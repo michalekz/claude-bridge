@@ -1,4 +1,5 @@
 import { homedir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, test } from "vitest";
 import {
   bridgeRoot,
@@ -77,7 +78,7 @@ describe("path resolvers (current platform)", () => {
 
   test("sessionFile composes correctly", () => {
     const result = sessionFile("/opt/oxy-kb", "abc-123");
-    expect(result.endsWith("-opt-oxy-kb/abc-123.jsonl")).toBe(true);
+    expect(result.endsWith(join("-opt-oxy-kb", "abc-123.jsonl"))).toBe(true);
   });
 
   test("bridgeRoot is ~/.claude-bridge", () => {
@@ -86,14 +87,18 @@ describe("path resolvers (current platform)", () => {
   });
 
   test("inboxDir composes for peer name", () => {
-    expect(inboxDir("mantis").endsWith(".claude-bridge/inbox/mantis")).toBe(true);
+    expect(inboxDir("mantis").endsWith(join(".claude-bridge", "inbox", "mantis"))).toBe(true);
   });
 
   test("peerRegistryFile composes JSON", () => {
-    expect(peerRegistryFile("mantis").endsWith(".claude-bridge/peers/mantis.json")).toBe(true);
+    expect(
+      peerRegistryFile("mantis").endsWith(join(".claude-bridge", "peers", "mantis.json")),
+    ).toBe(true);
   });
 
   test("sessionIndexFile points to SQLite", () => {
-    expect(sessionIndexFile().endsWith(".claude-bridge/index/sessions.sqlite")).toBe(true);
+    expect(sessionIndexFile().endsWith(join(".claude-bridge", "index", "sessions.sqlite"))).toBe(
+      true,
+    );
   });
 });
