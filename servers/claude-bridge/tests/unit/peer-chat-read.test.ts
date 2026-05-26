@@ -6,6 +6,7 @@ import { type ServerContext, buildContext } from "../../src/mcp/context.ts";
 import { PeerChatReadArgs, type ToolResult, peerChatReadTool } from "../../src/mcp/tools.ts";
 
 const ORIGINAL_HOME = process.env["HOME"];
+const ORIGINAL_USERPROFILE = process.env["USERPROFILE"]; // Windows: os.homedir() reads this, not HOME
 
 let homeDir: string;
 let baseDir: string;
@@ -130,18 +131,25 @@ describe("peer_chat_read", () => {
     homeDir = await mkdtemp(join(tmpdir(), "claude-bridge-chat-read-home-"));
     baseDir = join(homeDir, ".claude-bridge");
     process.env["HOME"] = homeDir;
+    process.env["USERPROFILE"] = homeDir; // Windows os.homedir() resolution
     projectDir = join(homeDir, ".claude", "projects", "-opt-test");
     await mkdir(projectDir, { recursive: true });
   });
 
   afterAll(async () => {
-    // Restore HOME — using delete here is correct (assignment to undefined
-    // would coerce to the string "undefined" and break subsequent tests).
+    // Restore HOME + USERPROFILE — using delete here is correct (assignment to
+    // undefined would coerce to the string "undefined" and break subsequent tests).
     if (ORIGINAL_HOME !== undefined) {
       process.env["HOME"] = ORIGINAL_HOME;
     } else {
       // biome-ignore lint/performance/noDelete: undefined assignment would coerce to "undefined"
       delete process.env["HOME"];
+    }
+    if (ORIGINAL_USERPROFILE !== undefined) {
+      process.env["USERPROFILE"] = ORIGINAL_USERPROFILE;
+    } else {
+      // biome-ignore lint/performance/noDelete: undefined assignment would coerce to "undefined"
+      delete process.env["USERPROFILE"];
     }
     await rm(homeDir, { recursive: true, force: true });
   });

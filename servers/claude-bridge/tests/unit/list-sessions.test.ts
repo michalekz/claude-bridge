@@ -5,6 +5,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, test } from "vitest"
 import { ListSessionsArgs, type ToolResult, listSessionsTool } from "../../src/mcp/tools.ts";
 
 const ORIGINAL_HOME = process.env["HOME"];
+const ORIGINAL_USERPROFILE = process.env["USERPROFILE"]; // Windows: os.homedir() reads this, not HOME
 
 let homeDir: string;
 let projectDir: string;
@@ -122,6 +123,7 @@ describe("list_sessions enhancement", () => {
   beforeAll(async () => {
     homeDir = await mkdtemp(join(tmpdir(), "claude-bridge-list-sessions-"));
     process.env["HOME"] = homeDir;
+    process.env["USERPROFILE"] = homeDir; // Windows os.homedir() resolution
     projectDir = join(homeDir, ".claude", "projects", "-opt-test");
     await mkdir(projectDir, { recursive: true });
   });
@@ -130,6 +132,9 @@ describe("list_sessions enhancement", () => {
     if (ORIGINAL_HOME !== undefined) process.env["HOME"] = ORIGINAL_HOME;
     // biome-ignore lint/performance/noDelete: coercing to "undefined" string would corrupt other tests
     else delete process.env["HOME"];
+    if (ORIGINAL_USERPROFILE !== undefined) process.env["USERPROFILE"] = ORIGINAL_USERPROFILE;
+    // biome-ignore lint/performance/noDelete: coercing to "undefined" string would corrupt other tests
+    else delete process.env["USERPROFILE"];
     await rm(homeDir, { recursive: true, force: true });
   });
 

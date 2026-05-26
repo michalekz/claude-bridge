@@ -6,6 +6,7 @@ import { type ServerContext, buildContext } from "../../src/mcp/context.ts";
 import { PeerChatSearchArgs, type ToolResult, peerChatSearchTool } from "../../src/mcp/tools.ts";
 
 const ORIGINAL_HOME = process.env["HOME"];
+const ORIGINAL_USERPROFILE = process.env["USERPROFILE"]; // Windows: os.homedir() reads this, not HOME
 const ORIGINAL_CWD_FN = process.cwd;
 
 let homeDir: string;
@@ -118,6 +119,7 @@ describe("peer_chat_search", () => {
     homeDir = await mkdtemp(join(tmpdir(), "claude-bridge-search-home-"));
     baseDir = join(homeDir, ".claude-bridge");
     process.env["HOME"] = homeDir;
+    process.env["USERPROFILE"] = homeDir; // Windows os.homedir() resolution
     // Two projects in the encoded form
     projectADir = join(homeDir, ".claude", "projects", "-opt-project-a");
     projectBDir = join(homeDir, ".claude", "projects", "-opt-project-b");
@@ -132,6 +134,9 @@ describe("peer_chat_search", () => {
     if (ORIGINAL_HOME !== undefined) process.env["HOME"] = ORIGINAL_HOME;
     // biome-ignore lint/performance/noDelete: undefined coerces to "undefined"
     else delete process.env["HOME"];
+    if (ORIGINAL_USERPROFILE !== undefined) process.env["USERPROFILE"] = ORIGINAL_USERPROFILE;
+    // biome-ignore lint/performance/noDelete: undefined coerces to "undefined"
+    else delete process.env["USERPROFILE"];
     process.cwd = ORIGINAL_CWD_FN;
     await rm(homeDir, { recursive: true, force: true });
   });
