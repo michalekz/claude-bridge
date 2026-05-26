@@ -1,0 +1,12 @@
+# Normalize line endings to LF for all text files.
+# Prevents Windows git autocrlf from corrupting files for cross-platform tooling
+# like Biome that detect line endings as formatting violations.
+* text=auto eol=lf
+
+# Binary files — never touch
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.cjs binary
