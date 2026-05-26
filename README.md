@@ -130,6 +130,16 @@ The plugin runs **locally, on one machine**. Inbox traffic goes through the loca
 - **[Detailed usage guide](docs/USAGE.md)** — every tool with arguments, examples, output formats, and workflow recipes.
 - **[Changelog](CHANGELOG.md)** — release history.
 - **[Security and privacy](SECURITY.md)** — what the plugin reads, what it writes, vulnerability disclosure.
+- **[Credits](CREDITS.md)** — open source projects whose patterns shaped this one.
+
+## Credits
+
+`claude-bridge` borrows specific patterns from earlier open-source explorations of Claude Code cross-chat coordination:
+[cc2cc](https://github.com/non4me/cc2cc) (atomic write + piggyback),
+[claude-peers-mcp](https://github.com/louislva/claude-peers-mcp) (push channel),
+[claude-relay](https://github.com/innestic/claude-relay) (factory closure pattern),
+[multiclaude](https://github.com/dlorenc/multiclaude) (phase planning).
+Full attribution and design notes in [CREDITS.md](CREDITS.md).
 
 ## License
 
