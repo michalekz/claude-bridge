@@ -1,5 +1,7 @@
 # claude-bridge
 
+🇬🇧 English · 🇨🇿 [Česky](README.cs.md)
+
 > Multi-chat orchestration for Claude Code. Two or more chats can talk to each other and look into each other's history. No copy-paste between windows, no server, no API keys — everything goes through the local filesystem.
 
 Built by [Zed Michalek](https://github.com/michalekz) at [oXyShop](https://oxyshop.cz). MIT licensed.
