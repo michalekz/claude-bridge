@@ -21843,7 +21843,7 @@ var TOOLS = [
 // src/mcp/server.ts
 var log5 = makeLogger("mcp-server");
 var SERVER_NAME = "claude-bridge";
-var SERVER_VERSION = "0.5.0";
+var SERVER_VERSION = "0.5.1";
 var INSTRUCTIONS = `
 claude-bridge \u2014 MCP server pro orchestraci nap\u0159\xED\u010D Claude Code chaty.
 

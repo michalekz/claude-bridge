@@ -2,6 +2,28 @@
 
 All notable changes to this project are documented here. Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.5.1] — 2026-05-26
+
+Patch release — no functional changes. Documentation, CI hygiene, and internal cleanup.
+
+### Added
+
+- `CREDITS.md` — explicit attribution to upstream projects (cc2cc, claude-peers-mcp, claude-relay, multiclaude) whose patterns shaped this one.
+- `README.cs.md` + `docs/cs/INSTALL.md` + `docs/cs/USAGE.md` — Czech translations as first-class parallel documentation. Language switcher in both READMEs.
+- `.gitattributes` — forces LF line endings on all platforms (fixes Windows CI Biome failures).
+- `local/` gitignore convention — per-clone scratch space for internal notes and drafts.
+
+### Changed
+
+- Test suites set `USERPROFILE` env var alongside `HOME` for Windows `os.homedir()` resolution. Fixes Windows CI test failures.
+- `paths.test.ts` assertions use `path.join()` for cross-platform path separators.
+- Internal source-comment examples updated from `/opt/oxy-kb` (real internal project name) to generic `/opt/my-project` placeholders.
+- Czech install docs (`docs/cs/INSTALL.md`) now point to public github marketplace instead of internal GitLab. oXyShop users continue to install via their internal marketplace (which references this public repo as an external source — see [oXyShop internal marketplace.json](https://git.oxyshop.cz/ai-tools/oxyshop-claude-plugins)).
+
+### Notes
+
+CI now green across **ubuntu-latest, macos-latest, windows-latest × Node 20, 22** (6 jobs).
+
 ## [0.5.0] — 2026-05-26
 
 Initial public release with the complete feature set developed across the 0.1.x–0.5.x internal cycle at oXyShop.
