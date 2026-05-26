@@ -21,6 +21,25 @@ Cascade, ze kterého plugin display name odvozuje, v pořadí priority:
 
 Refresh proběhne každých 5 s — když chat krátce po startu nemá ai-title, dorazí později.
 
+## Doporučená topologie: Extension jako orchestrátor, terminály jako workers
+
+Plugin funguje stejně ve VS Code Extension i v terminálovém Claude Code, ale doručovací charakteristiky se liší. Přirozený pattern pro multi-chat práci využívá obě strany — každá hraje na svoji silnou stránku.
+
+| Role | Kde | Doručování | Proč právě tato strana |
+|---|---|---|---|
+| **Orchestrátor** | VS Code Extension chat tab | Piggyback (channels v Extension aktuálně nejsou podporovány) | Orchestrátor *řídí* — sám volá `peer_ask`, `peer_list`, `peer_chat_read`. Každý tool call piggyback-drainuje inbox, takže odpovědi přicházejí přirozeně bez push. Extension navíc poskytuje editor surface pro práci, kterou řídíš. |
+| **Worker** | Terminálově spuštěný Claude s `--channels` | Real-time push | Workers *čekají* na úkoly. Bez push by viděli přicházející zprávy až při svém příštím self-initiated tool callu — což se nemusí nikdy stát, pokud worker leží idle. Push je probudí okamžitě, jakmile `ask` dorazí. |
+
+Asymetrie je *záměrná*, není to defekt: strana, která řídí konverzaci, nepotřebuje budíček; strana, která čeká, ho potřebuje.
+
+### Postup nasazení
+
+1. **Strana orchestrátora** — otevři Claude Code ve VS Code Extension běžně. Žádné speciální flagy. Plugin funguje hned po instalaci.
+2. **Strana worker** — otevři jeden nebo víc terminálů (separátní VS Code terminal taby, tmux panely, nebo platform-native terminal app) a spusť Claude s channelem: buď přes profil "Claude (channels)" (viz [INSTALL — VS Code terminal profile](INSTALL.md#vs-code-terminal-profile-všechny-os)), nebo napiš `claude --channels plugin:claude-bridge@oxyshop-plugins` přímo.
+3. **Ověř push** — z orchestrátora pošli `peer_ask` na worker. Worker zareaguje okamžitě (vidí `<channel source="claude-bridge" …>` tag inline v kontextu, ne odložené na další tool call).
+
+Pokud obě strany skončí ve stejném režimu (obě Extension nebo obě terminál-with-channels), nic se nerozbije — jen topologie neodpovídá latenčním charakteristikám tvého workflow.
+
 ## Tools — kompletní reference
 
 Nástroje jsou v Claude Code dostupné jako `mcp__plugin_claude-bridge_claude-bridge__<tool>`. Pluginné hooky pluginu je předem schvalují, takže od uživatele nevyžadují potvrzování.

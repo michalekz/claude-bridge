@@ -21,6 +21,25 @@ Cascade for display name resolution, in priority order:
 
 Refresh runs every 5 s — if a chat starts without an ai-title, it arrives shortly after.
 
+## Recommended topology: Extension as orchestrator, terminals as workers
+
+The plugin works the same in the VS Code Extension and in terminal-launched Claude Code, but they have different delivery characteristics. The natural pattern for multi-chat work uses both, with each side playing to its strength.
+
+| Role | Where | Delivery | Why this side |
+|---|---|---|---|
+| **Orchestrator** | VS Code Extension chat tab | Piggyback (channels not supported by Extension currently) | The orchestrator *drives* — it calls `peer_ask`, `peer_list`, `peer_chat_read` of its own accord. Every tool call piggyback-drains the inbox, so replies surface naturally without push. The Extension also gives you the file editing surface for the work you're directing. |
+| **Worker** | Terminal-launched Claude with `--channels` | Real-time push | Workers *wait* for tasks. Without push they'd only see incoming messages on their next self-initiated tool call — which might never happen if they're idle. Push wakes them immediately when an `ask` arrives. |
+
+The asymmetry is genuine, not a defect: an actor that drives the conversation doesn't need to be poked; an actor that waits does.
+
+### Setting it up
+
+1. **Orchestrator side** — open Claude Code in the VS Code Extension as normal. No special flags. Plugin works as soon as it's installed.
+2. **Worker side** — open one or more terminals (separate VS Code terminal tabs, tmux panes, or your platform's terminal app), and start Claude with the channel: either via the "Claude (channels)" terminal profile (see [INSTALL — VS Code terminal profile](INSTALL.md#vs-code-terminal-profile-all-oses)) or by typing `claude --channels plugin:claude-bridge` directly.
+3. **Verify push** — from the orchestrator, `peer_ask` a worker. It should react with no delay (the worker sees a `<channel source="claude-bridge" …>` tag inline in its context, not deferred to its next tool call).
+
+If both sides accidentally end up in the same mode (both Extension or both terminal-with-channels), nothing breaks — it just means the topology isn't aligned with the latency characteristics of your workflow.
+
 ## Tools — complete reference
 
 Tools are exposed in Claude Code as `mcp__plugin_claude-bridge_claude-bridge__<tool>`. The plugin's pre-approval hook clears them automatically — no user confirmation needed.

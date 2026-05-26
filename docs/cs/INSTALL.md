@@ -51,7 +51,28 @@ Pokud zapneš MCP channel feature, zpráva se cílovému chatu doručí **okamž
 >
 > Potřebuješ **obě konfigurace pohromadě**.
 
-### Jak zapnout channels (admin akce v claude.ai)
+### Jak zapnout channels
+
+Dvě cesty podle toho, jestli jsi org admin nebo jednotlivý vývojář. Obě produkují stejný efekt — pod nimi je identický setting.
+
+#### Varianta A — jednotlivý vývojář (user-level)
+
+Zapiš přímo do `~/.claude/settings.json` na stroji, kde běží `claude`:
+
+```json
+{
+  "channelsEnabled": true,
+  "allowedChannelPlugins": [
+    { "marketplace": "oxyshop-plugins", "plugin": "claude-bridge" }
+  ]
+}
+```
+
+Restartuj Claude Code (nebo `/mcp reconnect` v aktivních sessions) a `--channels plugin:claude-bridge@oxyshop-plugins` bude fungovat bez `--dangerously-load-development-channels` flagu.
+
+> **VS Code Remote upozornění:** soubor patří na **stroj, kde reálně běží `claude`**. Pokud používáš Remote-SSH nebo podobně, to je remote — tedy setting jde do remote `~/.claude/settings.json`, ne lokálního.
+
+#### Varianta B — organizace (managed settings)
 
 V *claude.ai → Admin settings → Claude Code → Channels*:
 
@@ -138,55 +159,82 @@ PowerShell restartni nebo `. $PROFILE`.
 
 ### VS Code terminal profile (všechny OS)
 
-Do `settings.json`:
+Přidá položku `Claude (channels)` do dropdownu vedle `+` v integrated terminálu. Stačí kliknout → Claude se spustí s zapnutým channelem.
 
-**Linux:**
+> **VS Code Remote upozornění — přečti jako první:** pro Remote-SSH (a podobné remote dev setupy) terminal profile config patří do **client settings.json** na lokálním notebooku — **ne** do `~/.vscode-server/data/User/settings.json` na remote. UI dropdown profilů kreslí desktop client a settings čte ze své strany. Auto-detekované shelly v dropdownu sice přicházejí z remote přes remote agenta, takže to vypadá, že VS Code settings čte ze serveru — ale profil entries jdou ze strany klienta. Cesty ke klient settings:
+>
+> - **Linux klient:** `~/.config/Code/User/settings.json`
+> - **macOS klient:** `~/Library/Application Support/Code/User/settings.json`
+> - **Windows klient:** `%APPDATA%\Code\User\settings.json`
+>
+> Klíč `terminal.integrated.profiles.<os>` je vázaný na **OS, kde běží terminál** (= remote OS), ne na klient OS. Při remote-Linux z Windows notebooku tedy editujeme `profiles.linux` v `%APPDATA%\Code\User\settings.json`.
+
+Do příslušného `settings.json` (klient strana) přidej blok podle OS, kde reálně budeš spouštět terminály:
+
+**Linux (terminál běží na Linuxu):**
 
 ```json
 {
   "terminal.integrated.profiles.linux": {
-    "claude-bridge": {
+    "Claude (channels)": {
       "path": "bash",
-      "args": ["-c", "claude --channels plugin:claude-bridge@oxyshop-plugins; exec bash"]
+      "args": ["-l", "-c", "exec claude --channels plugin:claude-bridge@oxyshop-plugins"],
+      "overrideName": true,
+      "icon": "comment-discussion"
     }
-  },
-  "terminal.integrated.defaultProfile.linux": "claude-bridge"
+  }
 }
 ```
 
-**macOS:**
+**macOS (terminál běží na macOS):**
 
 ```json
 {
   "terminal.integrated.profiles.osx": {
-    "claude-bridge": {
+    "Claude (channels)": {
       "path": "zsh",
-      "args": ["-c", "claude --channels plugin:claude-bridge@oxyshop-plugins; exec zsh"]
+      "args": ["-l", "-c", "exec claude --channels plugin:claude-bridge@oxyshop-plugins"],
+      "overrideName": true,
+      "icon": "comment-discussion"
     }
-  },
-  "terminal.integrated.defaultProfile.osx": "claude-bridge"
+  }
 }
 ```
 
-**Windows:**
+**Windows (terminál běží na Windows):**
 
 ```json
 {
   "terminal.integrated.profiles.windows": {
-    "claude-bridge": {
+    "Claude (channels)": {
       "path": "pwsh.exe",
-      "args": ["-NoExit", "-Command", "claude --channels plugin:claude-bridge@oxyshop-plugins"]
+      "args": ["-NoLogo", "-Command", "claude --channels plugin:claude-bridge@oxyshop-plugins"],
+      "overrideName": true,
+      "icon": "comment-discussion"
     }
-  },
-  "terminal.integrated.defaultProfile.windows": "claude-bridge"
+  }
 }
 ```
 
-Ctrl+` pak otevře terminál se zapnutým channelem.
+Reload window (Ctrl+Shift+P → *Developer: Reload Window*) a položka se objeví v `+` dropdownu v terminal panelu.
 
-### Pro VS Code Extension samotnou (ne terminal v ní)
+Drobnosti k zapamatování:
 
-Extension neumí předat `--channels` flag přes settings.json (zatím — viz claude-fa.st). Pokud chceš VS Code chat tab s channelem, musíš použít `claudeCode.claudeProcessWrapper` setting na wrapper skript, který flag doplní. Detail najdeš v `docs/audit/` nebo v issue trackeru — je to fragile a doporučujeme spíš použít terminálovou cestu.
+- **Žádný `defaultProfile`** — položka je *přídavná* volba, ne default. Vybírá se explicitně, když je potřeba; běžný `bash` (nebo tvůj obvyklý default) zůstává nedotčený.
+- **`exec claude …`** — Claude nahradí shell proces, takže Ctrl+D zavře terminál čistě bez prázdného shellu navrch.
+- **`-l` (login shell)** — načte `~/.bashrc` / `~/.zshrc`, takže úpravy PATH (nvm, asdf, vlastní `~/.local/bin`) se aplikují.
+- **`overrideName`** — bez něj by terminál nesl titulek "bash" / "pwsh" místo "Claude (channels)".
+
+### VS Code Extension chat taby
+
+Extension kreslí Claude Code chat taby přímo v VS Code (ne terminály). Aktuálně Extension **neumí zapnout channels** pro tyto taby — flag se nepředává, a setting `claudeCode.claudeProcessWrapper` je v aktuálním buildu Extension tiše ignorovaný.
+
+V praxi to znamená, že Extension chat taby běží v **piggyback režimu** (zprávy se drainují s každým tool callem), zatímco terminálově spuštěný Claude umí běžet s **real-time push**. Přirozené rozdělení rolí:
+
+- **Extension jako orchestrátor** — řídí multi-chat workflow, posílá `peer_ask`, čte odpovědi přes piggyback při svém příštím tool callu. Push nepotřebuje, protože je aktivně řídící strana.
+- **Terminály jako workers** — čekají na zprávy od orchestrátora. Push **potřebují**, aby se okamžitě probudily, když přijde úkol.
+
+Viz [USAGE — Doporučená topologie](USAGE.md#doporučená-topologie-extension-jako-orchestrátor-terminály-jako-workers) pro detail.
 
 ## Kde jsou data pluginu
 
@@ -227,6 +275,14 @@ Pokud tam JSON soubory jsou, doručení funguje — jen je cílový chat zatím 
 ### "--channels blocked by org policy"
 
 Tvůj org má `channelsEnabled: false` v managed settings. Admin musí flipnout. Bez admin akce ani `--dangerously-load-development-channels` flag neprojde. Plugin pokračuje v piggyback fallback režimu (bez push).
+
+### "identity_unresolvable při startu, plugin hlásí failed"
+
+Známý race condition (před v0.5.2): MCP server pluginu startuje o zlomek sekundy rychleji, než Claude Code zapíše `~/.claude/sessions/<ppid>.json`, takže plugin neumí rozpoznat svoji identitu a spadne.
+
+Workaround: `/mcp reconnect` v Claude Code. Session soubor je už na místě a identita se rozresolvuje čistě.
+
+Fix je naplánovaný do v0.5.2 (retry s exponential backoff + fallback na `cwd-slug`).
 
 ### "Po update pluginu se nic nezměnilo"
 

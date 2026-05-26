@@ -51,7 +51,28 @@ With MCP channels enabled, a message arrives **immediately** as a notification r
 >
 > You need **both** configured together.
 
-### Enabling channels (admin action in claude.ai)
+### Enabling channels
+
+Two ways to enable, depending on whether you're an org admin or an individual developer. Both produce the same effect — the underlying setting is identical.
+
+#### Option A — individual developer (user-level)
+
+Write directly to `~/.claude/settings.json` on the machine where you run `claude`:
+
+```json
+{
+  "channelsEnabled": true,
+  "allowedChannelPlugins": [
+    { "marketplace": "claude-bridge", "plugin": "claude-bridge" }
+  ]
+}
+```
+
+Restart Claude Code (or run `/mcp reconnect` in active sessions) and `--channels plugin:claude-bridge` will work without the `--dangerously-load-development-channels` flag.
+
+> **VS Code Remote caveat:** the file goes on the **machine where `claude` actually runs**. If you use Remote-SSH or similar, that's the remote — so the setting goes into the remote-side `~/.claude/settings.json`, not on your local laptop.
+
+#### Option B — organization (managed settings)
 
 In *claude.ai → Admin settings → Claude Code → Channels*:
 
@@ -138,55 +159,82 @@ Restart PowerShell or run `. $PROFILE`.
 
 ### VS Code terminal profile (all OSes)
 
-In `settings.json`:
+Adds a `Claude (channels)` entry to the `+` dropdown in the integrated terminal. Open it once → Claude starts with the channel ready.
 
-**Linux:**
+> **VS Code Remote caveat — read this first:** for Remote-SSH (or any remote dev setup), the terminal profile config **must go in the client-side `settings.json`** on your local laptop — **not** in `~/.vscode-server/data/User/settings.json` on the remote. VS Code's profile dropdown UI is rendered by the desktop client and reads its settings from the client. The auto-detected shell list in the dropdown comes from the remote, which makes this counter-intuitive — but profile entries themselves are client-only. Client settings paths:
+>
+> - **Linux client:** `~/.config/Code/User/settings.json`
+> - **macOS client:** `~/Library/Application Support/Code/User/settings.json`
+> - **Windows client:** `%APPDATA%\Code\User\settings.json`
+>
+> The `terminal.integrated.profiles.<os>` key is keyed on the **OS where the terminal runs** (= remote OS), not the client OS. So when connected to a Linux remote from a Windows laptop, edit `profiles.linux` in `%APPDATA%\Code\User\settings.json`.
+
+In the appropriate `settings.json` (client side), add the profile block(s) for the OS(es) where you'll actually run terminals:
+
+**Linux (terminal runs on Linux):**
 
 ```json
 {
   "terminal.integrated.profiles.linux": {
-    "claude-bridge": {
+    "Claude (channels)": {
       "path": "bash",
-      "args": ["-c", "claude --channels plugin:claude-bridge; exec bash"]
+      "args": ["-l", "-c", "exec claude --channels plugin:claude-bridge"],
+      "overrideName": true,
+      "icon": "comment-discussion"
     }
-  },
-  "terminal.integrated.defaultProfile.linux": "claude-bridge"
+  }
 }
 ```
 
-**macOS:**
+**macOS (terminal runs on macOS):**
 
 ```json
 {
   "terminal.integrated.profiles.osx": {
-    "claude-bridge": {
+    "Claude (channels)": {
       "path": "zsh",
-      "args": ["-c", "claude --channels plugin:claude-bridge; exec zsh"]
+      "args": ["-l", "-c", "exec claude --channels plugin:claude-bridge"],
+      "overrideName": true,
+      "icon": "comment-discussion"
     }
-  },
-  "terminal.integrated.defaultProfile.osx": "claude-bridge"
+  }
 }
 ```
 
-**Windows:**
+**Windows (terminal runs on Windows):**
 
 ```json
 {
   "terminal.integrated.profiles.windows": {
-    "claude-bridge": {
+    "Claude (channels)": {
       "path": "pwsh.exe",
-      "args": ["-NoExit", "-Command", "claude --channels plugin:claude-bridge"]
+      "args": ["-NoLogo", "-Command", "claude --channels plugin:claude-bridge"],
+      "overrideName": true,
+      "icon": "comment-discussion"
     }
-  },
-  "terminal.integrated.defaultProfile.windows": "claude-bridge"
+  }
 }
 ```
 
-Ctrl+` then opens a terminal with the channel pre-enabled.
+Reload window (Ctrl+Shift+P → *Developer: Reload Window*) and the entry appears in the `+` dropdown in the terminal panel.
 
-### For the VS Code Extension itself (not the terminal inside it)
+A few details worth knowing:
 
-The extension can't pass `--channels` via settings.json (yet). If you want a VS Code chat tab to have the channel enabled, you need to use `claudeCode.claudeProcessWrapper` pointing at a wrapper script that injects the flag. This setup is fragile and we recommend using the terminal path instead.
+- **No `defaultProfile`** — the entry is an additional option, not the default. You pick it explicitly when needed; ordinary `bash` (or your usual default) stays available.
+- **`exec claude …`** — Claude replaces the shell process, so Ctrl+D closes the terminal cleanly with no leftover empty shell.
+- **`-l` (login shell)** — sources `~/.bashrc` / `~/.zshrc`, so any PATH adjustments (nvm, asdf, custom `~/.local/bin`) are loaded.
+- **`overrideName`** — without this, the terminal title would still read "bash" / "pwsh" instead of "Claude (channels)".
+
+### VS Code Extension chat tabs
+
+The Extension renders Claude Code chat tabs inside VS Code itself (not terminals). Currently the Extension **cannot enable channels** for these tabs — there's no flag passthrough, and the `claudeCode.claudeProcessWrapper` setting is silently ignored in the current Extension build.
+
+In practice this means Extension chat tabs run in **piggyback mode** (messages drain on every tool call), while terminal-launched Claude can run with **real-time push**. The natural division of labor:
+
+- **Extension as orchestrator** — drives multi-chat workflows, sends `peer_ask`, reads replies via piggyback on its next tool call. Doesn't need push because it's actively driving anyway.
+- **Terminals as workers** — wait for messages from the orchestrator. They *do* need push, so they wake up immediately when a task arrives.
+
+See [USAGE — Recommended topology](USAGE.md#recommended-topology-extension-as-orchestrator-terminals-as-workers) for details.
 
 ## Where the plugin keeps its data
 
@@ -227,6 +275,14 @@ If JSON files are there, delivery works — the target chat just hasn't read the
 ### "--channels blocked by org policy"
 
 Your organization has `channelsEnabled: false` in managed settings. The admin needs to flip it. Without admin action, even `--dangerously-load-development-channels` will not get through. The plugin continues to work in piggyback-fallback mode (without push).
+
+### "identity_unresolvable on startup, plugin shows as failed"
+
+Known race condition (pre-v0.5.2): the plugin's MCP server can boot fractionally faster than Claude Code writes its `~/.claude/sessions/<ppid>.json` file, so the plugin can't resolve its own identity and exits.
+
+Workaround: `/mcp reconnect` inside Claude Code. The session file is in place by then and identity resolves cleanly.
+
+A fix is planned for v0.5.2 (retry with exponential backoff plus a `cwd-slug` fallback).
 
 ### "After plugin update nothing changed"
 
