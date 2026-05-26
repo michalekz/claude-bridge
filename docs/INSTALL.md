@@ -225,6 +225,42 @@ A few details worth knowing:
 - **`-l` (login shell)** — sources `~/.bashrc` / `~/.zshrc`, so any PATH adjustments (nvm, asdf, custom `~/.local/bin`) are loaded.
 - **`overrideName`** — without this, the terminal title would still read "bash" / "pwsh" instead of "Claude (channels)".
 
+### VS Code task — auto-start worker on folder open
+
+If you want a worker terminal to be ready as soon as you open the project — no dropdown click, no typing — use a VS Code task with `runOn: folderOpen`.
+
+Add to `.vscode/tasks.json` in your project (or in your user-level `~/.vscode/tasks.json` if you don't want to commit it):
+
+```json
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "Claude Code: claude-bridge worker",
+      "type": "shell",
+      "command": "claude --channels plugin:claude-bridge",
+      "isBackground": true,
+      "problemMatcher": [],
+      "runOptions": { "runOn": "folderOpen" },
+      "presentation": {
+        "reveal": "always",
+        "focus": false,
+        "panel": "dedicated",
+        "clear": false
+      }
+    }
+  ]
+}
+```
+
+The first time you open the folder, VS Code asks for permission to run automatic tasks. Allow it and the task fires on every subsequent folder open.
+
+Trade-offs compared to the manual terminal profile above:
+
+- **Auto-start vs. on-demand** — task starts every time, profile starts when you click it. Pick based on whether you want a worker ready by default.
+- **Workspace vs. system** — `.vscode/tasks.json` is per-project (and goes into git if you commit it); profile in `settings.json` is system-wide across all your VS Code windows.
+- **Terminal-side either way** — both spawn a terminal-launched Claude. Neither helps the Extension chat tab (which can't have channels enabled currently — see below).
+
 ### VS Code Extension chat tabs
 
 The Extension renders Claude Code chat tabs inside VS Code itself (not terminals). Currently the Extension **cannot enable channels** for these tabs — there's no flag passthrough, and the `claudeCode.claudeProcessWrapper` setting is silently ignored in the current Extension build.

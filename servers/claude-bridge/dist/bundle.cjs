@@ -18146,6 +18146,22 @@ async function resolvePeerIdentity(opts = {}) {
   const slug = slugFromCwd(cwd);
   return { id, name: slug, displayName: slug, source: "cwd-slug" };
 }
+var DEFAULT_IDENTITY_RETRY_DELAYS_MS = [100, 200, 400, 800, 1500];
+async function resolvePeerIdentityWithRetry(opts = {}) {
+  const delays = opts.retryDelays ?? DEFAULT_IDENTITY_RETRY_DELAYS_MS;
+  let lastError;
+  for (let attempt = 0; attempt <= delays.length; attempt++) {
+    try {
+      return await resolvePeerIdentity(opts);
+    } catch (e) {
+      lastError = e;
+      if (attempt < delays.length) {
+        await new Promise((r) => setTimeout(r, delays[attempt]));
+      }
+    }
+  }
+  throw lastError;
+}
 
 // src/util/logger.ts
 var LEVELS = { debug: 10, info: 20, warn: 30, error: 40 };
@@ -20263,7 +20279,7 @@ function createChannelSender(server) {
 var log3 = makeLogger("context");
 var DEFAULT_NAME_REFRESH_MS = 5e3;
 async function buildContext(opts = {}) {
-  const self = opts.identity ?? await resolvePeerIdentity(opts.identityOptions ?? {});
+  const self = opts.identity ?? await resolvePeerIdentityWithRetry(opts.identityOptions ?? {});
   log3.info("identity_resolved", { id: self.id, name: self.name, source: self.source });
   const inbox = createInboxStore({ baseDir: opts.baseDir });
   const registry2 = createPeerRegistry({ baseDir: opts.baseDir });
@@ -21843,7 +21859,7 @@ var TOOLS = [
 // src/mcp/server.ts
 var log5 = makeLogger("mcp-server");
 var SERVER_NAME = "claude-bridge";
-var SERVER_VERSION = "0.5.1";
+var SERVER_VERSION = "0.5.2";
 var INSTRUCTIONS = `
 claude-bridge \u2014 MCP server pro orchestraci nap\u0159\xED\u010D Claude Code chaty.
 

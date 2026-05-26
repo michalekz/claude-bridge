@@ -1,6 +1,6 @@
 {
   "name": "claude-bridge",
-  "version": "0.5.1",
+  "version": "0.5.2",
   "description": "Multi-chat orchestration for Claude Code. File-based inbox, peer messaging, peer_chat_read, peer_chat_search, enhanced list_sessions, bundled skill for agents.",
   "author": {
     "name": "Zed Michalek",

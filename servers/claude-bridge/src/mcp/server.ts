@@ -15,7 +15,7 @@ import { TOOLS, type ToolResult, piggybackInbox } from "./tools.ts";
 const log = makeLogger("mcp-server");
 
 const SERVER_NAME = "claude-bridge";
-const SERVER_VERSION = "0.5.1";
+const SERVER_VERSION = "0.5.2";
 
 const INSTRUCTIONS = `
 claude-bridge — MCP server pro orchestraci napříč Claude Code chaty.

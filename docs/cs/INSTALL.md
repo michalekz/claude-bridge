@@ -225,6 +225,42 @@ Drobnosti k zapamatování:
 - **`-l` (login shell)** — načte `~/.bashrc` / `~/.zshrc`, takže úpravy PATH (nvm, asdf, vlastní `~/.local/bin`) se aplikují.
 - **`overrideName`** — bez něj by terminál nesl titulek "bash" / "pwsh" místo "Claude (channels)".
 
+### VS Code task — auto-start worker při otevření projektu
+
+Pokud chceš worker terminál připravený ihned po otevření projektu — bez kliknutí v dropdownu, bez psaní — použij VS Code task s `runOn: folderOpen`.
+
+Přidej do `.vscode/tasks.json` v projektu (případně do user-level `~/.vscode/tasks.json`, pokud to nechceš commitnout):
+
+```json
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "Claude Code: claude-bridge worker",
+      "type": "shell",
+      "command": "claude --channels plugin:claude-bridge@oxyshop-plugins",
+      "isBackground": true,
+      "problemMatcher": [],
+      "runOptions": { "runOn": "folderOpen" },
+      "presentation": {
+        "reveal": "always",
+        "focus": false,
+        "panel": "dedicated",
+        "clear": false
+      }
+    }
+  ]
+}
+```
+
+Při prvním otevření složky se VS Code zeptá na povolení automatických tasků. Povolení odsouhlas a task pak nastartuje při každém dalším otevření.
+
+Trade-offy proti manuálnímu terminal profilu výše:
+
+- **Auto-start vs. on-demand** — task startuje pokaždé, profil startuje až po kliknutí. Vyber podle toho, jestli chceš worker připravený defaultně.
+- **Workspace vs. system** — `.vscode/tasks.json` platí per-projekt (a jde do gitu, pokud ho commitneš); profil v `settings.json` platí napříč všemi tvými VS Code okny.
+- **Vždycky terminálový Claude** — obě varianty spouští Claude v terminálu. Ani jedna nepomáhá Extension chat tabu (kde aktuálně channels zapnout nelze — viz níže).
+
 ### VS Code Extension chat taby
 
 Extension kreslí Claude Code chat taby přímo v VS Code (ne terminály). Aktuálně Extension **neumí zapnout channels** pro tyto taby — flag se nepředává, a setting `claudeCode.claudeProcessWrapper` je v aktuálním buildu Extension tiše ignorovaný.
