@@ -1,0 +1,23 @@
+{
+  "name": "claude-bridge",
+  "version": "0.5.0",
+  "description": "Multi-chat orchestration for Claude Code. File-based inbox, peer messaging, peer_chat_read, peer_chat_search, enhanced list_sessions, bundled skill for agents.",
+  "author": {
+    "name": "Zed Michalek",
+    "url": "https://github.com/michalekz"
+    },
+  "license": "MIT",
+  "homepage": "https://github.com/michalekz/claude-bridge",
+  "repository": "https://github.com/michalekz/claude-bridge.git",
+  "keywords": [
+    "claude-bridge",
+    "mcp",
+    "cross-chat",
+    "orchestration",
+    "peer-discovery",
+    "claude-code",
+    "claude-code-plugin",
+    "oxyshop"
+  ],
+  "mcpServers": "./.mcp.json"
+}

@@ -1,0 +1,36 @@
+{
+  "name": "claude-bridge",
+  "version": "0.5.0",
+  "private": true,
+  "description": "MCP server for cross-Claude-Code-chat orchestration over local session JSONL files",
+  "type": "module",
+  "main": "dist/bundle.cjs",
+  "scripts": {
+    "postinstall": "npm run build",
+    "dev": "tsx --watch src/index.ts",
+    "start": "node dist/bundle.cjs",
+    "build": "esbuild src/index.ts --bundle --platform=node --target=node18 --format=cjs --outfile=dist/bundle.cjs",
+    "test": "vitest run tests/",
+    "test:watch": "vitest tests/",
+    "typecheck": "tsc --noEmit",
+    "check": "biome check src tests",
+    "format": "biome format --write src tests",
+    "lint": "biome lint src tests"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.4",
+    "chokidar": "^4.0.1",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^1.9.4",
+    "@types/node": "^22.9.0",
+    "esbuild": "^0.24.0",
+    "tsx": "^4.19.2",
+    "typescript": "^5.6.3",
+    "vitest": "^2.1.8"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

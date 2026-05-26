@@ -1,0 +1,41 @@
+# Dependencies
+node_modules/
+
+# Build output — keep bundle.cjs as installable artifact (postinstall rebuilds it)
+dist/*
+!dist/bundle.cjs
+*.tsbuildinfo
+
+# Test coverage
+coverage/
+.coverage/
+
+# Environment
+.env
+.env.local
+.env.*.local
+
+# IDE
+.idea/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+npm-debug.log*
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Project-specific
+.tmp/
+tmp/
+*.tmp
+
+# Inbox / runtime data (when developing locally)
+.claude-bridge-test/
+reference/

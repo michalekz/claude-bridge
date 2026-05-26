@@ -1,0 +1,41 @@
+# Node.js dependencies — installed locally per developer
+node_modules/
+
+# Build artifact policy: keep dist/bundle.cjs (installable artifact),
+# ignore other build output and TypeScript incremental files
+dist/*
+!dist/bundle.cjs
+*.tsbuildinfo
+
+# Test coverage
+coverage/
+.coverage/
+
+# Environment files (never commit secrets)
+.env
+.env.local
+.env.*.local
+
+# IDE / editor
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS junk
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Logs
+*.log
+npm-debug.log*
+
+# Temporary / scratch
+.tmp/
+tmp/
+*.tmp
+
+# Runtime data (when developing locally against ~/.claude-bridge/)
+.claude-bridge-test/
+reference/
