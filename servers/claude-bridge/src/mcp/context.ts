@@ -1,6 +1,11 @@
 import { mkdir, rename } from "node:fs/promises";
 import { dirname, join } from "node:path";
-import { type IdentityOptions, type ResolvedIdentity, resolvePeerIdentity } from "../identity.ts";
+import {
+  type IdentityOptions,
+  type ResolvedIdentity,
+  resolvePeerIdentity,
+  resolvePeerIdentityWithRetry,
+} from "../identity.ts";
 import {
   type InboxStore,
   type MessageEnvelope,
@@ -60,7 +65,7 @@ export interface BuildContextOptions {
 export const DEFAULT_NAME_REFRESH_MS = 5_000;
 
 export async function buildContext(opts: BuildContextOptions = {}): Promise<ServerContext> {
-  const self = opts.identity ?? (await resolvePeerIdentity(opts.identityOptions ?? {}));
+  const self = opts.identity ?? (await resolvePeerIdentityWithRetry(opts.identityOptions ?? {}));
   log.info("identity_resolved", { id: self.id, name: self.name, source: self.source });
 
   const inbox = createInboxStore({ baseDir: opts.baseDir });

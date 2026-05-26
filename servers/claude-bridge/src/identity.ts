@@ -194,6 +194,45 @@ export async function resolvePeerIdentity(opts: IdentityOptions = {}): Promise<R
 }
 
 /**
+ * Default retry delays (ms) for `resolvePeerIdentityWithRetry`.
+ * Sum ≈ 3 s — comfortably above the cold-boot race window where
+ * Claude Code hasn't finished writing `~/.claude/sessions/<ppid>.json`.
+ */
+export const DEFAULT_IDENTITY_RETRY_DELAYS_MS = [100, 200, 400, 800, 1500];
+
+export type RetryIdentityOptions = IdentityOptions & {
+  /**
+   * Delays (ms) between retry attempts. Empty array = no retry (single attempt).
+   * Defaults to `DEFAULT_IDENTITY_RETRY_DELAYS_MS`.
+   */
+  retryDelays?: number[];
+};
+
+/**
+ * Same as `resolvePeerIdentity`, but retries on cold-boot races where
+ * `~/.claude/sessions/<ppid>.json` isn't yet written when our MCP server
+ * boots. Honors `retryDelays` for tests; default backoff is gentle and
+ * caps at ~3 s total.
+ */
+export async function resolvePeerIdentityWithRetry(
+  opts: RetryIdentityOptions = {},
+): Promise<ResolvedIdentity> {
+  const delays = opts.retryDelays ?? DEFAULT_IDENTITY_RETRY_DELAYS_MS;
+  let lastError: unknown;
+  for (let attempt = 0; attempt <= delays.length; attempt++) {
+    try {
+      return await resolvePeerIdentity(opts);
+    } catch (e) {
+      lastError = e;
+      if (attempt < delays.length) {
+        await new Promise((r) => setTimeout(r, delays[attempt]));
+      }
+    }
+  }
+  throw lastError;
+}
+
+/**
  * Backwards-compat shim — returns just the legacy `{ name, source }` shape.
  * @deprecated Use `resolvePeerIdentity()` instead. Kept until callers migrate.
  */

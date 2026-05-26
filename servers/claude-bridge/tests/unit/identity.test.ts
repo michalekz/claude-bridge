@@ -8,6 +8,7 @@ import {
   readLatestTitleFromJsonl,
   readSessionJsonAt,
   resolvePeerIdentity,
+  resolvePeerIdentityWithRetry,
   resolvePeerName,
   sanitizePeerName,
   slugFromCwd,
@@ -270,6 +271,86 @@ describe("resolvePeerIdentity — requires session.json with sessionId", () => {
     await writeSessionJson(ppid, { sessionId: SESSION_ID, cwd });
     const result = await resolvePeerIdentity({ ppid, home: tmp, cwd, env: {} });
     expect(result.id).toBe(SESSION_ID);
+  });
+});
+
+describe("resolvePeerIdentityWithRetry — cold-boot race condition", () => {
+  let tmp: string;
+  const SESSION_ID = "11111111-2222-3333-4444-555555555555";
+
+  beforeAll(async () => {
+    tmp = await mkdtemp(join(tmpdir(), "claude-bridge-identity-retry-"));
+    await mkdir(join(tmp, ".claude", "sessions"), { recursive: true });
+  });
+
+  afterAll(async () => {
+    await rm(tmp, { recursive: true, force: true });
+  });
+
+  test("succeeds on first attempt when session.json already present", async () => {
+    const ppid = 411111;
+    await writeFile(
+      join(tmp, ".claude", "sessions", `${ppid}.json`),
+      JSON.stringify({ pid: ppid, sessionId: SESSION_ID, cwd: "/opt/retry-fast" }),
+    );
+    const result = await resolvePeerIdentityWithRetry({
+      ppid,
+      home: tmp,
+      cwd: "/opt/retry-fast",
+      env: {},
+      retryDelays: [10, 20, 40],
+    });
+    expect(result.id).toBe(SESSION_ID);
+    expect(result.name).toBe("retry-fast");
+  });
+
+  test("succeeds after session.json appears mid-retry (cold-boot race)", async () => {
+    const ppid = 411112;
+    const cwd = "/opt/retry-late";
+    // Schedule session.json creation after the second retry delay (~30 ms)
+    setTimeout(() => {
+      void writeFile(
+        join(tmp, ".claude", "sessions", `${ppid}.json`),
+        JSON.stringify({ pid: ppid, sessionId: SESSION_ID, cwd }),
+      );
+    }, 30);
+
+    const result = await resolvePeerIdentityWithRetry({
+      ppid,
+      home: tmp,
+      cwd,
+      env: {},
+      retryDelays: [10, 20, 40, 80, 160],
+    });
+    expect(result.id).toBe(SESSION_ID);
+    expect(result.name).toBe("retry-late");
+  });
+
+  test("throws after exhausting all retries", async () => {
+    await expect(
+      resolvePeerIdentityWithRetry({
+        ppid: 411113,
+        home: tmp,
+        cwd: "/opt/never",
+        env: {},
+        retryDelays: [1, 1, 1],
+      }),
+    ).rejects.toThrow(IdentityError);
+  });
+
+  test("retryDelays: [] disables retry (single attempt)", async () => {
+    const start = Date.now();
+    await expect(
+      resolvePeerIdentityWithRetry({
+        ppid: 411114,
+        home: tmp,
+        cwd: "/opt/no-retry",
+        env: {},
+        retryDelays: [],
+      }),
+    ).rejects.toThrow(IdentityError);
+    // Should fail fast — no sleeps
+    expect(Date.now() - start).toBeLessThan(50);
   });
 });
 
