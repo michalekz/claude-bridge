@@ -39,3 +39,7 @@ tmp/
 # Runtime data (when developing locally against ~/.claude-bridge/)
 .claude-bridge-test/
 reference/
+
+# Per-clone scratch space — anything here is ignored by git.
+# Use for: internal prep notes, drafts, secrets staging, scratch scripts
+local/

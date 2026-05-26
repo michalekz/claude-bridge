@@ -17,8 +17,8 @@ Plugin si při instalaci sám stáhne a sestaví TypeScript MCP server — nemus
 V Claude Code spusť:
 
 ```
-/plugin marketplace add git@git.oxyshop.cz:ai-tools/oxyshop-claude-plugins.git
-/plugin install claude-bridge@oxyshop-plugins
+/plugin marketplace add github.com/michalekz/claude-bridge
+/plugin install claude-bridge
 ```
 
 První příkaz přidá oXyShop marketplace (jednou za stroj), druhý nainstaluje plugin. Build proběhne automaticky.
@@ -210,7 +210,7 @@ Tři možné příčiny v pořadí pravděpodobnosti:
 
 1. **Druhý chat ještě nebyl aktivován** (jen VS Code Extension). Klikni na druhý tab, počkej 5–10 s, zkus znovu. Terminálové chaty tento problém nemají.
 2. **Druhý chat běží jinde, než si myslíš.** Zkontroluj `cwd` ve výsledku `peer_list` — všichni peeři musí mít vidět stejný `~/.claude-bridge/` (tj. běžet jako stejný uživatel, na stejném stroji).
-3. **Plugin neběží.** V druhém chatu zkus `peer_list` — pokud vrátí chybu o neznámém nástroji, plugin se tam neinstaloval. Reinstaluj přes `/plugin install claude-bridge@oxyshop-plugins`.
+3. **Plugin neběží.** V druhém chatu zkus `peer_list` — pokud vrátí chybu o neznámém nástroji, plugin se tam neinstaloval. Reinstaluj přes `/plugin install claude-bridge`.
 
 ### "Posílám zprávu, ale druhý chat nereaguje hned"
 

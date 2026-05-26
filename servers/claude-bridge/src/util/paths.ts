@@ -6,7 +6,7 @@ import { join, resolve, sep } from "node:path";
  *
  * Claude Code stores sessions per-project in `~/.claude/projects/<encoded-cwd>/`.
  * The cwd encoding rule differs between OSes:
- * - Linux/macOS: `/opt/oxy-kb` → `-opt-oxy-kb`
+ * - Linux/macOS: `/opt/my-project` → `-opt-my-project`
  * - Windows:     `C:\Users\me\proj` → `C--Users-me-proj`
  *
  * This module centralizes that logic so the rest of the codebase is OS-agnostic.
@@ -43,7 +43,7 @@ export function ideLockDir(): string {
 /**
  * Encode an absolute cwd path into the directory name Claude Code uses.
  *
- * Linux example:   `/opt/oxy-kb`           → `-opt-oxy-kb`
+ * Linux example:   `/opt/my-project`           → `-opt-my-project`
  * Windows example: `C:\Users\me\my-proj`   → `C--Users-me-my-proj`
  *                  `C:/Users/me/my-proj`   → `C--Users-me-my-proj`
  *
@@ -62,7 +62,7 @@ export function encodeProjectDir(absoluteCwd: string, plat: Platform = currentPl
 /**
  * Resolve the directory holding session JSONL files for a given cwd.
  *
- * Example: cwd `/opt/oxy-kb` → `~/.claude/projects/-opt-oxy-kb/`
+ * Example: cwd `/opt/my-project` → `~/.claude/projects/-opt-my-project/`
  */
 export function projectDir(absoluteCwd: string): string {
   return join(projectsRoot(), encodeProjectDir(resolve(absoluteCwd)));

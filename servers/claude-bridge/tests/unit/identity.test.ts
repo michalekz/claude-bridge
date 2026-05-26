@@ -68,7 +68,7 @@ describe("sanitizePeerName", () => {
 
 describe("slugFromCwd", () => {
   test("Linux path", () => {
-    expect(slugFromCwd("/opt/oxy-kb")).toBe("oxy-kb");
+    expect(slugFromCwd("/opt/my-project")).toBe("my-project");
   });
 
   test("Linux deep path", () => {
@@ -76,7 +76,7 @@ describe("slugFromCwd", () => {
   });
 
   test("trailing slash", () => {
-    expect(slugFromCwd("/opt/oxy-kb/")).toBe("oxy-kb");
+    expect(slugFromCwd("/opt/my-project/")).toBe("my-project");
   });
 
   test("uppercase", () => {

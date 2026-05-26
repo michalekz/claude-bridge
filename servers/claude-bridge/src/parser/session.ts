@@ -16,7 +16,7 @@ import { projectsRoot } from "../util/paths.ts";
  */
 
 export interface ProjectRef {
-  /** Encoded cwd dir name, e.g. "-opt-oxy-kb" */
+  /** Encoded cwd dir name, e.g. "-opt-my-project" */
   projectDir: string;
   /** Absolute path to the project dir */
   absolutePath: string;
@@ -112,7 +112,7 @@ export async function findSessionInProject(
 
 /**
  * Helper: format a project dir name to a human-readable cwd guess.
- * Linux/macOS: "-opt-oxy-kb" → "/opt/oxy-kb"
+ * Linux/macOS: "-opt-my-project" → "/opt/my-project"
  * Windows: "C--Users-me-proj" → "C:\Users\me\proj"
  *
  * Note: this is heuristic. The encoding is not perfectly reversible (multiple

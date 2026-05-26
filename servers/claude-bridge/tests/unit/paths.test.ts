@@ -15,8 +15,8 @@ import {
 
 describe("encodeProjectDir", () => {
   describe("Linux/macOS", () => {
-    test("converts /opt/oxy-kb → -opt-oxy-kb", () => {
-      expect(encodeProjectDir("/opt/oxy-kb", "linux")).toBe("-opt-oxy-kb");
+    test("converts /opt/my-project → -opt-my-project", () => {
+      expect(encodeProjectDir("/opt/my-project", "linux")).toBe("-opt-my-project");
     });
 
     test("converts root path /", () => {
@@ -24,11 +24,11 @@ describe("encodeProjectDir", () => {
     });
 
     test("collapses consecutive slashes", () => {
-      expect(encodeProjectDir("/opt//oxy-kb", "linux")).toBe("-opt-oxy-kb");
+      expect(encodeProjectDir("/opt//my-project", "linux")).toBe("-opt-my-project");
     });
 
     test("handles trailing slash", () => {
-      expect(encodeProjectDir("/opt/oxy-kb/", "linux")).toBe("-opt-oxy-kb-");
+      expect(encodeProjectDir("/opt/my-project/", "linux")).toBe("-opt-my-project-");
     });
 
     test("handles macOS path", () => {
@@ -70,15 +70,15 @@ describe("path resolvers (current platform)", () => {
   });
 
   test("projectDir for known path", () => {
-    const result = projectDir("/opt/oxy-kb");
+    const result = projectDir("/opt/my-project");
     expect(result).toContain(".claude");
     expect(result).toContain("projects");
-    expect(result.endsWith("-opt-oxy-kb")).toBe(true);
+    expect(result.endsWith("-opt-my-project")).toBe(true);
   });
 
   test("sessionFile composes correctly", () => {
-    const result = sessionFile("/opt/oxy-kb", "abc-123");
-    expect(result.endsWith(join("-opt-oxy-kb", "abc-123.jsonl"))).toBe(true);
+    const result = sessionFile("/opt/my-project", "abc-123");
+    expect(result.endsWith(join("-opt-my-project", "abc-123.jsonl"))).toBe(true);
   });
 
   test("bridgeRoot is ~/.claude-bridge", () => {
