@@ -13,10 +13,10 @@
       "source": {
         "source": "github",
         "repo": "michalekz/claude-bridge",
-        "ref": "v0.5.3"
+        "ref": "v0.5.4"
       },
       "description": "MCP server for cross-Claude-Code-chat orchestration over local session JSONL files — peer messaging, peer_chat_read, peer_chat_search, enhanced list_sessions, bundled skill.",
-      "version": "0.5.3",
+      "version": "0.5.4",
       "author": {
         "name": "Zed Michalek",
         "url": "https://github.com/michalekz"

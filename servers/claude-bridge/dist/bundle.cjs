@@ -20838,9 +20838,17 @@ async function resolveTargetPeer(ctx, target) {
   if (byId) return { ok: true, peer: byId };
   const byName = peers.filter((p) => p.name === target);
   if (byName.length === 1) return { ok: true, peer: byName[0] };
-  if (byName.length === 0) return { ok: false, code: "peer_not_found" };
+  if (byName.length === 0) return { ok: false, code: "peer_not_found", activePeers: peers };
   return { ok: false, code: "ambiguous_peer", candidates: byName };
 }
+function peerDiagShape(p) {
+  return {
+    id: p.id,
+    name: p.name,
+    ...p.displayName && p.displayName !== p.name ? { displayName: p.displayName } : {}
+  };
+}
+var PEER_NOT_FOUND_HINT = "Heartbeat-based discovery can drop peers between calls (ONLINE_THRESHOLD_MS=30s). Re-check via peer_list. For unstable names, address by id (UUID).";
 function shortId(id) {
   return id.slice(0, 8);
 }
@@ -20889,7 +20897,10 @@ async function peerAskTool(ctx, args) {
         resolved.candidates.map((c) => ({ id: c.id, name: c.name, cwd: c.cwd }))
       );
     }
-    return err("peer_not_found", `No active peer with id or name "${args.to}"`);
+    return err("peer_not_found", `No active peer with id or name "${args.to}"`, {
+      activePeers: resolved.activePeers.map(peerDiagShape),
+      hint: PEER_NOT_FOUND_HINT
+    });
   }
   const envelope = {
     id: generateMessageId(),
@@ -20927,7 +20938,10 @@ async function peerReplyTool(ctx, args) {
   if (!found) {
     return err(
       "original_not_found",
-      `No message ${args.inReplyTo} found in inbox/${shortId(ctx.self.id)}/{pending,done}/`
+      `No message ${args.inReplyTo} found in inbox/${shortId(ctx.self.id)}/{pending,done}/`,
+      {
+        hint: "msgId may be a typo, from a previous session (archive purged), or the sender hasn't actually delivered yet. Run peer_inbox_read to explicitly drain pending messages."
+      }
     );
   }
   const original = found.envelope;
@@ -21113,7 +21127,11 @@ async function resolveSessionForRead(ctx, to, crossProject) {
     ok: false,
     result: err(
       "peer_not_found",
-      crossProject ? `No active peer and no session JSONL found for "${to}"` : `No active peer "${to}". Use crossProject:true to read dead sessions by UUID.`
+      crossProject ? `No active peer and no session JSONL found for "${to}"` : `No active peer "${to}". Use crossProject:true to read dead sessions by UUID.`,
+      {
+        activePeers: resolved.activePeers.map(peerDiagShape),
+        hint: PEER_NOT_FOUND_HINT
+      }
     )
   };
 }
@@ -21858,7 +21876,7 @@ var TOOLS = [
 // src/mcp/server.ts
 var log5 = makeLogger("mcp-server");
 var SERVER_NAME = "claude-bridge";
-var SERVER_VERSION = "0.5.3";
+var SERVER_VERSION = "0.5.4";
 var INSTRUCTIONS = `
 claude-bridge \u2014 MCP server pro orchestraci nap\u0159\xED\u010D Claude Code chaty.
 
