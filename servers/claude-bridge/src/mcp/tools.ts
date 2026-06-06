@@ -225,16 +225,21 @@ export async function sessionStatsTool(
  * Resolve a `to` parameter (peer id OR name) → ActivePeer.
  *
  * Returns:
- *   { ok: true, peer }                     — exact id or unique name match
- *   { ok: false, code: 'peer_not_found' }  — no match
- *   { ok: false, code: 'ambiguous_peer', candidates } — name matches >1 peer
+ *   { ok: true, peer }                                   — exact id or unique name match
+ *   { ok: false, code: 'peer_not_found', activePeers }   — no match; snapshot of who IS active
+ *   { ok: false, code: 'ambiguous_peer', candidates }    — name matches >1 peer
+ *
+ * The `activePeers` snapshot is included on `peer_not_found` so callers can
+ * surface diagnostic context to the user — heartbeat-based discovery can
+ * drop peers between calls (e.g. a `peer_list` ~30s+ before this resolver
+ * call), and the failing target name might genuinely not be present *now*.
  */
 async function resolveTargetPeer(
   ctx: ServerContext,
   target: string,
 ): Promise<
   | { ok: true; peer: ActivePeer }
-  | { ok: false; code: "peer_not_found" }
+  | { ok: false; code: "peer_not_found"; activePeers: ActivePeer[] }
   | { ok: false; code: "ambiguous_peer"; candidates: ActivePeer[] }
 > {
   const peers = await ctx.registry.listActivePeers();
@@ -243,9 +248,26 @@ async function resolveTargetPeer(
 
   const byName = peers.filter((p) => p.name === target);
   if (byName.length === 1) return { ok: true, peer: byName[0] as ActivePeer };
-  if (byName.length === 0) return { ok: false, code: "peer_not_found" };
+  if (byName.length === 0) return { ok: false, code: "peer_not_found", activePeers: peers };
   return { ok: false, code: "ambiguous_peer", candidates: byName };
 }
+
+/**
+ * Map ActivePeer → minimal diagnostic shape for error details.
+ * Includes id (UUID, always unique), name (slug, can collide),
+ * and displayName only if it differs from name.
+ */
+function peerDiagShape(p: ActivePeer): { id: string; name: string; displayName?: string } {
+  return {
+    id: p.id,
+    name: p.name,
+    ...(p.displayName && p.displayName !== p.name ? { displayName: p.displayName } : {}),
+  };
+}
+
+const PEER_NOT_FOUND_HINT =
+  "Heartbeat-based discovery can drop peers between calls (ONLINE_THRESHOLD_MS=30s). " +
+  "Re-check via peer_list. For unstable names, address by id (UUID).";
 
 function shortId(id: string): string {
   return id.slice(0, 8);
@@ -305,7 +327,10 @@ export async function peerAskTool(
         resolved.candidates.map((c) => ({ id: c.id, name: c.name, cwd: c.cwd })),
       );
     }
-    return err("peer_not_found", `No active peer with id or name "${args.to}"`);
+    return err("peer_not_found", `No active peer with id or name "${args.to}"`, {
+      activePeers: resolved.activePeers.map(peerDiagShape),
+      hint: PEER_NOT_FOUND_HINT,
+    });
   }
 
   const envelope: MessageEnvelope = {
@@ -354,6 +379,12 @@ export async function peerReplyTool(
     return err(
       "original_not_found",
       `No message ${args.inReplyTo} found in inbox/${shortId(ctx.self.id)}/{pending,done}/`,
+      {
+        hint:
+          "msgId may be a typo, from a previous session (archive purged), " +
+          "or the sender hasn't actually delivered yet. " +
+          "Run peer_inbox_read to explicitly drain pending messages.",
+      },
     );
   }
   const original = found.envelope;
@@ -610,6 +641,10 @@ async function resolveSessionForRead(
       crossProject
         ? `No active peer and no session JSONL found for "${to}"`
         : `No active peer "${to}". Use crossProject:true to read dead sessions by UUID.`,
+      {
+        activePeers: resolved.activePeers.map(peerDiagShape),
+        hint: PEER_NOT_FOUND_HINT,
+      },
     ),
   };
 }

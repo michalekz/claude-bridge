@@ -178,6 +178,35 @@ describe("peer_ask + peer_inbox_read", () => {
     expect(parseResult(result).payload["code"]).toBe("peer_not_found");
   });
 
+  test("peer_ask peer_not_found details include activePeers snapshot + hint", async () => {
+    // Diagnostic surface for timing/heartbeat-drop confusion — agent should
+    // see who IS currently active so it can tell typo from expiry.
+    const ctx = await makeContext(baseDir, "coordinator");
+    const alice = await makeContext(baseDir, "alice");
+    const bob = await makeContext(baseDir, "bob");
+    await registerInRegistry(ctx, alice, bob);
+
+    const result = await peerAskTool(ctx, { to: "missing", content: "?" });
+    expect(result.isError).toBe(true);
+    const { payload } = parseResult(result);
+    expect(payload["code"]).toBe("peer_not_found");
+
+    const details = payload["details"] as {
+      activePeers: Array<Record<string, string>>;
+      hint: string;
+    };
+    expect(details.hint).toContain("peer_list");
+    // listActivePeers includes self too — matches peer_list semantics
+    const names = details.activePeers.map((p) => p["name"]).sort();
+    expect(names).toEqual(["alice", "bob", "coordinator"]);
+    // Each entry has id + name
+    for (const p of details.activePeers) {
+      expect(typeof p["id"]).toBe("string");
+      expect(p["id"]).toBeTruthy();
+      expect(p["name"]).toBeTruthy();
+    }
+  });
+
   test("peer_ask rejects sending to self (by name or id)", async () => {
     const ctx = await makeContext(baseDir, "alice");
     await registerInRegistry(ctx);
@@ -269,7 +298,10 @@ describe("peer_reply (correlation via inReplyTo + done/)", () => {
       content: "ghost reply",
     });
     expect(result.isError).toBe(true);
-    expect(parseResult(result).payload["code"]).toBe("original_not_found");
+    const { payload } = parseResult(result);
+    expect(payload["code"]).toBe("original_not_found");
+    const details = payload["details"] as { hint: string };
+    expect(details.hint).toContain("peer_inbox_read");
   });
 
   test("reply preserves threadId from original", async () => {
