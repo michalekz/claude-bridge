@@ -1,0 +1,31 @@
+{
+  "name": "claude-bridge",
+  "owner": {
+    "name": "Zed Michalek",
+    "url": "https://github.com/michalekz"
+  },
+  "metadata": {
+    "description": "Multi-chat orchestration for Claude Code. Single-plugin marketplace."
+  },
+  "plugins": [
+    {
+      "name": "claude-bridge",
+      "source": ".",
+      "description": "MCP server for cross-Claude-Code-chat orchestration over local session JSONL files — peer messaging, peer_chat_read, peer_chat_search, enhanced list_sessions, bundled skill.",
+      "version": "0.5.2",
+      "author": {
+        "name": "Zed Michalek",
+        "url": "https://github.com/michalekz"
+      },
+      "homepage": "https://github.com/michalekz/claude-bridge",
+      "license": "MIT",
+      "tags": [
+        "mcp",
+        "cross-chat",
+        "orchestration",
+        "peer-discovery",
+        "claude-code"
+      ]
+    }
+  ]
+}
