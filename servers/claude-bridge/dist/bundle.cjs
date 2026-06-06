@@ -18035,10 +18035,9 @@ function projectsRoot() {
   return (0, import_node_path.join)(claudeHome(), "projects");
 }
 function encodeProjectDir(absoluteCwd, plat = currentPlatform()) {
-  if (plat === "win32") {
-    return absoluteCwd.replace(/:/g, "-").replace(/[\\/]+/g, "-");
-  }
-  return absoluteCwd.replace(/\/+/g, "-");
+  const dropColon = plat === "win32" ? absoluteCwd.replace(/:/g, "-") : absoluteCwd;
+  const collapseSeparators = plat === "win32" ? dropColon.replace(/[\\/]+/g, "-") : dropColon.replace(/\/+/g, "-");
+  return collapseSeparators.replace(/[^a-zA-Z0-9-]/g, "-");
 }
 function bridgeRoot() {
   return (0, import_node_path.join)((0, import_node_os.homedir)(), ".claude-bridge");
@@ -21859,7 +21858,7 @@ var TOOLS = [
 // src/mcp/server.ts
 var log5 = makeLogger("mcp-server");
 var SERVER_NAME = "claude-bridge";
-var SERVER_VERSION = "0.5.2";
+var SERVER_VERSION = "0.5.3";
 var INSTRUCTIONS = `
 claude-bridge \u2014 MCP server pro orchestraci nap\u0159\xED\u010D Claude Code chaty.
 
