@@ -47,16 +47,24 @@ export function ideLockDir(): string {
  * Windows example: `C:\Users\me\my-proj`   → `C--Users-me-my-proj`
  *                  `C:/Users/me/my-proj`   → `C--Users-me-my-proj`
  *
- * Algorithm (Linux/macOS): replace every `/` with `-`.
- * Algorithm (Windows): replace `:` with `-`, then `\` and `/` with `-`.
+ * Algorithm:
+ *  1. Windows only: replace `:` with `-`.
+ *  2. Collapse consecutive path separators (`/` or `\`) into a single `-`.
+ *  3. Replace every remaining char that's not `[a-zA-Z0-9-]` with `-` (per char,
+ *     no collapsing). This handles spaces, dots, and non-ASCII characters
+ *     exactly the way Claude Code itself does on Windows (`Přerov` → `P-erov`,
+ *     `s.r.o` → `s-r-o`, `Micronic - Dokumenty` → `Micronic---Dokumenty`).
  *
- * Both result in a single-component directory name safe across filesystems.
+ * Without step 3, identity resolution on Windows paths with spaces / dots /
+ * diacritics produces an encoded dir that doesn't match what Claude Code
+ * actually wrote, the JSONL isn't found, and ai-title can't be read — the
+ * peer falls back to `cwd-slug` and all chats in the same folder collide.
  */
 export function encodeProjectDir(absoluteCwd: string, plat: Platform = currentPlatform()): string {
-  if (plat === "win32") {
-    return absoluteCwd.replace(/:/g, "-").replace(/[\\/]+/g, "-");
-  }
-  return absoluteCwd.replace(/\/+/g, "-");
+  const dropColon = plat === "win32" ? absoluteCwd.replace(/:/g, "-") : absoluteCwd;
+  const collapseSeparators =
+    plat === "win32" ? dropColon.replace(/[\\/]+/g, "-") : dropColon.replace(/\/+/g, "-");
+  return collapseSeparators.replace(/[^a-zA-Z0-9-]/g, "-");
 }
 
 /**

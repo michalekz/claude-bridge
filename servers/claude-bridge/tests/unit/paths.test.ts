@@ -56,6 +56,34 @@ describe("encodeProjectDir", () => {
     test("collapses consecutive backslashes", () => {
       expect(encodeProjectDir("C:\\\\Users\\\\me", "win32")).toBe("C--Users-me");
     });
+
+    test("Windows path with spaces (each space → dash, no collapsing)", () => {
+      expect(encodeProjectDir("C:\\My Project\\sub dir", "win32")).toBe("C--My-Project-sub-dir");
+    });
+
+    test("Windows path with dots (each dot → dash)", () => {
+      expect(encodeProjectDir("C:\\Users\\me\\s.r.o", "win32")).toBe("C--Users-me-s-r-o");
+    });
+
+    test("Windows path with non-ASCII chars (Czech diacritics → dashes)", () => {
+      expect(
+        encodeProjectDir("o:\\MICRONIC Přerov s.r.o\\Micronic - Dokumenty\\Marketing", "win32"),
+      ).toBe("o--MICRONIC-P-erov-s-r-o-Micronic---Dokumenty-Marketing");
+    });
+
+    test("Windows: literal dashes in path are preserved", () => {
+      expect(encodeProjectDir("C:\\foo-bar\\baz", "win32")).toBe("C--foo-bar-baz");
+    });
+  });
+
+  describe("Linux/macOS with non-alphanumeric chars", () => {
+    test("Linux path with spaces (each space → dash)", () => {
+      expect(encodeProjectDir("/opt/my project/foo bar", "linux")).toBe("-opt-my-project-foo-bar");
+    });
+
+    test("Linux path with dots", () => {
+      expect(encodeProjectDir("/opt/s.r.o", "linux")).toBe("-opt-s-r-o");
+    });
   });
 });
 
