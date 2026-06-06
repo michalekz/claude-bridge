@@ -10,7 +10,11 @@
   "plugins": [
     {
       "name": "claude-bridge",
-      "source": ".",
+      "source": {
+        "source": "github",
+        "repo": "michalekz/claude-bridge",
+        "ref": "v0.5.2"
+      },
       "description": "MCP server for cross-Claude-Code-chat orchestration over local session JSONL files — peer messaging, peer_chat_read, peer_chat_search, enhanced list_sessions, bundled skill.",
       "version": "0.5.2",
       "author": {
