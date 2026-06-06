@@ -4,9 +4,9 @@
 
 > Multi-chat orchestration for Claude Code. Two or more chats can talk to each other and look into each other's history. No copy-paste between windows, no server, no API keys — everything goes through the local filesystem.
 
-[![claude-bridge demo — one manager and three worker chats coordinating live in a single VS Code window](assets/hero.gif)](https://github.com/michalekz/claude-bridge/releases/latest)
+[![claude-bridge demo — one manager and three worker chats coordinating live in a single VS Code window](assets/hero.gif)](https://youtu.be/Oe_YQqUNnsg)
 
-<sub>▶ **[Watch the full demo](https://github.com/michalekz/claude-bridge/releases/latest)** — one manager fans tasks out to three workers in a single **VS Code** window, they reply in real time, and you can read or search across every chat.</sub>
+<sub>▶ **[Watch the full demo](https://youtu.be/Oe_YQqUNnsg)** — one manager fans tasks out to three workers in a single **VS Code** window, they reply in real time, and you can read or search across every chat.</sub>
 
 Built by [Zed Michalek](https://github.com/michalekz) at [oXyShop](https://oxyshop.cz). MIT licensed.
 
