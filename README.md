@@ -4,9 +4,13 @@
 
 > Multi-chat orchestration for Claude Code. Two or more chats can talk to each other and look into each other's history. No copy-paste between windows, no server, no API keys — everything goes through the local filesystem.
 
+[![claude-bridge demo — one manager and three worker chats coordinating live in a single VS Code window](assets/hero.gif)](https://github.com/michalekz/claude-bridge/releases/latest)
+
+<sub>▶ **[Watch the full demo](https://github.com/michalekz/claude-bridge/releases/latest)** — one manager fans tasks out to three workers in a single **VS Code** window, they reply in real time, and you can read or search across every chat.</sub>
+
 Built by [Zed Michalek](https://github.com/michalekz) at [oXyShop](https://oxyshop.cz). MIT licensed.
 
-Works equally well from the terminal (`claude` CLI) and from the VS Code extension. A few characteristics differ between the two — see [CLI vs Extension](docs/INSTALL.md#cli-vs-vs-code-extension) in the install guide.
+**Built for the multi-chat workflow in VS Code** — keep several Claude Code chats open side by side in the integrated terminal and let them coordinate. It works just as well from the plain `claude` terminal; a few characteristics differ between the two — see [CLI vs VS Code](docs/INSTALL.md#cli-vs-vs-code-extension) in the install guide.
 
 ## Why this exists
 

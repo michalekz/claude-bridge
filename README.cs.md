@@ -4,7 +4,11 @@
 
 Plugin pro Claude Code, který umožňuje dvěma a více běžícím chatům spolu komunikovat a nahlížet si navzájem do historie. Bez copy-paste mezi okny, bez vlastního serveru, bez API klíčů — vše přes lokální filesystem.
 
-Funguje stejně dobře z terminálu (`claude` CLI) i z VS Code extension. Některé vlastnosti se trochu liší — viz [INSTALL § CLI vs Extension](docs/cs/INSTALL.md#cli-vs-vs-code-extension).
+[![claude-bridge demo — jeden manager a tři worker chaty spolupracují živě v jednom okně VS Code](assets/hero.gif)](https://github.com/michalekz/claude-bridge/releases/latest)
+
+<sub>▶ **[Celé demo](https://github.com/michalekz/claude-bridge/releases/latest)** — jeden manager rozešle úkoly třem workerům v jednom okně **VS Code**, ti odpovídají v reálném čase, a ty můžeš číst nebo prohledávat napříč všemi chaty.</sub>
+
+**Stavěné pro multi-chat workflow ve VS Code** — měj několik Claude Code chatů otevřených vedle sebe v integrovaném terminálu a nech je spolupracovat. Funguje stejně dobře i z čistého `claude` terminálu; některé vlastnosti se trochu liší — viz [CLI vs VS Code](docs/cs/INSTALL.md#cli-vs-vs-code-extension).
 
 ## Proč to vzniklo
 
