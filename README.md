@@ -42,6 +42,22 @@ The situations where the plugin pays off most:
 
 **Auditing what agents did overnight.** Read-only access to JSONL history lets you walk through next morning's standup — what was assigned, how it evolved.
 
+## How is this different from Agent Teams?
+
+Claude Code's experimental Agent Teams let the model spawn and coordinate **ephemeral subagents** inside a session — great for "one prompt, fan out internally." claude-bridge solves a different problem: making **your own, real, persistent chats** cooperate.
+
+| | Agent Teams (native) | claude-bridge |
+|---|---|---|
+| What the peers are | ephemeral subagents the model spawns | your real chats — you type into them too |
+| Read **and** write as a human | — | ✅ in every peer chat |
+| Reachable when idle | needs a live monitor | ✅ inbox waits, drains on next activity |
+| Read another chat's transcript | — | ✅ `peer_chat_read`, on demand (doesn't pollute context) |
+| Search across chats' history | — | ✅ `peer_chat_search` (project or all-projects) |
+| Survives a chat "deleted" in the UI | — | ✅ the JSONL stays on disk and is still readable |
+| Cross-project / observability | — | ✅ read-only over all your JSONL history |
+
+They're complementary, not competing — and both are still evolving. claude-bridge works today over the local filesystem, from the CLI and (mostly) the VS Code extension.
+
 ## A few first examples
 
 ### Who is available

@@ -40,6 +40,22 @@ Nejčastější situace, kdy plugin přijde k chuti:
 
 **Audituješ, co dělali agenti v noci.** Read-only přístup k JSONL historii umožní druhého dne projít, jaký workflow proběhl, co bylo zadáno a jak se to vyvinulo.
 
+## Jak se to liší od Agent Teams?
+
+Experimentální Agent Teams v Claude Code nechají model **spawnnout a koordinovat efemérní subagenty** uvnitř jedné session — skvělé pro „jeden prompt, vnitřní fan-out". claude-bridge řeší jiný problém: aby spolu spolupracovaly **tvoje vlastní, reálné, trvalé chaty**.
+
+| | Agent Teams (nativní) | claude-bridge |
+|---|---|---|
+| Co jsou peeři | efemérní subagenti spawnnutí modelem | tvoje reálné chaty — píšeš do nich i ty |
+| Číst **i** psát jako člověk | — | ✅ v každém peer chatu |
+| Dostupné i v nečinnosti | potřebuje živý monitor | ✅ inbox počká, doručí při další aktivitě |
+| Číst transkript jiného chatu | — | ✅ `peer_chat_read`, on-demand (nešpiní kontext) |
+| Hledat napříč historií chatů | — | ✅ `peer_chat_search` (projekt i všechny projekty) |
+| Přežije „smazání" chatu v UI | — | ✅ JSONL zůstane na disku a jde dál číst |
+| Cross-project / observabilita | — | ✅ read-only nad celou tvou JSONL historií |
+
+Jsou komplementární, ne konkurenční — a obojí se ještě vyvíjí. claude-bridge funguje už teď přes lokální filesystem, z CLI i (většinově) z VS Code extension.
+
 ## Pár prvních příkladů
 
 ### Jak vůbec zjistím, koho mám k dispozici
