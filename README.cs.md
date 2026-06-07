@@ -51,10 +51,13 @@ Experimentální Agent Teams v Claude Code nechají model **spawnnout a koordino
 | Dostupné i v nečinnosti | potřebuje živý monitor | ✅ inbox počká, doručí při další aktivitě |
 | Číst transkript jiného chatu | — | ✅ `peer_chat_read`, on-demand (nešpiní kontext) |
 | Hledat napříč historií chatů | — | ✅ `peer_chat_search` (projekt i všechny projekty) |
+| Statistiky per chat | — | ✅ `session_stats` rozebere libovolnou konverzaci |
 | Přežije „smazání" chatu v UI | — | ✅ JSONL zůstane na disku a jde dál číst |
-| Cross-project / observabilita | — | ✅ read-only nad celou tvou JSONL historií |
+| Cross-project / observabilita | — | ✅ hledání **i** čtení napříč všemi projekty, read-only |
 
-Jsou komplementární, ne konkurenční — a obojí se ještě vyvíjí. claude-bridge funguje už teď přes lokální filesystem, z CLI i (většinově) z VS Code extension.
+Hlubší posun: chaty přestávají být uzavřené, jednorázové sessions a stávají se **otevřenou, prohledávatelnou knihovnou** — se kterou umí pracovat jak ty, tak tví agenti. To dosud v podstatě nešlo.
+
+Jsou komplementární, ne konkurenční, a obojí se ještě vyvíjí. claude-bridge funguje už teď přes lokální filesystem, z CLI i (většinově) z VS Code extension.
 
 ## Pár prvních příkladů
 

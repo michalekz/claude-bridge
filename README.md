@@ -53,10 +53,13 @@ Claude Code's experimental Agent Teams let the model spawn and coordinate **ephe
 | Reachable when idle | needs a live monitor | ✅ inbox waits, drains on next activity |
 | Read another chat's transcript | — | ✅ `peer_chat_read`, on demand (doesn't pollute context) |
 | Search across chats' history | — | ✅ `peer_chat_search` (project or all-projects) |
+| Per-chat stats | — | ✅ `session_stats` breaks down any conversation |
 | Survives a chat "deleted" in the UI | — | ✅ the JSONL stays on disk and is still readable |
-| Cross-project / observability | — | ✅ read-only over all your JSONL history |
+| Cross-project / observability | — | ✅ search **and** read across every project, read-only |
 
-They're complementary, not competing — and both are still evolving. claude-bridge works today over the local filesystem, from the CLI and (mostly) the VS Code extension.
+The deeper shift: your chats stop being closed, throwaway sessions and become an **open, queryable library** — one that both you and your agents can actually work with. That wasn't really possible before.
+
+They're complementary, not competing, and both are still evolving. claude-bridge works today over the local filesystem, from the CLI and (mostly) the VS Code extension.
 
 ## A few first examples
 
