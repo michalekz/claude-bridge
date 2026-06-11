@@ -141,7 +141,9 @@ Funguje na jakoukoli JSONL session ze všech tvých projektů — `crossProject:
 
 Plugin běží **lokálně, na jednom stroji**. Inbox jde přes filesystem, ne přes síť. Pro distribuované týmy přes víc strojů zatím nepoužitelné.
 
-**Real-time push vyžaduje admin enable.** Channels (push notifikace) jsou ve výchozím stavu vypnuté na úrovni org policy. Bez nich plugin funguje jen v piggyback fallback režimu — zpráva se doručí cílovému chatu až při jeho příštím tool callu. Pro reaktivní workflow je potřeba admin nastavit `channelsEnabled: true` **a zároveň** přidat plugin do `allowedChannelPlugins` allowlistu. Detail v [INSTALL](docs/cs/INSTALL.md#real-time-push--proč-a-jak).
+**Out-of-the-box: piggyback doručení funguje bez nastavení.** Pošleš `peer_ask` a příjemce ho uvidí při svém příštím tool callu. Garantované doručení, žádná konfigurace.
+
+**Volitelný upgrade: real-time push channels.** Pro inline `<channel>` rendering hned při doručení zprávy potřebuješ tři věci: `channelsEnabled: true` v user nebo managed settings, plugin v `allowedChannelPlugins`, a `--channels plugin:claude-bridge@<marketplace>` při startu Claude Code. Teams/Enterprise účty potřebují admin enable v managed settings; Console účty si to mohou nastavit user-level. Základní setup je v [INSTALL](docs/cs/INSTALL.md#real-time-push--proč-a-jak); [CHANNELS-TROUBLESHOOTING](docs/cs/CHANNELS-TROUBLESHOOTING.md) je hloubková reference, když něco neklape.
 
 **VS Code Extension má lazy tab activation.** Po reload window se MCP server v chat tabu spustí teprve při prvním kliknutí na záložku. Než klikneš, chat není v `peer_list` vidět. V terminálu (CLI) tento limit není — chat je viditelný hned po startu.
 
@@ -150,6 +152,7 @@ Plugin běží **lokálně, na jednom stroji**. Inbox jde přes filesystem, ne p
 ## Co kde najdeš dál
 
 - **[Instalace a konfigurace](docs/cs/INSTALL.md)** — instalace, channels nastavení (dva nezávislé gaty), CLI vs VS Code Extension srovnání, cross-platform shell snippety, troubleshooting.
+- **[Channels troubleshooting](docs/cs/CHANNELS-TROUBLESHOOTING.md)** — hloubková reference, když real-time push nefunguje. Three-gate model, OS-specific pasti (Linux/macOS vs Windows), katalog chybových symptomů, filesystem-trace diagnostická procedura.
 - **[Podrobný návod k použití](docs/cs/USAGE.md)** — všechny nástroje včetně argumentů, příkladů a workflow vzorů.
 
 ## Licence

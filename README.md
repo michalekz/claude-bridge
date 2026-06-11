@@ -143,7 +143,9 @@ Works against any JSONL session in any of your projects — `crossProject: true`
 
 The plugin runs **locally, on one machine**. Inbox traffic goes through the local filesystem, not over the network. Not yet suitable for distributed teams across machines.
 
-**Real-time push requires admin enablement.** Channels (push notifications) are gated off at the organization-policy level by default. Without them the plugin works in piggyback-fallback mode — messages are delivered on the target chat's next tool call. For reactive workflow the admin needs to set `channelsEnabled: true` **and** add the plugin to `allowedChannelPlugins`. See [INSTALL](docs/INSTALL.md#real-time-push--why-and-how) for the full setup.
+**Out of the box: piggyback delivery works with zero setup.** Send a `peer_ask` and the recipient sees it on its next tool call. Guaranteed delivery, no configuration needed.
+
+**Optional upgrade: real-time push channels.** For inline `<channel>` rendering the moment a message arrives, three pieces line up: `channelsEnabled: true` in user or managed settings, the plugin listed in `allowedChannelPlugins`, and `--channels plugin:claude-bridge@<marketplace>` at Claude Code launch. Teams/Enterprise accounts need the admin to set this in managed settings; Console accounts can opt-in at the user level. The basic setup is in [INSTALL](docs/INSTALL.md#real-time-push--why-and-how); [CHANNELS-TROUBLESHOOTING](docs/CHANNELS-TROUBLESHOOTING.md) is the deep guide when something doesn't connect.
 
 **VS Code Extension has lazy tab activation.** After window reload, the MCP server inside a chat tab only starts after you click the tab. Until then, that chat isn't visible in `peer_list`. The terminal CLI doesn't have this limitation — the chat is visible immediately.
 
@@ -152,6 +154,7 @@ The plugin runs **locally, on one machine**. Inbox traffic goes through the loca
 ## Documentation
 
 - **[Installation and configuration](docs/INSTALL.md)** — installation via marketplace, channels setup (two independent gates), CLI vs VS Code Extension comparison, cross-platform shell snippets, troubleshooting.
+- **[Channels troubleshooting](docs/CHANNELS-TROUBLESHOOTING.md)** — deep reference when real-time push doesn't work. Three-gate model, OS-specific gotchas (Linux/macOS vs Windows), error-symptom catalog, filesystem-trace diagnostic procedure.
 - **[Detailed usage guide](docs/USAGE.md)** — every tool with arguments, examples, output formats, and workflow recipes.
 - **[Changelog](CHANGELOG.md)** — release history.
 - **[Security and privacy](SECURITY.md)** — what the plugin reads, what it writes, vulnerability disclosure.
