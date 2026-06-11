@@ -4401,11 +4401,11 @@ var require_core = __commonJS({
     Ajv2.ValidationError = validation_error_1.default;
     Ajv2.MissingRefError = ref_error_1.default;
     exports2.default = Ajv2;
-    function checkOptions(checkOpts, options, msg, log7 = "error") {
+    function checkOptions(checkOpts, options, msg, log8 = "error") {
       for (const key in checkOpts) {
         const opt = key;
         if (opt in options)
-          this.logger[log7](`${msg}: option ${key}. ${checkOpts[opt]}`);
+          this.logger[log8](`${msg}: option ${key}. ${checkOpts[opt]}`);
       }
     }
     function getSchEnv(keyRef) {
@@ -20237,8 +20237,80 @@ function createPeerRegistry(opts = {}) {
   };
 }
 
+// src/util/terminal-title.ts
+var import_node_child_process = require("node:child_process");
+var import_node_fs = require("node:fs");
+var log2 = makeLogger("terminal-title");
+function parseTtyNrFromProcStat(stat8) {
+  const lastParen = stat8.lastIndexOf(")");
+  if (lastParen === -1) return null;
+  const after = stat8.slice(lastParen + 2);
+  const fields = after.split(" ");
+  const ttyNrStr = fields[4];
+  if (!ttyNrStr) return null;
+  const ttyNr = Number.parseInt(ttyNrStr, 10);
+  if (Number.isNaN(ttyNr) || ttyNr === 0) return null;
+  const major = ttyNr >> 8 & 255;
+  const minorLow = ttyNr & 255;
+  const minorHigh = ttyNr >> 12 & 1048320;
+  const minor = minorLow | minorHigh;
+  return { major, minor };
+}
+function findLinuxParentTty(ppid) {
+  try {
+    const stat8 = (0, import_node_fs.readFileSync)(`/proc/${ppid}/stat`, "utf-8");
+    const parsed = parseTtyNrFromProcStat(stat8);
+    if (!parsed) return null;
+    if (parsed.major === 136) {
+      return `/dev/pts/${parsed.minor}`;
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+function findMacOSParentTty(ppid) {
+  try {
+    const tty = (0, import_node_child_process.execFileSync)("ps", ["-p", String(ppid), "-o", "tty="], {
+      encoding: "utf-8",
+      timeout: 1e3
+    }).trim();
+    if (!tty || tty === "?" || tty === "??") return null;
+    return `/dev/${tty}`;
+  } catch {
+    return null;
+  }
+}
+function findParentTty(ppid, plat = process.platform) {
+  if (plat === "linux") return findLinuxParentTty(ppid);
+  if (plat === "darwin") return findMacOSParentTty(ppid);
+  return null;
+}
+function emitTerminalTitle(tty, title) {
+  let fd = null;
+  try {
+    fd = (0, import_node_fs.openSync)(tty, "w");
+    (0, import_node_fs.writeSync)(fd, `\x1B]2;${title}\x07`);
+  } catch (e) {
+    log2.debug("emit_failed", { tty, err: e instanceof Error ? e.message : String(e) });
+  } finally {
+    if (fd !== null) {
+      try {
+        (0, import_node_fs.closeSync)(fd);
+      } catch {
+      }
+    }
+  }
+}
+function isTerminalTitleEnabled(env = process.env) {
+  const v = env["CLAUDE_BRIDGE_EMIT_TERMINAL_TITLE"];
+  if (v === void 0 || v === "") return true;
+  const norm = v.toLowerCase();
+  return norm !== "0" && norm !== "false";
+}
+
 // src/mcp/channel.ts
-var log2 = makeLogger("channel");
+var log3 = makeLogger("channel");
 var CHANNEL_METHOD = "notifications/claude/channel";
 function buildChannelNotification(envelope) {
   const meta = {
@@ -20264,10 +20336,10 @@ function createChannelSender(server) {
       const notif = buildChannelNotification(envelope);
       try {
         await server.notification(notif);
-        log2.debug("pushed", { msgId: envelope.id, from: envelope.from });
+        log3.debug("pushed", { msgId: envelope.id, from: envelope.from });
         return { delivered: true };
       } catch (e) {
-        log2.warn("push_failed", {
+        log3.warn("push_failed", {
           msgId: envelope.id,
           err: e instanceof Error ? e.message : String(e)
         });
@@ -20278,11 +20350,11 @@ function createChannelSender(server) {
 }
 
 // src/mcp/context.ts
-var log3 = makeLogger("context");
+var log4 = makeLogger("context");
 var DEFAULT_NAME_REFRESH_MS = 5e3;
 async function buildContext(opts = {}) {
   const self = opts.identity ?? await resolvePeerIdentityWithRetry(opts.identityOptions ?? {});
-  log3.info("identity_resolved", { id: self.id, name: self.name, source: self.source });
+  log4.info("identity_resolved", { id: self.id, name: self.name, source: self.source });
   const inbox = createInboxStore({ baseDir: opts.baseDir });
   const registry2 = createPeerRegistry({ baseDir: opts.baseDir });
   const version2 = opts.version ?? "0.0.1";
@@ -20297,7 +20369,13 @@ async function buildContext(opts = {}) {
       source: self.source,
       version: version2
     });
-    log3.info("heartbeat_started", { id: self.id, name: self.name, pid: process.pid });
+    log4.info("heartbeat_started", { id: self.id, name: self.name, pid: process.pid });
+  }
+  const titleAllowed = opts.emitTerminalTitle ?? isTerminalTitleEnabled();
+  const parentTty = titleAllowed ? findParentTty(process.ppid) : null;
+  if (parentTty) {
+    log4.info("terminal_title_emit_enabled", { tty: parentTty });
+    emitTerminalTitle(parentTty, self.displayName);
   }
   const context = {
     self,
@@ -20307,14 +20385,15 @@ async function buildContext(opts = {}) {
     channel: null,
     watcher: null,
     version: version2,
-    pushedMsgIds: /* @__PURE__ */ new Set()
+    pushedMsgIds: /* @__PURE__ */ new Set(),
+    parentTty
   };
   if (opts.baseDir) context.baseDir = opts.baseDir;
   const refreshMs = opts.nameRefreshIntervalMs ?? DEFAULT_NAME_REFRESH_MS;
   if (refreshMs > 0 && heartbeat && !opts.identity) {
     const timer = setInterval(() => {
       void refreshDisplayName(context, opts.identityOptions ?? {}).catch((e) => {
-        log3.warn("name_refresh_failed", { err: e instanceof Error ? e.message : String(e) });
+        log4.warn("name_refresh_failed", { err: e instanceof Error ? e.message : String(e) });
       });
     }, refreshMs);
     timer.unref?.();
@@ -20336,21 +20415,25 @@ async function refreshDisplayName(ctx, identityOptions) {
   if (fresh.name === ctx.self.name && fresh.source === ctx.self.source && fresh.displayName === ctx.self.displayName) {
     return;
   }
-  log3.info("name_refreshed", {
+  log4.info("name_refreshed", {
     from: ctx.self.name,
     to: fresh.name,
     source: fresh.source
   });
+  const displayChanged = fresh.displayName !== ctx.self.displayName;
   ctx.self = fresh;
   ctx.heartbeat?.update({
     name: fresh.name,
     displayName: fresh.displayName,
     source: fresh.source
   });
+  if (ctx.parentTty && displayChanged) {
+    emitTerminalTitle(ctx.parentTty, fresh.displayName);
+  }
 }
 async function migrateIdentity(ctx, fresh) {
   const oldId = ctx.self.id;
-  log3.info("identity_migrated", {
+  log4.info("identity_migrated", {
     from: oldId,
     to: fresh.id,
     newName: fresh.name,
@@ -20362,11 +20445,11 @@ async function migrateIdentity(ctx, fresh) {
   try {
     await (0, import_promises9.mkdir)((0, import_node_path8.dirname)(newInbox), { recursive: true });
     await (0, import_promises9.rename)(oldInbox, newInbox);
-    log3.info("inbox_dir_migrated", { from: oldInbox, to: newInbox });
+    log4.info("inbox_dir_migrated", { from: oldInbox, to: newInbox });
   } catch (e) {
     const code = e.code;
     if (code !== "ENOENT") {
-      log3.warn("inbox_dir_migrate_failed", { err: e instanceof Error ? e.message : String(e) });
+      log4.warn("inbox_dir_migrate_failed", { err: e instanceof Error ? e.message : String(e) });
     }
   }
   if (ctx.heartbeat) {
@@ -20388,7 +20471,7 @@ async function migrateIdentity(ctx, fresh) {
       fresh.id,
       async () => {
         const { pushed: pushed2 } = await pumpInboxToChannel(ctx);
-        if (pushed2 > 0) log3.info("pump_pushed", { count: pushed2 });
+        if (pushed2 > 0) log4.info("pump_pushed", { count: pushed2 });
       },
       ctx.baseDir ? { baseDir: ctx.baseDir } : {}
     );
@@ -20396,7 +20479,7 @@ async function migrateIdentity(ctx, fresh) {
     await newWatcher.ready;
   }
   const { pushed } = await pumpInboxToChannel(ctx);
-  if (pushed > 0) log3.info("post_migrate_drain", { pushed });
+  if (pushed > 0) log4.info("post_migrate_drain", { pushed });
 }
 async function pumpInboxToChannel(ctx) {
   if (!ctx.channel) return { pushed: 0 };
@@ -20406,7 +20489,7 @@ async function pumpInboxToChannel(ctx) {
     if (ctx.pushedMsgIds.has(env.id)) continue;
     const { delivered } = await ctx.channel.push(env);
     if (!delivered) {
-      log3.debug("push_failed_left_in_pending", { msgId: env.id });
+      log4.debug("push_failed_left_in_pending", { msgId: env.id });
       continue;
     }
     ctx.pushedMsgIds.add(env.id);
@@ -20421,11 +20504,11 @@ async function attachServer(ctx, server, opts = {}) {
       ctx.self.id,
       async () => {
         const { pushed } = await pumpInboxToChannel(ctx);
-        if (pushed > 0) log3.info("pump_pushed", { count: pushed });
+        if (pushed > 0) log4.info("pump_pushed", { count: pushed });
       },
       ctx.baseDir ? { baseDir: ctx.baseDir } : {}
     );
-    log3.info("watcher_attached", { id: ctx.self.id, name: ctx.self.name });
+    log4.info("watcher_attached", { id: ctx.self.id, name: ctx.self.name });
   }
 }
 async function shutdownContext(ctx) {
@@ -20439,7 +20522,7 @@ async function shutdownContext(ctx) {
 }
 
 // src/parser/jsonl.ts
-var import_node_fs = require("node:fs");
+var import_node_fs2 = require("node:fs");
 var import_node_readline = require("node:readline");
 
 // src/parser/schemas.ts
@@ -20584,7 +20667,7 @@ var SessionEventSchema = external_exports.discriminatedUnion("type", [
 
 // src/parser/jsonl.ts
 async function* parseSessionFile(filePath, options = {}) {
-  const stream = (0, import_node_fs.createReadStream)(filePath, { encoding: "utf-8" });
+  const stream = (0, import_node_fs2.createReadStream)(filePath, { encoding: "utf-8" });
   const lines = (0, import_node_readline.createInterface)({ input: stream, crlfDelay: Number.POSITIVE_INFINITY });
   let lineNumber = 0;
   for await (const line of lines) {
@@ -20613,7 +20696,7 @@ async function readSessionFile(filePath, options = {}) {
   return events;
 }
 async function* parseSessionFileRaw(filePath, options = {}) {
-  const stream = (0, import_node_fs.createReadStream)(filePath, { encoding: "utf-8" });
+  const stream = (0, import_node_fs2.createReadStream)(filePath, { encoding: "utf-8" });
   const lines = (0, import_node_readline.createInterface)({ input: stream, crlfDelay: Number.POSITIVE_INFINITY });
   let lineNumber = 0;
   for await (const line of lines) {
@@ -20696,7 +20779,7 @@ function serializeSessionRef(s) {
 }
 
 // src/mcp/tools.ts
-var log4 = makeLogger("tools");
+var log5 = makeLogger("tools");
 function ok(data) {
   return {
     content: [{ type: "text", text: JSON.stringify({ ok: true, ...data }) }]
@@ -20725,7 +20808,7 @@ async function listProjectsTool() {
       projects: projects.map((p) => ({ projectDir: p.projectDir, path: p.absolutePath }))
     });
   } catch (e) {
-    log4.error("list_projects_failed", { err: e instanceof Error ? e.message : String(e) });
+    log5.error("list_projects_failed", { err: e instanceof Error ? e.message : String(e) });
     return err("list_projects_failed", e instanceof Error ? e.message : "unknown");
   }
 }
@@ -20791,7 +20874,7 @@ async function listSessionsTool(args) {
             extras.userPrompts = meta.userPrompts;
             extras.assistantReplies = meta.assistantReplies;
           } catch (e) {
-            log4.warn("list_sessions_meta_scan_failed", {
+            log5.warn("list_sessions_meta_scan_failed", {
               file: s.filePath,
               err: e instanceof Error ? e.message : String(e)
             });
@@ -20802,7 +20885,7 @@ async function listSessionsTool(args) {
     );
     return ok({ count: enriched.length, sessions: enriched });
   } catch (e) {
-    log4.error("list_sessions_failed", { err: e instanceof Error ? e.message : String(e) });
+    log5.error("list_sessions_failed", { err: e instanceof Error ? e.message : String(e) });
     return err("list_sessions_failed", e instanceof Error ? e.message : "unknown");
   }
 }
@@ -20831,7 +20914,7 @@ async function sessionStatsTool(args) {
     );
     return ok({ sessionId: args.sessionId, instances: results });
   } catch (e) {
-    log4.error("session_stats_failed", { err: e instanceof Error ? e.message : String(e) });
+    log5.error("session_stats_failed", { err: e instanceof Error ? e.message : String(e) });
     return err("session_stats_failed", e instanceof Error ? e.message : "unknown");
   }
 }
@@ -20878,7 +20961,7 @@ async function peerListTool(ctx) {
       }))
     });
   } catch (e) {
-    log4.error("peer_list_failed", { err: e instanceof Error ? e.message : String(e) });
+    log5.error("peer_list_failed", { err: e instanceof Error ? e.message : String(e) });
     return err("peer_list_failed", e instanceof Error ? e.message : "unknown");
   }
 }
@@ -20918,7 +21001,7 @@ async function peerAskTool(ctx, args) {
   };
   try {
     await ctx.inbox.send(envelope);
-    log4.info("peer_ask_sent", {
+    log5.info("peer_ask_sent", {
       to: resolved.peer.id,
       toName: resolved.peer.name,
       msgId: envelope.id
@@ -20928,7 +21011,7 @@ async function peerAskTool(ctx, args) {
       to: { id: resolved.peer.id, name: resolved.peer.name }
     });
   } catch (e) {
-    log4.error("peer_ask_failed", { err: e instanceof Error ? e.message : String(e) });
+    log5.error("peer_ask_failed", { err: e instanceof Error ? e.message : String(e) });
     return err("peer_ask_failed", e instanceof Error ? e.message : "unknown");
   }
 }
@@ -20965,7 +21048,7 @@ async function peerReplyTool(ctx, args) {
   };
   try {
     await ctx.inbox.send(reply);
-    log4.info("peer_reply_sent", {
+    log5.info("peer_reply_sent", {
       to: original.from,
       toName: original.fromName,
       msgId: reply.id,
@@ -20977,7 +21060,7 @@ async function peerReplyTool(ctx, args) {
       inReplyTo: args.inReplyTo
     });
   } catch (e) {
-    log4.error("peer_reply_failed", { err: e instanceof Error ? e.message : String(e) });
+    log5.error("peer_reply_failed", { err: e instanceof Error ? e.message : String(e) });
     return err("peer_reply_failed", e instanceof Error ? e.message : "unknown");
   }
 }
@@ -20992,7 +21075,7 @@ async function peerInboxReadTool(ctx) {
     }
     return ok({ count: consumed.length, messages: consumed });
   } catch (e) {
-    log4.error("peer_inbox_read_failed", { err: e instanceof Error ? e.message : String(e) });
+    log5.error("peer_inbox_read_failed", { err: e instanceof Error ? e.message : String(e) });
     return err("peer_inbox_read_failed", e instanceof Error ? e.message : "unknown");
   }
 }
@@ -21287,7 +21370,7 @@ async function peerChatReadTool(ctx, args) {
       }
     }
   } catch (e) {
-    log4.error("peer_chat_read_parse_err", {
+    log5.error("peer_chat_read_parse_err", {
       file: sessionFile.filePath,
       err: e instanceof Error ? e.message : String(e)
     });
@@ -21481,7 +21564,7 @@ async function peerChatSearchTool(ctx, args) {
         });
       }
     } catch (e) {
-      log4.warn("peer_chat_search_parse_warning", {
+      log5.warn("peer_chat_search_parse_warning", {
         file: session.filePath,
         err: e instanceof Error ? e.message : String(e)
       });
@@ -21877,9 +21960,9 @@ var TOOLS = [
 ];
 
 // src/mcp/server.ts
-var log5 = makeLogger("mcp-server");
+var log6 = makeLogger("mcp-server");
 var SERVER_NAME = "claude-bridge";
-var SERVER_VERSION = "0.5.5";
+var SERVER_VERSION = "0.6.0";
 var INSTRUCTIONS = `
 claude-bridge \u2014 MCP server pro orchestraci nap\u0159\xED\u010D Claude Code chaty.
 
@@ -21928,10 +22011,10 @@ function wireTools(server, ctx) {
     const toolName = request.params.name;
     const args = request.params.arguments ?? {};
     const started = Date.now();
-    log5.debug("tool_call", { tool: toolName });
+    log6.debug("tool_call", { tool: toolName });
     const spec = TOOLS.find((t) => t.name === toolName);
     if (!spec) {
-      log5.warn("tool_not_found", { tool: toolName });
+      log6.warn("tool_not_found", { tool: toolName });
       const result = {
         isError: true,
         content: [
@@ -21946,14 +22029,14 @@ function wireTools(server, ctx) {
     try {
       let result = await spec.handler(args, ctx);
       result = await piggybackInbox(ctx, toolName, result);
-      log5.debug("tool_result", {
+      log6.debug("tool_result", {
         tool: toolName,
         ok: !result.isError,
         duration_ms: Date.now() - started
       });
       return result;
     } catch (e) {
-      log5.error("tool_call_err", {
+      log6.error("tool_call_err", {
         tool: toolName,
         err: e instanceof Error ? e.message : String(e),
         duration_ms: Date.now() - started
@@ -21981,14 +22064,14 @@ async function startStdioServer() {
     ctx = await buildContext({ version: SERVER_VERSION });
   } catch (e) {
     if (e instanceof IdentityError) {
-      log5.error("identity_unresolvable", { message: e.message, hint: e.hint });
+      log6.error("identity_unresolvable", { message: e.message, hint: e.hint });
       process.stderr.write(`
 claude-bridge fatal: ${e.message}
 Hint: ${e.hint}
 
 `);
     } else {
-      log5.error("boot_failed", { err: e instanceof Error ? e.message : String(e) });
+      log6.error("boot_failed", { err: e instanceof Error ? e.message : String(e) });
     }
     process.exit(1);
   }
@@ -21997,7 +22080,7 @@ Hint: ${e.hint}
   wireTools(server, ctx);
   const transport = new StdioServerTransport();
   await server.connect(transport);
-  log5.info("started", {
+  log6.info("started", {
     name: SERVER_NAME,
     version: SERVER_VERSION,
     tools: TOOLS.length,
@@ -22005,9 +22088,9 @@ Hint: ${e.hint}
     selfName: ctx.self.name
   });
   const { pushed } = await pumpInboxToChannel(ctx);
-  if (pushed > 0) log5.info("backlog_drained", { pushed });
+  if (pushed > 0) log6.info("backlog_drained", { pushed });
   const shutdown = async (signal) => {
-    log5.info("shutdown", { signal });
+    log6.info("shutdown", { signal });
     await shutdownContext(ctx).catch(() => void 0);
     await server.close().catch(() => void 0);
     process.exit(0);
@@ -22017,13 +22100,13 @@ Hint: ${e.hint}
 }
 
 // src/index.ts
-var log6 = makeLogger("entry");
+var log7 = makeLogger("entry");
 async function main() {
-  log6.info("boot");
+  log7.info("boot");
   try {
     await startStdioServer();
   } catch (e) {
-    log6.error("fatal", { err: e instanceof Error ? e.message : String(e) });
+    log7.error("fatal", { err: e instanceof Error ? e.message : String(e) });
     process.exit(1);
   }
 }
