@@ -66,9 +66,21 @@ export function startInboxWatcher(
   let watcherInstance: FSWatcher | null = null;
 
   void dirReady.then(() => {
+    // Windows: force polling. ReadDirectoryChangesW (chokidar's default backend
+    // on Windows) sporadically misses ADD events for files arriving via atomic
+    // rename — especially with antivirus in the loop. Empirically verified on a
+    // Windows-native Claude Code session: file arrives in pending/, watcher
+    // never fires, piggyback drains it on the next tool call (= no real-time
+    // push). Polling every 200 ms is reliable; adds at most ~200 ms latency to
+    // push delivery vs. inotify on Linux (still orders of magnitude faster than
+    // waiting for the recipient's next tool call).
+    // Linux/macOS keep native inotify/FSEvents — no change there.
+    const isWindows = process.platform === "win32";
     const watcher: FSWatcher = chokidar.watch(dir, {
       persistent: true,
       ignoreInitial: true,
+      usePolling: isWindows,
+      interval: isWindows ? 200 : undefined,
       awaitWriteFinish: {
         stabilityThreshold: opts.stabilityMs ?? 50,
         pollInterval: opts.pollMs ?? 10,
