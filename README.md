@@ -2,7 +2,7 @@
 
 🇬🇧 English · 🇨🇿 [Česky](README.cs.md)
 
-> Multi-chat orchestration for Claude Code. Two or more chats can talk to each other and look into each other's history. No copy-paste between windows, no server, no API keys — everything goes through the local filesystem.
+> Claude Code plugin built primarily for VS Code — lets two or more chats/agents in VS Code talk to each other, look into each other's history, and use that history as a library accessible to both users and agents. No copy-paste between windows, no server, no API keys — everything goes through the local filesystem.
 
 [![claude-bridge demo — one manager and three worker chats coordinating live in a single VS Code window](assets/hero.gif)](https://youtu.be/Oe_YQqUNnsg)
 
@@ -159,6 +159,16 @@ The plugin runs **locally, on one machine**. Inbox traffic goes through the loca
 - **[Changelog](CHANGELOG.md)** — release history.
 - **[Security and privacy](SECURITY.md)** — what the plugin reads, what it writes, vulnerability disclosure.
 - **[Credits](CREDITS.md)** — open source projects whose patterns shaped this one.
+
+## Questions & ideas
+
+Have a question, a workflow to share, or a feature in mind? Open a thread in [GitHub Discussions](https://github.com/michalekz/claude-bridge/discussions):
+
+- **[Show & tell](https://github.com/michalekz/claude-bridge/discussions/categories/show-and-tell)** — how you use claude-bridge, screenshots, workflows.
+- **[Ideas](https://github.com/michalekz/claude-bridge/discussions/categories/ideas)** — what it should do next.
+- **[Q&A](https://github.com/michalekz/claude-bridge/discussions/categories/q-a)** — "is it supposed to work this way?"
+
+Found a bug? Open an [Issue](https://github.com/michalekz/claude-bridge/issues) instead.
 
 ## Credits
 

@@ -2,7 +2,7 @@
 
 🇨🇿 Česky · 🇬🇧 [English](README.md)
 
-Plugin pro Claude Code, který umožňuje dvěma a více běžícím chatům spolu komunikovat a nahlížet si navzájem do historie. Bez copy-paste mezi okny, bez vlastního serveru, bez API klíčů — vše přes lokální filesystem.
+Plugin pro Claude Code, určený primárně pro VS Code, který umožňuje dvěma a více běžícím chatům/agentům ve VS Code spolu komunikovat a nahlížet si navzájem do historie a používat historii chatů jako uživateli i agentům přístupnou knihovnu. Bez copy-paste mezi okny, bez vlastního serveru, bez API klíčů — vše přes lokální filesystem.
 
 [![claude-bridge demo — jeden manager a tři worker chaty spolupracují živě v jednom okně VS Code](assets/hero.gif)](https://youtu.be/Oe_YQqUNnsg)
 
@@ -154,6 +154,16 @@ Plugin běží **lokálně, na jednom stroji**. Inbox jde přes filesystem, ne p
 - **[Instalace a konfigurace](docs/cs/INSTALL.md)** — instalace, channels nastavení (dva nezávislé gaty), CLI vs VS Code Extension srovnání, cross-platform shell snippety, troubleshooting.
 - **[Channels troubleshooting](docs/cs/CHANNELS-TROUBLESHOOTING.md)** — hloubková reference, když real-time push nefunguje. Three-gate model, OS-specific pasti (Linux/macOS vs Windows), katalog chybových symptomů, filesystem-trace diagnostická procedura.
 - **[Podrobný návod k použití](docs/cs/USAGE.md)** — všechny nástroje včetně argumentů, příkladů a workflow vzorů.
+
+## Dotazy a nápady
+
+Máš dotaz, chceš se podělit o workflow, nebo tě napadá featura? Založ vlákno v [GitHub Discussions](https://github.com/michalekz/claude-bridge/discussions):
+
+- **[Show & tell](https://github.com/michalekz/claude-bridge/discussions/categories/show-and-tell)** — jak claude-bridge používáš, screenshoty, workflow.
+- **[Ideas](https://github.com/michalekz/claude-bridge/discussions/categories/ideas)** — co by měl umět dál.
+- **[Q&A](https://github.com/michalekz/claude-bridge/discussions/categories/q-a)** — „má to takhle fungovat?"
+
+Našel jsi bug? Založ radši [Issue](https://github.com/michalekz/claude-bridge/issues).
 
 ## Licence
 
