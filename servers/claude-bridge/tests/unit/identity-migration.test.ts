@@ -47,6 +47,7 @@ describe("identity migration (id-change recovery)", () => {
       baseDir: bridgeBase,
       identityOptions: { ppid: PPID, home: homeBase, cwd: "/opt/test-cwd", env: {} },
       nameRefreshIntervalMs: 0, // disable auto, drive manually
+      emitTerminalTitle: false,
       version: "test",
     });
   }

@@ -23,6 +23,7 @@ async function makeContext(baseDir: string, name: string, id?: string): Promise<
     identity: { id: id ?? makeId(name), name, displayName: name, source: "env" },
     baseDir,
     withHeartbeat: false,
+    emitTerminalTitle: false,
     version: "0.0.1-test",
     nameRefreshIntervalMs: 0,
   });
@@ -82,6 +83,7 @@ describe("peer_list tool", () => {
       },
       baseDir,
       withHeartbeat: false,
+      emitTerminalTitle: false,
       nameRefreshIntervalMs: 0,
     });
     await registerInRegistry(me, other);

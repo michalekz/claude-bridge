@@ -37,6 +37,7 @@ async function mkCtx(baseDir: string, name: string, id?: string): Promise<Server
     identity: { id: id ?? makeId(name), name, displayName: name, source: "env" },
     baseDir,
     withHeartbeat: false,
+    emitTerminalTitle: false,
     version: "test",
     nameRefreshIntervalMs: 0,
   });

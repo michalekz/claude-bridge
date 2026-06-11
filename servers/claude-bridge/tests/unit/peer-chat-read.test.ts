@@ -24,6 +24,7 @@ async function makeContext(name: string): Promise<ServerContext> {
     identity: { id: uuid(), name, displayName: name, source: "env" },
     baseDir,
     withHeartbeat: false,
+    emitTerminalTitle: false,
     version: "0.0.1-test",
     nameRefreshIntervalMs: 0,
   });

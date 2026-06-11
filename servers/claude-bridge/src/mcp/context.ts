@@ -15,6 +15,11 @@ import {
 import { type InboxWatcherHandle, startInboxWatcher } from "../inbox/watcher.ts";
 import { type HeartbeatHandle, type PeerRegistry, createPeerRegistry } from "../registry/peers.ts";
 import { makeLogger } from "../util/logger.ts";
+import {
+  emitTerminalTitle,
+  findParentTty,
+  isTerminalTitleEnabled,
+} from "../util/terminal-title.ts";
 import { type ChannelSender, createChannelSender } from "./channel.ts";
 
 const log = makeLogger("context");
@@ -48,6 +53,13 @@ export interface ServerContext {
   nameRefreshTimer?: NodeJS.Timeout;
   /** In-memory set of msgIds already pushed via channel — prevents re-push on every watcher fire. */
   pushedMsgIds: Set<string>;
+  /**
+   * Parent process's controlling tty path (Linux/macOS only). When set, the
+   * plugin writes OSC 2 sequences here so the terminal tab title reflects
+   * the peer's displayName. Null when unavailable (Windows, Extension
+   * scenarios, opted out).
+   */
+  parentTty: string | null;
 }
 
 export interface BuildContextOptions {
@@ -60,6 +72,13 @@ export interface BuildContextOptions {
   identityOptions?: IdentityOptions;
   /** Identity refresh interval in ms (default 5_000). 0 disables. */
   nameRefreshIntervalMs?: number;
+  /**
+   * Emit OSC 2 escape sequences to the parent terminal so the tab title
+   * tracks the peer's displayName. Default: respect env var (enabled unless
+   * `CLAUDE_BRIDGE_EMIT_TERMINAL_TITLE=0`). Tests should pass `false` so
+   * they don't write OSC garbage to the test-runner tty.
+   */
+  emitTerminalTitle?: boolean;
 }
 
 export const DEFAULT_NAME_REFRESH_MS = 5_000;
@@ -86,6 +105,17 @@ export async function buildContext(opts: BuildContextOptions = {}): Promise<Serv
     log.info("heartbeat_started", { id: self.id, name: self.name, pid: process.pid });
   }
 
+  // Resolve parent CC's controlling tty so we can write OSC 2 sequences for
+  // terminal tab title. Null when not applicable (Extension scenarios where
+  // CC has no tty; Windows; opted out via env/opt). Cached for the lifetime
+  // of the session — ppid doesn't change.
+  const titleAllowed = opts.emitTerminalTitle ?? isTerminalTitleEnabled();
+  const parentTty = titleAllowed ? findParentTty(process.ppid) : null;
+  if (parentTty) {
+    log.info("terminal_title_emit_enabled", { tty: parentTty });
+    emitTerminalTitle(parentTty, self.displayName);
+  }
+
   const context: ServerContext = {
     self,
     inbox,
@@ -95,6 +125,7 @@ export async function buildContext(opts: BuildContextOptions = {}): Promise<Serv
     watcher: null,
     version,
     pushedMsgIds: new Set<string>(),
+    parentTty,
   };
   if (opts.baseDir) context.baseDir = opts.baseDir;
 
@@ -155,12 +186,19 @@ async function refreshDisplayName(
     to: fresh.name,
     source: fresh.source,
   });
+  const displayChanged = fresh.displayName !== ctx.self.displayName;
   ctx.self = fresh;
   ctx.heartbeat?.update({
     name: fresh.name,
     displayName: fresh.displayName,
     source: fresh.source,
   });
+  // Re-emit OSC 2 only when the human-visible displayName actually changed
+  // (e.g. cwd-slug → ai-title transition). Avoids spurious writes when the
+  // slug-only `name` changed but displayName stayed the same.
+  if (ctx.parentTty && displayChanged) {
+    emitTerminalTitle(ctx.parentTty, fresh.displayName);
+  }
 }
 
 /**
