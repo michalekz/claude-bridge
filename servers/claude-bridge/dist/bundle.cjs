@@ -20080,9 +20080,12 @@ function startInboxWatcher(peerId, onArrived, opts = {}) {
   });
   let watcherInstance = null;
   void dirReady.then(() => {
+    const isWindows2 = process.platform === "win32";
     const watcher = esm_default.watch(dir, {
       persistent: true,
       ignoreInitial: true,
+      usePolling: isWindows2,
+      interval: isWindows2 ? 200 : void 0,
       awaitWriteFinish: {
         stabilityThreshold: opts.stabilityMs ?? 50,
         pollInterval: opts.pollMs ?? 10
@@ -21876,7 +21879,7 @@ var TOOLS = [
 // src/mcp/server.ts
 var log5 = makeLogger("mcp-server");
 var SERVER_NAME = "claude-bridge";
-var SERVER_VERSION = "0.5.4";
+var SERVER_VERSION = "0.5.5";
 var INSTRUCTIONS = `
 claude-bridge \u2014 MCP server pro orchestraci nap\u0159\xED\u010D Claude Code chaty.
 

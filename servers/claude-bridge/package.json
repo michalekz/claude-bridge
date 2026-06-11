@@ -1,6 +1,6 @@
 {
   "name": "claude-bridge",
-  "version": "0.5.4",
+  "version": "0.5.5",
   "private": true,
   "description": "MCP server for cross-Claude-Code-chat orchestration over local session JSONL files",
   "type": "module",
