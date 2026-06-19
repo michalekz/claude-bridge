@@ -150,7 +150,11 @@ describe("peer_chat_search", () => {
     await mkdir(projectBDir, { recursive: true });
   });
 
-  test("scope='project' searches current project sessions, excludes self", async () => {
+  test("scope='project' searches current project sessions, includes self (post-autocompact recovery)", async () => {
+    // Pre-v0.6.1 the caller's own session was silently filtered out under the
+    // assumption "agent already has it loaded". That assumption breaks after
+    // autocompact / /clear / long sessions — searching own JSONL is then the
+    // only way to recover detail no longer in the in-memory context.
     const me = await makeContext("me");
     const peerSessionId = uuid();
     await writeSession(projectADir, peerSessionId, [
@@ -159,7 +163,7 @@ describe("peer_chat_search", () => {
       assistantEvent(peerSessionId, "2026-05-25T10:01:00Z", "yes agent teams are nice"),
       userEvent(peerSessionId, "2026-05-25T10:02:00Z", "unrelated message"),
     ]);
-    // Self's own session — should NOT be searched
+    // Self's own session — IS searched alongside peer sessions
     await writeSession(projectADir, me.self.id, [
       userEvent(me.self.id, "2026-05-25T10:05:00Z", "agent teams in my own chat"),
     ]);
@@ -170,8 +174,8 @@ describe("peer_chat_search", () => {
     expect(text).toContain("Project A peer chat");
     expect(text).toContain("agent teams are nice");
     expect(text).toContain("← match");
-    // Self session must be excluded
-    expect(text).not.toContain("agent teams in my own chat");
+    // Self session is included now
+    expect(text).toContain("agent teams in my own chat");
   });
 
   test("scope='project' does NOT scan other projects", async () => {

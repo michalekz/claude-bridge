@@ -329,17 +329,26 @@ describe("peer_chat_read", () => {
     expect(messages[0]?.["text"]).toBe("ghost text");
   });
 
-  test("self_read when target is self id or name", async () => {
+  test("reading own session works (post-autocompact recovery use case)", async () => {
+    // Pre-v0.6.1 this returned self_read error. Removed because the underlying
+    // assumption ("agent has full context") doesn't hold after autocompact /
+    // /clear / long sessions — the on-disk JSONL is the only place to recover
+    // detail that's been compressed out of the in-memory context.
     const me = await makeContext("me");
     await registerPeer(me);
+    await writeSession(me.self.id, [userEvent(me.self.id, "2026-01-01T10:00:00Z", "my own msg")]);
 
     const byName = await callRead(me, { to: "me" });
-    expect(byName.isError).toBe(true);
-    expect(parseResult(byName).payload["code"]).toBe("self_read");
+    expect(byName.isError).toBeFalsy();
+    const { payload: payloadByName } = parseResult(byName);
+    const messagesByName = payloadByName["messages"] as Array<Record<string, unknown>>;
+    expect(messagesByName[0]?.["text"]).toBe("my own msg");
 
     const byId = await callRead(me, { to: me.self.id });
-    expect(byId.isError).toBe(true);
-    expect(parseResult(byId).payload["code"]).toBe("self_read");
+    expect(byId.isError).toBeFalsy();
+    const { payload: payloadById } = parseResult(byId);
+    const messagesById = payloadById["messages"] as Array<Record<string, unknown>>;
+    expect(messagesById[0]?.["text"]).toBe("my own msg");
   });
 
   test("invalid_timestamp on unparseable sinceTimestamp", async () => {

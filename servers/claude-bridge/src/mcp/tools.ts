@@ -783,9 +783,10 @@ export async function peerChatReadTool(
   ctx: ServerContext,
   args: z.infer<typeof PeerChatReadArgs>,
 ): Promise<ToolResult> {
-  if (args.to === ctx.self.id || args.to === ctx.self.name) {
-    return err("self_read", "Cannot read own chat — your own context is already loaded");
-  }
+  // Reading own session is legitimate after autocompact / /clear / long sessions
+  // where on-disk JSONL holds detail no longer in the in-memory context window.
+  // The original self_read block assumed "agent always has full context" which
+  // doesn't hold in those scenarios. Caller decides what's worth re-loading.
 
   let sinceMs: number | null = null;
   if (args.sinceTimestamp) {
@@ -975,13 +976,13 @@ interface SearchMatchEntry {
 }
 
 /**
- * Resolve sessions in scope, sort by mtime desc, drop ones older than maxAgeDays
- * and skip the caller's own session (already in agent context).
+ * Resolve sessions in scope, sort by mtime desc, drop ones older than maxAgeDays.
+ *
+ * The caller's own session IS included — after autocompact / /clear / long
+ * sessions, the on-disk JSONL holds detail no longer in the in-memory context
+ * window, and searching it is a legitimate recovery path.
  */
-async function resolveSearchSessions(
-  scope: "project" | "all-projects",
-  selfSessionId: string,
-): Promise<SessionRef[]> {
+async function resolveSearchSessions(scope: "project" | "all-projects"): Promise<SessionRef[]> {
   const cutoffMs = Date.now() - SEARCH_MAX_AGE_DAYS * 24 * 60 * 60 * 1000;
 
   let sessions: SessionRef[];
@@ -995,9 +996,7 @@ async function resolveSearchSessions(
     sessions = matching ? await listSessionsInProject(matching) : [];
   }
 
-  return sessions
-    .filter((s) => s.sessionId !== selfSessionId)
-    .filter((s) => s.modifiedAt.getTime() >= cutoffMs);
+  return sessions.filter((s) => s.modifiedAt.getTime() >= cutoffMs);
 }
 
 /**
@@ -1040,7 +1039,7 @@ export async function peerChatSearchTool(
     return err("invalid_query_regex", `Cannot compile regex: ${eventMatcher.error}`);
   }
 
-  const sessions = await resolveSearchSessions(args.scope, ctx.self.id);
+  const sessions = await resolveSearchSessions(args.scope);
   if (sessions.length === 0) {
     return okText(
       `# Search: \`${args.query}\`\n\n**Scope:** ${args.scope}\n**Total matches:** 0 (no sessions in scope after maxAgeDays=${SEARCH_MAX_AGE_DAYS} filter)`,
