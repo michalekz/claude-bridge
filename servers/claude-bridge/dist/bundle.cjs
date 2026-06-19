@@ -21321,9 +21321,6 @@ function formatCompact(meta, messages) {
   return lines.join("\n");
 }
 async function peerChatReadTool(ctx, args) {
-  if (args.to === ctx.self.id || args.to === ctx.self.name) {
-    return err("self_read", "Cannot read own chat \u2014 your own context is already loaded");
-  }
   let sinceMs = null;
   if (args.sinceTimestamp) {
     sinceMs = Date.parse(args.sinceTimestamp);
@@ -21471,7 +21468,7 @@ var PeerChatSearchArgs = external_exports.object({
   maxMatches: external_exports.number().int().positive().max(500).default(30),
   maxBytes: external_exports.number().int().positive().max(1e6).default(3e4)
 }).strict();
-async function resolveSearchSessions(scope, selfSessionId) {
+async function resolveSearchSessions(scope) {
   const cutoffMs = Date.now() - SEARCH_MAX_AGE_DAYS * 24 * 60 * 60 * 1e3;
   let sessions;
   if (scope === "all-projects") {
@@ -21482,7 +21479,7 @@ async function resolveSearchSessions(scope, selfSessionId) {
     const matching = allProjects.find((p) => p.projectDir === currentProjectDir);
     sessions = matching ? await listSessionsInProject(matching) : [];
   }
-  return sessions.filter((s) => s.sessionId !== selfSessionId).filter((s) => s.modifiedAt.getTime() >= cutoffMs);
+  return sessions.filter((s) => s.modifiedAt.getTime() >= cutoffMs);
 }
 async function readFileForPrefilter(filePath) {
   try {
@@ -21512,7 +21509,7 @@ async function peerChatSearchTool(ctx, args) {
   if ("error" in eventMatcher) {
     return err("invalid_query_regex", `Cannot compile regex: ${eventMatcher.error}`);
   }
-  const sessions = await resolveSearchSessions(args.scope, ctx.self.id);
+  const sessions = await resolveSearchSessions(args.scope);
   if (sessions.length === 0) {
     return okText(
       `# Search: \`${args.query}\`
@@ -21962,7 +21959,7 @@ var TOOLS = [
 // src/mcp/server.ts
 var log6 = makeLogger("mcp-server");
 var SERVER_NAME = "claude-bridge";
-var SERVER_VERSION = "0.6.0";
+var SERVER_VERSION = "0.6.1";
 var INSTRUCTIONS = `
 claude-bridge \u2014 MCP server pro orchestraci nap\u0159\xED\u010D Claude Code chaty.
 

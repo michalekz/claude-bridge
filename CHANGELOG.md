@@ -2,6 +2,32 @@
 
 All notable changes to this project are documented here. Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.6.1] — 2026-06-11
+
+Patch release allowing an agent to **read and search its own session**. Two paternalistic blocks were removed because they actively hurt the most useful recovery scenarios.
+
+### Changed
+
+- **`peer_chat_read` no longer rejects own session.** Previously `peer_chat_read { to: <self> }` returned `self_read` error with message "Cannot read own chat — your own context is already loaded". That assumption is wrong in three common scenarios where it matters most:
+  - **Autocompact** — context window is compressed, original detail is gone from in-memory but lives on disk.
+  - **`/clear` during a long session** — agent intentionally cleared its context, JSONL stays intact on disk.
+  - **Resume after crash / restart** — only partial context is reloaded, full history is on disk.
+  
+  In all these, querying own JSONL via `peer_chat_read` is the legitimate (and sometimes only) recovery path. Caller has discretion over its own context window — adding history back is its call.
+
+- **`peer_chat_search` no longer silently filters out caller's own session.** Same reasoning as above: post-autocompact / long-session use needs to search full on-disk history, including own. The silent filter made searches look incomplete without explanation.
+
+### Why this isn't a breaking change
+
+- No tool signature changes. Both tools accept the same args.
+- `peer_ask` self-send block (`self_send` error) **stays intact** — sending a message to your own inbox is genuinely a weird loop with no useful semantic.
+- Behavior change only: previously-erroring calls now succeed. No existing correct code can break.
+
+### Tests
+
+- Existing self-rejection tests flipped to verify happy-path: `peer_chat_read { to: self }` returns messages, `peer_chat_search` includes self session in scope.
+- 230/230 tests pass.
+
 ## [0.6.0] — 2026-06-11
 
 Minor release adding **dynamic terminal tab title** that tracks each peer's `displayName` (ai-title) automatically. End of "all my Claude tabs look identical" — orchestrators with 4+ worker terminals can finally tell them apart at a glance without manual `--name` flags or right-click renames.
