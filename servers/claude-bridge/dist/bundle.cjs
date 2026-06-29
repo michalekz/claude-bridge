@@ -20718,37 +20718,164 @@ async function* parseSessionFileRaw(filePath, options = {}) {
   }
 }
 
-// src/parser/context-usage.ts
-var ONE_M_PATTERN = /\[1m\]/i;
+// src/parser/model-metadata.ts
 var STANDARD_LIMIT = 2e5;
 var ONE_M_LIMIT = 1e6;
-var MODEL_CONTEXT_WINDOWS = {
-  // Current generation (verified from https://platform.claude.com/docs/en/about-claude/models/overview, 2026-06-29)
-  "claude-fable-5": ONE_M_LIMIT,
-  "claude-mythos-5": ONE_M_LIMIT,
-  "claude-mythos-preview": ONE_M_LIMIT,
-  "claude-opus-4-8": ONE_M_LIMIT,
-  "claude-sonnet-4-6": ONE_M_LIMIT,
-  "claude-haiku-4-5": STANDARD_LIMIT,
-  // jediný 200k v aktuální generaci
-  // Legacy still available
-  "claude-opus-4-7": ONE_M_LIMIT,
-  "claude-opus-4-6": ONE_M_LIMIT,
-  "claude-sonnet-4-5": STANDARD_LIMIT,
-  "claude-opus-4-5": STANDARD_LIMIT,
-  // Deprecated (retiring)
-  "claude-opus-4-1": STANDARD_LIMIT
-};
+var MODELS = [
+  // ---- Current generation ----
+  {
+    id: "claude-fable-5",
+    displayName: "Claude Fable 5",
+    family: "fable",
+    generation: "current",
+    contextWindow: ONE_M_LIMIT,
+    maxOutputTokens: 128e3,
+    pricing: { inputPerMTok: 10, outputPerMTok: 50 },
+    capabilities: { vision: true, extendedThinking: false, adaptiveThinking: true },
+    knowledgeCutoff: "2026-01",
+    trainingDataCutoff: "2026-01",
+    notes: "Most capable widely released model; adaptive thinking always-on."
+  },
+  {
+    id: "claude-mythos-5",
+    displayName: "Claude Mythos 5",
+    family: "mythos",
+    generation: "current",
+    contextWindow: ONE_M_LIMIT,
+    maxOutputTokens: 128e3,
+    pricing: { inputPerMTok: 10, outputPerMTok: 50 },
+    capabilities: { vision: true, extendedThinking: false, adaptiveThinking: true },
+    knowledgeCutoff: "2026-01",
+    trainingDataCutoff: "2026-01",
+    notes: "Project Glasswing exclusive (invitation only)."
+  },
+  {
+    id: "claude-opus-4-8",
+    displayName: "Claude Opus 4.8",
+    family: "opus",
+    generation: "current",
+    contextWindow: ONE_M_LIMIT,
+    maxOutputTokens: 128e3,
+    pricing: { inputPerMTok: 5, outputPerMTok: 25 },
+    capabilities: { vision: true, extendedThinking: false, adaptiveThinking: true },
+    knowledgeCutoff: "2026-01",
+    trainingDataCutoff: "2026-01",
+    notes: "On Microsoft Foundry context is 200k. Default effort=high on Claude Code and API."
+  },
+  {
+    id: "claude-sonnet-4-6",
+    displayName: "Claude Sonnet 4.6",
+    family: "sonnet",
+    generation: "current",
+    contextWindow: ONE_M_LIMIT,
+    maxOutputTokens: 128e3,
+    pricing: { inputPerMTok: 3, outputPerMTok: 15 },
+    capabilities: { vision: true, extendedThinking: true, adaptiveThinking: true },
+    knowledgeCutoff: "2025-08",
+    trainingDataCutoff: "2026-01"
+  },
+  {
+    id: "claude-haiku-4-5",
+    displayName: "Claude Haiku 4.5",
+    family: "haiku",
+    generation: "current",
+    contextWindow: STANDARD_LIMIT,
+    maxOutputTokens: 64e3,
+    pricing: { inputPerMTok: 1, outputPerMTok: 5 },
+    capabilities: { vision: true, extendedThinking: true, adaptiveThinking: false },
+    knowledgeCutoff: "2025-02",
+    trainingDataCutoff: "2025-07",
+    notes: "The only current-generation 200k-context model."
+  },
+  // ---- Legacy (still available) ----
+  {
+    id: "claude-opus-4-7",
+    displayName: "Claude Opus 4.7 (legacy)",
+    family: "opus",
+    generation: "legacy",
+    contextWindow: ONE_M_LIMIT,
+    maxOutputTokens: 128e3,
+    pricing: { inputPerMTok: 5, outputPerMTok: 25 },
+    capabilities: { vision: true, extendedThinking: false, adaptiveThinking: true },
+    knowledgeCutoff: "2026-01",
+    trainingDataCutoff: "2026-01",
+    notes: "Tokenizer introduced here; ~30% more tokens per text vs. older models."
+  },
+  {
+    id: "claude-opus-4-6",
+    displayName: "Claude Opus 4.6 (legacy)",
+    family: "opus",
+    generation: "legacy",
+    contextWindow: ONE_M_LIMIT,
+    maxOutputTokens: 128e3,
+    pricing: { inputPerMTok: 5, outputPerMTok: 25 },
+    capabilities: { vision: true, extendedThinking: true, adaptiveThinking: true },
+    knowledgeCutoff: "2025-05",
+    trainingDataCutoff: "2025-08"
+  },
+  {
+    id: "claude-sonnet-4-5",
+    displayName: "Claude Sonnet 4.5 (legacy)",
+    family: "sonnet",
+    generation: "legacy",
+    contextWindow: STANDARD_LIMIT,
+    maxOutputTokens: 64e3,
+    pricing: { inputPerMTok: 3, outputPerMTok: 15 },
+    capabilities: { vision: true, extendedThinking: true, adaptiveThinking: false },
+    knowledgeCutoff: "2025-01",
+    trainingDataCutoff: "2025-07"
+  },
+  {
+    id: "claude-opus-4-5",
+    displayName: "Claude Opus 4.5 (legacy)",
+    family: "opus",
+    generation: "legacy",
+    contextWindow: STANDARD_LIMIT,
+    maxOutputTokens: 64e3,
+    pricing: { inputPerMTok: 5, outputPerMTok: 25 },
+    capabilities: { vision: true, extendedThinking: true, adaptiveThinking: false },
+    knowledgeCutoff: "2025-05",
+    trainingDataCutoff: "2025-08"
+  },
+  // ---- Deprecated (retiring) ----
+  {
+    id: "claude-opus-4-1",
+    displayName: "Claude Opus 4.1 (deprecated)",
+    family: "opus",
+    generation: "deprecated",
+    contextWindow: STANDARD_LIMIT,
+    maxOutputTokens: 32e3,
+    pricing: { inputPerMTok: 15, outputPerMTok: 75 },
+    capabilities: { vision: true, extendedThinking: true, adaptiveThinking: false },
+    knowledgeCutoff: "2025-01",
+    trainingDataCutoff: "2025-03",
+    notes: "Retires 2026-08-05. Migrate to Claude Opus 4.8."
+  }
+];
+var MODEL_BY_ID = Object.fromEntries(MODELS.map((m) => [m.id, m]));
 function normalizeModelId(model) {
   return model.replace(/\[1m\]/gi, "").replace(/-\d{8}$/, "");
 }
-function detectContextLimit(model) {
-  if (!model) return STANDARD_LIMIT;
-  if (ONE_M_PATTERN.test(model)) return ONE_M_LIMIT;
+function lookupModel(model) {
+  if (!model) return null;
   const baseId = normalizeModelId(model);
-  const known = MODEL_CONTEXT_WINDOWS[baseId];
-  if (known !== void 0) return known;
-  return STANDARD_LIMIT;
+  return MODEL_BY_ID[baseId] ?? null;
+}
+var MODEL_METADATA_SOURCE = {
+  source: "https://platform.claude.com/docs/en/about-claude/models/overview",
+  verifiedAt: "2026-06-29"
+};
+
+// src/parser/context-usage.ts
+var ONE_M_PATTERN = /\[1m\]/i;
+var STANDARD_LIMIT2 = 2e5;
+var ONE_M_LIMIT2 = 1e6;
+function detectContextLimit(model) {
+  if (!model) return STANDARD_LIMIT2;
+  if (ONE_M_PATTERN.test(model)) return ONE_M_LIMIT2;
+  const known = lookupModel(model);
+  if (known) return known.contextWindow;
+  return STANDARD_LIMIT2;
 }
 function riskBucket(percent) {
   if (percent < 0.6) return "low";
@@ -20778,8 +20905,8 @@ async function readContextUsage(sessionRef) {
   }
   const tokensUsed = lastUsage.cache_read_input_tokens;
   let contextLimit = detectContextLimit(lastModel);
-  if (contextLimit === STANDARD_LIMIT && tokensUsed > STANDARD_LIMIT) {
-    contextLimit = ONE_M_LIMIT;
+  if (contextLimit === STANDARD_LIMIT2 && tokensUsed > STANDARD_LIMIT2) {
+    contextLimit = ONE_M_LIMIT2;
   }
   const percentUsed = contextLimit > 0 ? tokensUsed / contextLimit : 0;
   const tokensRemaining = Math.max(0, contextLimit - tokensUsed);
@@ -22020,6 +22147,39 @@ async function peerSetNotificationTool(ctx, args) {
     return err("peer_set_notification_failed", e instanceof Error ? e.message : "unknown");
   }
 }
+var ModelInfoArgs = external_exports.object({
+  model: external_exports.string().optional(),
+  generation: external_exports.enum(["current", "legacy", "deprecated"]).optional()
+}).strict();
+async function modelInfoTool(args) {
+  try {
+    if (args.model) {
+      const found = lookupModel(args.model);
+      if (!found) {
+        return err("model_not_found", `No metadata for model "${args.model}".`, {
+          knownIds: MODELS.map((m) => m.id),
+          hint: "Date suffix (-YYYYMMDD) and [1m] tag are stripped before lookup. If you believe this model should exist, file an issue."
+        });
+      }
+      return ok({
+        source: MODEL_METADATA_SOURCE,
+        model: found
+      });
+    }
+    let list = MODELS;
+    if (args.generation) {
+      list = list.filter((m) => m.generation === args.generation);
+    }
+    return ok({
+      source: MODEL_METADATA_SOURCE,
+      modelsCount: list.length,
+      models: list
+    });
+  } catch (e) {
+    log5.error("model_info_failed", { err: e instanceof Error ? e.message : String(e) });
+    return err("model_info_failed", e instanceof Error ? e.message : "unknown");
+  }
+}
 var TOOLS = [
   {
     name: "list_projects",
@@ -22323,6 +22483,30 @@ var TOOLS = [
     }
   },
   {
+    name: "model_info",
+    description: "Return canonical Claude model metadata: context window, max output, pricing, capabilities (vision / extended thinking / adaptive thinking), knowledge cutoff, lifecycle status (current/legacy/deprecated). Static lookup \u2014 no JSONL scan, no network calls. Source: Anthropic platform docs (https://platform.claude.com/docs/en/about-claude/models/overview), verified 2026-06-29. Pass `model` to query specific id (date suffix and [1m] tag are stripped automatically). Pass `generation` to filter (current/legacy/deprecated). No args = list all known models.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        model: {
+          type: "string",
+          description: "Optional: query specific model by id (e.g., 'claude-opus-4-7'). Date suffix and [1m] tag normalized. Returns model_not_found error if unknown."
+        },
+        generation: {
+          type: "string",
+          enum: ["current", "legacy", "deprecated"],
+          description: "Optional: filter listed models by lifecycle status. Ignored if `model` is set."
+        }
+      },
+      additionalProperties: false
+    },
+    handler: async (args) => {
+      const parsed = ModelInfoArgs.safeParse(args);
+      if (!parsed.success) return err("invalid_args", "Schema validation failed", parsed.error);
+      return modelInfoTool(parsed.data);
+    }
+  },
+  {
     name: "peer_set_notification",
     description: "Configure own idle-notification (terminal beep when stable-idle, self-write only). When enabled and peer is idle for `minIdleSeconds`, plugin emits terminal bell + visual notification. Self-targeted \u2014 peer can only set its own notification config. Defaults: enabled=false, minIdleSeconds=30.",
     inputSchema: {
@@ -22352,7 +22536,7 @@ var TOOLS = [
 // src/mcp/server.ts
 var log6 = makeLogger("mcp-server");
 var SERVER_NAME = "claude-bridge";
-var SERVER_VERSION = "0.7.2";
+var SERVER_VERSION = "0.7.3";
 var INSTRUCTIONS = `
 claude-bridge \u2014 MCP server pro orchestraci nap\u0159\xED\u010D Claude Code chaty.
 
@@ -22364,6 +22548,7 @@ MCP tools:
 - peer_context_status (v0.7.0+) \u2014 autocompact-relevant context %, model, risk bucket per peer (self / single / array / 'all').
 - peer_set_context_guard (v0.7.0+) \u2014 own threshold-guard (warn/critical) + notify subscribers.
 - peer_set_notification (v0.7.0+) \u2014 own idle-beep notification.
+- model_info (v0.7.3+) \u2014 canonical Claude model metadata (context window, max output, pricing, capabilities, lifecycle).
 
 Bundled skills (load detail via skill name):
 - claude-bridge \u2014 overview / quick decision tree

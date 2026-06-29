@@ -15,7 +15,7 @@ import { TOOLS, type ToolResult, piggybackInbox } from "./tools.ts";
 const log = makeLogger("mcp-server");
 
 const SERVER_NAME = "claude-bridge";
-const SERVER_VERSION = "0.7.2";
+const SERVER_VERSION = "0.7.3";
 
 const INSTRUCTIONS = `
 claude-bridge — MCP server pro orchestraci napříč Claude Code chaty.
@@ -28,6 +28,7 @@ MCP tools:
 - peer_context_status (v0.7.0+) — autocompact-relevant context %, model, risk bucket per peer (self / single / array / 'all').
 - peer_set_context_guard (v0.7.0+) — own threshold-guard (warn/critical) + notify subscribers.
 - peer_set_notification (v0.7.0+) — own idle-beep notification.
+- model_info (v0.7.3+) — canonical Claude model metadata (context window, max output, pricing, capabilities, lifecycle).
 
 Bundled skills (load detail via skill name):
 - claude-bridge — overview / quick decision tree

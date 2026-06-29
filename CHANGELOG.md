@@ -2,6 +2,34 @@
 
 All notable changes to this project are documented here. Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.7.3] — 2026-06-29
+
+### Added — `model_info` MCP tool
+
+Static lookup tool returning canonical Claude model metadata. No JSONL scan, no network call — just an in-process table sourced from [Anthropic platform docs](https://platform.claude.com/docs/en/about-claude/models/overview).
+
+Per-model fields:
+- `id`, `displayName`, `family` (opus/sonnet/haiku/fable/mythos), `generation` (current/legacy/deprecated)
+- `contextWindow`, `maxOutputTokens`
+- `pricing` (input/output per MTok)
+- `capabilities` (vision, extendedThinking, adaptiveThinking)
+- `knowledgeCutoff`, `trainingDataCutoff`
+- `notes` (special quirks, EOL dates)
+
+Usage:
+- `model_info()` — list all 10 known models
+- `model_info({ model: "claude-opus-4-7" })` — single lookup (date suffix + [1m] stripped)
+- `model_info({ generation: "current" })` — filter by lifecycle
+
+### Refactored
+
+- Extracted canonical model table to `src/parser/model-metadata.ts` (= single source of truth shared between `context-usage.ts` and `model_info` tool).
+- `detectContextLimit` now delegates to `lookupModel` from the shared table.
+
+### Tests
+
+- 248 → 263 (+15 covering normalization, lookup, table integrity).
+
 ## [0.7.2] — 2026-06-29
 
 Patch: replace empirical heuristic with **canonical model → context-window lookup**.

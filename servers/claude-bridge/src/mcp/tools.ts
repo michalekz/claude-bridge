@@ -5,6 +5,7 @@ import { z } from "zod";
 import { type MessageEnvelope, type MessageKind, generateMessageId } from "../inbox/store.ts";
 import { type ContextUsage, readContextUsageForSession } from "../parser/context-usage.ts";
 import { parseSessionFile, parseSessionFileRaw, readSessionFile } from "../parser/jsonl.ts";
+import { MODELS, MODEL_METADATA_SOURCE, lookupModel } from "../parser/model-metadata.ts";
 import type { AssistantEvent, ContentBlock, SessionEvent, UserEvent } from "../parser/schemas.ts";
 import {
   type SessionRef,
@@ -1617,6 +1618,49 @@ export async function peerSetNotificationTool(
 }
 
 // ============================================================================
+// model_info — canonical Claude model metadata (static lookup, no JSONL scan)
+// ============================================================================
+
+export const ModelInfoArgs = z
+  .object({
+    model: z.string().optional(),
+    generation: z.enum(["current", "legacy", "deprecated"]).optional(),
+  })
+  .strict();
+
+export async function modelInfoTool(args: z.infer<typeof ModelInfoArgs>): Promise<ToolResult> {
+  try {
+    if (args.model) {
+      const found = lookupModel(args.model);
+      if (!found) {
+        return err("model_not_found", `No metadata for model "${args.model}".`, {
+          knownIds: MODELS.map((m) => m.id),
+          hint: "Date suffix (-YYYYMMDD) and [1m] tag are stripped before lookup. If you believe this model should exist, file an issue.",
+        });
+      }
+      return ok({
+        source: MODEL_METADATA_SOURCE,
+        model: found,
+      });
+    }
+
+    let list = MODELS;
+    if (args.generation) {
+      list = list.filter((m) => m.generation === args.generation);
+    }
+
+    return ok({
+      source: MODEL_METADATA_SOURCE,
+      modelsCount: list.length,
+      models: list,
+    });
+  } catch (e) {
+    log.error("model_info_failed", { err: e instanceof Error ? e.message : String(e) });
+    return err("model_info_failed", e instanceof Error ? e.message : "unknown");
+  }
+}
+
+// ============================================================================
 // Tool registry
 // ============================================================================
 
@@ -1951,6 +1995,33 @@ export const TOOLS: ToolSpec[] = [
       const parsed = PeerSetContextGuardArgs.safeParse(args);
       if (!parsed.success) return err("invalid_args", "Schema validation failed", parsed.error);
       return peerSetContextGuardTool(ctx, parsed.data);
+    },
+  },
+  {
+    name: "model_info",
+    description:
+      "Return canonical Claude model metadata: context window, max output, pricing, capabilities (vision / extended thinking / adaptive thinking), knowledge cutoff, lifecycle status (current/legacy/deprecated). Static lookup — no JSONL scan, no network calls. Source: Anthropic platform docs (https://platform.claude.com/docs/en/about-claude/models/overview), verified 2026-06-29. Pass `model` to query specific id (date suffix and [1m] tag are stripped automatically). Pass `generation` to filter (current/legacy/deprecated). No args = list all known models.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        model: {
+          type: "string",
+          description:
+            "Optional: query specific model by id (e.g., 'claude-opus-4-7'). Date suffix and [1m] tag normalized. Returns model_not_found error if unknown.",
+        },
+        generation: {
+          type: "string",
+          enum: ["current", "legacy", "deprecated"],
+          description:
+            "Optional: filter listed models by lifecycle status. Ignored if `model` is set.",
+        },
+      },
+      additionalProperties: false,
+    },
+    handler: async (args) => {
+      const parsed = ModelInfoArgs.safeParse(args);
+      if (!parsed.success) return err("invalid_args", "Schema validation failed", parsed.error);
+      return modelInfoTool(parsed.data);
     },
   },
   {
