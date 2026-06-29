@@ -103,7 +103,15 @@ export async function readContextUsage(sessionRef: SessionRef): Promise<ContextU
   }
 
   const tokensUsed = lastUsage.cache_read_input_tokens;
-  const contextLimit = detectContextLimit(lastModel);
+  // Limit detection: model name first (catches explicit [1m]).
+  // Fallback heuristic: if tokensUsed > STANDARD_LIMIT, must be [1m] variant
+  // (the 200k variant would have rejected the request before reaching this size).
+  // The model string sometimes omits the [1m] tag because it's a session-level
+  // setting, not part of the model id itself.
+  let contextLimit = detectContextLimit(lastModel);
+  if (contextLimit === STANDARD_LIMIT && tokensUsed > STANDARD_LIMIT) {
+    contextLimit = ONE_M_LIMIT;
+  }
   const percentUsed = contextLimit > 0 ? tokensUsed / contextLimit : 0;
   const tokensRemaining = Math.max(0, contextLimit - tokensUsed);
 

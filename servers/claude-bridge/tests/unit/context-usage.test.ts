@@ -150,6 +150,25 @@ describe("readContextUsage", () => {
     expect(usage?.autocompactRisk).toBe("high");
   });
 
+  test("heuristic: tokensUsed > 200k without [1m] tag → assume 1M variant", async () => {
+    // Real-world case: model string "claude-opus-4-7" doesn't carry [1m] suffix
+    // (it's a session-level setting), but usage clearly exceeds 200k → must be [1m].
+    const line = JSON.stringify({
+      type: "assistant",
+      timestamp: "2026-06-29T10:00:00Z",
+      message: {
+        model: "claude-opus-4-7",
+        usage: { cache_read_input_tokens: 511_699 },
+      },
+    });
+    await writeFile(jsonlPath, line);
+    const usage = await readContextUsage(makeSessionRef());
+    expect(usage?.contextLimit).toBe(1_000_000); // heuristic flipped to 1M
+    expect(usage?.tokensUsed).toBe(511_699);
+    expect(usage?.percentUsed).toBeCloseTo(0.512, 2);
+    expect(usage?.autocompactRisk).toBe("low"); // < 60%
+  });
+
   test("ignores user events", async () => {
     const lines = [
       JSON.stringify({ type: "user", message: { content: "hi" }, usage: { cache_read_input_tokens: 99_999 } }),

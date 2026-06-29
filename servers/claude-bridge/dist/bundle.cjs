@@ -20521,6 +20521,11 @@ async function shutdownContext(ctx) {
   }
 }
 
+// src/mcp/tools.ts
+var import_promises13 = require("node:fs/promises");
+var import_promises14 = require("node:fs/promises");
+var import_node_path10 = require("node:path");
+
 // src/parser/context-usage.ts
 var import_promises10 = require("node:fs/promises");
 
@@ -20749,7 +20754,10 @@ async function readContextUsage(sessionRef) {
     return null;
   }
   const tokensUsed = lastUsage.cache_read_input_tokens;
-  const contextLimit = detectContextLimit(lastModel);
+  let contextLimit = detectContextLimit(lastModel);
+  if (contextLimit === STANDARD_LIMIT && tokensUsed > STANDARD_LIMIT) {
+    contextLimit = ONE_M_LIMIT;
+  }
   const percentUsed = contextLimit > 0 ? tokensUsed / contextLimit : 0;
   const tokensRemaining = Math.max(0, contextLimit - tokensUsed);
   return {
@@ -20842,9 +20850,6 @@ function serializeSessionRef(s) {
 }
 
 // src/mcp/tools.ts
-var import_promises13 = require("node:fs/promises");
-var import_node_path10 = require("node:path");
-var import_promises14 = require("node:fs/promises");
 var log5 = makeLogger("tools");
 function ok(data) {
   return {
@@ -21883,14 +21888,10 @@ async function peerContextStatusTool(ctx, args) {
           targets.push({ id: normalized, name: null });
           continue;
         }
-        return err(
-          "peer_not_found",
-          `No active peer "${normalized}" and not a UUID`,
-          {
-            activePeers: activePeers.map(peerDiagShape),
-            hint: PEER_NOT_FOUND_HINT
-          }
-        );
+        return err("peer_not_found", `No active peer "${normalized}" and not a UUID`, {
+          activePeers: activePeers.map(peerDiagShape),
+          hint: PEER_NOT_FOUND_HINT
+        });
       }
     }
     const peers = [];
@@ -21900,10 +21901,7 @@ async function peerContextStatusTool(ctx, args) {
     return ok({ count: peers.length, peers });
   } catch (e) {
     log5.error("peer_context_status_failed", { err: e instanceof Error ? e.message : String(e) });
-    return err(
-      "peer_context_status_failed",
-      e instanceof Error ? e.message : "unknown"
-    );
+    return err("peer_context_status_failed", e instanceof Error ? e.message : "unknown");
   }
 }
 var DEFAULT_GUARD_CONFIG = {
@@ -21957,10 +21955,7 @@ async function peerSetContextGuardTool(ctx, args) {
     return ok({ guard: next, sessionId: ctx.self.id });
   } catch (e) {
     log5.error("peer_set_context_guard_failed", { err: e instanceof Error ? e.message : String(e) });
-    return err(
-      "peer_set_context_guard_failed",
-      e instanceof Error ? e.message : "unknown"
-    );
+    return err("peer_set_context_guard_failed", e instanceof Error ? e.message : "unknown");
   }
 }
 var DEFAULT_NOTIFICATION_CONFIG = {
@@ -21999,10 +21994,7 @@ async function peerSetNotificationTool(ctx, args) {
     return ok({ notification: next, sessionId: ctx.self.id });
   } catch (e) {
     log5.error("peer_set_notification_failed", { err: e instanceof Error ? e.message : String(e) });
-    return err(
-      "peer_set_notification_failed",
-      e instanceof Error ? e.message : "unknown"
-    );
+    return err("peer_set_notification_failed", e instanceof Error ? e.message : "unknown");
   }
 }
 var TOOLS = [
@@ -22337,7 +22329,7 @@ var TOOLS = [
 // src/mcp/server.ts
 var log6 = makeLogger("mcp-server");
 var SERVER_NAME = "claude-bridge";
-var SERVER_VERSION = "0.7.0";
+var SERVER_VERSION = "0.7.1";
 var INSTRUCTIONS = `
 claude-bridge \u2014 MCP server pro orchestraci nap\u0159\xED\u010D Claude Code chaty.
 

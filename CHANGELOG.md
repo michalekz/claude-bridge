@@ -2,6 +2,22 @@
 
 All notable changes to this project are documented here. Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.7.1] — 2026-06-29
+
+Patch fix discovered during v0.7.0 smoke test.
+
+### Fixed
+
+- **`peer_context_status` limit detection** — model strings in JSONL don't always carry the `[1m]` suffix even when the session runs on the 1M variant (it's a session-level setting, not part of the model id). The original `detectContextLimit` returned 200k for `"claude-opus-4-7"` regardless of actual variant, producing `percentUsed` > 1.0 for active 1M sessions (e.g. 511,699 / 200,000 = 2.558).
+  
+  Heuristic added: if `tokensUsed > STANDARD_LIMIT (200k)`, the limit is bumped to `ONE_M_LIMIT (1M)` automatically — because the 200k variant would have rejected the request before reaching that size. Result: realistic `percentUsed` and `autocompactRisk` bucket for all observed peer sessions in real-world test.
+
+- **`dist/bundle.cjs` rebuilt** with the fix.
+
+### Tests
+
+- 243 → 244 (+1 for heuristic).
+
 ## [0.7.0] — 2026-06-29
 
 Major release — **self-defending context lifecycle** + practitioner-grounded role playbooks.
