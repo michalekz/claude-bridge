@@ -15,7 +15,7 @@ import { TOOLS, type ToolResult, piggybackInbox } from "./tools.ts";
 const log = makeLogger("mcp-server");
 
 const SERVER_NAME = "claude-bridge";
-const SERVER_VERSION = "0.6.1";
+const SERVER_VERSION = "0.7.0";
 
 const INSTRUCTIONS = `
 claude-bridge — MCP server pro orchestraci napříč Claude Code chaty.
@@ -25,6 +25,14 @@ MCP tools:
 - peer_list, peer_ask, peer_reply, peer_inbox_read — file-based komunikace s ostatními peery.
 - peer_chat_read — náhled do session JSONL jiného peera (last N zpráv, since timestamp, in-session query/regex).
 - peer_chat_search — cross-session search v rámci current project (default) nebo všech projektů (CLAUDE_BRIDGE_ALLOW_ALL_PROJECTS=1).
+- peer_context_status (v0.7.0+) — autocompact-relevant context %, model, risk bucket per peer (self / single / array / 'all').
+- peer_set_context_guard (v0.7.0+) — own threshold-guard (warn/critical) + notify subscribers.
+- peer_set_notification (v0.7.0+) — own idle-beep notification.
+
+Bundled skills (load detail via skill name):
+- claude-bridge — overview / quick decision tree
+- claude-bridge-role-manager — orchestrator of 2-N worker peers
+- claude-bridge-role-memory-keeper — single-writer for shared memory
 
 Identita peerů (v0.2.0):
 - Každý peer má stable id (Claude Code sessionId UUID) + display name (může kolidovat).
@@ -40,6 +48,8 @@ Doručování zpráv:
 Layout:
 - ~/.claude-bridge/inbox/<sessionId>/{pending,done}/<msg-id>.json
 - ~/.claude-bridge/status/<sessionId>.json
+- ~/.claude-bridge/guard/<sessionId>.json     (v0.7.0+)
+- ~/.claude-bridge/notify/<sessionId>.json    (v0.7.0+)
 `.trim();
 
 export function createServer(): Server {

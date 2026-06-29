@@ -19942,8 +19942,8 @@ var FSWatcher = class extends import_events.EventEmitter {
     }
     return this._userIgnored(path, stats);
   }
-  _isntIgnored(path, stat8) {
-    return !this._isIgnored(path, stat8);
+  _isntIgnored(path, stat9) {
+    return !this._isIgnored(path, stat9);
   }
   /**
    * Provides a set of common helpers and properties relating to symlink handling.
@@ -20241,10 +20241,10 @@ function createPeerRegistry(opts = {}) {
 var import_node_child_process = require("node:child_process");
 var import_node_fs = require("node:fs");
 var log2 = makeLogger("terminal-title");
-function parseTtyNrFromProcStat(stat8) {
-  const lastParen = stat8.lastIndexOf(")");
+function parseTtyNrFromProcStat(stat9) {
+  const lastParen = stat9.lastIndexOf(")");
   if (lastParen === -1) return null;
-  const after = stat8.slice(lastParen + 2);
+  const after = stat9.slice(lastParen + 2);
   const fields = after.split(" ");
   const ttyNrStr = fields[4];
   if (!ttyNrStr) return null;
@@ -20258,8 +20258,8 @@ function parseTtyNrFromProcStat(stat8) {
 }
 function findLinuxParentTty(ppid) {
   try {
-    const stat8 = (0, import_node_fs.readFileSync)(`/proc/${ppid}/stat`, "utf-8");
-    const parsed = parseTtyNrFromProcStat(stat8);
+    const stat9 = (0, import_node_fs.readFileSync)(`/proc/${ppid}/stat`, "utf-8");
+    const parsed = parseTtyNrFromProcStat(stat9);
     if (!parsed) return null;
     if (parsed.major === 136) {
       return `/dev/pts/${parsed.minor}`;
@@ -20521,6 +20521,9 @@ async function shutdownContext(ctx) {
   }
 }
 
+// src/parser/context-usage.ts
+var import_promises10 = require("node:fs/promises");
+
 // src/parser/jsonl.ts
 var import_node_fs2 = require("node:fs");
 var import_node_readline = require("node:readline");
@@ -20710,16 +20713,76 @@ async function* parseSessionFileRaw(filePath, options = {}) {
   }
 }
 
+// src/parser/context-usage.ts
+var ONE_M_PATTERN = /\[1m\]/i;
+var STANDARD_LIMIT = 2e5;
+var ONE_M_LIMIT = 1e6;
+function detectContextLimit(model) {
+  if (!model) return STANDARD_LIMIT;
+  if (ONE_M_PATTERN.test(model)) return ONE_M_LIMIT;
+  return STANDARD_LIMIT;
+}
+function riskBucket(percent) {
+  if (percent < 0.6) return "low";
+  if (percent < 0.85) return "medium";
+  return "high";
+}
+async function readContextUsage(sessionRef) {
+  let lastUsage = null;
+  let lastModel = null;
+  let lastTimestamp = null;
+  try {
+    for await (const event of parseSessionFileRaw(sessionRef.filePath)) {
+      if (event.type !== "assistant") continue;
+      const usage = event.message?.usage;
+      if (!usage || typeof usage.cache_read_input_tokens !== "number") continue;
+      lastUsage = usage;
+      lastModel = event.message?.model ?? null;
+      if (typeof event.timestamp === "string") {
+        lastTimestamp = event.timestamp;
+      }
+    }
+  } catch {
+    return null;
+  }
+  if (!lastUsage || typeof lastUsage.cache_read_input_tokens !== "number") {
+    return null;
+  }
+  const tokensUsed = lastUsage.cache_read_input_tokens;
+  const contextLimit = detectContextLimit(lastModel);
+  const percentUsed = contextLimit > 0 ? tokensUsed / contextLimit : 0;
+  const tokensRemaining = Math.max(0, contextLimit - tokensUsed);
+  return {
+    tokensUsed,
+    model: lastModel,
+    contextLimit,
+    lastTurnAt: lastTimestamp,
+    percentUsed,
+    tokensRemaining,
+    autocompactRisk: riskBucket(percentUsed)
+  };
+}
+async function readContextUsageForSession(sessions) {
+  if (sessions.length === 0) return null;
+  const sessionRef = sessions[0];
+  try {
+    await (0, import_promises10.stat)(sessionRef.filePath);
+  } catch {
+    return null;
+  }
+  return readContextUsage(sessionRef);
+}
+
 // src/parser/session.ts
-var import_promises10 = require("node:fs/promises");
 var import_promises11 = require("node:fs/promises");
+var import_promises12 = require("node:fs/promises");
 var import_node_path9 = require("node:path");
 var JSONL_PATTERN = /^([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.jsonl$/;
 async function listProjects() {
   const root = projectsRoot();
   let entries;
   try {
-    entries = await (0, import_promises11.readdir)(root);
+    entries = await (0, import_promises12.readdir)(root);
   } catch (e) {
     if (e.code === "ENOENT") return [];
     throw e;
@@ -20727,7 +20790,7 @@ async function listProjects() {
   const projects = [];
   for (const entry of entries) {
     const absolutePath = (0, import_node_path9.join)(root, entry);
-    const s = await (0, import_promises10.stat)(absolutePath).catch(() => null);
+    const s = await (0, import_promises11.stat)(absolutePath).catch(() => null);
     if (!s?.isDirectory()) continue;
     projects.push({ projectDir: entry, absolutePath });
   }
@@ -20736,7 +20799,7 @@ async function listProjects() {
 async function listSessionsInProject(project) {
   let entries;
   try {
-    entries = await (0, import_promises11.readdir)(project.absolutePath);
+    entries = await (0, import_promises12.readdir)(project.absolutePath);
   } catch {
     return [];
   }
@@ -20746,7 +20809,7 @@ async function listSessionsInProject(project) {
     if (!match) continue;
     const sessionId = match[1];
     const filePath = (0, import_node_path9.join)(project.absolutePath, entry);
-    const s = await (0, import_promises10.stat)(filePath).catch(() => null);
+    const s = await (0, import_promises11.stat)(filePath).catch(() => null);
     if (!s?.isFile()) continue;
     sessions.push({
       projectDir: project.projectDir,
@@ -20779,6 +20842,9 @@ function serializeSessionRef(s) {
 }
 
 // src/mcp/tools.ts
+var import_promises13 = require("node:fs/promises");
+var import_node_path10 = require("node:path");
+var import_promises14 = require("node:fs/promises");
 var log5 = makeLogger("tools");
 function ok(data) {
   return {
@@ -20820,12 +20886,12 @@ var ListSessionsArgs = external_exports.object({
 }).strict();
 var HEARTBEAT_ACTIVE_THRESHOLD_MS = 3e4;
 async function isSessionActive(sessionId) {
-  const { stat: stat8 } = await import("node:fs/promises");
+  const { stat: stat9 } = await import("node:fs/promises");
   const { homedir: homedir4 } = await import("node:os");
-  const { join: join11 } = await import("node:path");
-  const hbPath = join11(homedir4(), ".claude-bridge", "status", `${sessionId}.json`);
+  const { join: join12 } = await import("node:path");
+  const hbPath = join12(homedir4(), ".claude-bridge", "status", `${sessionId}.json`);
   try {
-    const s = await stat8(hbPath);
+    const s = await stat9(hbPath);
     return Date.now() - s.mtimeMs <= HEARTBEAT_ACTIVE_THRESHOLD_MS;
   } catch {
     return false;
@@ -21718,6 +21784,227 @@ async function piggybackInbox(ctx, toolName, result) {
     content: [...result.content, { type: "text", text: block }]
   };
 }
+var PeerContextStatusArgs = external_exports.object({
+  to: external_exports.union([external_exports.string(), external_exports.array(external_exports.string())]).optional()
+}).strict();
+async function buildContextStatusEntry(ctx, peerId, peerName) {
+  const sessions = await findSessions(peerId);
+  const isSelf = peerId === ctx.self.id;
+  const guard = await readContextGuard(peerId);
+  if (sessions.length === 0) {
+    return {
+      id: peerId,
+      name: peerName,
+      isSelf,
+      model: null,
+      contextLimit: 2e5,
+      tokensUsed: 0,
+      tokensRemaining: 2e5,
+      percentUsed: 0,
+      autocompactRisk: "low",
+      lastTurnAt: null,
+      hasSession: false,
+      ...guard ? { guard } : {}
+    };
+  }
+  const usage = await readContextUsageForSession(sessions);
+  if (!usage) {
+    return {
+      id: peerId,
+      name: peerName,
+      isSelf,
+      model: null,
+      contextLimit: 2e5,
+      tokensUsed: 0,
+      tokensRemaining: 2e5,
+      percentUsed: 0,
+      autocompactRisk: "unknown",
+      lastTurnAt: null,
+      hasSession: true,
+      ...guard ? { guard } : {}
+    };
+  }
+  return {
+    id: peerId,
+    name: peerName,
+    isSelf,
+    model: usage.model,
+    contextLimit: usage.contextLimit,
+    tokensUsed: usage.tokensUsed,
+    tokensRemaining: usage.tokensRemaining,
+    percentUsed: Math.round(usage.percentUsed * 1e3) / 1e3,
+    autocompactRisk: usage.autocompactRisk,
+    lastTurnAt: usage.lastTurnAt,
+    hasSession: true,
+    ...guard ? { guard } : {}
+  };
+}
+async function peerContextStatusTool(ctx, args) {
+  try {
+    const targets = [];
+    const toArg = args.to;
+    if (toArg === void 0) {
+      targets.push({ id: ctx.self.id, name: ctx.self.name });
+    } else if (typeof toArg === "string" && toArg === "all") {
+      const peers2 = await ctx.registry.listActivePeers();
+      const seen = /* @__PURE__ */ new Set();
+      for (const p of peers2) {
+        if (seen.has(p.id)) continue;
+        seen.add(p.id);
+        targets.push({ id: p.id, name: p.name });
+      }
+      if (!seen.has(ctx.self.id)) {
+        targets.push({ id: ctx.self.id, name: ctx.self.name });
+      }
+    } else {
+      const list = Array.isArray(toArg) ? toArg : [toArg];
+      const peers2 = await ctx.registry.listActivePeers();
+      const activePeers = peers2;
+      for (const item of list) {
+        const normalized = item === "self" ? ctx.self.id : item;
+        const byId = activePeers.find((p) => p.id === normalized);
+        if (byId) {
+          targets.push({ id: byId.id, name: byId.name });
+          continue;
+        }
+        const byName = activePeers.filter((p) => p.name === normalized);
+        if (byName.length === 1) {
+          targets.push({ id: byName[0]?.id ?? "", name: byName[0]?.name ?? null });
+          continue;
+        }
+        if (byName.length > 1) {
+          return err(
+            "ambiguous_peer",
+            `Multiple peers match name "${normalized}". Use peer id instead.`,
+            byName.map((c) => ({ id: c.id, name: c.name, cwd: c.cwd }))
+          );
+        }
+        if (UUID_RE.test(normalized)) {
+          targets.push({ id: normalized, name: null });
+          continue;
+        }
+        return err(
+          "peer_not_found",
+          `No active peer "${normalized}" and not a UUID`,
+          {
+            activePeers: activePeers.map(peerDiagShape),
+            hint: PEER_NOT_FOUND_HINT
+          }
+        );
+      }
+    }
+    const peers = [];
+    for (const t of targets) {
+      peers.push(await buildContextStatusEntry(ctx, t.id, t.name));
+    }
+    return ok({ count: peers.length, peers });
+  } catch (e) {
+    log5.error("peer_context_status_failed", { err: e instanceof Error ? e.message : String(e) });
+    return err(
+      "peer_context_status_failed",
+      e instanceof Error ? e.message : "unknown"
+    );
+  }
+}
+var DEFAULT_GUARD_CONFIG = {
+  enabled: true,
+  warnAtPercent: 0.85,
+  criticalAtPercent: 0.95,
+  notifyPeerIds: [],
+  broadcastProject: false
+};
+var PeerSetContextGuardArgs = external_exports.object({
+  enabled: external_exports.boolean().optional(),
+  warnAtPercent: external_exports.number().min(0).max(1).optional(),
+  criticalAtPercent: external_exports.number().min(0).max(1).optional(),
+  notifyPeerIds: external_exports.array(external_exports.string()).optional(),
+  broadcastProject: external_exports.boolean().optional()
+}).strict();
+function guardConfigFile(peerId) {
+  return (0, import_node_path10.join)(bridgeRoot(), "guard", `${peerId}.json`);
+}
+async function readContextGuard(peerId) {
+  try {
+    const raw = await (0, import_promises13.readFile)(guardConfigFile(peerId), "utf-8");
+    const parsed = JSON.parse(raw);
+    return { ...DEFAULT_GUARD_CONFIG, ...parsed };
+  } catch {
+    return void 0;
+  }
+}
+async function writeContextGuard(peerId, cfg) {
+  const file = guardConfigFile(peerId);
+  await (0, import_promises14.mkdir)((0, import_node_path10.join)(bridgeRoot(), "guard"), { recursive: true });
+  await atomicWriteJson(file, cfg);
+}
+async function peerSetContextGuardTool(ctx, args) {
+  try {
+    const current = await readContextGuard(ctx.self.id) ?? DEFAULT_GUARD_CONFIG;
+    const next = {
+      enabled: args.enabled ?? current.enabled,
+      warnAtPercent: args.warnAtPercent ?? current.warnAtPercent,
+      criticalAtPercent: args.criticalAtPercent ?? current.criticalAtPercent,
+      notifyPeerIds: args.notifyPeerIds ?? current.notifyPeerIds,
+      broadcastProject: args.broadcastProject ?? current.broadcastProject
+    };
+    if (next.warnAtPercent > next.criticalAtPercent) {
+      return err(
+        "invalid_thresholds",
+        `warnAtPercent (${next.warnAtPercent}) must be <= criticalAtPercent (${next.criticalAtPercent})`
+      );
+    }
+    await writeContextGuard(ctx.self.id, next);
+    return ok({ guard: next, sessionId: ctx.self.id });
+  } catch (e) {
+    log5.error("peer_set_context_guard_failed", { err: e instanceof Error ? e.message : String(e) });
+    return err(
+      "peer_set_context_guard_failed",
+      e instanceof Error ? e.message : "unknown"
+    );
+  }
+}
+var DEFAULT_NOTIFICATION_CONFIG = {
+  enabled: false,
+  minIdleSeconds: 30
+};
+var PeerSetNotificationArgs = external_exports.object({
+  enabled: external_exports.boolean().optional(),
+  minIdleSeconds: external_exports.number().int().min(5).max(3600).optional()
+}).strict();
+function notificationConfigFile(peerId) {
+  return (0, import_node_path10.join)(bridgeRoot(), "notify", `${peerId}.json`);
+}
+async function readNotificationConfig(peerId) {
+  try {
+    const raw = await (0, import_promises13.readFile)(notificationConfigFile(peerId), "utf-8");
+    const parsed = JSON.parse(raw);
+    return { ...DEFAULT_NOTIFICATION_CONFIG, ...parsed };
+  } catch {
+    return void 0;
+  }
+}
+async function writeNotificationConfig(peerId, cfg) {
+  const file = notificationConfigFile(peerId);
+  await (0, import_promises14.mkdir)((0, import_node_path10.join)(bridgeRoot(), "notify"), { recursive: true });
+  await atomicWriteJson(file, cfg);
+}
+async function peerSetNotificationTool(ctx, args) {
+  try {
+    const current = await readNotificationConfig(ctx.self.id) ?? DEFAULT_NOTIFICATION_CONFIG;
+    const next = {
+      enabled: args.enabled ?? current.enabled,
+      minIdleSeconds: args.minIdleSeconds ?? current.minIdleSeconds
+    };
+    await writeNotificationConfig(ctx.self.id, next);
+    return ok({ notification: next, sessionId: ctx.self.id });
+  } catch (e) {
+    log5.error("peer_set_notification_failed", { err: e instanceof Error ? e.message : String(e) });
+    return err(
+      "peer_set_notification_failed",
+      e instanceof Error ? e.message : "unknown"
+    );
+  }
+}
 var TOOLS = [
   {
     name: "list_projects",
@@ -21953,13 +22240,104 @@ var TOOLS = [
       if (!parsed.success) return err("invalid_args", "Schema validation failed", parsed.error);
       return peerChatSearchTool(ctx, parsed.data);
     }
+  },
+  {
+    name: "peer_context_status",
+    description: "Read autocompact-relevant context statistics for self or other peer(s). Returns tokensUsed, contextLimit, percentUsed, autocompactRisk (low/medium/high), model, lastTurnAt. Data source: `usage.cache_read_input_tokens` on most recent assistant event in peer's JSONL \u2014 matches `/context` Total exactly. `to` omitted = self only. `to: 'all'` = all active peers + self. `to: ['alice', 'bob', 'self']` = specified peers (mix of names/UUIDs/'self'). `to: 'alice'` = single peer by name or UUID. Includes `guard` config field if peer has one configured. For peers without JSONL yet (brand-new): returns zero usage with autocompactRisk='low'.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        to: {
+          oneOf: [
+            { type: "string", description: "Peer id (UUID), name, 'self', or 'all'" },
+            {
+              type: "array",
+              items: { type: "string" },
+              description: "Array of peer ids/names/'self'"
+            }
+          ],
+          description: "Target peer(s). Omit = self only. 'all' = all active peers + self. String = single peer (UUID/name/'self'). Array = bulk."
+        }
+      },
+      additionalProperties: false
+    },
+    handler: async (args, ctx) => {
+      const parsed = PeerContextStatusArgs.safeParse(args);
+      if (!parsed.success) return err("invalid_args", "Schema validation failed", parsed.error);
+      return peerContextStatusTool(ctx, parsed.data);
+    }
+  },
+  {
+    name: "peer_set_context_guard",
+    description: "Configure own context-usage guard (self-write only). When peer's tokensUsed crosses warnAtPercent or criticalAtPercent, plugin can notify subscribers via push channel messages. Self-targeted \u2014 peer can only set its own guard, not other peer's. Defaults: enabled=true, warnAtPercent=0.85, criticalAtPercent=0.95, notifyPeerIds=[] (no external notify), broadcastProject=false. Returns updated config + sessionId.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        enabled: {
+          type: "boolean",
+          description: "Master toggle (default true)."
+        },
+        warnAtPercent: {
+          type: "number",
+          minimum: 0,
+          maximum: 1,
+          description: "First threshold (default 0.85). Fires 'warn' level notification when crossed."
+        },
+        criticalAtPercent: {
+          type: "number",
+          minimum: 0,
+          maximum: 1,
+          description: "Critical threshold (default 0.95). Fires 'critical' level notification when crossed. Must be >= warnAtPercent."
+        },
+        notifyPeerIds: {
+          type: "array",
+          items: { type: "string" },
+          description: "Peer IDs to notify on threshold crossing (default [])."
+        },
+        broadcastProject: {
+          type: "boolean",
+          description: "If true, notify all peers in same cwd (default false)."
+        }
+      },
+      additionalProperties: false
+    },
+    handler: async (args, ctx) => {
+      const parsed = PeerSetContextGuardArgs.safeParse(args);
+      if (!parsed.success) return err("invalid_args", "Schema validation failed", parsed.error);
+      return peerSetContextGuardTool(ctx, parsed.data);
+    }
+  },
+  {
+    name: "peer_set_notification",
+    description: "Configure own idle-notification (terminal beep when stable-idle, self-write only). When enabled and peer is idle for `minIdleSeconds`, plugin emits terminal bell + visual notification. Self-targeted \u2014 peer can only set its own notification config. Defaults: enabled=false, minIdleSeconds=30.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        enabled: {
+          type: "boolean",
+          description: "Toggle idle notification (default false)."
+        },
+        minIdleSeconds: {
+          type: "integer",
+          minimum: 5,
+          maximum: 3600,
+          description: "Seconds of idle before first beep fires (default 30). Also gap between escalation beeps."
+        }
+      },
+      additionalProperties: false
+    },
+    handler: async (args, ctx) => {
+      const parsed = PeerSetNotificationArgs.safeParse(args);
+      if (!parsed.success) return err("invalid_args", "Schema validation failed", parsed.error);
+      return peerSetNotificationTool(ctx, parsed.data);
+    }
   }
 ];
 
 // src/mcp/server.ts
 var log6 = makeLogger("mcp-server");
 var SERVER_NAME = "claude-bridge";
-var SERVER_VERSION = "0.6.1";
+var SERVER_VERSION = "0.7.0";
 var INSTRUCTIONS = `
 claude-bridge \u2014 MCP server pro orchestraci nap\u0159\xED\u010D Claude Code chaty.
 
@@ -21968,6 +22346,14 @@ MCP tools:
 - peer_list, peer_ask, peer_reply, peer_inbox_read \u2014 file-based komunikace s ostatn\xEDmi peery.
 - peer_chat_read \u2014 n\xE1hled do session JSONL jin\xE9ho peera (last N zpr\xE1v, since timestamp, in-session query/regex).
 - peer_chat_search \u2014 cross-session search v r\xE1mci current project (default) nebo v\u0161ech projekt\u016F (CLAUDE_BRIDGE_ALLOW_ALL_PROJECTS=1).
+- peer_context_status (v0.7.0+) \u2014 autocompact-relevant context %, model, risk bucket per peer (self / single / array / 'all').
+- peer_set_context_guard (v0.7.0+) \u2014 own threshold-guard (warn/critical) + notify subscribers.
+- peer_set_notification (v0.7.0+) \u2014 own idle-beep notification.
+
+Bundled skills (load detail via skill name):
+- claude-bridge \u2014 overview / quick decision tree
+- claude-bridge-role-manager \u2014 orchestrator of 2-N worker peers
+- claude-bridge-role-memory-keeper \u2014 single-writer for shared memory
 
 Identita peer\u016F (v0.2.0):
 - Ka\u017Ed\xFD peer m\xE1 stable id (Claude Code sessionId UUID) + display name (m\u016F\u017Ee kolidovat).
@@ -21983,6 +22369,8 @@ Doru\u010Dov\xE1n\xED zpr\xE1v:
 Layout:
 - ~/.claude-bridge/inbox/<sessionId>/{pending,done}/<msg-id>.json
 - ~/.claude-bridge/status/<sessionId>.json
+- ~/.claude-bridge/guard/<sessionId>.json     (v0.7.0+)
+- ~/.claude-bridge/notify/<sessionId>.json    (v0.7.0+)
 `.trim();
 function createServer() {
   return new Server(

@@ -1,5 +1,9 @@
+import { readFile } from "node:fs/promises";
+import { mkdir } from "node:fs/promises";
+import { join } from "node:path";
 import { z } from "zod";
 import { type MessageEnvelope, type MessageKind, generateMessageId } from "../inbox/store.ts";
+import { type ContextUsage, readContextUsageForSession } from "../parser/context-usage.ts";
 import { parseSessionFile, parseSessionFileRaw, readSessionFile } from "../parser/jsonl.ts";
 import type { AssistantEvent, ContentBlock, SessionEvent, UserEvent } from "../parser/schemas.ts";
 import {
@@ -11,8 +15,9 @@ import {
   serializeSessionRef,
 } from "../parser/session.ts";
 import type { ActivePeer } from "../registry/peers.ts";
+import { atomicWriteJson } from "../util/atomic-write.ts";
 import { makeLogger } from "../util/logger.ts";
-import { encodeProjectDir } from "../util/paths.ts";
+import { bridgeRoot, encodeProjectDir } from "../util/paths.ts";
 import type { ServerContext } from "./context.ts";
 
 const log = makeLogger("tools");
@@ -1318,6 +1323,300 @@ export async function piggybackInbox(
 }
 
 // ============================================================================
+// peer_context_status — read autocompact-relevant statistics from peer JSONL
+// ============================================================================
+
+export const PeerContextStatusArgs = z
+  .object({
+    to: z.union([z.string(), z.array(z.string())]).optional(),
+  })
+  .strict();
+
+interface ContextStatusEntry {
+  id: string;
+  name: string | null;
+  isSelf: boolean;
+  model: string | null;
+  contextLimit: number;
+  tokensUsed: number;
+  tokensRemaining: number;
+  percentUsed: number;
+  autocompactRisk: "low" | "medium" | "high" | "unknown";
+  lastTurnAt: string | null;
+  hasSession: boolean;
+  guard?: ContextGuardConfig;
+}
+
+async function buildContextStatusEntry(
+  ctx: ServerContext,
+  peerId: string,
+  peerName: string | null,
+): Promise<ContextStatusEntry> {
+  const sessions = await findSessions(peerId);
+  const isSelf = peerId === ctx.self.id;
+  const guard = await readContextGuard(peerId);
+
+  if (sessions.length === 0) {
+    return {
+      id: peerId,
+      name: peerName,
+      isSelf,
+      model: null,
+      contextLimit: 200_000,
+      tokensUsed: 0,
+      tokensRemaining: 200_000,
+      percentUsed: 0,
+      autocompactRisk: "low",
+      lastTurnAt: null,
+      hasSession: false,
+      ...(guard ? { guard } : {}),
+    };
+  }
+
+  const usage: ContextUsage | null = await readContextUsageForSession(sessions);
+  if (!usage) {
+    return {
+      id: peerId,
+      name: peerName,
+      isSelf,
+      model: null,
+      contextLimit: 200_000,
+      tokensUsed: 0,
+      tokensRemaining: 200_000,
+      percentUsed: 0,
+      autocompactRisk: "unknown",
+      lastTurnAt: null,
+      hasSession: true,
+      ...(guard ? { guard } : {}),
+    };
+  }
+
+  return {
+    id: peerId,
+    name: peerName,
+    isSelf,
+    model: usage.model,
+    contextLimit: usage.contextLimit,
+    tokensUsed: usage.tokensUsed,
+    tokensRemaining: usage.tokensRemaining,
+    percentUsed: Math.round(usage.percentUsed * 1000) / 1000,
+    autocompactRisk: usage.autocompactRisk,
+    lastTurnAt: usage.lastTurnAt,
+    hasSession: true,
+    ...(guard ? { guard } : {}),
+  };
+}
+
+export async function peerContextStatusTool(
+  ctx: ServerContext,
+  args: z.infer<typeof PeerContextStatusArgs>,
+): Promise<ToolResult> {
+  try {
+    const targets: { id: string; name: string | null }[] = [];
+
+    const toArg = args.to;
+    if (toArg === undefined) {
+      targets.push({ id: ctx.self.id, name: ctx.self.name });
+    } else if (typeof toArg === "string" && toArg === "all") {
+      const peers = await ctx.registry.listActivePeers();
+      const seen = new Set<string>();
+      for (const p of peers) {
+        if (seen.has(p.id)) continue;
+        seen.add(p.id);
+        targets.push({ id: p.id, name: p.name });
+      }
+      if (!seen.has(ctx.self.id)) {
+        targets.push({ id: ctx.self.id, name: ctx.self.name });
+      }
+    } else {
+      const list = Array.isArray(toArg) ? toArg : [toArg];
+      const peers = await ctx.registry.listActivePeers();
+      const activePeers: ActivePeer[] = peers;
+      for (const item of list) {
+        const normalized = item === "self" ? ctx.self.id : item;
+        const byId = activePeers.find((p) => p.id === normalized);
+        if (byId) {
+          targets.push({ id: byId.id, name: byId.name });
+          continue;
+        }
+        const byName = activePeers.filter((p) => p.name === normalized);
+        if (byName.length === 1) {
+          targets.push({ id: byName[0]?.id ?? "", name: byName[0]?.name ?? null });
+          continue;
+        }
+        if (byName.length > 1) {
+          return err(
+            "ambiguous_peer",
+            `Multiple peers match name "${normalized}". Use peer id instead.`,
+            byName.map((c) => ({ id: c.id, name: c.name, cwd: c.cwd })),
+          );
+        }
+        // Allow UUID fallback even if not active (= dead session, JSONL may still exist)
+        if (UUID_RE.test(normalized)) {
+          targets.push({ id: normalized, name: null });
+          continue;
+        }
+        return err("peer_not_found", `No active peer "${normalized}" and not a UUID`, {
+          activePeers: activePeers.map(peerDiagShape),
+          hint: PEER_NOT_FOUND_HINT,
+        });
+      }
+    }
+
+    const peers: ContextStatusEntry[] = [];
+    for (const t of targets) {
+      peers.push(await buildContextStatusEntry(ctx, t.id, t.name));
+    }
+
+    return ok({ count: peers.length, peers });
+  } catch (e) {
+    log.error("peer_context_status_failed", { err: e instanceof Error ? e.message : String(e) });
+    return err("peer_context_status_failed", e instanceof Error ? e.message : "unknown");
+  }
+}
+
+// ============================================================================
+// peer_set_context_guard — self-write guard config (thresholds + notify routes)
+// ============================================================================
+
+export interface ContextGuardConfig {
+  enabled: boolean;
+  warnAtPercent: number;
+  criticalAtPercent: number;
+  notifyPeerIds: string[];
+  broadcastProject: boolean;
+}
+
+const DEFAULT_GUARD_CONFIG: ContextGuardConfig = {
+  enabled: true,
+  warnAtPercent: 0.85,
+  criticalAtPercent: 0.95,
+  notifyPeerIds: [],
+  broadcastProject: false,
+};
+
+export const PeerSetContextGuardArgs = z
+  .object({
+    enabled: z.boolean().optional(),
+    warnAtPercent: z.number().min(0).max(1).optional(),
+    criticalAtPercent: z.number().min(0).max(1).optional(),
+    notifyPeerIds: z.array(z.string()).optional(),
+    broadcastProject: z.boolean().optional(),
+  })
+  .strict();
+
+function guardConfigFile(peerId: string): string {
+  return join(bridgeRoot(), "guard", `${peerId}.json`);
+}
+
+export async function readContextGuard(peerId: string): Promise<ContextGuardConfig | undefined> {
+  try {
+    const raw = await readFile(guardConfigFile(peerId), "utf-8");
+    const parsed = JSON.parse(raw);
+    return { ...DEFAULT_GUARD_CONFIG, ...parsed };
+  } catch {
+    return undefined;
+  }
+}
+
+async function writeContextGuard(peerId: string, cfg: ContextGuardConfig): Promise<void> {
+  const file = guardConfigFile(peerId);
+  await mkdir(join(bridgeRoot(), "guard"), { recursive: true });
+  await atomicWriteJson(file, cfg);
+}
+
+export async function peerSetContextGuardTool(
+  ctx: ServerContext,
+  args: z.infer<typeof PeerSetContextGuardArgs>,
+): Promise<ToolResult> {
+  try {
+    const current = (await readContextGuard(ctx.self.id)) ?? DEFAULT_GUARD_CONFIG;
+    const next: ContextGuardConfig = {
+      enabled: args.enabled ?? current.enabled,
+      warnAtPercent: args.warnAtPercent ?? current.warnAtPercent,
+      criticalAtPercent: args.criticalAtPercent ?? current.criticalAtPercent,
+      notifyPeerIds: args.notifyPeerIds ?? current.notifyPeerIds,
+      broadcastProject: args.broadcastProject ?? current.broadcastProject,
+    };
+
+    if (next.warnAtPercent > next.criticalAtPercent) {
+      return err(
+        "invalid_thresholds",
+        `warnAtPercent (${next.warnAtPercent}) must be <= criticalAtPercent (${next.criticalAtPercent})`,
+      );
+    }
+
+    await writeContextGuard(ctx.self.id, next);
+    return ok({ guard: next, sessionId: ctx.self.id });
+  } catch (e) {
+    log.error("peer_set_context_guard_failed", { err: e instanceof Error ? e.message : String(e) });
+    return err("peer_set_context_guard_failed", e instanceof Error ? e.message : "unknown");
+  }
+}
+
+// ============================================================================
+// peer_set_notification — self-write notification config (beep on idle)
+// ============================================================================
+
+export interface NotificationConfig {
+  enabled: boolean;
+  minIdleSeconds: number;
+}
+
+const DEFAULT_NOTIFICATION_CONFIG: NotificationConfig = {
+  enabled: false,
+  minIdleSeconds: 30,
+};
+
+export const PeerSetNotificationArgs = z
+  .object({
+    enabled: z.boolean().optional(),
+    minIdleSeconds: z.number().int().min(5).max(3600).optional(),
+  })
+  .strict();
+
+function notificationConfigFile(peerId: string): string {
+  return join(bridgeRoot(), "notify", `${peerId}.json`);
+}
+
+export async function readNotificationConfig(
+  peerId: string,
+): Promise<NotificationConfig | undefined> {
+  try {
+    const raw = await readFile(notificationConfigFile(peerId), "utf-8");
+    const parsed = JSON.parse(raw);
+    return { ...DEFAULT_NOTIFICATION_CONFIG, ...parsed };
+  } catch {
+    return undefined;
+  }
+}
+
+async function writeNotificationConfig(peerId: string, cfg: NotificationConfig): Promise<void> {
+  const file = notificationConfigFile(peerId);
+  await mkdir(join(bridgeRoot(), "notify"), { recursive: true });
+  await atomicWriteJson(file, cfg);
+}
+
+export async function peerSetNotificationTool(
+  ctx: ServerContext,
+  args: z.infer<typeof PeerSetNotificationArgs>,
+): Promise<ToolResult> {
+  try {
+    const current = (await readNotificationConfig(ctx.self.id)) ?? DEFAULT_NOTIFICATION_CONFIG;
+    const next: NotificationConfig = {
+      enabled: args.enabled ?? current.enabled,
+      minIdleSeconds: args.minIdleSeconds ?? current.minIdleSeconds,
+    };
+
+    await writeNotificationConfig(ctx.self.id, next);
+    return ok({ notification: next, sessionId: ctx.self.id });
+  } catch (e) {
+    log.error("peer_set_notification_failed", { err: e instanceof Error ? e.message : String(e) });
+    return err("peer_set_notification_failed", e instanceof Error ? e.message : "unknown");
+  }
+}
+
+// ============================================================================
 // Tool registry
 // ============================================================================
 
@@ -1581,6 +1880,104 @@ export const TOOLS: ToolSpec[] = [
       const parsed = PeerChatSearchArgs.safeParse(args);
       if (!parsed.success) return err("invalid_args", "Schema validation failed", parsed.error);
       return peerChatSearchTool(ctx, parsed.data);
+    },
+  },
+  {
+    name: "peer_context_status",
+    description:
+      "Read autocompact-relevant context statistics for self or other peer(s). Returns tokensUsed, contextLimit, percentUsed, autocompactRisk (low/medium/high), model, lastTurnAt. Data source: `usage.cache_read_input_tokens` on most recent assistant event in peer's JSONL — matches `/context` Total exactly. `to` omitted = self only. `to: 'all'` = all active peers + self. `to: ['alice', 'bob', 'self']` = specified peers (mix of names/UUIDs/'self'). `to: 'alice'` = single peer by name or UUID. Includes `guard` config field if peer has one configured. For peers without JSONL yet (brand-new): returns zero usage with autocompactRisk='low'.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        to: {
+          oneOf: [
+            { type: "string", description: "Peer id (UUID), name, 'self', or 'all'" },
+            {
+              type: "array",
+              items: { type: "string" },
+              description: "Array of peer ids/names/'self'",
+            },
+          ],
+          description:
+            "Target peer(s). Omit = self only. 'all' = all active peers + self. String = single peer (UUID/name/'self'). Array = bulk.",
+        },
+      },
+      additionalProperties: false,
+    },
+    handler: async (args, ctx) => {
+      const parsed = PeerContextStatusArgs.safeParse(args);
+      if (!parsed.success) return err("invalid_args", "Schema validation failed", parsed.error);
+      return peerContextStatusTool(ctx, parsed.data);
+    },
+  },
+  {
+    name: "peer_set_context_guard",
+    description:
+      "Configure own context-usage guard (self-write only). When peer's tokensUsed crosses warnAtPercent or criticalAtPercent, plugin can notify subscribers via push channel messages. Self-targeted — peer can only set its own guard, not other peer's. Defaults: enabled=true, warnAtPercent=0.85, criticalAtPercent=0.95, notifyPeerIds=[] (no external notify), broadcastProject=false. Returns updated config + sessionId.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        enabled: {
+          type: "boolean",
+          description: "Master toggle (default true).",
+        },
+        warnAtPercent: {
+          type: "number",
+          minimum: 0,
+          maximum: 1,
+          description:
+            "First threshold (default 0.85). Fires 'warn' level notification when crossed.",
+        },
+        criticalAtPercent: {
+          type: "number",
+          minimum: 0,
+          maximum: 1,
+          description:
+            "Critical threshold (default 0.95). Fires 'critical' level notification when crossed. Must be >= warnAtPercent.",
+        },
+        notifyPeerIds: {
+          type: "array",
+          items: { type: "string" },
+          description: "Peer IDs to notify on threshold crossing (default []).",
+        },
+        broadcastProject: {
+          type: "boolean",
+          description: "If true, notify all peers in same cwd (default false).",
+        },
+      },
+      additionalProperties: false,
+    },
+    handler: async (args, ctx) => {
+      const parsed = PeerSetContextGuardArgs.safeParse(args);
+      if (!parsed.success) return err("invalid_args", "Schema validation failed", parsed.error);
+      return peerSetContextGuardTool(ctx, parsed.data);
+    },
+  },
+  {
+    name: "peer_set_notification",
+    description:
+      "Configure own idle-notification (terminal beep when stable-idle, self-write only). When enabled and peer is idle for `minIdleSeconds`, plugin emits terminal bell + visual notification. Self-targeted — peer can only set its own notification config. Defaults: enabled=false, minIdleSeconds=30.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        enabled: {
+          type: "boolean",
+          description: "Toggle idle notification (default false).",
+        },
+        minIdleSeconds: {
+          type: "integer",
+          minimum: 5,
+          maximum: 3600,
+          description:
+            "Seconds of idle before first beep fires (default 30). Also gap between escalation beeps.",
+        },
+      },
+      additionalProperties: false,
+    },
+    handler: async (args, ctx) => {
+      const parsed = PeerSetNotificationArgs.safeParse(args);
+      if (!parsed.success) return err("invalid_args", "Schema validation failed", parsed.error);
+      return peerSetNotificationTool(ctx, parsed.data);
     },
   },
 ];

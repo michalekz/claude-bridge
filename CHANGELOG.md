@@ -2,6 +2,44 @@
 
 All notable changes to this project are documented here. Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.7.0] — 2026-06-29
+
+Major release — **self-defending context lifecycle** + practitioner-grounded role playbooks.
+
+### Added — MCP tools
+
+- **`peer_context_status`** — read autocompact-relevant statistics for self or other peer(s). Returns `tokensUsed`, `contextLimit`, `percentUsed`, `autocompactRisk` (low/medium/high), `model`, `lastTurnAt`. Data source: `usage.cache_read_input_tokens` on most recent assistant event in peer's JSONL — matches `/context` Total exactly. Targets: `to` omitted = self; `to: 'all'` = all active peers + self; `to: 'alice'` = single peer; `to: ['alice', 'bob', 'self']` = bulk.
+
+- **`peer_set_context_guard`** — self-write configuration for context-usage guard. Defaults: `enabled=true`, `warnAtPercent=0.85`, `criticalAtPercent=0.95`, `notifyPeerIds=[]`, `broadcastProject=false`. Self-targeted only — peer controls own settings. Persisted to `~/.claude-bridge/guard/<sessionId>.json`.
+
+- **`peer_set_notification`** — self-write configuration for idle-beep notification. Defaults: `enabled=false`, `minIdleSeconds=30`. Persisted to `~/.claude-bridge/notify/<sessionId>.json`.
+
+### Added — bundled role skills
+
+Practitioner-grounded playbooks (3 reviewers across 3 different teams):
+
+- **`claude-bridge-role-manager`** — playbook pro orchestrátora 2-N worker peerů. 11 load-bearing principů (Manager nevyrábí výstup, scale rigor to stakes, gating dle reverzibility×blast-radius×outward, verify, worker output = data, hub-and-spoke + mesh, NEzprůměrovávat neshodu, async crossed messages, no manager-execution, FREEZE artifact, manage upward). 17-section PLAYBOOK.md s detail patterns + cross-machine handoff + peer death recovery. Konvergenční signál: 3 nezávislí praktici z různých týmů zkonvergovaly na stejné patterny (pre-flight downstream isolation, single-writer route-to-keeper, FREEZE artifact, doc-wins-on-conflict).
+
+- **`claude-bridge-role-memory-keeper`** — LIGHT playbook pro dedikovaného memory keeper peera v týmu 3+. 5 load-bearing principů + 8-krok zápis workflow + reconcile-pass workflow. References `claude-bridge-role-manager` PLAYBOOK #10 (= ironicky exemplifikuje princip pointer-not-duplicate).
+
+### Changed
+
+- **Bundle rebuilt** — previous bundle (`dist/bundle.cjs`) was stale from Jun 6, pre-v0.6.1. Self-read fix from commit `0e945dd` now actually shipped.
+
+- **Naming convention documented** (`docs/NAMING-CONVENTION.md`) — MCP tools snake_case, skills `claude-bridge-role-*` pro role-based / `claude-bridge-*` pro operational.
+
+- **Existing `claude-bridge` skill SKILL.md updated** — odebrány stale references na `self_read` error (= odstraněn v v0.6.1).
+
+### Notes
+
+- v0.7.0 introduces **infrastructure** for context guard (tools + state files). Wake-time warning injection into channel pump is scheduled for v0.7.1. v0.7.0 lets peers read each other's status; v0.7.1 will auto-fire warnings when threshold crossed.
+- Tool count: 9 → 12.
+
+### Tests
+
+- 230 → 243 (+13 for context-usage parser).
+- All passing, TypeScript strict, biome lint clean.
+
 ## [0.6.1] — 2026-06-11
 
 Patch release allowing an agent to **read and search its own session**. Two paternalistic blocks were removed because they actively hurt the most useful recovery scenarios.

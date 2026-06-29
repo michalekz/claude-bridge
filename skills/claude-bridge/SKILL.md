@@ -5,7 +5,11 @@ description: Use when orchestrating multiple Claude Code chats, reading other ch
 
 # claude-bridge — Multi-chat orchestration
 
-The `claude-bridge` plugin gives you eight MCP tools to coordinate with other Claude Code chats running on the same machine: see them, message them, read their transcripts, search across them. All file-based, no servers, no API keys. Tools are exposed as `mcp__plugin_claude-bridge_claude-bridge__<tool>`.
+The `claude-bridge` plugin gives you twelve MCP tools to coordinate with other Claude Code chats running on the same machine: see them, message them, read their transcripts, search across them, monitor context usage, and protect peers from autocompact. All file-based, no servers, no API keys. Tools are exposed as `mcp__plugin_claude-bridge_claude-bridge__<tool>`.
+
+For role-specific playbooks see the bundled role skills:
+- `claude-bridge-role-manager` — orchestrator of 2-N worker peers
+- `claude-bridge-role-memory-keeper` — single-writer for shared agent memory
 
 ## Decision tree — which tool to reach for
 
@@ -144,7 +148,6 @@ A naive count of 2000 events might map to 90 actual prompts and 125 actual repli
 | `session_file_not_found` | Peer exists but its JSONL doesn't | Brand new chat without a first prompt — wait until they send something. |
 | `invalid_query_regex` | `queryRegex: true` got an uncompilable pattern | Read the message's detail (it includes the regex compile error). |
 | `scope_too_large` | `peer_chat_search` filtered scope > 200 MB | Narrow with `scope: 'project'` instead of `all-projects`, or refine `query` to be more selective. FTS5 backend planned for very large scopes. |
-| `self_read` | Tried to read or search own session | The current chat is already in context — read from history instead. |
 | `self_send` | Tried to `peer_ask` self | Use direct reasoning instead. |
 
 ## Delivery model — push vs piggyback
@@ -160,7 +163,7 @@ You don't choose — the plugin uses push when available, piggyback otherwise. F
 
 - **Don't poll `peer_inbox_read` in a loop.** Piggyback drains on every tool call. Polling adds nothing.
 - **Don't use `peer_chat_search` when you know the peer.** Use `peer_chat_read { query }` — same matching, one session scope, faster, less noise.
-- **Don't use `peer_chat_read` with `to: <self.id>`.** Returns `self_read`. Your own conversation history is already in your context.
+- **Don't reflexively re-read your own session.** Since v0.6.1 `peer_chat_read({to: <selfUUID>})` works (legitimate after autocompact / /clear when on-disk JSONL holds detail no longer in memory). But your own history is usually already loaded — only re-read it if context was truncated.
 - **Don't `peer_ask` and then immediately `peer_chat_read` to see the reply.** Wait for the reply to come back via piggyback or push; reading the peer's chat right after a send shows you their state from BEFORE they processed your message (race-prone).
 - **Don't load `peer_chat_read` with `includeThinking: true` unless you specifically need chain-of-thought.** Thinking blocks are often 5–10× the size of the visible answer.
 - **Don't gate `peer_chat_search` results without context.** If you get 50 matches, use `contextLines: 1` to surface enough surrounding text to judge relevance — bare matches without context are usually too thin to evaluate.
