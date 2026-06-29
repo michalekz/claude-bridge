@@ -20,7 +20,7 @@ If you keep two or more Claude Code chats open side by side in VS Code, you even
 
 ## What the plugin actually adds
 
-After installation, each chat gets a set of new MCP tools opening four categories of workflow:
+After installation, each chat gets a set of new MCP tools opening five categories of workflow:
 
 **See other chats.** `peer_list` shows every active Claude Code chat on the same machine — its name, sessionId, cwd, age of last activity. A coordinating chat learns who is available.
 
@@ -29,6 +29,18 @@ After installation, each chat gets a set of new MCP tools opening four categorie
 **Read another chat's content.** `peer_chat_read` returns a sister chat's transcript — the last few messages, everything since its most recent user prompt, or messages matching a query (substring or regex). Supporting tools `list_projects`, `list_sessions`, and `session_stats` expose JSONL history metadata across all your projects.
 
 **Search across chats.** `peer_chat_search` looks for arbitrary text across every session in the current project (default) or every project on the machine. Useful when you don't remember which chat discussed something but know the topic.
+
+**Monitor context window** *(v0.7.0+)*. `peer_context_status` reads autocompact-relevant statistics for self or any peer — tokens used, % of context window consumed, risk bucket (low/medium/high), model id. Data comes from `cache_read_input_tokens` in the JSONL — matches `/context` Total exactly. `peer_set_context_guard` lets a peer set its own warn/critical thresholds (default 85% / 95%). `peer_set_notification` toggles idle-beep notifications. `model_info` returns canonical Claude model metadata (context window, max output, pricing, capabilities, lifecycle status) — no JSONL scan, just an in-process table sourced from Anthropic platform docs.
+
+### Bundled role playbooks *(v0.7.0+)*
+
+For agents in specific orchestration roles, two practitioner-grounded skill playbooks ship with the plugin:
+
+- **`claude-bridge-role-manager`** — playbook for an agent orchestrating 2-N worker peers. 11 load-bearing principles (Manager doesn't produce output — Manager produces trust in output; scale rigor to stakes; gating by reversibility × blast-radius × outward-facing; verify-don't-guess; worker output = data not authorization; hub-and-spoke contracts + mesh consult; async messages cross — thread via `inReplyTo`; FREEZE artifact at "ready-for-gate"; manage upward to the human). Detailed PLAYBOOK.md covers dispatch templates, multi-verification gates, pre-flight downstream isolation, anti-patterns, memory model, onboarding, incident response, cross-machine handoffs.
+
+- **`claude-bridge-role-memory-keeper`** — LIGHT playbook for a dedicated memory-keeper peer in teams of 3+. 5 load-bearing principles (single-writer / route-to-keeper; pointer-not-duplicate; doc-wins-on-conflict + escalate-doc-error; verify-before-write + dedup-across-senders; reconcile-pass after every coordination round). 8-step write workflow + reconcile-pass workflow.
+
+Both skills emerged from 3-way convergence across independent practitioner teams. See [USAGE.md](docs/USAGE.md) for invocation patterns.
 
 ## When it's useful
 
@@ -56,6 +68,8 @@ Claude Code's experimental Agent Teams let the model spawn and coordinate **ephe
 | Per-chat stats | — | ✅ `session_stats` breaks down any conversation |
 | Survives a chat "deleted" in the UI | — | ✅ the JSONL stays on disk and is still readable |
 | Cross-project / observability | — | ✅ search **and** read across every project, read-only |
+| **Context-usage monitoring** | — | ✅ `peer_context_status` — see who's near autocompact (v0.7.0+) |
+| **Role-specific playbooks** | — | ✅ bundled `claude-bridge-role-manager` + `claude-bridge-role-memory-keeper` (v0.7.0+) |
 
 The deeper shift: your chats stop being closed, throwaway sessions and become an **open, queryable library** — one that both you and your agents can actually work with. That wasn't really possible before.
 
@@ -138,6 +152,34 @@ peer_chat_read {
 ```
 
 Works against any JSONL session in any of your projects — `crossProject: true` lifts the active-peer requirement.
+
+### See who's close to autocompact *(v0.7.0+)*
+
+```jsonc
+peer_context_status { "to": "all" }
+```
+
+Returns per-peer `tokensUsed`, `contextLimit`, `percentUsed`, `autocompactRisk` (low/medium/high), and `model`. Use it before dispatching a long task — pick a fresh worker rather than one already at 85%.
+
+### Set your own context guard *(v0.7.0+)*
+
+```jsonc
+peer_set_context_guard {
+  "warnAtPercent": 0.85,
+  "criticalAtPercent": 0.95,
+  "notifyPeerIds": ["<manager-uuid>"]
+}
+```
+
+Persists to `~/.claude-bridge/guard/<sessionId>.json`. Future wake-time injection (v0.7.x) will fire warnings to subscribers when the threshold is crossed.
+
+### Look up canonical model metadata *(v0.7.3+)*
+
+```jsonc
+model_info { "model": "claude-opus-4-7" }
+```
+
+Returns context window, max output, pricing, capabilities (vision / extended thinking / adaptive thinking), knowledge cutoff, lifecycle status (current/legacy/deprecated). Static lookup, no JSONL scan. Source: Anthropic platform docs.
 
 ## Things to keep in mind
 

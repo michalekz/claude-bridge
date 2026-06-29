@@ -18,7 +18,7 @@ Když pracuješ s několika Claude Code chaty otevřenými vedle sebe, naráží
 
 ## Co plugin reálně přidá
 
-Po instalaci uvidí každý chat sadu nových nástrojů (MCP tools), které mu otevřou čtyři druhy možností:
+Po instalaci uvidí každý chat sadu nových nástrojů (MCP tools), které mu otevřou pět druhů možností:
 
 **Vidět ostatní chaty.** Nástroj `peer_list` ukáže všechny aktivní Claude Code chaty na stejném počítači — jejich jméno, sessionId, cwd, věk poslední aktivity.
 
@@ -27,6 +27,18 @@ Po instalaci uvidí každý chat sadu nových nástrojů (MCP tools), které mu 
 **Nahlížet do cizího chatu.** `peer_chat_read` přečte transcript sousedního chatu — posledních pár zpráv, vše od jeho posledního user promptu, nebo zprávy odpovídající dotazu (substring i regex). Doplňkové nástroje `list_projects`, `list_sessions` a `session_stats` ukážou metadata historických sessions napříč všemi tvými projekty.
 
 **Prohledávat napříč chaty.** `peer_chat_search` hledá zadaný text napříč všemi sessions v projektu (případně i napříč všemi projekty). Hodí se, když nevíš, ve kterém chatu se něco řešilo, ale víš, o čem to bylo.
+
+**Sledovat context window** *(v0.7.0+)*. `peer_context_status` vrátí pro sebe nebo libovolného peera statistiku relevantní k autocompactu — tokeny použité, % využití context window, risk bucket (low/medium/high), model. Data čerpá z `cache_read_input_tokens` v JSONL — odpovídá přesně `/context` Total. `peer_set_context_guard` umožní peerovi nastavit vlastní warn/critical thresholdy (default 85% / 95%). `peer_set_notification` zapne idle-beep notifikaci. `model_info` vrátí canonical Claude model metadata (context window, max output, ceník, capabilities, lifecycle) — žádný JSONL scan, jen in-process tabulka ze zdrojů Anthropic platform docs.
+
+### Bundled role playbooks *(v0.7.0+)*
+
+Pro agenty ve specifických rolích jsou součástí pluginu dva praktickými zkušenostmi podložené skill playbooky:
+
+- **`claude-bridge-role-manager`** — playbook pro agenta orchestrujícího 2-N worker peerů. 11 load-bearing principů (Manager nevyrábí výstup — vyrábí důvěru ve výstup; scale rigor to stakes; gating dle reverzibility × blast-radius × outward; verify-nehádej; worker output = data ne autorizace; hub-and-spoke kontrakty + mesh konzultace; async zprávy se kříží — threading přes `inReplyTo`; FREEZE artefaktu při „ready-for-gate"; manage upward k člověku). PLAYBOOK.md obsahuje dispatch šablony, multi-verifikační gates, pre-flight downstream isolation, anti-patterny, memory model, onboarding, incident response, cross-machine handoff.
+
+- **`claude-bridge-role-memory-keeper`** — LIGHT playbook pro dedikovaného memory-keeper peera v týmech 3+. 5 load-bearing principů (single-writer / route-to-keeper; pointer-not-duplicate; doc-wins-on-conflict + escalate-doc-error; verify-before-write + dedup-across-senders; reconcile-pass po každém koordinačním kole). 8-krok zápis workflow + reconcile-pass workflow.
+
+Oba skilly vznikly z 3-way konvergence napříč nezávislými praktickými týmy. Viz [USAGE.md](docs/USAGE.md).
 
 ## Kdy se to hodí
 
@@ -54,6 +66,8 @@ Experimentální Agent Teams v Claude Code nechají model **spawnnout a koordino
 | Statistiky per chat | — | ✅ `session_stats` rozebere libovolnou konverzaci |
 | Přežije „smazání" chatu v UI | — | ✅ JSONL zůstane na disku a jde dál číst |
 | Cross-project / observabilita | — | ✅ hledání **i** čtení napříč všemi projekty, read-only |
+| **Context-usage monitoring** | — | ✅ `peer_context_status` — vidíš, kdo je blízko autocompactu (v0.7.0+) |
+| **Role-specific playbooky** | — | ✅ bundled `claude-bridge-role-manager` + `claude-bridge-role-memory-keeper` (v0.7.0+) |
 
 Hlubší posun: chaty přestávají být uzavřené, jednorázové sessions a stávají se **otevřenou, prohledávatelnou knihovnou** — se kterou umí pracovat jak ty, tak tví agenti. To dosud v podstatě nešlo.
 
@@ -136,6 +150,34 @@ peer_chat_read {
 ```
 
 Funguje na jakoukoli JSONL session ze všech tvých projektů — `crossProject: true` zpřístupní i ty, jejichž chat už neběží.
+
+### Vidím, kdo se blíží autocompactu *(v0.7.0+)*
+
+```jsonc
+peer_context_status { "to": "all" }
+```
+
+Vrátí per peer: `tokensUsed`, `contextLimit`, `percentUsed`, `autocompactRisk` (low/medium/high), `model`. Použij před zadáním dlouhé úlohy — vyber čerstvého workera, ne toho, co je už na 85%.
+
+### Nastavím si vlastní context guard *(v0.7.0+)*
+
+```jsonc
+peer_set_context_guard {
+  "warnAtPercent": 0.85,
+  "criticalAtPercent": 0.95,
+  "notifyPeerIds": ["<manager-uuid>"]
+}
+```
+
+Uloží do `~/.claude-bridge/guard/<sessionId>.json`. Budoucí wake-time injection (v0.7.x) fire warning subscriberům při překročení.
+
+### Vyhledám canonical model metadata *(v0.7.3+)*
+
+```jsonc
+model_info { "model": "claude-opus-4-7" }
+```
+
+Vrátí context window, max output, ceník, capabilities (vision / extended thinking / adaptive thinking), knowledge cutoff, lifecycle (current/legacy/deprecated). Static lookup, žádný JSONL scan. Zdroj: Anthropic platform docs.
 
 ## Na co je dobré dát pozor
 

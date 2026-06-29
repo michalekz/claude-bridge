@@ -371,6 +371,116 @@ For a specific session, returns event counts grouped by type (user, assistant, t
 
 ---
 
+## Context-usage monitoring tools *(v0.7.0+)*
+
+### `peer_context_status`
+
+Read autocompact-relevant statistics for self or any peer. Data source: `usage.cache_read_input_tokens` on the most recent assistant event in the peer's JSONL — matches `/context` Total exactly.
+
+**Arguments:**
+
+- `to` (optional) — target selector:
+  - omitted = self only
+  - `"all"` = all active peers + self
+  - `"alice"` = single peer by name/UUID/`"self"`
+  - `["alice", "bob", "self"]` = bulk
+
+**Output per peer:** `id`, `name`, `isSelf`, `model`, `contextLimit`, `tokensUsed`, `tokensRemaining`, `percentUsed` (0-1), `autocompactRisk` (`low`<60%, `medium`60-85%, `high`>85%), `lastTurnAt`, `hasSession`. Includes `guard` field if the peer has one configured (read-only side effect).
+
+**When to use:** before dispatching a long task → pick a fresh worker. To monitor the team during overnight runs. To pre-empt autocompact by triggering handoff before the threshold.
+
+**Example:**
+
+```jsonc
+peer_context_status { "to": "all" }
+// → { count: 14, peers: [{ id, name, model, contextLimit, tokensUsed, percentUsed: 0.586, autocompactRisk: "low", ... }, ...] }
+```
+
+---
+
+### `peer_set_context_guard`
+
+Self-write: configure context-usage guard thresholds. Self-targeted only (no `to` param) — peer controls its own settings. Persisted to `~/.claude-bridge/guard/<sessionId>.json`.
+
+**Arguments (all optional):**
+
+- `enabled` (default `true`) — master toggle.
+- `warnAtPercent` (default `0.85`) — first warning threshold.
+- `criticalAtPercent` (default `0.95`) — critical threshold (must be ≥ warnAtPercent).
+- `notifyPeerIds` (default `[]`) — peer IDs to notify on threshold crossing.
+- `broadcastProject` (default `false`) — if true, notify all peers in same cwd.
+
+**When to use:** at session start to subscribe a manager peer to threshold warnings. Wake-time auto-fire is scheduled for v0.7.x; v0.7.0 only persists the config (= manager can read it via `peer_context_status`).
+
+**Example:**
+
+```jsonc
+peer_set_context_guard {
+  "warnAtPercent": 0.80,
+  "criticalAtPercent": 0.92,
+  "notifyPeerIds": ["56eca981-8434-4e29-9a57-bf7a41a051a9"]
+}
+```
+
+---
+
+### `peer_set_notification`
+
+Self-write: configure idle-beep notification. Self-targeted only.
+
+**Arguments (all optional):**
+
+- `enabled` (default `false`) — toggle.
+- `minIdleSeconds` (default `30`, min 5, max 3600) — seconds idle before first beep.
+
+**When to use:** when you want a terminal bell when a worker peer goes quiet (= done or stuck). Wake-time injection scheduled for v0.7.x.
+
+---
+
+### `model_info` *(v0.7.3+)*
+
+Static lookup of canonical Claude model metadata. No JSONL scan, no network call — just an in-process table from Anthropic platform docs.
+
+**Arguments (all optional):**
+
+- `model` — query specific id (e.g., `"claude-opus-4-7"`). Date suffix and `[1m]` tag normalized.
+- `generation` — filter listed models by lifecycle: `"current"` | `"legacy"` | `"deprecated"`. Ignored if `model` is set.
+
+**Output per model:** `id`, `displayName`, `family` (opus/sonnet/haiku/fable/mythos), `generation`, `contextWindow`, `maxOutputTokens`, `pricing.inputPerMTok`/`outputPerMTok`, `capabilities.vision`/`extendedThinking`/`adaptiveThinking`, `knowledgeCutoff`, `trainingDataCutoff`, `notes`.
+
+**Example:**
+
+```jsonc
+model_info()
+// → { source: { ... }, modelsCount: 10, models: [...] }
+
+model_info { "model": "claude-haiku-4-5-20251001" }
+// → { source: { ... }, model: { id: "claude-haiku-4-5", contextWindow: 200000, ... } }
+
+model_info { "generation": "current" }
+// → 5 current models (Fable 5, Mythos 5, Opus 4.8, Sonnet 4.6, Haiku 4.5)
+```
+
+---
+
+## Bundled role skills *(v0.7.0+)*
+
+Two practitioner-grounded playbooks ship with the plugin. Invoke via the skill name in your agent prompt or via the `/<skill>` command.
+
+### `claude-bridge-role-manager`
+
+Playbook for an agent orchestrating 2-N worker peers via claude-bridge. 11 load-bearing principles + tool quick-reference + minimal-viable-loop walkthrough + reference to PLAYBOOK.md for detail (17 sections: dispatch templates, gate workflow, pre-flight downstream isolation, scale-rigor, adversarial-refute, anti-patterns, memory model, onboarding, incident response, cross-machine handoff, peer death recovery).
+
+**Triggers:** "managing agent role", "orchestruju tým peerů", "dispatch úkolu peerům", "gate workflow", multi-peer orchestration.
+
+### `claude-bridge-role-memory-keeper`
+
+LIGHT playbook for a dedicated memory-keeper peer in teams of 3+. 5 load-bearing principles + 8-step write workflow + reconcile-pass workflow. References `claude-bridge-role-manager` PLAYBOOK #10 (= single-source, no duplication).
+
+**Triggers:** "memory keeper", "memory hygiene", "shared memory", "reconcile memory", "single-writer keeper".
+
+---
+
 ## Ready-made recipes
 
 Combinations of tools for typical workflows.

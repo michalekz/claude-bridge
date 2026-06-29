@@ -353,6 +353,116 @@ Pro konkrétní session vrátí počty eventů podle typu (user, assistant, tool
 
 ---
 
+## Nástroje pro monitoring context window *(v0.7.0+)*
+
+### `peer_context_status`
+
+Vrátí autocompact-relevantní statistiku pro sebe nebo libovolného peera. Zdroj dat: `usage.cache_read_input_tokens` na posledním assistant eventu v peer's JSONL — odpovídá přesně `/context` Total.
+
+**Argumenty:**
+
+- `to` (volitelný) — výběr cíle:
+  - vynechané = jen self
+  - `"all"` = všichni aktivní peeři + self
+  - `"alice"` = jeden peer (jméno/UUID/`"self"`)
+  - `["alice", "bob", "self"]` = bulk
+
+**Output per peer:** `id`, `name`, `isSelf`, `model`, `contextLimit`, `tokensUsed`, `tokensRemaining`, `percentUsed` (0-1), `autocompactRisk` (`low`<60%, `medium`60-85%, `high`>85%), `lastTurnAt`, `hasSession`. Zahrnuje `guard` field, pokud peer nějakou guard config nastavený má.
+
+**Kdy použít:** před zadáním dlouhé úlohy → vybrat čerstvého workera. Pro overnight monitoring týmu. Pro preempt autocompactu — handoff před překročením prahu.
+
+**Příklad:**
+
+```jsonc
+peer_context_status { "to": "all" }
+// → { count: 14, peers: [{ id, name, model, contextLimit, tokensUsed, percentUsed: 0.586, autocompactRisk: "low", ... }, ...] }
+```
+
+---
+
+### `peer_set_context_guard`
+
+Self-write: konfiguruje vlastní context-usage guard. Self-targeted (žádný `to` argument) — peer si nastavuje vlastní config. Persist do `~/.claude-bridge/guard/<sessionId>.json`.
+
+**Argumenty (všechny volitelné):**
+
+- `enabled` (default `true`) — master toggle.
+- `warnAtPercent` (default `0.85`) — první práh.
+- `criticalAtPercent` (default `0.95`) — kritický práh (musí být ≥ warnAtPercent).
+- `notifyPeerIds` (default `[]`) — peer IDs k notifikaci při překročení.
+- `broadcastProject` (default `false`) — pokud true, notify všichni peeři v same cwd.
+
+**Kdy použít:** na začátku session pro subscribe manager peera. Wake-time auto-fire plánováno na v0.7.x; v0.7.0 jen persistuje config (= manager si ho přečte přes `peer_context_status`).
+
+**Příklad:**
+
+```jsonc
+peer_set_context_guard {
+  "warnAtPercent": 0.80,
+  "criticalAtPercent": 0.92,
+  "notifyPeerIds": ["56eca981-8434-4e29-9a57-bf7a41a051a9"]
+}
+```
+
+---
+
+### `peer_set_notification`
+
+Self-write: konfiguruje idle-beep notifikaci. Self-targeted.
+
+**Argumenty (všechny volitelné):**
+
+- `enabled` (default `false`) — toggle.
+- `minIdleSeconds` (default `30`, min 5, max 3600) — sekund idle před první beep.
+
+**Kdy použít:** když chceš terminálový bell, když worker peer ztichne (= hotovo nebo se zasekl). Wake-time injection plánováno na v0.7.x.
+
+---
+
+### `model_info` *(v0.7.3+)*
+
+Static lookup canonical Claude model metadata. Žádný JSONL scan, žádný network call — jen in-process tabulka z Anthropic platform docs.
+
+**Argumenty (všechny volitelné):**
+
+- `model` — dotaz na konkrétní id (např. `"claude-opus-4-7"`). Date suffix a `[1m]` tag normalizovány.
+- `generation` — filter lifecycle: `"current"` | `"legacy"` | `"deprecated"`. Ignored if `model` is set.
+
+**Output per model:** `id`, `displayName`, `family` (opus/sonnet/haiku/fable/mythos), `generation`, `contextWindow`, `maxOutputTokens`, `pricing.inputPerMTok`/`outputPerMTok`, `capabilities.vision`/`extendedThinking`/`adaptiveThinking`, `knowledgeCutoff`, `trainingDataCutoff`, `notes`.
+
+**Příklad:**
+
+```jsonc
+model_info()
+// → { source: { ... }, modelsCount: 10, models: [...] }
+
+model_info { "model": "claude-haiku-4-5-20251001" }
+// → { source: { ... }, model: { id: "claude-haiku-4-5", contextWindow: 200000, ... } }
+
+model_info { "generation": "current" }
+// → 5 aktuálních modelů (Fable 5, Mythos 5, Opus 4.8, Sonnet 4.6, Haiku 4.5)
+```
+
+---
+
+## Bundled role skills *(v0.7.0+)*
+
+Dva praktiky-grounded playbooky jsou součástí pluginu. Invoke přes jméno skillu v promptu nebo přes `/<skill>` příkaz.
+
+### `claude-bridge-role-manager`
+
+Playbook pro agenta orchestrujícího 2-N worker peerů. 11 load-bearing principů + tool quick-reference + minimal-viable-loop walkthrough + reference na PLAYBOOK.md pro detail (17 sekcí: dispatch šablony, gate workflow, pre-flight downstream isolation, scale-rigor, adversarial-refute, anti-patterny, memory model, onboarding, incident response, cross-machine handoff, peer death recovery).
+
+**Triggery:** "managing agent role", "orchestruju tým peerů", "dispatch úkolu peerům", "gate workflow", multi-peer orchestrace.
+
+### `claude-bridge-role-memory-keeper`
+
+LIGHT playbook pro dedikovaného memory-keeper peera v týmech 3+. 5 load-bearing principů + 8-krok zápis workflow + reconcile-pass workflow. References `claude-bridge-role-manager` PLAYBOOK #10 (= single-source, žádná duplicita).
+
+**Triggery:** "memory keeper", "memory hygiene", "shared memory", "reconcile memory", "single-writer keeper".
+
+---
+
 ## Hotové recepty
 
 Příklady kombinací nástrojů pro typické workflows.
