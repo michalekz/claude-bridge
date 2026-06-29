@@ -20722,9 +20722,32 @@ async function* parseSessionFileRaw(filePath, options = {}) {
 var ONE_M_PATTERN = /\[1m\]/i;
 var STANDARD_LIMIT = 2e5;
 var ONE_M_LIMIT = 1e6;
+var MODEL_CONTEXT_WINDOWS = {
+  // Current generation (verified from https://platform.claude.com/docs/en/about-claude/models/overview, 2026-06-29)
+  "claude-fable-5": ONE_M_LIMIT,
+  "claude-mythos-5": ONE_M_LIMIT,
+  "claude-mythos-preview": ONE_M_LIMIT,
+  "claude-opus-4-8": ONE_M_LIMIT,
+  "claude-sonnet-4-6": ONE_M_LIMIT,
+  "claude-haiku-4-5": STANDARD_LIMIT,
+  // jediný 200k v aktuální generaci
+  // Legacy still available
+  "claude-opus-4-7": ONE_M_LIMIT,
+  "claude-opus-4-6": ONE_M_LIMIT,
+  "claude-sonnet-4-5": STANDARD_LIMIT,
+  "claude-opus-4-5": STANDARD_LIMIT,
+  // Deprecated (retiring)
+  "claude-opus-4-1": STANDARD_LIMIT
+};
+function normalizeModelId(model) {
+  return model.replace(/\[1m\]/gi, "").replace(/-\d{8}$/, "");
+}
 function detectContextLimit(model) {
   if (!model) return STANDARD_LIMIT;
   if (ONE_M_PATTERN.test(model)) return ONE_M_LIMIT;
+  const baseId = normalizeModelId(model);
+  const known = MODEL_CONTEXT_WINDOWS[baseId];
+  if (known !== void 0) return known;
   return STANDARD_LIMIT;
 }
 function riskBucket(percent) {
@@ -22329,7 +22352,7 @@ var TOOLS = [
 // src/mcp/server.ts
 var log6 = makeLogger("mcp-server");
 var SERVER_NAME = "claude-bridge";
-var SERVER_VERSION = "0.7.1";
+var SERVER_VERSION = "0.7.2";
 var INSTRUCTIONS = `
 claude-bridge \u2014 MCP server pro orchestraci nap\u0159\xED\u010D Claude Code chaty.
 

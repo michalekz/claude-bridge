@@ -2,15 +2,38 @@
 
 All notable changes to this project are documented here. Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-## [0.7.1] — 2026-06-29
+## [0.7.2] — 2026-06-29
 
-Patch fix discovered during v0.7.0 smoke test.
+Patch: replace empirical heuristic with **canonical model → context-window lookup**.
 
 ### Fixed
 
-- **`peer_context_status` limit detection** — model strings in JSONL don't always carry the `[1m]` suffix even when the session runs on the 1M variant (it's a session-level setting, not part of the model id). The original `detectContextLimit` returned 200k for `"claude-opus-4-7"` regardless of actual variant, producing `percentUsed` > 1.0 for active 1M sessions (e.g. 511,699 / 200,000 = 2.558).
-  
-  Heuristic added: if `tokensUsed > STANDARD_LIMIT (200k)`, the limit is bumped to `ONE_M_LIMIT (1M)` automatically — because the 200k variant would have rejected the request before reaching that size. Result: realistic `percentUsed` and `autocompactRisk` bucket for all observed peer sessions in real-world test.
+- **`detectContextLimit` now uses a canonical lookup table** sourced from [Anthropic platform docs](https://platform.claude.com/docs/en/about-claude/models/overview) (verified 2026-06-29):
+
+| Model | Context window |
+|---|---|
+| Opus 4.6 / 4.7 / 4.8 | **1M** |
+| Sonnet 4.6 | **1M** |
+| Fable 5 / Mythos 5 / Mythos Preview | **1M** |
+| Haiku 4.5 | **200k** |
+| Legacy: Opus 4.1 / 4.5, Sonnet 4.5 | **200k** |
+
+Previous v0.7.1 used the heuristic "tokensUsed > 200k → assume 1M". That worked but was hacky. v0.7.2 uses official model metadata; heuristic remains as defensive fallback for unknown/future model ids.
+
+- Date suffix on model ids (`claude-haiku-4-5-20251001`) is stripped before lookup.
+- Explicit `[1m]` tag still wins (overrides lookup for legacy models).
+
+### Tests
+
+- 244 → 248 (+4 covering canonical lookup, all generations, date-suffix normalization).
+
+## [0.7.1] — 2026-06-29
+
+Patch fix discovered during v0.7.0 smoke test (= empirical heuristic, superseded by v0.7.2 canonical lookup).
+
+### Fixed
+
+- **`peer_context_status` limit detection** — model strings in JSONL don't always carry the `[1m]` suffix. v0.7.1 added empirical heuristic: if `tokensUsed > STANDARD_LIMIT (200k)`, bump to `ONE_M_LIMIT (1M)`. v0.7.2 replaces this with canonical lookup table.
 
 - **`dist/bundle.cjs` rebuilt** with the fix.
 

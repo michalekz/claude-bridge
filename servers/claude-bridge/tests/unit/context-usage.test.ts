@@ -10,22 +10,37 @@ import {
 import type { SessionRef } from "../../src/parser/session.ts";
 
 describe("detectContextLimit", () => {
-  test("returns 200k for standard models", () => {
-    expect(detectContextLimit("claude-opus-4-7")).toBe(200_000);
-    expect(detectContextLimit("claude-sonnet-4-6")).toBe(200_000);
+  test("returns 1M for Opus 4.6/4.7/4.8 (canonical lookup)", () => {
+    expect(detectContextLimit("claude-opus-4-6")).toBe(1_000_000);
+    expect(detectContextLimit("claude-opus-4-7")).toBe(1_000_000);
+    expect(detectContextLimit("claude-opus-4-8")).toBe(1_000_000);
+  });
+
+  test("returns 1M for Sonnet 4.6 (canonical lookup)", () => {
+    expect(detectContextLimit("claude-sonnet-4-6")).toBe(1_000_000);
+  });
+
+  test("returns 1M for Fable 5 / Mythos 5 (canonical lookup)", () => {
+    expect(detectContextLimit("claude-fable-5")).toBe(1_000_000);
+    expect(detectContextLimit("claude-mythos-5")).toBe(1_000_000);
+  });
+
+  test("returns 200k for Haiku 4.5 (only standard-window model)", () => {
+    expect(detectContextLimit("claude-haiku-4-5")).toBe(200_000);
+    // Date suffix is stripped before lookup.
     expect(detectContextLimit("claude-haiku-4-5-20251001")).toBe(200_000);
   });
 
-  test("returns 1M for [1m] variant", () => {
+  test("explicit [1m] tag still works (legacy)", () => {
     expect(detectContextLimit("claude-opus-4-7-[1m]")).toBe(1_000_000);
-    expect(detectContextLimit("claude-sonnet-4-6-[1m]")).toBe(1_000_000);
-    expect(detectContextLimit("[1m]-anywhere-in-name")).toBe(1_000_000);
+    expect(detectContextLimit("claude-haiku-4-5-[1m]")).toBe(1_000_000); // override
   });
 
-  test("returns 200k default for null/undefined/empty", () => {
+  test("returns 200k default for null/undefined/empty/unknown", () => {
     expect(detectContextLimit(null)).toBe(200_000);
     expect(detectContextLimit(undefined)).toBe(200_000);
     expect(detectContextLimit("")).toBe(200_000);
+    expect(detectContextLimit("future-unknown-model")).toBe(200_000);
   });
 });
 
@@ -88,7 +103,7 @@ describe("readContextUsage", () => {
     expect(usage).toBeNull();
   });
 
-  test("extracts cache_read_input_tokens from latest assistant event", async () => {
+  test("extracts cache_read_input_tokens from latest assistant event (Opus 4.7 = 1M)", async () => {
     const lines = [
       JSON.stringify({
         type: "assistant",
@@ -103,18 +118,18 @@ describe("readContextUsage", () => {
         timestamp: "2026-06-29T11:00:00Z",
         message: {
           model: "claude-opus-4-7",
-          usage: { cache_read_input_tokens: 150_000 },
+          usage: { cache_read_input_tokens: 750_000 },
         },
       }),
     ];
     await writeFile(jsonlPath, lines.join("\n"));
     const usage = await readContextUsage(makeSessionRef());
     expect(usage).not.toBeNull();
-    expect(usage?.tokensUsed).toBe(150_000); // latest, not earliest
+    expect(usage?.tokensUsed).toBe(750_000); // latest, not earliest
     expect(usage?.model).toBe("claude-opus-4-7");
-    expect(usage?.contextLimit).toBe(200_000);
+    expect(usage?.contextLimit).toBe(1_000_000); // canonical lookup
     expect(usage?.percentUsed).toBe(0.75);
-    expect(usage?.tokensRemaining).toBe(50_000);
+    expect(usage?.tokensRemaining).toBe(250_000);
     expect(usage?.autocompactRisk).toBe("medium");
     expect(usage?.lastTurnAt).toBe("2026-06-29T11:00:00Z");
   });
@@ -135,18 +150,35 @@ describe("readContextUsage", () => {
     expect(usage?.autocompactRisk).toBe("low");
   });
 
-  test("classifies high risk correctly", async () => {
+  test("classifies high risk correctly (Haiku 4.5 = 200k)", async () => {
     const line = JSON.stringify({
       type: "assistant",
       timestamp: "2026-06-29T10:00:00Z",
       message: {
-        model: "claude-opus-4-7",
+        model: "claude-haiku-4-5",
         usage: { cache_read_input_tokens: 180_000 },
       },
     });
     await writeFile(jsonlPath, line);
     const usage = await readContextUsage(makeSessionRef());
+    expect(usage?.contextLimit).toBe(200_000);
     expect(usage?.percentUsed).toBe(0.9);
+    expect(usage?.autocompactRisk).toBe("high");
+  });
+
+  test("classifies high risk correctly (Opus 4.7 at 95% of 1M)", async () => {
+    const line = JSON.stringify({
+      type: "assistant",
+      timestamp: "2026-06-29T10:00:00Z",
+      message: {
+        model: "claude-opus-4-7",
+        usage: { cache_read_input_tokens: 950_000 },
+      },
+    });
+    await writeFile(jsonlPath, line);
+    const usage = await readContextUsage(makeSessionRef());
+    expect(usage?.contextLimit).toBe(1_000_000);
+    expect(usage?.percentUsed).toBe(0.95);
     expect(usage?.autocompactRisk).toBe("high");
   });
 
