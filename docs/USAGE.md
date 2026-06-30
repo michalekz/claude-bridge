@@ -375,7 +375,7 @@ For a specific session, returns event counts grouped by type (user, assistant, t
 
 ### `peer_context_status`
 
-Read autocompact-relevant statistics for self or any peer. Data source: `usage.cache_read_input_tokens` on the most recent assistant event in the peer's JSONL — matches `/context` Total exactly.
+Read autocompact-relevant statistics for self or any peer. Data source: the token counts on the most recent assistant event in the peer's JSONL — `cache_read + cache_creation + input + output` (full-sum formula corrected in v0.7.4; matches `/context` Total exactly across both fresh and mature sessions).
 
 **Arguments:**
 

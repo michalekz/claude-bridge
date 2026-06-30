@@ -35,7 +35,7 @@ Asymetrie je *záměrná*, není to defekt: strana, která řídí konverzaci, n
 ### Postup nasazení
 
 1. **Strana orchestrátora** — otevři Claude Code ve VS Code Extension běžně. Žádné speciální flagy. Plugin funguje hned po instalaci.
-2. **Strana worker** — otevři jeden nebo víc terminálů (separátní VS Code terminal taby, tmux panely, nebo platform-native terminal app) a spusť Claude s channelem: buď přes profil "Claude (channels)" (viz [INSTALL — VS Code terminal profile](INSTALL.md#vs-code-terminal-profile-všechny-os)), nebo napiš `claude --channels plugin:claude-bridge@oxyshop-plugins` přímo.
+2. **Strana worker** — otevři jeden nebo víc terminálů (separátní VS Code terminal taby, tmux panely, nebo platform-native terminal app) a spusť Claude s channelem: buď přes profil "Claude (channels)" (viz [INSTALL — VS Code terminal profile](INSTALL.md#vs-code-terminal-profile-všechny-os)), nebo napiš `claude --channels plugin:claude-bridge` přímo.
 3. **Ověř push** — z orchestrátora pošli `peer_ask` na worker. Worker zareaguje okamžitě (vidí `<channel source="claude-bridge" …>` tag inline v kontextu, ne odložené na další tool call).
 
 Pokud obě strany skončí ve stejném režimu (obě Extension nebo obě terminál-with-channels), nic se nerozbije — jen topologie neodpovídá latenčním charakteristikám tvého workflow.
@@ -289,7 +289,7 @@ peer_chat_search {
 Co s tím:
 
 - Zužuj na `scope: 'project'` (default).
-- Nebo počkej na FTS5 backend ve verzi v0.5+ (lazy-built index, queries v desítkách ms i pro 1 GB+ datasets).
+- Nebo počkej na full-text-search backend (připravuje se pro některou z příštích verzí; lazy-built index, queries v desítkách ms i pro 1 GB+ datasets).
 
 #### Výstupní formát
 
@@ -335,8 +335,27 @@ Vypíše session JSONL soubory napříč všemi projekty, seřazené od nejnově
 
 - `project` (volitelný) — omez na konkrétní projekt dir (např. `-opt-claude-bridge`).
 - `limit` (volitelný, default 50) — max počet vrácených sessions.
+- `includeActive` (default `true`) — přidá u každé session boolean `active` (heartbeat mladší než 30 s). Levné, jeden stat na session.
+- `includeMeta` (default `false`) — přidá u každé session `aiTitle`, `userPrompts` a `assistantReplies`. Streamuje každý JSONL jednou, takže je to drahé (~50–200 ms na MB). Použij pro dashboard přehled; pro rychlý výpis metadat vynech.
 
-**Kdy použít:** typicky před `peer_chat_read` s `crossProject: true` — potřebuješ vědět, jakou UUID session chceš číst.
+**Pole na výstupu (per session):**
+
+| Pole | Zdroj |
+|---|---|
+| `project`, `sessionId`, `file`, `sizeKB`, `modifiedAt`, `filename` | vždy |
+| `active` | při `includeActive: true` (default) |
+| `aiTitle` | při `includeMeta: true` |
+| `userPrompts` | při `includeMeta: true` |
+| `assistantReplies` | při `includeMeta: true` |
+
+**Počítání zpráv, buď přesný.** Naivní grep řádků `"type":"user"` plus `"type":"assistant"` v JSONL souboru počet dramaticky nadhodnotí (10× i víc u sessions s mnoha nástroji). Správné metriky:
+
+- **`userPrompts`** — skutečné vstupy uživatele. Vynechá tool_result obaly (kde agent zavolal nástroj a jeho výsledek se vrátil jako `user` událost).
+- **`assistantReplies`** — assistant události se `stop_reason='end_turn'`. Jedna na každé „agent dokončil, jsi na řadě".
+
+Naivní počet 2000 událostí může odpovídat 90 skutečným promptům a 125 skutečným odpovědím. Při reportování aktivity používej tyto správně omezené počty.
+
+**Kdy použít:** typicky před `peer_chat_read` s `crossProject: true` — potřebuješ vědět, jakou UUID session chceš číst. Nebo jako dashboard dotaz (s `includeMeta: true`).
 
 ---
 
@@ -357,7 +376,7 @@ Pro konkrétní session vrátí počty eventů podle typu (user, assistant, tool
 
 ### `peer_context_status`
 
-Vrátí autocompact-relevantní statistiku pro sebe nebo libovolného peera. Zdroj dat: `usage.cache_read_input_tokens` na posledním assistant eventu v peer's JSONL — odpovídá přesně `/context` Total.
+Vrátí autocompact-relevantní statistiku pro sebe nebo libovolného peera. Zdroj dat: počty tokenů na posledním assistant eventu v JSONL peera — `cache_read + cache_creation + input + output` (vzorec opraven ve v0.7.4 na plný součet; odpovídá přesně `/context` Total u čerstvých i zaběhnutých sessions).
 
 **Argumenty:**
 
@@ -426,7 +445,7 @@ Static lookup canonical Claude model metadata. Žádný JSONL scan, žádný net
 **Argumenty (všechny volitelné):**
 
 - `model` — dotaz na konkrétní id (např. `"claude-opus-4-7"`). Date suffix a `[1m]` tag normalizovány.
-- `generation` — filter lifecycle: `"current"` | `"legacy"` | `"deprecated"`. Ignored if `model` is set.
+- `generation` — filtr podle lifecycle: `"current"` | `"legacy"` | `"deprecated"`. Ignorováno, je-li nastaven `model`.
 
 **Output per model:** `id`, `displayName`, `family` (opus/sonnet/haiku/fable/mythos), `generation`, `contextWindow`, `maxOutputTokens`, `pricing.inputPerMTok`/`outputPerMTok`, `capabilities.vision`/`extendedThinking`/`adaptiveThinking`, `knowledgeCutoff`, `trainingDataCutoff`, `notes`.
 
@@ -576,7 +595,7 @@ Většinu problémů řeší [INSTALL — troubleshooting sekce](INSTALL.md#čas
 - **`peer_reply` vrací `original_not_found`:** zpráva nebyla v `done/` ani `pending/`. Od v0.3.1 plugin hledá v obou — pokud chyba přesto padne, msgId je opravdu neznámý (zkontroluj překlep). Před v0.3.1 musel uživatel volat `peer_inbox_read` manuálně.
 - **`peer_chat_read` vrací `session_file_not_found`:** peer je sice v heartbeat seznamu, ale JSONL ještě nevznikla (typicky úplně nový chat bez prvního promptu). Počkat až user pošle první zprávu.
 - **`peer_chat_read.query` / `peer_chat_search` regex hází `invalid_query_regex`:** regex se nezkompiloval. Error message obsahuje konkrétní důvod (nezavřená skupina, neznámý flag, …).
-- **`peer_chat_search` vrací `scope_too_large`:** filtrovaný scope (po 30-day cutoff) přesáhl 200 MB cap. Zužuj na `scope: 'project'` nebo počkej na FTS5 backend (v0.5+).
+- **`peer_chat_search` vrací `scope_too_large`:** filtrovaný scope (po 30-day cutoff) přesáhl 200 MB cap. Zužuj na `scope: 'project'` nebo počkej na full-text-search backend (některá z příštích verzí).
 
 ## Kam dál
 

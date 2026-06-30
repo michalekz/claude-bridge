@@ -30,7 +30,7 @@ After installation, each chat gets a set of new MCP tools opening five categorie
 
 **Search across chats.** `peer_chat_search` looks for arbitrary text across every session in the current project (default) or every project on the machine. Useful when you don't remember which chat discussed something but know the topic.
 
-**Monitor context window** *(v0.7.0+)*. `peer_context_status` reads autocompact-relevant statistics for self or any peer — tokens used, % of context window consumed, risk bucket (low/medium/high), model id. Data comes from `cache_read_input_tokens` in the JSONL — matches `/context` Total exactly. `peer_set_context_guard` lets a peer set its own warn/critical thresholds (default 85% / 95%). `peer_set_notification` toggles idle-beep notifications. `model_info` returns canonical Claude model metadata (context window, max output, pricing, capabilities, lifecycle status) — no JSONL scan, just an in-process table sourced from Anthropic platform docs.
+**Monitor context window** *(v0.7.0+)*. `peer_context_status` reads autocompact-relevant statistics for self or any peer — tokens used, % of context window consumed, risk bucket (low/medium/high), model id. Data comes from the most recent assistant event's token counts (`cache_read + cache_creation + input + output`, formula corrected in v0.7.4) — matches `/context` Total exactly. `peer_set_context_guard` lets a peer set its own warn/critical thresholds (default 85% / 95%). `peer_set_notification` toggles idle-beep notifications. `model_info` returns canonical Claude model metadata (context window, max output, pricing, capabilities, lifecycle status) — no JSONL scan, just an in-process table sourced from Anthropic platform docs.
 
 ### Bundled role playbooks *(v0.7.0+)*
 
@@ -198,6 +198,7 @@ The plugin runs **locally, on one machine**. Inbox traffic goes through the loca
 - **[Installation and configuration](docs/INSTALL.md)** — installation via marketplace, channels setup (two independent gates), CLI vs VS Code Extension comparison, cross-platform shell snippets, troubleshooting.
 - **[Channels troubleshooting](docs/CHANNELS-TROUBLESHOOTING.md)** — deep reference when real-time push doesn't work. Three-gate model, OS-specific gotchas (Linux/macOS vs Windows), error-symptom catalog, filesystem-trace diagnostic procedure.
 - **[Detailed usage guide](docs/USAGE.md)** — every tool with arguments, examples, output formats, and workflow recipes.
+- **[Naming conventions](docs/NAMING-CONVENTION.md)** — how MCP tools (snake_case) and bundled skills (`claude-bridge-role-*`) are named.
 - **[Changelog](CHANGELOG.md)** — release history.
 - **[Security and privacy](SECURITY.md)** — what the plugin reads, what it writes, vulnerability disclosure.
 - **[Credits](CREDITS.md)** — open source projects whose patterns shaped this one.

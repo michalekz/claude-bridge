@@ -14,13 +14,15 @@ The plugin **never** sends any of this data over the network. There are no exter
 
 Only inside `~/.claude-bridge/` (its own namespace):
 
-- Inbox files for messages it sends to other chats.
-- Heartbeat files signalling its presence to other chats.
+- `inbox/<sessionId>/` — messages it sends to other chats.
+- `status/<sessionId>.json` — heartbeat files signalling its presence to other chats.
+- `guard/<sessionId>.json` — context-usage guard thresholds, self-written per session (v0.7.0+).
+- `notify/<sessionId>.json` — idle-beep notification config, self-written per session (v0.7.0+).
 - No writes to `~/.claude/projects/` or any other Claude Code state.
 
 ## Cross-project search scope
 
-`peer_chat_search { scope: 'all-projects' }` reads JSONL files across every project under `~/.claude/projects/`. This is the same filesystem access already available via Claude Code's built-in `Read`, `Glob`, and `Grep` tools — there is no escalation of privileges.
+`peer_chat_search { scope: 'all-projects' }` reads JSONL files across every project under `~/.claude/projects/`, but only when you explicitly opt in with `CLAUDE_BRIDGE_ALLOW_ALL_PROJECTS=1`. Without it, search stays scoped to the current project. This is the same filesystem access already available via Claude Code's built-in `Read`, `Glob`, and `Grep` tools — there is no escalation of privileges.
 
 The 30-day age filter and 200 MB scope cap exist purely for performance, not security.
 

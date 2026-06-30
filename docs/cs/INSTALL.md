@@ -21,7 +21,7 @@ V Claude Code spusť:
 /plugin install claude-bridge
 ```
 
-První příkaz přidá oXyShop marketplace (jednou za stroj), druhý nainstaluje plugin. Build proběhne automaticky.
+První příkaz zaregistruje marketplace (jednou za stroj), druhý nainstaluje plugin. Build proběhne automaticky.
 
 Po instalaci je potřeba restart Claude Code procesu:
 
@@ -63,12 +63,12 @@ Zapiš přímo do `~/.claude/settings.json` na stroji, kde běží `claude`:
 {
   "channelsEnabled": true,
   "allowedChannelPlugins": [
-    { "marketplace": "oxyshop-plugins", "plugin": "claude-bridge" }
+    { "marketplace": "claude-bridge", "plugin": "claude-bridge" }
   ]
 }
 ```
 
-Restartuj Claude Code (nebo `/mcp reconnect` v aktivních sessions) a `--channels plugin:claude-bridge@oxyshop-plugins` bude fungovat bez `--dangerously-load-development-channels` flagu.
+Restartuj Claude Code (nebo `/mcp reconnect` v aktivních sessions) a `--channels plugin:claude-bridge` bude fungovat bez `--dangerously-load-development-channels` flagu.
 
 > **VS Code Remote upozornění:** soubor patří na **stroj, kde reálně běží `claude`**. Pokud používáš Remote-SSH nebo podobně, to je remote — tedy setting jde do remote `~/.claude/settings.json`, ne lokálního.
 
@@ -79,7 +79,7 @@ V *claude.ai → Admin settings → Claude Code → Channels*:
 1. Zapnout `channelsEnabled: true`.
 2. Do `allowedChannelPlugins` přidat:
    ```json
-   { "marketplace": "oxyshop-plugins", "plugin": "claude-bridge" }
+   { "marketplace": "claude-bridge", "plugin": "claude-bridge" }
    ```
 
 Pozor: `allowedChannelPlugins` **nahrazuje** Anthropic default seznam. Pokud váš tým používá Telegram/Discord/iMessage channels, musí být v seznamu explicitně:
@@ -91,7 +91,7 @@ Pozor: `allowedChannelPlugins` **nahrazuje** Anthropic default seznam. Pokud vá
     { "marketplace": "claude-plugins-official", "plugin": "telegram" },
     { "marketplace": "claude-plugins-official", "plugin": "discord" },
     { "marketplace": "claude-plugins-official", "plugin": "imessage" },
-    { "marketplace": "oxyshop-plugins", "plugin": "claude-bridge" }
+    { "marketplace": "claude-bridge", "plugin": "claude-bridge" }
   ]
 }
 ```
@@ -101,7 +101,7 @@ Pozor: `allowedChannelPlugins` **nahrazuje** Anthropic default seznam. Pokud vá
 Po správně nastavených managed settings stačí `--channels` flag:
 
 ```bash
-claude --channels plugin:claude-bridge@oxyshop-plugins
+claude --channels plugin:claude-bridge
 ```
 
 Pro trvalé zapnutí přes alias nebo VS Code terminal profile — viz [cross-platform sekce](#cross-platform--alias-a-vs-code-terminal-profile).
@@ -142,7 +142,7 @@ Trvalé zapnutí `--channels` flagu se dělá podle operačního systému. Pří
 Do `~/.bashrc` nebo `~/.zshrc`:
 
 ```bash
-alias claude='claude --channels plugin:claude-bridge@oxyshop-plugins'
+alias claude='claude --channels plugin:claude-bridge'
 ```
 
 Po `source ~/.bashrc` (nebo nové terminál session) každé `claude` spouští s channelem.
@@ -152,7 +152,7 @@ Po `source ~/.bashrc` (nebo nové terminál session) každé `claude` spouští 
 Do `$PROFILE` (zjistíš cestou `echo $PROFILE` v PowerShellu, typicky `Documents\PowerShell\Microsoft.PowerShell_profile.ps1`):
 
 ```powershell
-function claude { & claude.exe --channels plugin:claude-bridge@oxyshop-plugins $args }
+function claude { & claude.exe --channels plugin:claude-bridge $args }
 ```
 
 PowerShell restartni nebo `. $PROFILE`.
@@ -178,7 +178,7 @@ Do příslušného `settings.json` (klient strana) přidej blok podle OS, kde re
   "terminal.integrated.profiles.linux": {
     "Claude (channels)": {
       "path": "bash",
-      "args": ["-l", "-c", "exec claude --channels plugin:claude-bridge@oxyshop-plugins"],
+      "args": ["-l", "-c", "exec claude --channels plugin:claude-bridge"],
       "overrideName": true,
       "icon": "comment-discussion"
     }
@@ -193,7 +193,7 @@ Do příslušného `settings.json` (klient strana) přidej blok podle OS, kde re
   "terminal.integrated.profiles.osx": {
     "Claude (channels)": {
       "path": "zsh",
-      "args": ["-l", "-c", "exec claude --channels plugin:claude-bridge@oxyshop-plugins"],
+      "args": ["-l", "-c", "exec claude --channels plugin:claude-bridge"],
       "overrideName": true,
       "icon": "comment-discussion"
     }
@@ -208,7 +208,7 @@ Do příslušného `settings.json` (klient strana) přidej blok podle OS, kde re
   "terminal.integrated.profiles.windows": {
     "Claude (channels)": {
       "path": "pwsh.exe",
-      "args": ["-NoLogo", "-Command", "claude --channels plugin:claude-bridge@oxyshop-plugins"],
+      "args": ["-NoLogo", "-Command", "claude --channels plugin:claude-bridge"],
       "overrideName": true,
       "icon": "comment-discussion"
     }
@@ -238,7 +238,7 @@ Přidej do `.vscode/tasks.json` v projektu (případně do user-level `~/.vscode
     {
       "label": "Claude Code: claude-bridge worker",
       "type": "shell",
-      "command": "claude --channels plugin:claude-bridge@oxyshop-plugins",
+      "command": "claude --channels plugin:claude-bridge",
       "isBackground": true,
       "problemMatcher": [],
       "runOptions": { "runOn": "folderOpen" },
@@ -281,10 +281,22 @@ Plugin si drží stav v samostatném adresáři, nikdy nezapisuje do Claude Code
 ├── inbox/<sessionId>/
 │   ├── pending/<msg-id>.json   — nedoručené zprávy
 │   └── done/<msg-id>.json      — archiv konzumovaných
-└── status/<sessionId>.json     — heartbeat (1 soubor / chat, refresh každých 5 s)
+├── status/<sessionId>.json     — heartbeat (1 soubor / chat, refresh každých 5 s)
+├── guard/<sessionId>.json      — prahy context-usage guardu (v0.7.0+)
+└── notify/<sessionId>.json     — konfigurace idle-beep notifikace (v0.7.0+)
 ```
 
 Read-only přístup k `~/.claude/projects/` a `~/.claude/sessions/`. Plugin nikdy nemodifikuje session JSONL ani jiný stav Claude Code.
+
+## Proměnné prostředí
+
+Všechny volitelné. Nastav je v shellu před spuštěním Claude Code (nebo v profilu shellu).
+
+| Proměnná | Výchozí | Co dělá |
+|---|---|---|
+| `CLAUDE_BRIDGE_PEER_NAME` | ai-title ze session | Přepíše zobrazované jméno tohoto chatu v `peer_list`. Užitečné, než Claude Code vygeneruje ai-title. |
+| `CLAUDE_BRIDGE_ALLOW_ALL_PROJECTS` | nenastaveno | Nastav na `1` pro povolení `peer_chat_search { scope: 'all-projects' }`. Bez toho zůstává hledání jen v aktuálním projektu. |
+| `CLAUDE_BRIDGE_EMIT_TERMINAL_TITLE` | zapnuto | Nastav na `0` (nebo `false`) pro vypnutí dynamického titulku terminálové záložky (OSC 2) z v0.6.0. Jen Linux/macOS, na Windows je to no-op. |
 
 ## Časté problémy a řešení
 
@@ -318,7 +330,7 @@ Známý race condition (před v0.5.2): MCP server pluginu startuje o zlomek seku
 
 Workaround: `/mcp reconnect` v Claude Code. Session soubor je už na místě a identita se rozresolvuje čistě.
 
-Fix je naplánovaný do v0.5.2 (retry s exponential backoff + fallback na `cwd-slug`).
+Opraveno ve v0.5.2 (retry s exponential backoff + fallback na `cwd-slug`), takže na aktuálních verzích je workaround potřeba jen výjimečně.
 
 ### "Po update pluginu se nic nezměnilo"
 
@@ -340,9 +352,12 @@ Filtrovaný scope (po `maxAgeDays: 30`) přesahuje 200 MB. Důvody:
 - Máš hodně velkých sessions (s tool_result obsahy) v jednom projektu.
 - Spustil jsi `scope: 'all-projects'` na notebooku s desítkami projektů.
 
-Workaround: použij specifičtější `query`, nebo zužuj scope (přejdi z `all-projects` na `project`). Pro reálné nasazení s velkým historickým archivem se připravuje FTS5 backend ve verzi v0.5+.
+Workaround: použij specifičtější `query`, nebo zužuj scope (přejdi z `all-projects` na `project`). Pro reálné nasazení s velkým historickým archivem se připravuje full-text-search backend (zatím není součástí žádné verze).
 
 ## Co dál
 
 - **[Podrobný návod k použití](USAGE.md)** — všechny nástroje, argumenty, vzory pro typické workflows.
+- **[Konvence pojmenování](../NAMING-CONVENTION.md)** — jak se pojmenovávají MCP nástroje a balené skills.
 - **[Hlavní README](../../README.cs.md)** — krátké shrnutí toho, co plugin dělá a komu se hodí.
+
+Plugin navíc obsahuje role-playbook skills pro multi-chat workflows: `claude-bridge-role-manager` (orchestrace worker peerů) a `claude-bridge-role-memory-keeper` (single-writer sdílená paměť). Kdy je načíst, viz [USAGE](USAGE.md).

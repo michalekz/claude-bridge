@@ -281,10 +281,22 @@ The plugin lives entirely in `~/.claude-bridge/` (its own namespace; never touch
 ├── inbox/<sessionId>/
 │   ├── pending/<msg-id>.json   ← incoming messages, not yet drained
 │   └── done/<msg-id>.json      ← already consumed, available for peer_reply
-└── status/<sessionId>.json     ← heartbeat (refreshed every 5 s)
+├── status/<sessionId>.json     ← heartbeat (refreshed every 5 s)
+├── guard/<sessionId>.json      ← context-usage guard thresholds (v0.7.0+)
+└── notify/<sessionId>.json     ← idle-beep notification config (v0.7.0+)
 ```
 
 Read-only access to `~/.claude/projects/` and `~/.claude/sessions/`. The plugin never modifies session JSONL files or any other Claude Code state.
+
+## Environment variables
+
+All optional. Set them in the shell before launching Claude Code (or in your shell profile).
+
+| Variable | Default | What it does |
+|---|---|---|
+| `CLAUDE_BRIDGE_PEER_NAME` | ai-title from the session | Override this chat's display name in `peer_list`. Useful before Claude Code has generated an ai-title. |
+| `CLAUDE_BRIDGE_ALLOW_ALL_PROJECTS` | unset | Set to `1` to allow `peer_chat_search { scope: 'all-projects' }`. Without it, search stays scoped to the current project. |
+| `CLAUDE_BRIDGE_EMIT_TERMINAL_TITLE` | enabled | Set to `0` (or `false`) to opt out of the dynamic terminal tab title (OSC 2) added in v0.6.0. Linux/macOS only; on Windows it is a no-op. |
 
 ## Common problems and fixes
 
@@ -318,7 +330,7 @@ Known race condition (pre-v0.5.2): the plugin's MCP server can boot fractionally
 
 Workaround: `/mcp reconnect` inside Claude Code. The session file is in place by then and identity resolves cleanly.
 
-A fix is planned for v0.5.2 (retry with exponential backoff plus a `cwd-slug` fallback).
+This was fixed in v0.5.2 (retry with exponential backoff plus a `cwd-slug` fallback), so on current versions the workaround is rarely needed.
 
 ### "After plugin update nothing changed"
 
@@ -345,4 +357,7 @@ Workaround: use a more specific `query`, or narrow scope (from `all-projects` to
 ## What's next
 
 - **[Detailed usage guide](USAGE.md)** — every tool, arguments, workflow recipes.
+- **[Naming conventions](NAMING-CONVENTION.md)** — how MCP tools and bundled skills are named.
 - **[Main README](../README.md)** — short summary of what the plugin does and who it's for.
+
+The plugin also bundles role-playbook skills for multi-chat workflows: `claude-bridge-role-manager` (orchestrating worker peers) and `claude-bridge-role-memory-keeper` (single-writer shared memory). See [USAGE](USAGE.md) for when to load them.
