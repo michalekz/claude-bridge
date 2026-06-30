@@ -354,6 +354,22 @@ The filtered scope (after `maxAgeDays: 30`) exceeded 200 MB. Reasons:
 
 Workaround: use a more specific `query`, or narrow scope (from `all-projects` to `project`). For real deployments with large historical archives, an FTS5 backend is planned for a future release.
 
+## Contributing — pre-push hook
+
+The repo ships a `.githooks/pre-push` script that runs the same checks as CI (biome, typecheck, vitest) before allowing a `git push`. Opt-in once per clone:
+
+```bash
+git config core.hooksPath .githooks
+```
+
+Then every `git push` runs the checks first; a failure aborts the push and prints the fix command. To bypass for a WIP branch:
+
+```bash
+git push --no-verify
+```
+
+This catches the CI-breaking formatter, type, or test failures locally instead of after every push round-trip.
+
 ## What's next
 
 - **[Detailed usage guide](USAGE.md)** — every tool, arguments, workflow recipes.

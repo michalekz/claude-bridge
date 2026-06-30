@@ -1,0 +1,59 @@
+#!/usr/bin/env bash
+# Pre-push hook — runs the same checks as CI before pushing.
+#
+# Mirrors .github/workflows/ci.yml (minus `npm ci` and `npm run build` which
+# are expensive and don't gate behavior beyond what these checks already verify).
+#
+# To enable in your local clone, run once:
+#
+#   git config core.hooksPath .githooks
+#
+# To bypass for a single push (e.g., WIP branch):
+#
+#   git push --no-verify
+#
+# Hook is idempotent and exits non-zero on any failure.
+
+set -euo pipefail
+
+PLUGIN_DIR="servers/claude-bridge"
+
+if [ ! -d "$PLUGIN_DIR" ]; then
+  echo "pre-push: plugin dir $PLUGIN_DIR not found, skipping checks"
+  exit 0
+fi
+
+echo "▸ pre-push: running CI-equivalent checks (biome + tsc + tests)…"
+cd "$PLUGIN_DIR"
+
+# Match CI step "Lint (Biome)" — `npm run check` is strict, no auto-fix.
+echo "  → biome check"
+if ! npm run check --silent; then
+  echo
+  echo "✗ biome check failed. Fix with:"
+  echo "    cd $PLUGIN_DIR && npx biome check --write src tests"
+  echo
+  echo "Or bypass with: git push --no-verify"
+  exit 1
+fi
+
+# Match CI step "Typecheck"
+echo "  → tsc --noEmit"
+if ! npm run typecheck --silent; then
+  echo
+  echo "✗ tsc typecheck failed. See errors above."
+  echo "Or bypass with: git push --no-verify"
+  exit 1
+fi
+
+# Match CI step "Unit tests"
+echo "  → vitest"
+if ! npm test --silent; then
+  echo
+  echo "✗ tests failed. See output above."
+  echo "Or bypass with: git push --no-verify"
+  exit 1
+fi
+
+echo
+echo "✓ pre-push: all checks passed"
