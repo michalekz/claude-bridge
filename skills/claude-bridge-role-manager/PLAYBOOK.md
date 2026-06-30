@@ -267,20 +267,24 @@ Skim pro orientaci OK, ale závěrečné rozhodování musí jet na load.
 2. Peerům: "freeze + drž bez akce".
 3. Optional: snapshot konverzace do `RESUME-POST-COMPACT.md` s explicitním "⏯ resume-point = X".
 
-### Cross-role meta-pattern: post-compact self-check
+### Cross-role meta-pattern: confidence bez substance
 
-Identický failure mode existuje napříč rolemi:
-- **Manager** — sebevědomí bez živého vlákna (= tento bod)
-- **Memory-keeper** — sebevědomí bez empirického ověření (= "self_read drift" cautionary example v role-memory-keeper skillu)
-- **Integration-dev** — sebevědomí z grep místo runtime evidence (= "merged ≠ called")
+Identický failure mode existuje napříč rolemi — **tři role, tři nezávislé incidenty, jeden pattern:**
 
-**Společný self-check po compactu:**
+1. **Manager** — sebevědomí bez živého vlákna user-contentu (= tento bod, post-compact).
+   *Evidence:* HMH tým, 2026-06-30 — orchestrátor 2× prohlásil "re-aligned" než byl reálně naložený.
+
+2. **Memory-keeper** — sebevědomí bez empirického ověření (= "self_read drift" cautionary v role-memory-keeper skillu).
+   *Evidence:* HMH tým — keeper recykloval stale `self_read` claim jako absolutní fakt, dokud ho někdo nedonutil empiricky otestovat.
+
+3. **Integration-dev** — sebevědomí z grep místo runtime evidence (= "merged ≠ called").
+   *Evidence:* HMH tým — move-spike označil plugin endpoint za "broken" protože `javap | head` uřízl výpis `migrate*` metod. Žádný runtime test. Až runtime PoC na jira2 ukázal, že API funguje → falešný "broken" závěr. **Pravidlo: neZávěrovat 'broken' z API-absence bez runtime testu.**
+
+**Společný self-check (= verbatim věta napříč skilly):**
 
 > "Je v mém kontextu reálný materiál, nebo jen pointery na něj?"
 
-Pokud "jen pointery" → načíst materiál PŘED dalším rozhodnutím.
-
-**Evidence:** jira-architect HMH tým, 2026-06-30, 2× ta chyba v jedné session (prohlásil "re-aligned" než byl reálně v obraze).
+Pokud "jen pointery" → načíst materiál PŘED dalším rozhodnutím. Tři role × tři incidenty = silný konvergenční signál.
 
 ## 14. Manager ↔ human interface
 

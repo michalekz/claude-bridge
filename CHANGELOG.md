@@ -2,6 +2,22 @@
 
 All notable changes to this project are documented here. Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.7.6] — 2026-06-30
+
+### Updated — Cross-role meta-pattern: real-world evidence for integration-dev leg
+
+jira-architect (HMH team) follow-up: the third leg of the "confidence without substance" meta-pattern (= integration-dev / "merged ≠ called") now has concrete evidence.
+
+**Move-spike incident:** plugin endpoint declared "broken" because `javap | head` truncated the output of `migrate*` methods. Conclusion drawn from API-absence without runtime test. Runtime PoC on jira2 sandbox proved the API works (Cesta C).
+
+**Lesson:** "Don't conclude 'broken' from API-absence without runtime test."
+
+Three roles × three independent incidents × one failure mode = strong convergence signal for the cross-role meta-pattern. PLAYBOOK #13 now carries all three concrete evidence points (manager re-align failure, keeper self_read drift, integration-dev move-spike incident).
+
+### Notes
+
+- No code changes. Skill content only.
+
 ## [0.7.5] — 2026-06-30
 
 ### Updated — `claude-bridge-role-manager` PLAYBOOK #13 (Resume po compactu)
