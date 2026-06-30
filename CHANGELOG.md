@@ -2,6 +2,29 @@
 
 All notable changes to this project are documented here. Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.7.4] — 2026-06-30
+
+### Fixed — `peer_context_status` undercount for fresh / post-clear sessions
+
+Real-world smoke test on 5 active peers (jira-architect, jira-admin, jira-transition-head, jira-integration-dev, hmh-memory-keeper) revealed major undercount when a peer's session had recently gone through cache invalidation:
+
+| peer | cache_read | cache_creation | true `/context` | v0.7.3 returned | v0.7.4 returns |
+|---|---|---|---|---|---|
+| jira-transition-head | 23,060 | **806,186** | ~83% | **2.3%** ❌ | **83.4%** ✓ |
+| jira-integration-dev | 23,060 | **935,683** | ~96% | **2.3%** ❌ | **96.3%** ✓ |
+| jira-admin | 948,901 | 596 | ~95% | 94.9% (~OK) | 94.9% |
+
+**Root cause:** v0.7.0-v0.7.3 used `cache_read_input_tokens` alone. That works for mature cached sessions (cache_read dominates, cache_creation tiny). But after `/clear`, autocompact, or session start, cache is freshly being filled — `cache_creation_input_tokens` carries most of the input, `cache_read` is tiny. The original implementation read the wrong field.
+
+**Fix:** `tokensUsed = cache_read + cache_creation + input + output` — total tokens in context window after the last assistant turn. Empirically matches `/context` across both fresh and mature sessions.
+
+User-reported: "/context ukazuje zcela jiné (pravdivé) hodnoty ve srovnání s tím, co vrací MCP nástroj". Confirmed by raw JSONL inspection.
+
+### Tests
+
+- 263 → 265 (+2 covering full-formula sum + missing-field handling).
+- Pre-existing test data updated to use realistic 4-field usage objects.
+
 ## [0.7.3] — 2026-06-29
 
 ### Added — `model_info` MCP tool

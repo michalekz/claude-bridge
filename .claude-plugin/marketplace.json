@@ -13,10 +13,10 @@
       "source": {
         "source": "github",
         "repo": "michalekz/claude-bridge",
-        "ref": "v0.7.3"
+        "ref": "v0.7.4"
       },
       "description": "MCP server for cross-Claude-Code-chat orchestration. Peer messaging, chat read/search, context-usage monitoring (peer_context_status + wake-time guard), idle-beep notification, bundled role skills (manager, memory-keeper).",
-      "version": "0.7.3",
+      "version": "0.7.4",
       "author": {
         "name": "Zed Michalek",
         "url": "https://github.com/michalekz"

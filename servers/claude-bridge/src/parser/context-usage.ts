@@ -100,7 +100,13 @@ export async function readContextUsage(sessionRef: SessionRef): Promise<ContextU
     >) {
       if (event.type !== "assistant") continue;
       const usage = event.message?.usage;
-      if (!usage || typeof usage.cache_read_input_tokens !== "number") continue;
+      if (!usage) continue;
+      // Accept event if it has any of the usage fields we care about.
+      const hasAnyUsage =
+        typeof usage.cache_read_input_tokens === "number" ||
+        typeof usage.cache_creation_input_tokens === "number" ||
+        typeof usage.input_tokens === "number";
+      if (!hasAnyUsage) continue;
 
       lastUsage = usage;
       lastModel = event.message?.model ?? null;
@@ -112,11 +118,23 @@ export async function readContextUsage(sessionRef: SessionRef): Promise<ContextU
     return null;
   }
 
-  if (!lastUsage || typeof lastUsage.cache_read_input_tokens !== "number") {
+  if (!lastUsage) {
     return null;
   }
 
-  const tokensUsed = lastUsage.cache_read_input_tokens;
+  // tokensUsed = full context size after the last assistant turn.
+  //   cache_read         — bytes read from prompt cache (mostly prior conversation)
+  //   cache_creation     — bytes added to cache this turn (big after /clear or autocompact)
+  //   input_tokens       — non-cached input (small per turn)
+  //   output_tokens      — assistant's response (now part of history)
+  // Summing all four matches /context Total across both mature and fresh sessions.
+  // Reading cache_read alone undercounts by ~cache_creation for sessions that
+  // recently went through cache invalidation (= near-100% bug if /clear just ran).
+  const tokensUsed =
+    (lastUsage.cache_read_input_tokens ?? 0) +
+    (lastUsage.cache_creation_input_tokens ?? 0) +
+    (lastUsage.input_tokens ?? 0) +
+    (lastUsage.output_tokens ?? 0);
   // Limit detection: canonical lookup table for known models; defensive
   // empirical fallback for unknown/future models — if usage exceeds 200k,
   // the model must be on a 1M-capable variant (200k would have rejected).

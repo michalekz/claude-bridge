@@ -20890,7 +20890,9 @@ async function readContextUsage(sessionRef) {
     for await (const event of parseSessionFileRaw(sessionRef.filePath)) {
       if (event.type !== "assistant") continue;
       const usage = event.message?.usage;
-      if (!usage || typeof usage.cache_read_input_tokens !== "number") continue;
+      if (!usage) continue;
+      const hasAnyUsage = typeof usage.cache_read_input_tokens === "number" || typeof usage.cache_creation_input_tokens === "number" || typeof usage.input_tokens === "number";
+      if (!hasAnyUsage) continue;
       lastUsage = usage;
       lastModel = event.message?.model ?? null;
       if (typeof event.timestamp === "string") {
@@ -20900,10 +20902,10 @@ async function readContextUsage(sessionRef) {
   } catch {
     return null;
   }
-  if (!lastUsage || typeof lastUsage.cache_read_input_tokens !== "number") {
+  if (!lastUsage) {
     return null;
   }
-  const tokensUsed = lastUsage.cache_read_input_tokens;
+  const tokensUsed = (lastUsage.cache_read_input_tokens ?? 0) + (lastUsage.cache_creation_input_tokens ?? 0) + (lastUsage.input_tokens ?? 0) + (lastUsage.output_tokens ?? 0);
   let contextLimit = detectContextLimit(lastModel);
   if (contextLimit === STANDARD_LIMIT2 && tokensUsed > STANDARD_LIMIT2) {
     contextLimit = ONE_M_LIMIT2;
@@ -22536,7 +22538,7 @@ var TOOLS = [
 // src/mcp/server.ts
 var log6 = makeLogger("mcp-server");
 var SERVER_NAME = "claude-bridge";
-var SERVER_VERSION = "0.7.3";
+var SERVER_VERSION = "0.7.4";
 var INSTRUCTIONS = `
 claude-bridge \u2014 MCP server pro orchestraci nap\u0159\xED\u010D Claude Code chaty.
 

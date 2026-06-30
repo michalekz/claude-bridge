@@ -103,7 +103,7 @@ describe("readContextUsage", () => {
     expect(usage).toBeNull();
   });
 
-  test("extracts cache_read_input_tokens from latest assistant event (Opus 4.7 = 1M)", async () => {
+  test("sums all 4 usage fields from latest assistant event (Opus 4.7 = 1M)", async () => {
     const lines = [
       JSON.stringify({
         type: "assistant",
@@ -118,20 +118,50 @@ describe("readContextUsage", () => {
         timestamp: "2026-06-29T11:00:00Z",
         message: {
           model: "claude-opus-4-7",
-          usage: { cache_read_input_tokens: 750_000 },
+          usage: {
+            cache_read_input_tokens: 740_000,
+            cache_creation_input_tokens: 8_000,
+            input_tokens: 1_500,
+            output_tokens: 500,
+          },
         },
       }),
     ];
     await writeFile(jsonlPath, lines.join("\n"));
     const usage = await readContextUsage(makeSessionRef());
     expect(usage).not.toBeNull();
-    expect(usage?.tokensUsed).toBe(750_000); // latest, not earliest
+    expect(usage?.tokensUsed).toBe(750_000); // 740k + 8k + 1.5k + 500 = 750k (latest, not earliest)
     expect(usage?.model).toBe("claude-opus-4-7");
     expect(usage?.contextLimit).toBe(1_000_000); // canonical lookup
     expect(usage?.percentUsed).toBe(0.75);
     expect(usage?.tokensRemaining).toBe(250_000);
     expect(usage?.autocompactRisk).toBe("medium");
     expect(usage?.lastTurnAt).toBe("2026-06-29T11:00:00Z");
+  });
+
+  test("CRITICAL: counts cache_creation for fresh / post-clear sessions", async () => {
+    // Real-world scenario: jira-transition-head session post-autocompact.
+    // cache_read is tiny (cache invalidated), cache_creation is huge (re-filling).
+    // Old algorithm (cache_read alone) showed 23k/1M = 2.3% — wildly wrong.
+    // Correct: 23,060 + 806,186 + 3,989 + 301 = 833,536 (= 83.4%).
+    const line = JSON.stringify({
+      type: "assistant",
+      timestamp: "2026-06-30T10:01:22Z",
+      message: {
+        model: "claude-opus-4-8",
+        usage: {
+          cache_read_input_tokens: 23_060,
+          cache_creation_input_tokens: 806_186,
+          input_tokens: 3_989,
+          output_tokens: 301,
+        },
+      },
+    });
+    await writeFile(jsonlPath, line);
+    const usage = await readContextUsage(makeSessionRef());
+    expect(usage?.tokensUsed).toBe(833_536);
+    expect(usage?.percentUsed).toBeCloseTo(0.834, 2);
+    expect(usage?.autocompactRisk).toBe("medium"); // 83.4% → medium
   });
 
   test("detects [1m] variant", async () => {
@@ -162,6 +192,7 @@ describe("readContextUsage", () => {
     await writeFile(jsonlPath, line);
     const usage = await readContextUsage(makeSessionRef());
     expect(usage?.contextLimit).toBe(200_000);
+    expect(usage?.tokensUsed).toBe(180_000); // cache_read alone (others 0)
     expect(usage?.percentUsed).toBe(0.9);
     expect(usage?.autocompactRisk).toBe("high");
   });
@@ -216,6 +247,21 @@ describe("readContextUsage", () => {
     await writeFile(jsonlPath, lines.join("\n"));
     const usage = await readContextUsage(makeSessionRef());
     expect(usage?.tokensUsed).toBe(42_000); // user event's 99_999 ignored
+  });
+
+  test("missing usage fields default to 0 (= partial usage object)", async () => {
+    const line = JSON.stringify({
+      type: "assistant",
+      timestamp: "2026-06-29T10:00:00Z",
+      message: {
+        model: "claude-opus-4-7",
+        usage: { cache_creation_input_tokens: 500_000 }, // ONLY cache_creation, others missing
+      },
+    });
+    await writeFile(jsonlPath, line);
+    const usage = await readContextUsage(makeSessionRef());
+    expect(usage?.tokensUsed).toBe(500_000); // missing fields treated as 0
+    expect(usage?.percentUsed).toBe(0.5);
   });
 
   test("returns null for non-existent file", async () => {
