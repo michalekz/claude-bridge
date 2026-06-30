@@ -2,6 +2,43 @@
 
 All notable changes to this project are documented here. Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.7.5] — 2026-06-30
+
+### Updated — `claude-bridge-role-manager` PLAYBOOK #13 (Resume po compactu)
+
+Real-world contribution from jira-architect peer (HMH team, 2026-06-30) — observed 2× failure in their own session where they declared "re-aligned" before actually being loaded with material. Owner relayed for skill integration.
+
+**Worker vs orchestrator re-onboard recipe differs:**
+
+- **Worker peer** — substance is durable artifacts (locked docs, code). Re-align against DOCS = aligned. Standard recipe (peer_list, inbox_read, load canonical docs) sufficient.
+- **Manager / orchestrator** — substance is **live thread**: who's waiting on what, owner's nuanced intent, cross-cutting view, **WHY decisions were made**. Lives in CONVERSATION, not docs. Docs alone are insufficient.
+
+**🚩 Red flag for manager: low `/context` % post-compact.** Tell from `/context` structure:
+- ~5-15% total occupancy
+- "Messages" category thin vs others (system/tool noise dominates)
+- = signature of lossy compact-summary + skim, not real material loaded
+
+**Skim ≠ load.** Compact-format one-liners = index for orientation, NOT material for reasoning. Manager may use skim to navigate, but must then load full material before deciding.
+
+**Frugality = false economy.** ~77k tokens on 1M window is trivial. The point of a 1M context window is to carry real material, not pointers.
+
+### Cross-role meta-pattern (added to manager + memory-keeper skills)
+
+Same failure mode exists across roles. All = "confidence without substance" post-compact:
+
+- **Manager** — confidence without live user-content thread
+- **Memory-keeper** — confidence without empirical verification (= `self_read` cautionary)
+- **Integration-dev** — confidence from grep instead of runtime evidence (= "merged ≠ called")
+
+**Shared post-compact self-check:** "Is real material in my context, or just pointers to it?" If "just pointers" → load material before next decision.
+
+Cross-reference added to both `claude-bridge-role-manager` PLAYBOOK #13 and `claude-bridge-role-memory-keeper` SKILL.md (cautionary section). Detail stays in role-manager (single-source per the pointer-not-duplicate principle).
+
+### Notes
+
+- No code changes. Skill content only.
+- No version bump for tools (still 13 tools, same APIs).
+
 ## [0.7.4] — 2026-06-30
 
 ### Fixed — `peer_context_status` undercount for fresh / post-clear sessions

@@ -209,16 +209,78 @@ Vrstvy: 0 convention → 1 business → 2 model → 3 hrozby → 4-6 specifika.
 | Worker u context limitu | (v0.7.0+) peer_context_status, handoff PŘED compactem. |
 | **Peer death mid-task** | viz #17 (hard recovery) |
 
-## 13. Resume po compactu
+## 13. Resume po compactu — manager vs worker recept
 
-Před compactem (manager-side):
-1. Napsat resume-state do memory.
+Worker a orchestrátor mají **JINÝ re-onboard recept**. Manageru nestačí to, co stačí workerovi.
+
+### Worker peer
+
+Substance workera = **artefakty, které vyrobil** (kód, locked docs, lock-records). Re-align proti DOCŮM = aligned. Stačí:
+1. `peer_list`, `peer_inbox_read`
+2. Načíst kanonické docy ve své doméně
+3. Načíst memory "READ FIRST current state"
+4. Resume
+
+### Manager / orchestrátor
+
+Substance managera = **živé vlákno**: kdo na co čeká, nuance záměru ownera, cross-cutting obraz, **PROČ padla rozhodnutí**. To **NEŽIJE v docích** — žije v KONVERZACI. Docy stačí workerovi, NESTAČÍ managerovi.
+
+**Manager se proto musí načíst z plného user-contentu, ne jen z artefaktů.**
+
+### 🚩 Red flag: nízké obsazení kontextu po compactu
+
+**Nízké % v `/context` po compactu = ČERVENÁ VLAJKA pro managera, ne komfort.**
+
+Tell (jak chybu poznat z výstupu `/context`):
+- ~5-15% celkového obsazení
+- "Messages" kategorie **tenká** vůči ostatním
+- Většina objemu = system prompt + system tools + MCP tools (= noise vzhledem k práci)
+
+Tahle struktura = podpis běhu na **lossy compact-summary + skim**, ne reálně načteného materiálu.
+
+**Sebevědomí ≠ naloženost.** Manager může 2× prohlásit "re-aligned" než je reálně v obraze. `peer_context_status` ukáže % — ale neukáže, jestli těch X % je SKUTEČNÝ user content, nebo noise.
+
+### Skim ≠ load
+
+- **Skim** (compact format, one-liners přes `peer_chat_read format:"compact"`) = **index pro orientaci**, NE materiál k uvažování.
+- **Load** = plný user-content v markdown formě, čteno přes Read tool.
+
+Manager může POUŽÍT skim k navigaci ("co se dělo poslední 2 dny"), ale **musí pak načíst plný materiál** k reálnému uvažování.
+
+### Recept (manager-side post-compact, zpřesněný)
+
+1. **Skim pro orientaci** — `peer_chat_read({to, format: "compact", lastN: 50})` k identifikaci důležitých turnů.
+2. **Load plný user content** — `peer_chat_read({to, rolesOnly:['user'], format: "markdown"})`, sinceTimestamp ~2 dny zpět. Chunknout přes ~25k Read strop (= cca 7×650 řádků ≈ 77k tok pro 2 dny intenzivní práce).
+3. **Load kanonické docy** v plném znění (artefakty, co manager orchestruje).
+4. **Resume-anchor** od memory-keepera (volatilní pozice, "kde jsme").
+5. `peer_list`, `peer_inbox_read` — kdo žije, co dorazilo offline.
+
+### Frugalita = falešná úspora
+
+~77k na 1M okně je triviál. **Právě proto, že je to levné, NENÍ důvod skimovat.** Smysl 1M context window = **nosit reálný materiál, ne pointery na něj**.
+
+Skim pro orientaci OK, ale závěrečné rozhodování musí jet na load.
+
+### Pre-compact (manager-side)
+
+1. Napsat resume-state do memory: aktuální fáze, resume-point, co locked, co in-flight, **co je owner-gated**.
 2. Peerům: "freeze + drž bez akce".
+3. Optional: snapshot konverzace do `RESUME-POST-COMPACT.md` s explicitním "⏯ resume-point = X".
 
-Po compactu:
-1. peer_list, peer_inbox_read.
-2. Načíst memory "READ FIRST".
-3. Resume.
+### Cross-role meta-pattern: post-compact self-check
+
+Identický failure mode existuje napříč rolemi:
+- **Manager** — sebevědomí bez živého vlákna (= tento bod)
+- **Memory-keeper** — sebevědomí bez empirického ověření (= "self_read drift" cautionary example v role-memory-keeper skillu)
+- **Integration-dev** — sebevědomí z grep místo runtime evidence (= "merged ≠ called")
+
+**Společný self-check po compactu:**
+
+> "Je v mém kontextu reálný materiál, nebo jen pointery na něj?"
+
+Pokud "jen pointery" → načíst materiál PŘED dalším rozhodnutím.
+
+**Evidence:** jira-architect HMH tým, 2026-06-30, 2× ta chyba v jedné session (prohlásil "re-aligned" než byl reálně v obraze).
 
 ## 14. Manager ↔ human interface
 

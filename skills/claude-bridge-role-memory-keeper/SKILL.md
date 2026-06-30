@@ -75,6 +75,15 @@ Drift žil **jen v session reasoning, ne v memory souboru** — index integrita 
 
 **Précis pro tebe:** Memory drift chytíš jen empirickým testem proti živému systému, ne čtením vlastní paměti. I jako keeper.
 
+### Twin pattern: post-compact self-check napříč rolemi
+
+Identický failure mode existuje napříč rolemi:
+- **Keeper** — sebevědomí bez empirického ověření (= tento self_read example)
+- **Manager** — sebevědomí bez živého vlákna user-contentu (= role-manager PLAYBOOK #13)
+- **Integration-dev** — sebevědomí z grep místo runtime evidence
+
+**Společný self-check po compactu:** "Je v mém kontextu reálný materiál, nebo jen pointery na něj?" Pokud "jen pointery" → načíst materiál PŘED dalším rozhodnutím.
+
 ## Single sentence (= když zapomeneš všechno ostatní)
 
 > **Memory drift chytíš jen empirickým testem proti živému systému, ne čtením vlastní paměti. I jako keeper.**
