@@ -35,7 +35,7 @@ Pro routine: self-check + manager spot-check.
 
 ## 2.4. Dedikovaný drift/memory-guardian pro tým 3+ peerů
 
-**Silný konvergenční signál:** oba praktické zdroje (jira-architect tým + Manager BridgT) nezávisle zkonvergovaly na dedikovaný memory/drift-guardian peer.
+**Silný konvergenční signál:** dva nezávislé praktické zdroje nezávisle zkonvergovaly na dedikovaný memory/drift-guardian peer.
 
 **Role guardian peera:**
 - Single-writer pro shared memory (proti konfliktům + duplikátům)
@@ -56,23 +56,23 @@ Viz `claude-bridge-role-memory-keeper` skill pro detail.
 
 | zdroj | úroveň |
 |---|---|
-| Manager (radioham/bridgt) | princip: gating dle blast-radius × outward, ne sandbox/prod |
-| jira-architect (HMH) | hard-rule v CLAUDE.md zapsané PO incidentu |
-| jira-integration-dev (HMH) | operational pre-flight check |
+| orchestrátor | princip: gating dle blast-radius × outward, ne sandbox/prod |
+| worker (architektura) | hard-rule v CLAUDE.md zapsané PO incidentu |
+| worker (integrace) | operational pre-flight check |
 
 ### Pravidlo
 
 > **Před JAKOUKOLI hromadnou operací / write-testem na JAKÝKOLI systém (i sandbox) ověř:**
 > 1. Co operace spustí **downstream** (eventy / webhooky / integrace).
-> 2. Že je downstream **izolovaný** (nevedie na prod / outward systémy).
+> 2. Že je downstream **izolovaný** (nevede na prod / outward systémy).
 > 3. Sandbox z prod-restoru **dědí ostrá napojení** — webhooky, scheduled triggery, sync queues.
 
-### Canonical incident (HMH 2026-06-29)
+### Modelový incident
 
-Worker spustil migrační test na sandboxu (jira2):
+Worker spustil hromadný write-test na sandboxu:
 - **Sandbox-vs-prod osa řekla:** "bezpečné, je to sandbox."
-- **Reálný blast-radius:** jira2 sandbox zdědil z prod-restoru webhooky mířící na **prod Mantis**.
-- **Výsledek:** test unikl na produkci, **reopenul 16 prod tiketů.**
+- **Reálný blast-radius:** sandbox vznikl z obnovy produkce a zdědil webhooky mířící na **produkční systém**.
+- **Výsledek:** test unikl na produkci a způsobil tam nechtěné změny.
 
 **Závěr:** "sandbox = autonomní" je nebezpečná binárka. **Sandbox může mít ostrá napojení.** Vždy ověř, nikdy nepředpokládej izolaci.
 
@@ -128,7 +128,7 @@ Když je cíl **report**: subagent OK.
 - Vynést rozdíl + vyžádat empirickou pečeť (dryRun, log, DB count).
 - Konvergence > kompromis.
 
-Příklad: jira-admin "0 transitions" vs integration-dev "webhook fired" → apache log rozhodl.
+Příklad: jeden worker hlásí "0 změn" vs druhý worker "událost proběhla" → rozhodl až nezávislý log.
 
 ## 7. FREEZE artefaktu při "ready-for-gate"
 
@@ -272,13 +272,13 @@ Skim pro orientaci OK, ale závěrečné rozhodování musí jet na load.
 Identický failure mode existuje napříč rolemi — **tři role, tři nezávislé incidenty, jeden pattern:**
 
 1. **Manager** — sebevědomí bez živého vlákna user-contentu (= tento bod, post-compact).
-   *Evidence:* HMH tým, 2026-06-30 — orchestrátor 2× prohlásil "re-aligned" než byl reálně naložený.
+   *Evidence z praxe:* orchestrátor 2× prohlásil "re-aligned" dřív, než byl reálně naložený materiálem.
 
 2. **Memory-keeper** — sebevědomí bez empirického ověření (= "self_read drift" cautionary v role-memory-keeper skillu).
-   *Evidence:* HMH tým — keeper recykloval stale `self_read` claim jako absolutní fakt, dokud ho někdo nedonutil empiricky otestovat.
+   *Evidence z praxe:* keeper recykloval zastaralý claim jako absolutní fakt, dokud ho někdo nedonutil empiricky otestovat.
 
 3. **Integration-dev** — sebevědomí z grep místo runtime evidence (= "merged ≠ called").
-   *Evidence:* HMH tým — move-spike označil plugin endpoint za "broken" protože `javap | head` uřízl výpis `migrate*` metod. Žádný runtime test. Až runtime PoC na jira2 ukázal, že API funguje → falešný "broken" závěr. **Pravidlo: neZávěrovat 'broken' z API-absence bez runtime testu.**
+   *Evidence z praxe:* endpoint označen za "broken" na základě neúplného výpisu (oříznutý nástrojem) místo runtime testu. Runtime PoC pak ukázal, že API funguje → falešný "broken" závěr. **Pravidlo: nezávěrovat 'broken' z API-absence bez runtime testu.**
 
 **Společný self-check (= verbatim věta napříč skilly):**
 

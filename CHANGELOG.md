@@ -4,79 +4,36 @@ All notable changes to this project are documented here. Format follows [Keep a 
 
 ## [0.7.6] — 2026-06-30
 
-### Updated — Cross-role meta-pattern: real-world evidence for integration-dev leg
+### Changed
 
-jira-architect (HMH team) follow-up: the third leg of the "confidence without substance" meta-pattern (= integration-dev / "merged ≠ called") now has concrete evidence.
-
-**Move-spike incident:** plugin endpoint declared "broken" because `javap | head` truncated the output of `migrate*` methods. Conclusion drawn from API-absence without runtime test. Runtime PoC on jira2 sandbox proved the API works (Cesta C).
-
-**Lesson:** "Don't conclude 'broken' from API-absence without runtime test."
-
-Three roles × three independent incidents × one failure mode = strong convergence signal for the cross-role meta-pattern. PLAYBOOK #13 now carries all three concrete evidence points (manager re-align failure, keeper self_read drift, integration-dev move-spike incident).
-
-### Notes
-
-- No code changes. Skill content only.
+- Role-skill documentation update: expanded the cross-role "confidence without substance" guidance in the bundled role playbooks with a further worked example. No code changes; skill content only.
 
 ## [0.7.5] — 2026-06-30
 
-### Updated — `claude-bridge-role-manager` PLAYBOOK #13 (Resume po compactu)
+### Changed — `claude-bridge-role-manager`: post-compaction recipe
 
-Real-world contribution from jira-architect peer (HMH team, 2026-06-30) — observed 2× failure in their own session where they declared "re-aligned" before actually being loaded with material. Owner relayed for skill integration.
+Added guidance for re-onboarding a role after a context compaction:
 
-**Worker vs orchestrator re-onboard recipe differs:**
+- **Worker peers** re-align against durable artifacts (locked docs, code). The standard recipe (`peer_list`, `peer_inbox_read`, reload canonical docs) is enough.
+- **Managers / orchestrators** also need the live thread: who is waiting on what, the intent behind decisions, the cross-cutting view. That lives in the conversation, not the docs, so docs alone are insufficient.
+- A low `/context` percentage right after a compaction is a warning sign that only a lossy summary was loaded. A compact summary is for orientation, not for reasoning; load the full material before deciding.
 
-- **Worker peer** — substance is durable artifacts (locked docs, code). Re-align against DOCS = aligned. Standard recipe (peer_list, inbox_read, load canonical docs) sufficient.
-- **Manager / orchestrator** — substance is **live thread**: who's waiting on what, owner's nuanced intent, cross-cutting view, **WHY decisions were made**. Lives in CONVERSATION, not docs. Docs alone are insufficient.
+A shared post-compaction self-check ("is real material in my context, or just pointers to it?") was added to both bundled role skills.
 
-**🚩 Red flag for manager: low `/context` % post-compact.** Tell from `/context` structure:
-- ~5-15% total occupancy
-- "Messages" category thin vs others (system/tool noise dominates)
-- = signature of lossy compact-summary + skim, not real material loaded
-
-**Skim ≠ load.** Compact-format one-liners = index for orientation, NOT material for reasoning. Manager may use skim to navigate, but must then load full material before deciding.
-
-**Frugality = false economy.** ~77k tokens on 1M window is trivial. The point of a 1M context window is to carry real material, not pointers.
-
-### Cross-role meta-pattern (added to manager + memory-keeper skills)
-
-Same failure mode exists across roles. All = "confidence without substance" post-compact:
-
-- **Manager** — confidence without live user-content thread
-- **Memory-keeper** — confidence without empirical verification (= `self_read` cautionary)
-- **Integration-dev** — confidence from grep instead of runtime evidence (= "merged ≠ called")
-
-**Shared post-compact self-check:** "Is real material in my context, or just pointers to it?" If "just pointers" → load material before next decision.
-
-Cross-reference added to both `claude-bridge-role-manager` PLAYBOOK #13 and `claude-bridge-role-memory-keeper` SKILL.md (cautionary section). Detail stays in role-manager (single-source per the pointer-not-duplicate principle).
-
-### Notes
-
-- No code changes. Skill content only.
-- No version bump for tools (still 13 tools, same APIs).
+No code changes; skill content only. Tool set unchanged (13 tools, same APIs).
 
 ## [0.7.4] — 2026-06-30
 
 ### Fixed — `peer_context_status` undercount for fresh / post-clear sessions
 
-Real-world smoke test on 5 active peers (jira-architect, jira-admin, jira-transition-head, jira-integration-dev, hmh-memory-keeper) revealed major undercount when a peer's session had recently gone through cache invalidation:
+`peer_context_status` significantly undercounted token usage for sessions that had recently gone through cache invalidation (after `/clear`, autocompact, or session start), in some cases reporting a few percent when the real figure was over 80%.
 
-| peer | cache_read | cache_creation | true `/context` | v0.7.3 returned | v0.7.4 returns |
-|---|---|---|---|---|---|
-| jira-transition-head | 23,060 | **806,186** | ~83% | **2.3%** ❌ | **83.4%** ✓ |
-| jira-integration-dev | 23,060 | **935,683** | ~96% | **2.3%** ❌ | **96.3%** ✓ |
-| jira-admin | 948,901 | 596 | ~95% | 94.9% (~OK) | 94.9% |
-
-**Root cause:** v0.7.0-v0.7.3 used `cache_read_input_tokens` alone. That works for mature cached sessions (cache_read dominates, cache_creation tiny). But after `/clear`, autocompact, or session start, cache is freshly being filled — `cache_creation_input_tokens` carries most of the input, `cache_read` is tiny. The original implementation read the wrong field.
-
-**Fix:** `tokensUsed = cache_read + cache_creation + input + output` — total tokens in context window after the last assistant turn. Empirically matches `/context` across both fresh and mature sessions.
-
-User-reported: "/context ukazuje zcela jiné (pravdivé) hodnoty ve srovnání s tím, co vrací MCP nástroj". Confirmed by raw JSONL inspection.
+- **Root cause:** v0.7.0–v0.7.3 read `cache_read_input_tokens` alone. That works for mature cached sessions where `cache_read` dominates, but in a freshly filling cache most input lands in `cache_creation_input_tokens` while `cache_read` is tiny, so the reported percentage collapsed toward zero.
+- **Fix:** `tokensUsed = cache_read + cache_creation + input + output` — the total tokens in the context window after the last assistant turn. This matches `/context` across both fresh and mature sessions.
 
 ### Tests
 
-- 263 → 265 (+2 covering full-formula sum + missing-field handling).
-- Pre-existing test data updated to use realistic 4-field usage objects.
+- 263 → 265 (+2 covering the full-formula sum and missing-field handling).
 
 ## [0.7.3] — 2026-06-29
 
@@ -159,19 +116,19 @@ Major release — **self-defending context lifecycle** + practitioner-grounded r
 
 ### Added — bundled role skills
 
-Practitioner-grounded playbooks (3 reviewers across 3 different teams):
+Two role playbooks for multi-chat orchestration now ship with the plugin:
 
-- **`claude-bridge-role-manager`** — playbook pro orchestrátora 2-N worker peerů. 11 load-bearing principů (Manager nevyrábí výstup, scale rigor to stakes, gating dle reverzibility×blast-radius×outward, verify, worker output = data, hub-and-spoke + mesh, NEzprůměrovávat neshodu, async crossed messages, no manager-execution, FREEZE artifact, manage upward). 17-section PLAYBOOK.md s detail patterns + cross-machine handoff + peer death recovery. Konvergenční signál: 3 nezávislí praktici z různých týmů zkonvergovaly na stejné patterny (pre-flight downstream isolation, single-writer route-to-keeper, FREEZE artifact, doc-wins-on-conflict).
+- **`claude-bridge-role-manager`** — a playbook for an agent orchestrating 2–N worker peers. Covers dispatch patterns, gating by reversibility / blast-radius / outward-facing impact, verify-don't-guess, treating worker output as data rather than authorization, hub-and-spoke contracts plus mesh consults, handling crossed async messages, a FREEZE-at-ready-for-gate convention, and managing upward to the human. A detailed PLAYBOOK.md adds dispatch templates, pre-flight downstream isolation, anti-patterns, cross-machine handoff, and peer-death recovery.
 
-- **`claude-bridge-role-memory-keeper`** — LIGHT playbook pro dedikovaného memory keeper peera v týmu 3+. 5 load-bearing principů + 8-krok zápis workflow + reconcile-pass workflow. References `claude-bridge-role-manager` PLAYBOOK #10 (= ironicky exemplifikuje princip pointer-not-duplicate).
+- **`claude-bridge-role-memory-keeper`** — a lighter playbook for a dedicated memory-keeper peer in teams of 3+. Five principles (single-writer / route-to-keeper, pointer-not-duplicate, doc-wins-on-conflict, verify-before-write with dedup across senders, reconcile after each coordination round) plus the write and reconcile workflows.
 
 ### Changed
 
-- **Bundle rebuilt** — previous bundle (`dist/bundle.cjs`) was stale from Jun 6, pre-v0.6.1. Self-read fix from commit `0e945dd` now actually shipped.
+- **Bundle rebuilt** so the self-read fix from v0.6.1 actually ships (the published bundle had been stale).
 
-- **Naming convention documented** (`docs/NAMING-CONVENTION.md`) — MCP tools snake_case, skills `claude-bridge-role-*` pro role-based / `claude-bridge-*` pro operational.
+- **Naming convention documented** (`docs/NAMING-CONVENTION.md`) — MCP tools are snake_case; skills use `claude-bridge-role-*` for role-based playbooks and `claude-bridge-*` for operational ones.
 
-- **Existing `claude-bridge` skill SKILL.md updated** — odebrány stale references na `self_read` error (= odstraněn v v0.6.1).
+- **`claude-bridge` skill updated** — removed stale references to the `self_read` error (removed in v0.6.1).
 
 ### Notes
 

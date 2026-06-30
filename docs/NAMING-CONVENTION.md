@@ -64,4 +64,4 @@ Skills používají **kebab-case** s prefixem `claude-bridge-`.
 ## Historie
 
 - **2026-06-29** — Counterpart audit (`peer_set_notify` → `peer_set_notification` rename před release; `claude-bridge-memory-delegate` dropped jako redundantní). Konvence dokumentována v tomto souboru.
-- **2026-06-29** — Skill convention `claude-bridge-role-*` zavedena (vlastník 2026-06-29 návrh, integrováno do 07-todo).
+- **2026-06-29** — Skill convention `claude-bridge-role-*` zavedena.
