@@ -234,7 +234,11 @@ describe("readContextUsage", () => {
 
   test("ignores user events", async () => {
     const lines = [
-      JSON.stringify({ type: "user", message: { content: "hi" }, usage: { cache_read_input_tokens: 99_999 } }),
+      JSON.stringify({
+        type: "user",
+        message: { content: "hi" },
+        usage: { cache_read_input_tokens: 99_999 },
+      }),
       JSON.stringify({
         type: "assistant",
         timestamp: "2026-06-29T10:00:00Z",
