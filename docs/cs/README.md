@@ -1,16 +1,16 @@
 # claude-bridge
 
-🇨🇿 Česky · 🇬🇧 [English](README.md)
+🇨🇿 Česky · 🇬🇧 [English](../../README.md)
 
 Plugin pro Claude Code, určený primárně pro VS Code, který umožňuje dvěma a více běžícím chatům/agentům ve VS Code spolu komunikovat a nahlížet si navzájem do historie a používat historii chatů jako uživateli i agentům přístupnou knihovnu. Bez copy-paste mezi okny, bez vlastního serveru, bez API klíčů — vše přes lokální filesystem.
 
-[![claude-bridge demo — jeden manager a tři worker chaty spolupracují živě v jednom okně VS Code](assets/hero.gif)](https://youtu.be/Oe_YQqUNnsg)
+[![claude-bridge demo — jeden manager a tři worker chaty spolupracují živě v jednom okně VS Code](../../assets/hero.gif)](https://youtu.be/Oe_YQqUNnsg)
 
 <sub>▶ **[Celé demo](https://youtu.be/Oe_YQqUNnsg)** — jeden manager rozešle úkoly třem workerům v jednom okně **VS Code**, ti odpovídají v reálném čase, a ty můžeš číst nebo prohledávat napříč všemi chaty.</sub>
 
 Tvůrce: [Zed Michalek](https://github.com/michalekz) z [oXyShop](https://oxyshop.cz). MIT licence.
 
-**Stavěné pro multi-chat workflow ve VS Code** — měj několik Claude Code chatů otevřených vedle sebe v integrovaném terminálu a nech je spolupracovat. Funguje stejně dobře i z čistého `claude` terminálu; některé vlastnosti se trochu liší — viz [CLI vs VS Code](docs/cs/INSTALL.md#cli-vs-vs-code-extension).
+**Stavěné pro multi-chat workflow ve VS Code** — měj několik Claude Code chatů otevřených vedle sebe v integrovaném terminálu a nech je spolupracovat. Funguje stejně dobře i z čistého `claude` terminálu; některé vlastnosti se trochu liší — viz [CLI vs VS Code](INSTALL.md#cli-vs-vs-code-extension).
 
 ## Proč to vzniklo
 
@@ -40,7 +40,7 @@ Pro agenty ve specifických rolích jsou součástí pluginu dva praktickými zk
 
 - **`claude-bridge-role-memory-keeper`** — LIGHT playbook pro dedikovaného memory-keeper peera v týmech 3+. 5 load-bearing principů (single-writer / route-to-keeper; pointer-not-duplicate; doc-wins-on-conflict + escalate-doc-error; verify-before-write + dedup-across-senders; reconcile-pass po každém koordinačním kole). 8-krok zápis workflow + reconcile-pass workflow.
 
-Oba skilly vznikly z 3-way konvergence napříč nezávislými praktickými týmy. Viz [USAGE.md](docs/USAGE.md).
+Oba skilly vznikly z 3-way konvergence napříč nezávislými praktickými týmy. Viz [USAGE.md](USAGE.md).
 
 ## Kdy se to hodí
 
@@ -187,7 +187,7 @@ Plugin běží **lokálně, na jednom stroji**. Inbox jde přes filesystem, ne p
 
 **Out-of-the-box: piggyback doručení funguje bez nastavení.** Pošleš `peer_ask` a příjemce ho uvidí při svém příštím tool callu. Garantované doručení, žádná konfigurace.
 
-**Volitelný upgrade: real-time push channels.** Pro inline `<channel>` rendering hned při doručení zprávy potřebuješ tři věci: `channelsEnabled: true` v user nebo managed settings, plugin v `allowedChannelPlugins`, a `--channels plugin:claude-bridge@<marketplace>` při startu Claude Code. Teams/Enterprise účty potřebují admin enable v managed settings; Console účty si to mohou nastavit user-level. Základní setup je v [INSTALL](docs/cs/INSTALL.md#real-time-push--proč-a-jak); [CHANNELS-TROUBLESHOOTING](docs/cs/CHANNELS-TROUBLESHOOTING.md) je hloubková reference, když něco neklape.
+**Volitelný upgrade: real-time push channels.** Pro inline `<channel>` rendering hned při doručení zprávy potřebuješ tři věci: `channelsEnabled: true` v user nebo managed settings, plugin v `allowedChannelPlugins`, a `--channels plugin:claude-bridge@<marketplace>` při startu Claude Code. Teams/Enterprise účty potřebují admin enable v managed settings; Console účty si to mohou nastavit user-level. Základní setup je v [INSTALL](INSTALL.md#real-time-push--proč-a-jak); [CHANNELS-TROUBLESHOOTING](CHANNELS-TROUBLESHOOTING.md) je hloubková reference, když něco neklape.
 
 **VS Code Extension má lazy tab activation.** Po reload window se MCP server v chat tabu spustí teprve při prvním kliknutí na záložku. Než klikneš, chat není v `peer_list` vidět. V terminálu (CLI) tento limit není — chat je viditelný hned po startu.
 
@@ -195,13 +195,13 @@ Plugin běží **lokálně, na jednom stroji**. Inbox jde přes filesystem, ne p
 
 ## Co kde najdeš dál
 
-- **[Instalace a konfigurace](docs/cs/INSTALL.md)** — instalace z marketplace, channels nastavení (dva nezávislé gaty), CLI vs VS Code Extension srovnání, cross-platform shell snippety, troubleshooting.
-- **[Channels troubleshooting](docs/cs/CHANNELS-TROUBLESHOOTING.md)** — hloubková reference, když real-time push nefunguje. Three-gate model, OS-specific pasti (Linux/macOS vs Windows), katalog chybových symptomů, filesystem-trace diagnostická procedura.
-- **[Podrobný návod k použití](docs/cs/USAGE.md)** — všechny nástroje včetně argumentů, příkladů a workflow vzorů.
-- **[Konvence pojmenování](docs/NAMING-CONVENTION.md)** — jak se pojmenovávají MCP nástroje (snake_case) a balené skills (`claude-bridge-role-*`).
-- **[Seznam změn](CHANGELOG.md)** — historie verzí.
-- **[Bezpečnost a soukromí](SECURITY.md)** — co plugin čte, co zapisuje, hlášení zranitelností.
-- **[Poděkování](CREDITS.md)** — open-source projekty, z nichž se plugin inspiroval.
+- **[Instalace a konfigurace](INSTALL.md)** — instalace z marketplace, channels nastavení (dva nezávislé gaty), CLI vs VS Code Extension srovnání, cross-platform shell snippety, troubleshooting.
+- **[Channels troubleshooting](CHANNELS-TROUBLESHOOTING.md)** — hloubková reference, když real-time push nefunguje. Three-gate model, OS-specific pasti (Linux/macOS vs Windows), katalog chybových symptomů, filesystem-trace diagnostická procedura.
+- **[Podrobný návod k použití](USAGE.md)** — všechny nástroje včetně argumentů, příkladů a workflow vzorů.
+- **[Konvence pojmenování](../NAMING-CONVENTION.md)** — jak se pojmenovávají MCP nástroje (snake_case) a balené skills (`claude-bridge-role-*`).
+- **[Seznam změn](../../CHANGELOG.md)** — historie verzí.
+- **[Bezpečnost a soukromí](../../SECURITY.md)** — co plugin čte, co zapisuje, hlášení zranitelností.
+- **[Poděkování](../../CREDITS.md)** — open-source projekty, z nichž se plugin inspiroval.
 
 ## Dotazy a nápady
 
@@ -220,8 +220,8 @@ Našel jsi bug? Založ radši [Issue](https://github.com/michalekz/claude-bridge
 [claude-peers-mcp](https://github.com/louislva/claude-peers-mcp) (push channel),
 [claude-relay](https://github.com/innestic/claude-relay) (factory closure pattern),
 [multiclaude](https://github.com/dlorenc/multiclaude) (fázové plánování).
-Plné uvedení zdrojů a poznámky k designu v [CREDITS.md](CREDITS.md).
+Plné uvedení zdrojů a poznámky k designu v [CREDITS.md](../../CREDITS.md).
 
 ## Licence
 
-MIT, viz [LICENSE](LICENSE).
+MIT, viz [LICENSE](../../LICENSE).

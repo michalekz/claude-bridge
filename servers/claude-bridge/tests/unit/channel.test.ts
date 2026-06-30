@@ -18,7 +18,7 @@ function envelope(overrides: Partial<MessageEnvelope> = {}): MessageEnvelope {
     toName: "mantis",
     kind: "ask",
     sentAt: "2026-05-25T10:00:00.000Z",
-    content: "kolik je open ticketů?",
+    content: "how many open tickets?",
     ...overrides,
   };
 }
@@ -34,7 +34,7 @@ describe("buildChannelNotification", () => {
     const n = buildChannelNotification(envelope());
     expect(n.params.content).toContain("coordinator");
     expect(n.params.content).toContain("(ask, msg msg-abc)");
-    expect(n.params.content).toContain("kolik je open ticketů?");
+    expect(n.params.content).toContain("how many open tickets?");
   });
 
   test("content falls back to id when fromName is missing", () => {

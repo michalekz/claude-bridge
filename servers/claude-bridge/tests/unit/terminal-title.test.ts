@@ -73,9 +73,9 @@ describe("emitTerminalTitle", () => {
   test("writes OSC 2 escape sequence to the target path", async () => {
     const target = join(tmp, "fake-tty");
     await writeFile(target, ""); // pre-create so openSync("w") truncates predictably
-    emitTerminalTitle(target, "Marketingový stratég");
+    emitTerminalTitle(target, "Strategist 🎯");
     const content = await readFile(target, "utf-8");
-    expect(content).toBe("\x1b]2;Marketingový stratég\x07");
+    expect(content).toBe("\x1b]2;Strategist 🎯\x07");
   });
 
   test("silently fails on non-existent path (no throw)", () => {

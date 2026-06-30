@@ -358,6 +358,6 @@ Workaround: použij specifičtější `query`, nebo zužuj scope (přejdi z `all
 
 - **[Podrobný návod k použití](USAGE.md)** — všechny nástroje, argumenty, vzory pro typické workflows.
 - **[Konvence pojmenování](../NAMING-CONVENTION.md)** — jak se pojmenovávají MCP nástroje a balené skills.
-- **[Hlavní README](../../README.cs.md)** — krátké shrnutí toho, co plugin dělá a komu se hodí.
+- **[Hlavní README](README.md)** — krátké shrnutí toho, co plugin dělá a komu se hodí.
 
 Plugin navíc obsahuje role-playbook skills pro multi-chat workflows: `claude-bridge-role-manager` (orchestrace worker peerů) a `claude-bridge-role-memory-keeper` (single-writer sdílená paměť). Kdy je načíst, viz [USAGE](USAGE.md).

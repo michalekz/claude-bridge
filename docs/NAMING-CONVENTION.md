@@ -1,67 +1,67 @@
 # Naming convention — claude-bridge
 
-Konvence pro MCP tools a skills v claude-bridge pluginu. Verifikováno auditem 2026-06-29.
+Conventions for MCP tools and skills in the claude-bridge plugin. Verified by audit on 2026-06-29.
 
 ## MCP tools
 
-Tools používají **snake_case**.
+Tools use **snake_case**.
 
-### Kategorie podle vzoru
+### Categories by pattern
 
-| pattern | použití | příklad |
+| pattern | usage | example |
 |---|---|---|
-| `list_<entities>` | čtení kolekce | `list_projects`, `list_sessions` |
-| `<entity>_<noun>` | statistika single entity | `session_stats`, `peer_context_status` |
-| `peer_set_<noun>` | self-write (peer si nastavuje vlastní config) | `peer_set_context_guard`, `peer_set_notification` |
+| `list_<entities>` | read a collection | `list_projects`, `list_sessions` |
+| `<entity>_<noun>` | statistics for a single entity | `session_stats`, `peer_context_status` |
+| `peer_set_<noun>` | self-write (a peer sets its own config) | `peer_set_context_guard`, `peer_set_notification` |
 | `peer_<noun>_read` | self-read | `peer_inbox_read` |
 | `peer_<noun>_<read\|search>` | cross-peer read | `peer_chat_read`, `peer_chat_search` |
-| `peer_<verb>` | komunikační akce | `peer_ask`, `peer_reply` |
+| `peer_<verb>` | communication action | `peer_ask`, `peer_reply` |
 
-### Pravidla
+### Rules
 
-- **Konsistence sloves a podstatných jmen:** Tool name končí **noun**, ne verbem. `peer_set_notification` ✓, ~~`peer_set_notify`~~ ✗.
-- **`peer_set_*` = self-only:** Tools s prefixem `peer_set_` operují vždy na vlastní session peera (= nemůžeš nastavit konfiguraci cizího peera). Tool s parametrem `to` může cross-peer (`peer_context_status`).
-- **`peer_*_read` / `peer_*_search` může být cross-peer:** Tyto akce mají `to` parametr a čtou jiný peer's data.
-- **Komunikační verby:** `peer_ask` (nová zpráva), `peer_reply` (odpověď). Pro budoucí `peer_broadcast` platí stejný pattern (`peer_<verb>`).
+- **Consistent verbs and nouns:** A tool name ends with a **noun**, not a verb. `peer_set_notification` ✓, ~~`peer_set_notify`~~ ✗.
+- **`peer_set_*` = self-only:** Tools with the `peer_set_` prefix always operate on the peer's own session (you cannot set another peer's config). A tool with a `to` parameter may be cross-peer (`peer_context_status`).
+- **`peer_*_read` / `peer_*_search` may be cross-peer:** These actions take a `to` parameter and read another peer's data.
+- **Communication verbs:** `peer_ask` (new message), `peer_reply` (response). A future `peer_broadcast` follows the same pattern (`peer_<verb>`).
 
-### Známé výjimky (legacy)
+### Known exceptions (legacy)
 
-| tool | proč nesedí | rozhodnutí |
+| tool | why it doesn't fit | decision |
 |---|---|---|
-| `peer_list` | Měl by být `list_peers` pro souznění s `list_projects`/`list_sessions`. | **Keep** — published API od v0.2.0, rename = breaking change. Zvážit alias + deprecation v MAJOR (v1.0+). |
+| `peer_list` | Should be `list_peers` to align with `list_projects`/`list_sessions`. | **Keep** — published API since v0.2.0, rename = breaking change. Consider an alias + deprecation in a MAJOR release (v1.0+). |
 
 ## Skills
 
-Skills používají **kebab-case** s prefixem `claude-bridge-`.
+Skills use **kebab-case** with the `claude-bridge-` prefix.
 
-### Kategorie
+### Categories
 
-| pattern | použití | příklad |
+| pattern | usage | example |
 |---|---|---|
 | `claude-bridge` | top-level intro / index skill | `claude-bridge` |
-| `claude-bridge-role-<role-name>` | role-based playbook (= identita peera v týmu) | `claude-bridge-role-manager`, `claude-bridge-role-memory-keeper` |
+| `claude-bridge-role-<role-name>` | role-based playbook (= a peer's identity in the team) | `claude-bridge-role-manager`, `claude-bridge-role-memory-keeper` |
 | `claude-bridge-<task>` | operational pattern / specific task | `claude-bridge-cleanup` |
 
 ### Decision rule
 
-- **Role-based** = skill popisuje **kdo peer je** v týmu (manager, memory-keeper, integration-dev, test-engineer, ...). Použij `claude-bridge-role-*` prefix.
-- **Operational** = skill popisuje **co peer dělá** v konkrétní úloze (cleanup before compact, ...). Použij `claude-bridge-*` bez `-role-`.
+- **Role-based** = the skill describes **who the peer is** in the team (manager, memory-keeper, integration-dev, test-engineer, ...). Use the `claude-bridge-role-*` prefix.
+- **Operational** = the skill describes **what the peer does** in a specific task (cleanup before compact, ...). Use `claude-bridge-*` without `-role-`.
 
-### Pravidla
+### Rules
 
-- **No "-agent" suffix:** Všechny skilly jsou pro agenty, "-agent" je redundantní. `claude-bridge-role-manager` ✓, ~~`claude-bridge-role-managing-agent`~~ ✗.
-- **No skill bez prefix `claude-bridge-`:** Plugin's skills musí mít prefix, ať se v multi-plugin marketplace nepleta.
-- **Role-name = role v týmu**, ne specializace. "manager" = generic orchestrator role; "memory-keeper" = specialista na shared memory. Ne příliš úzké názvy (nepoužívej "ticket-tracker" — to už je business-doménový, ne universal role).
+- **No "-agent" suffix:** All skills are for agents, so "-agent" is redundant. `claude-bridge-role-manager` ✓, ~~`claude-bridge-role-managing-agent`~~ ✗.
+- **No skill without the `claude-bridge-` prefix:** The plugin's skills must carry the prefix so they don't clash in a multi-plugin marketplace.
+- **Role-name = role in the team**, not a specialization. "manager" = generic orchestrator role; "memory-keeper" = specialist for shared memory. Avoid overly narrow names (don't use "ticket-tracker" — that is business-domain-specific, not a universal role).
 
-## Proces přidání nového tool / skill
+## Process for adding a new tool / skill
 
-1. **Pojmenuj podle konvence výše.** Pokud nový pattern (= žádná z kategorií nesedí), nejdřív rozšiř tuto konvenci.
-2. **Audit existující jména** — `grep -r "<navrhované jméno>"` v `servers/` a `local/`, vyhni se kolizi.
-3. **Pro tools:** přidej do `servers/claude-bridge/src/mcp/tools.ts` + zod schéma + handler.
-4. **Pro skills:** přidej do `skills/<skill-name>/SKILL.md` + případně `PLAYBOOK.md` (= on-demand detail).
-5. **Update této konvence** — pokud zavádíš nový pattern (= nová kategorie), zdokumentuj.
+1. **Name it according to the convention above.** If it's a new pattern (= none of the categories fit), first extend this convention.
+2. **Audit existing names** — `grep -r "<proposed name>"` in `servers/` and `local/`, avoid collisions.
+3. **For tools:** add to `servers/claude-bridge/src/mcp/tools.ts` + zod schema + handler.
+4. **For skills:** add to `skills/<skill-name>/SKILL.md` + optionally `PLAYBOOK.md` (= on-demand detail).
+5. **Update this convention** — if you introduce a new pattern (= a new category), document it.
 
-## Historie
+## History
 
-- **2026-06-29** — Counterpart audit (`peer_set_notify` → `peer_set_notification` rename před release; `claude-bridge-memory-delegate` dropped jako redundantní). Konvence dokumentována v tomto souboru.
-- **2026-06-29** — Skill convention `claude-bridge-role-*` zavedena.
+- **2026-06-29** — Counterpart audit (`peer_set_notify` → `peer_set_notification` rename before release; `claude-bridge-memory-delegate` dropped as redundant). Convention documented in this file.
+- **2026-06-29** — Skill convention `claude-bridge-role-*` introduced.

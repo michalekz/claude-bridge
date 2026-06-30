@@ -6,8 +6,8 @@ const log = makeLogger("terminal-title");
 
 /**
  * Emit OSC 2 escape sequences to the parent process's controlling tty so
- * the terminal tab title reflects the running peer's ai-title (e.g. "Marketingový
- * stratég" instead of "claude" or "bash").
+ * the terminal tab title reflects the running peer's ai-title (e.g. "Marketing
+ * strategist" instead of "claude" or "bash").
  *
  * Targeted scenario: CLI-launched Claude Code in a VS Code integrated terminal
  * (or any standard terminal emulator). The plugin process itself has no tty —

@@ -122,7 +122,7 @@ describe("peer_ask + peer_inbox_read", () => {
 
     const askResult = await peerAskTool(coordinator, {
       to: "mantis",
-      content: "kolik je open ticketů?",
+      content: "how many open tickets?",
     });
     const { ok: askOk, payload: askPayload } = parseResult(askResult);
     expect(askOk).toBe(true);
@@ -139,7 +139,7 @@ describe("peer_ask + peer_inbox_read", () => {
     expect(messages[0]?.["id"]).toBe(msgId);
     expect(messages[0]?.["from"]).toBe(coordinator.self.id);
     expect(messages[0]?.["fromName"]).toBe("coordinator");
-    expect(messages[0]?.["content"]).toBe("kolik je open ticketů?");
+    expect(messages[0]?.["content"]).toBe("how many open tickets?");
   });
 
   test("peer_ask accepts id directly (no name lookup)", async () => {
@@ -327,9 +327,9 @@ describe("peer_reply (correlation via inReplyTo + done/)", () => {
   });
 
   test("reply works when original still in pending/ (push delivered, not drained)", async () => {
-    // Simulates the channel-push path: zpráva dorazí inline jako <channel> tag,
-    // ale piggyback ji ještě nedrainoval (still in pending/). peer_reply musí
-    // umět najít originál a archivovat ho on the fly.
+    // Simulates the channel-push path: the message arrives inline as a <channel> tag,
+    // but piggyback hasn't drained it yet (still in pending/). peer_reply must
+    // be able to find the original and archive it on the fly.
     const coordinator = await makeContext(baseDir, "coordinator");
     const mantis = await makeContext(baseDir, "mantis");
     await registerInRegistry(coordinator, mantis);
@@ -337,7 +337,7 @@ describe("peer_reply (correlation via inReplyTo + done/)", () => {
     const ask = await peerAskTool(coordinator, { to: "mantis", content: "ping" });
     const askMsgId = parseResult(ask).payload["msgId"] as string;
 
-    // NOTE: záměrně NEvoláme peerInboxReadTool — zpráva zůstává v pending/
+    // NOTE: intentionally do NOT call peerInboxReadTool — the message stays in pending/
     expect(await mantis.inbox.countPending(mantis.self.id)).toBe(1);
     expect((await mantis.inbox.listDone(mantis.self.id)).length).toBe(0);
 
@@ -349,11 +349,11 @@ describe("peer_reply (correlation via inReplyTo + done/)", () => {
     expect(ok).toBe(true);
     expect(payload["inReplyTo"]).toBe(askMsgId);
 
-    // Post-condition: peer_reply by měl archivovat původní zprávu (pending → done)
+    // Post-condition: peer_reply should archive the original message (pending → done)
     expect(await mantis.inbox.countPending(mantis.self.id)).toBe(0);
     expect((await mantis.inbox.listDone(mantis.self.id)).length).toBe(1);
 
-    // Coordinator dostane reply normálně
+    // Coordinator receives the reply normally
     const incoming = await peerInboxReadTool(coordinator);
     const msgs = parseResult(incoming).payload["messages"] as Array<Record<string, unknown>>;
     expect(msgs[0]?.["content"]).toBe("pong via push");

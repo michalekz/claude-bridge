@@ -18,13 +18,13 @@ const SERVER_NAME = "claude-bridge";
 const SERVER_VERSION = "0.7.6";
 
 const INSTRUCTIONS = `
-claude-bridge — MCP server pro orchestraci napříč Claude Code chaty.
+claude-bridge — MCP server for orchestration across Claude Code chats.
 
 MCP tools:
-- list_projects, list_sessions (with includeActive + includeMeta for aiTitle/event counts), session_stats — read-only přístup k JSONL historii.
-- peer_list, peer_ask, peer_reply, peer_inbox_read — file-based komunikace s ostatními peery.
-- peer_chat_read — náhled do session JSONL jiného peera (last N zpráv, since timestamp, in-session query/regex).
-- peer_chat_search — cross-session search v rámci current project (default) nebo všech projektů (CLAUDE_BRIDGE_ALLOW_ALL_PROJECTS=1).
+- list_projects, list_sessions (with includeActive + includeMeta for aiTitle/event counts), session_stats — read-only access to JSONL history.
+- peer_list, peer_ask, peer_reply, peer_inbox_read — file-based communication with other peers.
+- peer_chat_read — view into another peer's session JSONL (last N messages, since timestamp, in-session query/regex).
+- peer_chat_search — cross-session search within the current project (default) or all projects (CLAUDE_BRIDGE_ALLOW_ALL_PROJECTS=1).
 - peer_context_status (v0.7.0+) — autocompact-relevant context %, model, risk bucket per peer (self / single / array / 'all').
 - peer_set_context_guard (v0.7.0+) — own threshold-guard (warn/critical) + notify subscribers.
 - peer_set_notification (v0.7.0+) — own idle-beep notification.
@@ -35,16 +35,16 @@ Bundled skills (load detail via skill name):
 - claude-bridge-role-manager — orchestrator of 2-N worker peers
 - claude-bridge-role-memory-keeper — single-writer for shared memory
 
-Identita peerů (v0.2.0):
-- Každý peer má stable id (Claude Code sessionId UUID) + display name (může kolidovat).
-- peer_list vrací oba. peer_ask { to } přijímá id nebo name.
-- Pokud name matchuje > 1 peera (typicky 2 chaty ve stejném cwd než se naplní ai-title),
-  vrátí ambiguous_peer error s výčtem id — pošli pak by id.
+Peer identity (v0.2.0):
+- Each peer has a stable id (Claude Code sessionId UUID) + a display name (which may collide).
+- peer_list returns both. peer_ask { to } accepts an id or a name.
+- If a name matches > 1 peer (typically 2 chats in the same cwd before the ai-title is set),
+  it returns an ambiguous_peer error listing the ids — then send by id.
 
-Doručování zpráv:
-- Když dorazí zpráva od peer chatu, přijde jako <channel source="claude-bridge" from="..." msgId="..." kind="ask|reply"> tag.
-  Pokud kind="ask", odpověz pomocí peer_reply s inReplyTo=<msgId>. Pokud kind="reply", jen ji vezmi na vědomí.
-- Bez --channels flagu (piggyback fallback): každý úspěšný tool call drainuje inbox a appendne pending zprávy do výstupu.
+Message delivery:
+- When a message arrives from a peer chat, it comes as a <channel source="claude-bridge" from="..." msgId="..." kind="ask|reply"> tag.
+  If kind="ask", reply with peer_reply using inReplyTo=<msgId>. If kind="reply", just take note of it.
+- Without the --channels flag (piggyback fallback): every successful tool call drains the inbox and appends pending messages to the output.
 
 Layout:
 - ~/.claude-bridge/inbox/<sessionId>/{pending,done}/<msg-id>.json

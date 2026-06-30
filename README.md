@@ -1,6 +1,6 @@
 # claude-bridge
 
-🇬🇧 English · 🇨🇿 [Česky](README.cs.md)
+🇬🇧 English · 🇨🇿 [Česky](docs/cs/README.md)
 
 > Claude Code plugin built primarily for VS Code — lets two or more chats/agents in VS Code talk to each other, look into each other's history, and use that history as a library accessible to both users and agents. No copy-paste between windows, no server, no API keys — everything goes through the local filesystem.
 

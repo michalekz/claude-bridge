@@ -599,5 +599,5 @@ Většinu problémů řeší [INSTALL — troubleshooting sekce](INSTALL.md#čas
 
 ## Kam dál
 
-- **[Hlavní README](../../README.cs.md)** — krátké shrnutí plugin.
+- **[Hlavní README](README.md)** — krátké shrnutí plugin.
 - **[Instalace a konfigurace](INSTALL.md)** — jak plugin přidat do Claude Code a nastavit real-time push.

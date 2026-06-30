@@ -471,7 +471,7 @@ Two practitioner-grounded playbooks ship with the plugin. Invoke via the skill n
 
 Playbook for an agent orchestrating 2-N worker peers via claude-bridge. 11 load-bearing principles + tool quick-reference + minimal-viable-loop walkthrough + reference to PLAYBOOK.md for detail (17 sections: dispatch templates, gate workflow, pre-flight downstream isolation, scale-rigor, adversarial-refute, anti-patterns, memory model, onboarding, incident response, cross-machine handoff, peer death recovery).
 
-**Triggers:** "managing agent role", "orchestruju tým peerů", "dispatch úkolu peerům", "gate workflow", multi-peer orchestration.
+**Triggers:** "managing agent role", "I'm orchestrating a team of peers", "dispatch a task to peers", "gate workflow", multi-peer orchestration.
 
 ### `claude-bridge-role-memory-keeper`
 

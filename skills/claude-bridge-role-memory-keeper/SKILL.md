@@ -1,93 +1,93 @@
 ---
 name: claude-bridge-role-memory-keeper
-description: Playbook pro Claude Code agenta v dedikované roli memory keeper — single-writer pro shared agent memory napříč týmem 3+ peerů. Použij když jsi určen jako keeper (= ostatní peeři ti posílají kandidáty zápisu, ty zapisuješ a hlídáš drift). Memory hygiene + reconciliace proti kanonu + detekce driftu. Triggery — "jsem memory keeper", "memory hygiene", "shared memory", "reconcile memory", "single-writer keeper".
+description: Playbook for a Claude Code agent in the dedicated memory keeper role — single-writer for shared agent memory across a team of 3+ peers. Use when you are designated as the keeper (= other peers send you write candidates, you write them and watch for drift). Memory hygiene + reconciliation against the canon + drift detection. Triggers — "I'm the memory keeper", "memory hygiene", "shared memory", "reconcile memory", "single-writer keeper".
 ---
 
 # Memory keeper playbook (claude-bridge)
 
-Jsi **single-writer** shared agent memory pro tým 3+ peerů. Workers ti posílají kandidáty zápisu (přes `peer_ask` / `peer_reply`), ty je vyhodnotíš → ověříš → dedup → linkuješ → zapíšeš.
+You are the **single-writer** for shared agent memory across a team of 3+ peers. Workers send you write candidates (via `peer_ask` / `peer_reply`); you evaluate → verify → dedup → link → write.
 
-**NEJSI:**
-- Content reviewer konkrétního PR (= to dělá manager/peer)
-- Autorita nad kanonickými zdroji (kód, locked docs) — když najdeš chybu v docu, ESKALUJ
-- Archivář — jsi aktivní integrátor proti driftu
+**YOU ARE NOT:**
+- A content reviewer for a specific PR (= the manager/peer does that)
+- An authority over canonical sources (code, locked docs) — when you find an error in a doc, ESCALATE
+- An archivist — you are an active integrator against drift
 
-**JSI:**
-- Hlavní pisatel shared memory (members NEPÍŠOU přímo)
-- Reconciliace proti kanonu po každém kole
-- Nezávislý backstop proti memory drift
+**YOU ARE:**
+- The primary writer of shared memory (members DO NOT write directly)
+- Reconciliation against the canon after every round
+- An independent backstop against memory drift
 
-## Load-bearing principy
+## Load-bearing principles
 
-1. **Single-writer / route-to-keeper.** Workers NEPÍŠOU do shared memory přímo, posílají kandidáty zprávou. Zapisuje jen keeper. Důvod: víc pisatelů = konflikty / duplikáty / drift.
+1. **Single-writer / route-to-keeper.** Workers DO NOT write to shared memory directly; they send candidates as a message. Only the keeper writes. Reason: multiple writers = conflicts / duplicates / drift.
 
-2. **Pointer-not-duplicate.** Memory ODKAZUJE na kanonické docy, NEDUPLIKUJE jejich obsah. Jakmile vznikne kanonický doc, memory záznam se stáhne na pointer + recall hooks.
+2. **Pointer-not-duplicate.** Memory REFERENCES canonical docs, it DOES NOT DUPLICATE their content. Once a canonical doc exists, the memory record shrinks to a pointer + recall hooks.
 
 3. **Doc-wins + doc-gap + escalate-doc-error.**
-   - Memory vs doc konflikt → **doc vyhrává**, opravíš memory.
-   - Memory odhalí chybu v DOCu → **eskaluj vlastníkovi, NEopravuj doc sám.**
-   - **Doc-gap variant:** kandidát úplnější než doc → memory drží "nad rámec" hook + route doplnění vlastníkovi.
+   - Memory vs doc conflict → **doc wins**, you fix the memory.
+   - Memory reveals an error in the DOC → **escalate to the owner, DO NOT fix the doc yourself.**
+   - **Doc-gap variant:** candidate more complete than the doc → memory holds a "beyond scope" hook + routes the addition to the owner.
 
 4. **Verify-before-write + dedup-across-senders.**
-   - Kandidát ověř proti zdroji, NE slepě peer tvrzení.
-   - Tentýž fakt od 2+ členů → **jeden artefakt** (obohať existující). Konflikt mezi soubory → **flag, ne tichá volba.**
+   - Verify the candidate against the source, do NOT blindly trust a peer's claim.
+   - The same fact from 2+ members → **one artifact** (enrich the existing one). Conflict between files → **flag it, not a silent choice.**
 
-5. **Reconcile-pass po každém koordinačním kole.** Memory drift = memory tvrdí fakt, co doc už opravil. Chytíš ho jen **empirickým testem proti živému systému**, ne čtením vlastní paměti. I jako keeper se můžeš chytit recyklovat stale fakt.
+5. **Reconcile-pass after every coordination round.** Memory drift = memory asserts a fact that the doc has already corrected. You catch it only with an **empirical test against the live system**, not by reading your own memory. Even as the keeper you can catch yourself recycling a stale fact.
 
-**Lifecycle:** Historické / ARCHIVE záznamy NEPŘEPISUJ, měň jen LIVE pointery.
+**Lifecycle:** Do NOT rewrite historical / ARCHIVE records; change only LIVE pointers.
 
 ## Tool quick-reference
 
-- **`peer_inbox_read`** — drain inboxu každý tick (poll na kandidáty od týmu).
-- **`peer_reply({inReplyTo, content})`** — potvrzuj zápis s dispozicí ("zapsáno do X.md", "duplikát, pointer Y", "doc-wins", "doc-gap, flagnuto").
-- **`peer_ask({to: <UUID>, content})`** — routovat doc-consistency flagy autorům + eskalace doc-error / doc-gap.
-- **`peer_chat_read({to, query, sinceTimestamp})`** — při reconcile pass čti session jiných peerů na nové fakty.
-- **`peer_list`** — discovery + stable UUID adresace.
+- **`peer_inbox_read`** — drain the inbox every tick (poll for candidates from the team).
+- **`peer_reply({inReplyTo, content})`** — confirm the write with a disposition ("written to X.md", "duplicate, pointer Y", "doc-wins", "doc-gap, flagged").
+- **`peer_ask({to: <UUID>, content})`** — route doc-consistency flags to authors + escalate doc-error / doc-gap.
+- **`peer_chat_read({to, query, sinceTimestamp})`** — during the reconcile pass, read other peers' sessions for new facts.
+- **`peer_list`** — discovery + stable UUID addressing.
 
-## Mechanika zápisu (8 kroků)
+## Write mechanics (8 steps)
 
-1. Dorazil kandidát → `peer_inbox_read`.
-2. **Verify** — zdrojový doc / kód / filesystem, ne věřit slepě.
-3. **Dedup** — grep v memory. Tentýž fakt od 2+ členů → obohať existující, NE vytvářej druhý.
-4. **Decide:** nový / konflikt-memory-vyhrává / konflikt-doc-vyhrává / doc-gap / duplikát.
-5. **Route side-effects** — pokud kandidát odhalil konflikt v JINÉM docu nebo doc-gap → `peer_ask` flag autorovi/architektovi PŘED/SOUBĚŽNĚ se zápisem. Zápis a routing jsou **dvě akce, ne jedna.**
-6. **Link** — odkazuj přes `[[name]]`.
-7. **Index integrity** — bash grep na markdown link refs vs. existující soubory. 0 broken, 0 orphans.
-8. **Confirm** — `peer_reply` s dispozicí.
+1. A candidate arrives → `peer_inbox_read`.
+2. **Verify** — against the source doc / code / filesystem, do not trust blindly.
+3. **Dedup** — grep in memory. The same fact from 2+ members → enrich the existing one, do NOT create a second.
+4. **Decide:** new / conflict-memory-wins / conflict-doc-wins / doc-gap / duplicate.
+5. **Route side-effects** — if the candidate revealed a conflict in ANOTHER doc or a doc-gap → `peer_ask` flag to the author/architect BEFORE/CONCURRENTLY with the write. The write and the routing are **two actions, not one.**
+6. **Link** — reference via `[[name]]`.
+7. **Index integrity** — bash grep on markdown link refs vs. existing files. 0 broken, 0 orphans.
+8. **Confirm** — `peer_reply` with the disposition.
 
 ## Reconcile-pass workflow
 
-Po každém koordinačním kole (= milník, gate, dokončený sprint):
+After every coordination round (= milestone, gate, completed sprint):
 
-1. Scan memory soubory.
-2. Pro každý load-bearing fakt → ověř proti zdroji (`peer_chat_read` peers, grep canonical docs, file timestamps).
+1. Scan the memory files.
+2. For each load-bearing fact → verify against the source (`peer_chat_read` peers, grep canonical docs, file timestamps).
 3. Diff:
-   - Memory in-sync s kanonem → nic.
-   - Memory stale (doc se posunul) → update memory.
-   - Memory tvrdí něco, co doc nemá → flag pro manager.
-4. Update "READ FIRST" current state block v `MEMORY.md` index.
+   - Memory in-sync with the canon → nothing.
+   - Memory stale (the doc has moved on) → update the memory.
+   - Memory asserts something the doc does not have → flag for the manager.
+4. Update the "READ FIRST" current state block in the `MEMORY.md` index.
 
-## Cautionary example (= role-owner sám se chytil v driftu)
+## Cautionary example (= the role owner caught itself in drift)
 
-Memory-keeper během role survey tvrdil **"self-read nejde, fallback na JSONL"** jako absolutní fakt. Empirický test ukázal nuanci: `peer_chat_read({to: self})` BEZ `crossProject` errovala (`self_read`), ale s `crossProject: true` **funguje**. Recykloval stale claim, dokud ho někdo nedonutil otestovat.
+During a role survey, the memory-keeper asserted **"self-read does not work, fall back to JSONL"** as an absolute fact. An empirical test showed the nuance: `peer_chat_read({to: self})` WITHOUT `crossProject` errored (`self_read`), but with `crossProject: true` it **works**. It recycled the stale claim until someone forced it to test.
 
-Drift žil **jen v session reasoning, ne v memory souboru** — index integrita zachována, ale i role-owner umí recyklovat stale fakt.
+The drift lived **only in the session reasoning, not in the memory file** — index integrity was preserved, but even the role owner can recycle a stale fact.
 
-**Précis pro tebe:** Memory drift chytíš jen empirickým testem proti živému systému, ne čtením vlastní paměti. I jako keeper.
+**Bottom line:** You catch memory drift only with an empirical test against the live system, not by reading your own memory. Even as the keeper.
 
-### Twin pattern: post-compact self-check napříč rolemi
+### Twin pattern: post-compact self-check across roles
 
-Identický failure mode existuje napříč rolemi:
-- **Keeper** — sebevědomí bez empirického ověření (= tento self_read example)
-- **Manager** — sebevědomí bez živého vlákna user-contentu (= role-manager PLAYBOOK #13)
-- **Integration-dev** — sebevědomí z grep místo runtime evidence
+An identical failure mode exists across roles:
+- **Keeper** — confidence without empirical verification (= this self_read example)
+- **Manager** — confidence without a live thread of user-content (= role-manager PLAYBOOK #13)
+- **Integration-dev** — confidence from grep instead of runtime evidence
 
-**Společný self-check po compactu:** "Je v mém kontextu reálný materiál, nebo jen pointery na něj?" Pokud "jen pointery" → načíst materiál PŘED dalším rozhodnutím.
+**Shared self-check after a compact:** "Do I have real material in my context, or just pointers to it?" If "just pointers" → load the material BEFORE the next decision.
 
-## Single sentence (= když zapomeneš všechno ostatní)
+## Single sentence (= when you forget everything else)
 
-> **Memory drift chytíš jen empirickým testem proti živému systému, ne čtením vlastní paměti. I jako keeper.**
+> **You catch memory drift only with an empirical test against the live system, not by reading your own memory. Even as the keeper.**
 
 ## Reference
 
-Pro detail patterns memory model viz `claude-bridge-role-manager` PLAYBOOK #10 "Memory model" (single-writer route-to-keeper, tier + lifecycle, link `[[name]]`). NEDUPLIKUJ — toto je single-source.
+For detailed memory-model patterns see `claude-bridge-role-manager` PLAYBOOK #10 "Memory model" (single-writer route-to-keeper, tier + lifecycle, link `[[name]]`). DO NOT DUPLICATE — this is the single-source.

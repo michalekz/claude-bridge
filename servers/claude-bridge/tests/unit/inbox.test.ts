@@ -16,7 +16,7 @@ function makeEnvelope(overrides: Partial<MessageEnvelope> = {}): MessageEnvelope
     to: "mantis",
     kind: "ask",
     sentAt: new Date().toISOString(),
-    content: "kolik je open ticketů?",
+    content: "how many open tickets?",
     ...overrides,
   };
 }
@@ -92,7 +92,7 @@ describe("InboxStore", () => {
     const pending = await store.listPending("mantis");
     expect(pending.length).toBe(1);
     expect(pending[0]?.id).toBe(env.id);
-    expect(pending[0]?.content).toBe("kolik je open ticketů?");
+    expect(pending[0]?.content).toBe("how many open tickets?");
   });
 
   test("listPending returns empty for unknown peer", async () => {
