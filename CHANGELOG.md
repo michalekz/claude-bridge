@@ -2,6 +2,36 @@
 
 All notable changes to this project are documented here. Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.8.2] — 2026-07-07
+
+### Fixed — `rate_limit_status` misleading data from expired windows
+
+Bug reported by Zdeněk Michálek + jira-architect (HMH) from first real-world use: `rate_limit_status` returned a 36-hour-stale cache showing `week: 96% CRITICAL` with `hoursUntilReset: -32.5` (past). The utilization number described a DEAD window; consumers reasoned about it as if it were live state.
+
+The `cacheAgeSeconds` field alone wasn't enough — agents don't reliably cross-check it against `resetsAt`. This release adds a deterministic verdict instead of a caveat.
+
+### Added — `staleness` verdict + per-bucket `windowExpired`
+
+- **`windowExpired: boolean`** on every `RateLimitBucket` (session, week) and `ScopedLimit` — true when `resetsAt < now`. Deterministic, no heuristics.
+- **`staleness`** on the tool root (new enum `"fresh" | "stale" | "expired-window"`):
+  - `fresh` — cache < 5 min old, no expired windows. Trust everything.
+  - `stale` — cache older but session + week windows still current. Absolute utilization is orientational; `resetsAt` and window boundaries remain reliable.
+  - `expired-window` — one or more buckets have `windowExpired: true`. Utilization describes a dead window; consult `/rate-limits` in Claude Code or wait for the next cache refresh event.
+
+**Priority:** `expired-window` dominates the age check. A 60-second-old cache with a past `resetsAt` is still `expired-window` — window integrity beats freshness.
+
+### Tool description update
+
+`rate_limit_status` description now documents the three staleness levels + when to trust which fields (per Zdeňkovo dodatek from approval msg `mrakpgr6-6dd16214`).
+
+### Deferred (v0.9.0)
+
+- **Exploration:** find the live data source Claude Code's status line uses (evidently fresh, unlike `.usage_cache.json`). Candidates: statusLine hook payload (leading), other `~/.claude/*.json` file, CC IPC, or direct API call. Recon-first, not a promise.
+
+### Tests
+
+- 306 → 313 (+7 covering windowExpired flags on session/week/scopedLimits, three staleness verdicts (fresh/stale/expired-window), and the "fresh cache + dead window" corner case where window integrity beats age).
+
 ## [0.8.1] — 2026-07-07
 
 ### Fixed — authoritative `[1m]` detection via `~/.claude/settings.json`

@@ -21009,6 +21009,11 @@ function hoursBetween(iso, now) {
   if (Number.isNaN(target)) return Number.NaN;
   return (target - now.getTime()) / (1e3 * 60 * 60);
 }
+function isWindowExpired(resetsAt, now) {
+  const t = Date.parse(resetsAt);
+  if (Number.isNaN(t)) return false;
+  return t < now.getTime();
+}
 function toBucket(raw, matchingLimit, now) {
   if (raw.utilization == null || raw.resets_at == null) return void 0;
   return {
@@ -21016,7 +21021,8 @@ function toBucket(raw, matchingLimit, now) {
     resetsAt: raw.resets_at,
     hoursUntilReset: hoursBetween(raw.resets_at, now),
     severity: matchingLimit?.severity ?? "normal",
-    isActive: matchingLimit?.is_active ?? false
+    isActive: matchingLimit?.is_active ?? false,
+    windowExpired: isWindowExpired(raw.resets_at, now)
   };
 }
 function minorToMajor(used) {
@@ -21032,12 +21038,14 @@ function normalizeUsageCache(raw, now = /* @__PURE__ */ new Date()) {
   const session = toBucket(data.five_hour, sessionLimit, now);
   const week = toBucket(data.seven_day, weeklyAllLimit, now);
   const scopedLimits = limits.filter((l) => l.scope != null && l.kind !== "session" && l.kind !== "weekly_all").map((l) => {
+    const resetsAt = l.resets_at ?? "";
     const entry = {
       kind: l.kind,
       utilization: l.percent / 100,
-      resetsAt: l.resets_at ?? "",
+      resetsAt,
       severity: l.severity,
-      isActive: l.is_active
+      isActive: l.is_active,
+      windowExpired: resetsAt ? isWindowExpired(resetsAt, now) : false
     };
     const model = l.scope?.model;
     if (model?.display_name) entry.modelDisplayName = model.display_name;
@@ -21045,10 +21053,14 @@ function normalizeUsageCache(raw, now = /* @__PURE__ */ new Date()) {
     if (l.scope?.surface) entry.surface = l.scope.surface;
     return entry;
   });
+  const anyExpired = (session?.windowExpired ?? false) || (week?.windowExpired ?? false) || scopedLimits.some((l) => l.windowExpired);
+  const FRESH_THRESHOLD_SECONDS = 300;
+  const staleness = anyExpired ? "expired-window" : cacheAgeSeconds < FRESH_THRESHOLD_SECONDS ? "fresh" : "stale";
   const status = {
     hasCache: true,
     cacheTimestamp,
-    cacheAgeSeconds
+    cacheAgeSeconds,
+    staleness
   };
   if (session) status.session = session;
   if (week) status.week = week;
@@ -22679,7 +22691,7 @@ var TOOLS = [
   },
   {
     name: "rate_limit_status",
-    description: "Read account-scoped rate limits (5-hour session + 7-day weekly budgets) from Claude Code's own usage cache at ~/.claude/.usage_cache.json. USER-scoped \u2014 all peers on the same POSIX account share one set of rate limits. Returns utilization (0-1), resets_at timestamps, hoursUntilReset, severity, plus optional per-model scoped limits, spend cap (if enabled), extra credits (if enabled), and passthrough for internal experiment codenames. Includes `cacheAgeSeconds` \u2014 Claude Code refreshes the cache only on specific events (session start, /rate-limits invocation, threshold crossing), NOT per-turn. Agents should check cacheAgeSeconds and treat old data with caution. Returns `hasCache: false` gracefully if the file doesn't exist yet (= account never invoked /rate-limits or not logged in).",
+    description: "Read account-scoped rate limits (5-hour session + 7-day weekly budgets) from Claude Code's own usage cache at ~/.claude/.usage_cache.json. USER-scoped \u2014 all peers on the same POSIX account share one set of rate limits. Returns utilization (0-1), resets_at timestamps, hoursUntilReset, severity, plus optional per-model scoped limits, spend cap (if enabled), extra credits (if enabled), and passthrough for internal experiment codenames. Includes `cacheAgeSeconds` \u2014 Claude Code refreshes the cache only on specific events (session start, /rate-limits invocation, threshold crossing), NOT per-turn. v0.8.2+ adds `staleness` verdict (fresh/stale/expired-window) and per-bucket `windowExpired` flags: 'fresh' (< 5 min old, use as-is), 'stale' (older but windows still current \u2014 absolute utilization is orientational, resetsAt/window boundaries remain reliable), 'expired-window' (\u26A0 one or more bucket's resetsAt is in the past \u2014 utilization describes a DEAD window; consult `/rate-limits` in Claude Code or wait for next cache refresh). Returns `hasCache: false` gracefully if the file doesn't exist yet (= account never invoked /rate-limits or not logged in).",
     inputSchema: { type: "object", properties: {}, additionalProperties: false },
     handler: async () => rateLimitStatusTool()
   },
@@ -22737,7 +22749,7 @@ var TOOLS = [
 // src/mcp/server.ts
 var log6 = makeLogger("mcp-server");
 var SERVER_NAME = "claude-bridge";
-var SERVER_VERSION = "0.8.1";
+var SERVER_VERSION = "0.8.2";
 var INSTRUCTIONS = `
 claude-bridge \u2014 MCP server for orchestration across Claude Code chats.
 
@@ -22750,7 +22762,7 @@ MCP tools:
 - peer_set_context_guard (v0.7.0+) \u2014 own threshold-guard (warn/critical) + notify subscribers.
 - peer_set_notification (v0.7.0+) \u2014 own idle-beep notification.
 - model_info (v0.7.3+) \u2014 canonical Claude model metadata (context window, max output, pricing, capabilities, lifecycle).
-- rate_limit_status (v0.8.0+) \u2014 account-scoped 5h session + 7d weekly usage from Claude Code's ~/.claude/.usage_cache.json (per-model breakdown, spend, extra credits).
+- rate_limit_status (v0.8.0+) \u2014 account-scoped 5h session + 7d weekly usage from Claude Code's ~/.claude/.usage_cache.json (per-model breakdown, spend, extra credits). v0.8.2+: adds staleness verdict ("fresh"/"stale"/"expired-window") + per-bucket windowExpired flag so agents don't act on utilization from dead windows.
 - peer_context_status (v0.8.1+) \u2014 now reads ~/.claude/settings.json for authoritative [1m] tag detection; new contextLimitSource value 'settings-json-1m-tag' takes priority when settings.model carries [1m]. Fixes bare-id ambiguity where JSONL strips the [1m] suffix from message.model.
 
 Bundled skills (load detail via skill name):

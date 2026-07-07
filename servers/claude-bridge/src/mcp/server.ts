@@ -15,7 +15,7 @@ import { TOOLS, type ToolResult, piggybackInbox } from "./tools.ts";
 const log = makeLogger("mcp-server");
 
 const SERVER_NAME = "claude-bridge";
-const SERVER_VERSION = "0.8.1";
+const SERVER_VERSION = "0.8.2";
 
 const INSTRUCTIONS = `
 claude-bridge — MCP server for orchestration across Claude Code chats.
@@ -29,7 +29,7 @@ MCP tools:
 - peer_set_context_guard (v0.7.0+) — own threshold-guard (warn/critical) + notify subscribers.
 - peer_set_notification (v0.7.0+) — own idle-beep notification.
 - model_info (v0.7.3+) — canonical Claude model metadata (context window, max output, pricing, capabilities, lifecycle).
-- rate_limit_status (v0.8.0+) — account-scoped 5h session + 7d weekly usage from Claude Code's ~/.claude/.usage_cache.json (per-model breakdown, spend, extra credits).
+- rate_limit_status (v0.8.0+) — account-scoped 5h session + 7d weekly usage from Claude Code's ~/.claude/.usage_cache.json (per-model breakdown, spend, extra credits). v0.8.2+: adds staleness verdict ("fresh"/"stale"/"expired-window") + per-bucket windowExpired flag so agents don't act on utilization from dead windows.
 - peer_context_status (v0.8.1+) — now reads ~/.claude/settings.json for authoritative [1m] tag detection; new contextLimitSource value 'settings-json-1m-tag' takes priority when settings.model carries [1m]. Fixes bare-id ambiguity where JSONL strips the [1m] suffix from message.model.
 
 Bundled skills (load detail via skill name):

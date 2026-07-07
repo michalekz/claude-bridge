@@ -250,6 +250,111 @@ describe("normalizeUsageCache — codenames passthrough", () => {
   });
 });
 
+describe("normalizeUsageCache — v0.8.2 staleness detection", () => {
+  // REAL_SAMPLE at FIXED_NOW (2026-07-05T15:31Z):
+  //   - session resets_at 2026-07-04T03:49 (past → windowExpired=true)
+  //   - week resets_at 2026-07-06T02:59 (future → windowExpired=false)
+  //   - cacheAgeSeconds ~140k
+  test("session bucket has windowExpired=true when resets_at in past", () => {
+    const s = normalizeUsageCache(REAL_SAMPLE as never, FIXED_NOW);
+    expect(s.session?.windowExpired).toBe(true);
+  });
+
+  test("week bucket has windowExpired=false when resets_at in future", () => {
+    const s = normalizeUsageCache(REAL_SAMPLE as never, FIXED_NOW);
+    expect(s.week?.windowExpired).toBe(false);
+  });
+
+  test("scopedLimits get windowExpired flag too", () => {
+    const s = normalizeUsageCache(REAL_SAMPLE as never, FIXED_NOW);
+    // The Fable scoped limit in the fixture has resets_at in the future,
+    // so windowExpired=false.
+    expect(s.scopedLimits?.[0]?.windowExpired).toBe(false);
+  });
+
+  test("staleness='expired-window' when any bucket has windowExpired=true", () => {
+    const s = normalizeUsageCache(REAL_SAMPLE as never, FIXED_NOW);
+    // REAL_SAMPLE session bucket expired → staleness='expired-window'
+    expect(s.staleness).toBe("expired-window");
+  });
+
+  test("staleness='fresh' when cache < 5 min old AND all windows current", () => {
+    // Rebuild sample with timestamps relative to a controlled "now".
+    const now = new Date("2026-07-05T15:31:00Z");
+    const fresh = {
+      timestamp: (now.getTime() - 60_000) / 1000, // 60 sec ago
+      data: {
+        ...REAL_SAMPLE.data,
+        five_hour: {
+          ...REAL_SAMPLE.data.five_hour,
+          resets_at: "2026-07-05T17:00:00Z", // future
+        },
+        seven_day: {
+          ...REAL_SAMPLE.data.seven_day,
+          resets_at: "2026-07-06T02:59:59Z", // future
+        },
+        limits: REAL_SAMPLE.data.limits.map((l) => ({
+          ...l,
+          resets_at: l.kind === "session" ? "2026-07-05T17:00:00Z" : "2026-07-06T02:59:59Z",
+        })),
+      },
+    };
+    const s = normalizeUsageCache(fresh as never, now);
+    expect(s.cacheAgeSeconds).toBeLessThan(300);
+    expect(s.session?.windowExpired).toBe(false);
+    expect(s.week?.windowExpired).toBe(false);
+    expect(s.staleness).toBe("fresh");
+  });
+
+  test("staleness='stale' when cache old but windows current", () => {
+    const now = new Date("2026-07-05T15:31:00Z");
+    const stale = {
+      timestamp: (now.getTime() - 3_600_000) / 1000, // 1 hour ago
+      data: {
+        ...REAL_SAMPLE.data,
+        five_hour: {
+          ...REAL_SAMPLE.data.five_hour,
+          resets_at: "2026-07-05T17:00:00Z", // future
+        },
+        seven_day: {
+          ...REAL_SAMPLE.data.seven_day,
+          resets_at: "2026-07-06T02:59:59Z", // future
+        },
+        limits: REAL_SAMPLE.data.limits.map((l) => ({
+          ...l,
+          resets_at: l.kind === "session" ? "2026-07-05T17:00:00Z" : "2026-07-06T02:59:59Z",
+        })),
+      },
+    };
+    const s = normalizeUsageCache(stale as never, now);
+    expect(s.cacheAgeSeconds).toBeGreaterThan(300);
+    expect(s.session?.windowExpired).toBe(false);
+    expect(s.week?.windowExpired).toBe(false);
+    expect(s.staleness).toBe("stale");
+  });
+
+  test("expired-window dominates fresh — even a 60-sec-old cache with dead window is expired-window", () => {
+    // Corner case: cache is fresh by age but window boundary is stale.
+    // The bug shape from Zdeňkovo report — user needs to know the window
+    // died, not that the cache was recently written.
+    const now = new Date("2026-07-05T15:31:00Z");
+    const fresh = {
+      timestamp: (now.getTime() - 60_000) / 1000, // 60 sec ago — "fresh" by age
+      data: {
+        ...REAL_SAMPLE.data,
+        five_hour: {
+          ...REAL_SAMPLE.data.five_hour,
+          resets_at: "2026-07-05T14:00:00Z", // past
+        },
+      },
+    };
+    const s = normalizeUsageCache(fresh as never, now);
+    expect(s.cacheAgeSeconds).toBeLessThan(300);
+    expect(s.session?.windowExpired).toBe(true);
+    expect(s.staleness).toBe("expired-window");
+  });
+});
+
 describe("readRateLimits — file I/O", () => {
   let tmp: string;
 

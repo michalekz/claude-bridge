@@ -101,6 +101,9 @@ interface RawUsageCache {
  * Normalized bucket (session or week).
  * `utilization` in 0-1 fraction (source is 0-100).
  * `hoursUntilReset` may be NEGATIVE if the cache is stale.
+ * `windowExpired` is true when `resetsAt` is in the past (v0.8.2+) — the
+ * utilization number describes a DEAD window and is not meaningful for
+ * decisions about the current period.
  */
 export interface RateLimitBucket {
   utilization: number;
@@ -108,6 +111,7 @@ export interface RateLimitBucket {
   hoursUntilReset: number;
   severity: string;
   isActive: boolean;
+  windowExpired: boolean;
 }
 
 export interface ScopedLimit {
@@ -116,10 +120,25 @@ export interface ScopedLimit {
   resetsAt: string;
   severity: string;
   isActive: boolean;
+  windowExpired: boolean;
   modelDisplayName?: string;
   modelId?: string;
   surface?: string;
 }
+
+/**
+ * Overall freshness of the cache (v0.8.2+).
+ *
+ *  - `fresh`           — cache < 5 min old, no expired windows
+ *  - `stale`           — cache >= 5 min old but session + week windows still
+ *                        current; utilization is orientational, `resetsAt`
+ *                        and window boundaries remain reliable
+ *  - `expired-window`  — one or more buckets have `windowExpired: true`;
+ *                        utilization describes a dead window, consult
+ *                        `/rate-limits` in Claude Code or wait for the next
+ *                        cache refresh event
+ */
+export type Staleness = "fresh" | "stale" | "expired-window";
 
 export interface RateLimitSpend {
   enabled: boolean;
@@ -142,6 +161,12 @@ export interface RateLimitStatus {
   hasCache: boolean;
   cacheTimestamp?: string;
   cacheAgeSeconds?: number;
+  /**
+   * Overall freshness verdict (v0.8.2+). Absent when `hasCache=false`.
+   * Consumers should treat `expired-window` as "utilization numbers are
+   * from a dead time window — do not act on them".
+   */
+  staleness?: Staleness;
   cachePath?: string;
   session?: RateLimitBucket;
   week?: RateLimitBucket;
@@ -182,6 +207,12 @@ function hoursBetween(iso: string, now: Date): number {
   return (target - now.getTime()) / (1000 * 60 * 60);
 }
 
+function isWindowExpired(resetsAt: string, now: Date): boolean {
+  const t = Date.parse(resetsAt);
+  if (Number.isNaN(t)) return false;
+  return t < now.getTime();
+}
+
 function toBucket(
   raw: RawFiveHourSevenDay,
   matchingLimit: RawLimit | undefined,
@@ -194,6 +225,7 @@ function toBucket(
     hoursUntilReset: hoursBetween(raw.resets_at, now),
     severity: matchingLimit?.severity ?? "normal",
     isActive: matchingLimit?.is_active ?? false,
+    windowExpired: isWindowExpired(raw.resets_at, now),
   };
 }
 
@@ -222,12 +254,14 @@ export function normalizeUsageCache(raw: RawUsageCache, now: Date = new Date()):
   const scopedLimits: ScopedLimit[] = limits
     .filter((l) => l.scope != null && l.kind !== "session" && l.kind !== "weekly_all")
     .map((l) => {
+      const resetsAt = l.resets_at ?? "";
       const entry: ScopedLimit = {
         kind: l.kind,
         utilization: l.percent / 100,
-        resetsAt: l.resets_at ?? "",
+        resetsAt,
         severity: l.severity,
         isActive: l.is_active,
+        windowExpired: resetsAt ? isWindowExpired(resetsAt, now) : false,
       };
       const model = l.scope?.model;
       if (model?.display_name) entry.modelDisplayName = model.display_name;
@@ -236,10 +270,26 @@ export function normalizeUsageCache(raw: RawUsageCache, now: Date = new Date()):
       return entry;
     });
 
+  // v0.8.2 staleness verdict — priority: expired-window > fresh/stale by age.
+  // The window check dominates: a 60-second-old cache with resets_at in the
+  // past is still expired-window; a 24-hour-old cache with both windows in
+  // the future is just stale (utilization is orientational, windows reliable).
+  const anyExpired =
+    (session?.windowExpired ?? false) ||
+    (week?.windowExpired ?? false) ||
+    scopedLimits.some((l) => l.windowExpired);
+  const FRESH_THRESHOLD_SECONDS = 300;
+  const staleness: Staleness = anyExpired
+    ? "expired-window"
+    : cacheAgeSeconds < FRESH_THRESHOLD_SECONDS
+      ? "fresh"
+      : "stale";
+
   const status: RateLimitStatus = {
     hasCache: true,
     cacheTimestamp,
     cacheAgeSeconds,
+    staleness,
   };
 
   if (session) status.session = session;
