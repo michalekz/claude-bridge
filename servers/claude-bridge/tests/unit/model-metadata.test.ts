@@ -39,6 +39,20 @@ describe("lookupModel", () => {
     expect(opus?.family).toBe("opus");
   });
 
+  test("returns metadata for Sonnet 5 (added 2026-07-07)", () => {
+    const sonnet5 = lookupModel("claude-sonnet-5");
+    expect(sonnet5).not.toBeNull();
+    expect(sonnet5?.generation).toBe("current");
+    expect(sonnet5?.contextWindow).toBe(1_000_000);
+    expect(sonnet5?.family).toBe("sonnet");
+  });
+
+  test("Sonnet 4.6 moved from current to legacy (2026-07-07)", () => {
+    const sonnet46 = lookupModel("claude-sonnet-4-6");
+    expect(sonnet46?.generation).toBe("legacy");
+    expect(sonnet46?.contextWindow).toBe(1_000_000);
+  });
+
   test("returns metadata for legacy models", () => {
     const opus47 = lookupModel("claude-opus-4-7");
     expect(opus47?.generation).toBe("legacy");

@@ -4,12 +4,20 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import {
   detectContextLimit,
+  detectContextLimitWithSource,
   readContextUsage,
   riskBucket,
 } from "../../src/parser/context-usage.ts";
 import type { SessionRef } from "../../src/parser/session.ts";
 
 describe("detectContextLimit", () => {
+  test("returns 1M for Sonnet 5 (canonical lookup, added 2026-07-07)", () => {
+    // Regression: pre-v0.8.0 this returned 200_000 because Sonnet 5 was
+    // missing from MODEL_CONTEXT_WINDOWS — caused 5× inflated percentUsed
+    // in jira-architect HMH incident (jira-gui-tester session).
+    expect(detectContextLimit("claude-sonnet-5")).toBe(1_000_000);
+  });
+
   test("returns 1M for Opus 4.6/4.7/4.8 (canonical lookup)", () => {
     expect(detectContextLimit("claude-opus-4-6")).toBe(1_000_000);
     expect(detectContextLimit("claude-opus-4-7")).toBe(1_000_000);
@@ -41,6 +49,39 @@ describe("detectContextLimit", () => {
     expect(detectContextLimit(undefined)).toBe(200_000);
     expect(detectContextLimit("")).toBe(200_000);
     expect(detectContextLimit("future-unknown-model")).toBe(200_000);
+  });
+});
+
+describe("detectContextLimitWithSource", () => {
+  test("known model → canonical-lookup", () => {
+    const r = detectContextLimitWithSource("claude-sonnet-5", 500_000);
+    expect(r.limit).toBe(1_000_000);
+    expect(r.source).toBe("canonical-lookup");
+  });
+
+  test("explicit [1m] tag → explicit-1m-tag", () => {
+    const r = detectContextLimitWithSource("claude-opus-4-7-[1m]", 100_000);
+    expect(r.limit).toBe(1_000_000);
+    expect(r.source).toBe("explicit-1m-tag");
+  });
+
+  test("unknown model + tokensUsed > 200k → empirical-heuristic (bumps to 1M)", () => {
+    const r = detectContextLimitWithSource("claude-future-model-xyz", 350_000);
+    expect(r.limit).toBe(1_000_000);
+    expect(r.source).toBe("empirical-heuristic");
+  });
+
+  test("unknown model + tokensUsed <= 200k → unknown-model-fallback (⚠ possibly wrong)", () => {
+    // This is the bug scenario. Reactive heuristic doesn't fire under 200k,
+    // so source flag is the only way consumer knows to distrust percentUsed.
+    const r = detectContextLimitWithSource("claude-future-model-xyz", 156_000);
+    expect(r.limit).toBe(200_000);
+    expect(r.source).toBe("unknown-model-fallback");
+  });
+
+  test("null model → unknown-model-fallback", () => {
+    const r = detectContextLimitWithSource(null, 50_000);
+    expect(r.source).toBe("unknown-model-fallback");
   });
 });
 
