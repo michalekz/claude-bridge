@@ -2,6 +2,65 @@
 
 All notable changes to this project are documented here. Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.9.0-alpha.2] — 2026-07-07 (pre-release, beta phase)
+
+Continues the v0.9.0 breaking-change series. Alpha 1 shipped the statusLine wrapper + `peer_context_status` refactor; alpha 2 completes the rate-limits half.
+
+### Breaking
+
+`rate_limit_status` is live-data-only. Fossil `~/.claude/.usage_cache.json` read REMOVED.
+
+New source priority (v0.9.0-alpha.2):
+1. `~/.claude-bridge/live/statusline.json.rate_limits` (primary, per-turn from CC stdin)
+2. `~/.claude-bridge/live/oauth-api.json` (secondary, throttled ~1/min via new PostToolUse hook)
+3. Neither → `hasLiveData: false` + `setupPointer`
+
+Newer capture wins when both are present. Older CC versions (< 2.1.80) that don't send `rate_limits` on statusLine stdin naturally fall through to the OAuth path.
+
+Output shape changes:
+- `source: "statusline-stdin" | "oauth-api" | "no-live-data"` (new, replaces `hasCache`)
+- `hasLiveData: boolean` (was `hasCache`)
+- `capturedAt`, `capturedAgeSeconds` (unchanged semantics — measures how old the live envelope is, not the fossil cache)
+- `staleness`, `windowExpired` preserved from v0.8.2
+- All richer fields (`spend`, `extraUsage`, `perModelWeekly`, `rawExperimental`, `scopedLimits`) only populated when the source is `oauth-api` — statusLine stdin doesn't carry them.
+
+### Added
+
+- **`bin/claude-bridge-refresh-limits`** — PostToolUse hook. Reads OAuth token from `~/.claude/.credentials.json` (or macOS Keychain), curl `/api/oauth/usage` via subprocess with `--config` stdin (token doesn't leak into `ps`), throttled to ~1/min via `~/.claude-bridge/live/last-oauth-refresh` marker. Never crashes — hook must be side-effect-only.
+- **`src/parser/oauth-token.ts`** — token reader with platform-appropriate sources (macOS Keychain via `security find-generic-password`, Linux/Windows via credentials.json). Character-set validation prevents HTTP header injection.
+- **`peer_set_rate_limit_guard` MCP tool** — new. Account-scoped guard config for session (5h) + week (7d) utilization thresholds. Analog to `peer_set_context_guard` but user-scoped (rate limits are per-account, not per-session). Defaults: session warn 0.85 / crit 0.95, week warn 0.75 / crit 0.90 (week is stricter since 7-day recovery hurts more than 5h). Config persisted to `~/.claude-bridge/guard-rate-limits.json`.
+- **`bin/refresh-limits.cjs`** — new build target (11.2 KB esbuild bundle).
+- **`src/parser/live-data.ts`** — added `readOAuthApiLive` + `writeOAuthApiLive` + lazy path helpers.
+
+### Wiring (manual until v0.9.0-rc automates it)
+
+Add to `~/.claude/settings.json`:
+
+```json
+"hooks": {
+  "PostToolUse": [{
+    "matcher": ".*",
+    "hooks": [{
+      "type": "command",
+      "command": "node ~/.claude/claude-bridge-refresh-limits.cjs",
+      "timeout": 6
+    }]
+  }]
+}
+```
+
+Plus a symlink from `~/.claude/claude-bridge-refresh-limits.cjs` → cache dir's `refresh-limits.cjs` (analogous to the statusLine symlink introduced in alpha.1). v0.9.0-rc will maintain both symlinks automatically via a SessionStart hook.
+
+### Tests
+
+- 282 → 281 (rate-limits.test.ts rewritten for live-only shape: +6 normalizeFromOAuth cases, +5 normalizeFromStatusLine cases, +5 readLiveRateLimits priority cases; removed 15 fossil-cache path tests). Total net: -1 case but coverage of the new architecture is complete.
+
+### Still pending for v0.9.0 stable
+
+- rc: bundled SessionStart hook + `bin/setup-check` + banner, `claude-bridge-setup` skill (auto-maintains symlinks + generates wrapper script + detects underlying statusLine)
+- docs: `docs/SETUP-LIVE-DATA.md` (EN + CS), `docs/HOOKS-STATUSLINE-ARCHITECTURE.md`
+- Verification with jira-architect on HMH setup
+
 ## [0.9.0-alpha.1] — 2026-07-07 (pre-release)
 
 ⚠ **Pre-release for internal live-testing only.** Not the full v0.9.0.

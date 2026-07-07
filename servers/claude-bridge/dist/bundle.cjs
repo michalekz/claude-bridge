@@ -20522,9 +20522,9 @@ async function shutdownContext(ctx) {
 }
 
 // src/mcp/tools.ts
+var import_promises13 = require("node:fs/promises");
 var import_promises14 = require("node:fs/promises");
-var import_promises15 = require("node:fs/promises");
-var import_node_path12 = require("node:path");
+var import_node_path11 = require("node:path");
 
 // src/parser/live-data.ts
 var import_promises10 = require("node:fs/promises");
@@ -20534,6 +20534,9 @@ function liveDir() {
 }
 function statusLineLivePath() {
   return (0, import_node_path9.join)(liveDir(), "statusline.json");
+}
+function oauthLivePath() {
+  return (0, import_node_path9.join)(liveDir(), "oauth-api.json");
 }
 async function readEnvelope2(path) {
   try {
@@ -20547,6 +20550,14 @@ async function readEnvelope2(path) {
 }
 async function readStatusLineLive() {
   return readEnvelope2(statusLineLivePath());
+}
+async function readOAuthApiLive() {
+  return readEnvelope2(oauthLivePath());
+}
+function envelopeAgeSeconds(envelope, now = /* @__PURE__ */ new Date()) {
+  const captured = Date.parse(envelope.capturedAt);
+  if (Number.isNaN(captured)) return Number.POSITIVE_INFINITY;
+  return Math.max(0, Math.floor((now.getTime() - captured) / 1e3));
 }
 
 // src/parser/context-usage.ts
@@ -20954,10 +20965,6 @@ var MODEL_METADATA_SOURCE = {
 };
 
 // src/parser/rate-limits.ts
-var import_promises11 = require("node:fs/promises");
-var import_node_os4 = require("node:os");
-var import_node_path10 = require("node:path");
-var USAGE_CACHE_PATH = (0, import_node_path10.join)((0, import_node_os4.homedir)(), ".claude", ".usage_cache.json");
 var EXPERIMENTAL_KEYS = [
   "tangelo",
   "iguana_necktie",
@@ -20973,6 +20980,8 @@ var PER_MODEL_WEEKLY_KEYS = {
   seven_day_cowork: "cowork",
   seven_day_omelette: "omelette"
 };
+var FRESH_THRESHOLD_SECONDS = 300;
+var SETUP_POINTER2 = "Install the plugin's statusLine wrapper AND/OR enable the PostToolUse refresh-limits hook. See docs/SETUP-LIVE-DATA.md.";
 function hoursBetween(iso, now) {
   const target = Date.parse(iso);
   if (Number.isNaN(target)) return Number.NaN;
@@ -20997,10 +21006,20 @@ function toBucket(raw, matchingLimit, now) {
 function minorToMajor(used) {
   return used.amount_minor / 10 ** used.exponent;
 }
-function normalizeUsageCache(raw, now = /* @__PURE__ */ new Date()) {
-  const cacheTimestamp = new Date(raw.timestamp * 1e3).toISOString();
-  const cacheAgeSeconds = Math.max(0, Math.floor((now.getTime() - raw.timestamp * 1e3) / 1e3));
-  const data = raw.data;
+function computeStaleness(session, week, scopedLimits, ageSeconds) {
+  const anyExpired = (session?.windowExpired ?? false) || (week?.windowExpired ?? false) || scopedLimits.some((l) => l.windowExpired);
+  if (anyExpired) return "expired-window";
+  return ageSeconds < FRESH_THRESHOLD_SECONDS ? "fresh" : "stale";
+}
+function normalizeFromOAuth(envelope, now = /* @__PURE__ */ new Date()) {
+  const data = envelope.data;
+  if (!data) {
+    return {
+      hasLiveData: false,
+      source: "no-live-data",
+      setupPointer: SETUP_POINTER2
+    };
+  }
   const limits = data.limits ?? [];
   const sessionLimit = limits.find((l) => l.kind === "session");
   const weeklyAllLimit = limits.find((l) => l.kind === "weekly_all");
@@ -21022,13 +21041,13 @@ function normalizeUsageCache(raw, now = /* @__PURE__ */ new Date()) {
     if (l.scope?.surface) entry.surface = l.scope.surface;
     return entry;
   });
-  const anyExpired = (session?.windowExpired ?? false) || (week?.windowExpired ?? false) || scopedLimits.some((l) => l.windowExpired);
-  const FRESH_THRESHOLD_SECONDS = 300;
-  const staleness = anyExpired ? "expired-window" : cacheAgeSeconds < FRESH_THRESHOLD_SECONDS ? "fresh" : "stale";
+  const ageSeconds = envelopeAgeSeconds(envelope, now);
+  const staleness = computeStaleness(session, week, scopedLimits, ageSeconds);
   const status = {
-    hasCache: true,
-    cacheTimestamp,
-    cacheAgeSeconds,
+    hasLiveData: true,
+    source: "oauth-api",
+    capturedAt: envelope.capturedAt,
+    capturedAgeSeconds: ageSeconds,
     staleness
   };
   if (session) status.session = session;
@@ -21076,42 +21095,86 @@ function normalizeUsageCache(raw, now = /* @__PURE__ */ new Date()) {
   }
   return status;
 }
-async function readRateLimits(path = USAGE_CACHE_PATH, now = /* @__PURE__ */ new Date()) {
-  let raw;
-  try {
-    raw = await (0, import_promises11.readFile)(path, "utf-8");
-  } catch {
-    return { hasCache: false, cachePath: path };
+function normalizeFromStatusLine(envelope, now = /* @__PURE__ */ new Date()) {
+  const rl = envelope.payload.rate_limits;
+  if (!rl) {
+    return {
+      hasLiveData: false,
+      source: "no-live-data",
+      setupPointer: SETUP_POINTER2
+    };
   }
-  let parsed;
-  try {
-    parsed = JSON.parse(raw);
-  } catch {
-    return { hasCache: false, cachePath: path };
+  function bucketFromStatusLine(w, now2) {
+    if (!w || w.used_percentage == null || w.resets_at == null) return void 0;
+    const resetsAtIso = new Date(w.resets_at * 1e3).toISOString();
+    return {
+      utilization: w.used_percentage / 100,
+      resetsAt: resetsAtIso,
+      hoursUntilReset: hoursBetween(resetsAtIso, now2),
+      severity: "normal",
+      // statusLine payload doesn't carry per-bucket severity
+      isActive: true,
+      // statusLine payload doesn't carry is_active either
+      windowExpired: isWindowExpired(resetsAtIso, now2)
+    };
   }
-  const status = normalizeUsageCache(parsed, now);
-  status.cachePath = path;
+  const session = bucketFromStatusLine(rl.five_hour, now);
+  const week = bucketFromStatusLine(rl.seven_day, now);
+  const ageSeconds = envelopeAgeSeconds(envelope, now);
+  const staleness = computeStaleness(session, week, [], ageSeconds);
+  const status = {
+    hasLiveData: true,
+    source: "statusline-stdin",
+    capturedAt: envelope.capturedAt,
+    capturedAgeSeconds: ageSeconds,
+    staleness
+  };
+  if (session) status.session = session;
+  if (week) status.week = week;
   return status;
+}
+async function readLiveRateLimits(now = /* @__PURE__ */ new Date()) {
+  const [statusEnv, oauthEnv] = await Promise.all([readStatusLineLive(), readOAuthApiLive()]);
+  const statusResult = statusEnv ? normalizeFromStatusLine(statusEnv, now) : null;
+  const oauthResult = oauthEnv ? normalizeFromOAuth(oauthEnv, now) : null;
+  const statusOk = statusResult?.hasLiveData ?? false;
+  const oauthOk = oauthResult?.hasLiveData ?? false;
+  if (!statusOk && !oauthOk) {
+    return {
+      hasLiveData: false,
+      source: "no-live-data",
+      setupPointer: SETUP_POINTER2
+    };
+  }
+  if (statusOk && !oauthOk) {
+    return statusResult;
+  }
+  if (!statusOk && oauthOk) {
+    return oauthResult;
+  }
+  const statusAge = statusResult?.capturedAgeSeconds ?? Number.POSITIVE_INFINITY;
+  const oauthAge = oauthResult?.capturedAgeSeconds ?? Number.POSITIVE_INFINITY;
+  return statusAge <= oauthAge ? statusResult : oauthResult;
 }
 
 // src/parser/session.ts
+var import_promises11 = require("node:fs/promises");
 var import_promises12 = require("node:fs/promises");
-var import_promises13 = require("node:fs/promises");
-var import_node_path11 = require("node:path");
+var import_node_path10 = require("node:path");
 var JSONL_PATTERN = /^([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.jsonl$/;
 async function listProjects() {
   const root = projectsRoot();
   let entries;
   try {
-    entries = await (0, import_promises13.readdir)(root);
+    entries = await (0, import_promises12.readdir)(root);
   } catch (e) {
     if (e.code === "ENOENT") return [];
     throw e;
   }
   const projects = [];
   for (const entry of entries) {
-    const absolutePath = (0, import_node_path11.join)(root, entry);
-    const s = await (0, import_promises12.stat)(absolutePath).catch(() => null);
+    const absolutePath = (0, import_node_path10.join)(root, entry);
+    const s = await (0, import_promises11.stat)(absolutePath).catch(() => null);
     if (!s?.isDirectory()) continue;
     projects.push({ projectDir: entry, absolutePath });
   }
@@ -21120,7 +21183,7 @@ async function listProjects() {
 async function listSessionsInProject(project) {
   let entries;
   try {
-    entries = await (0, import_promises13.readdir)(project.absolutePath);
+    entries = await (0, import_promises12.readdir)(project.absolutePath);
   } catch {
     return [];
   }
@@ -21129,8 +21192,8 @@ async function listSessionsInProject(project) {
     const match = JSONL_PATTERN.exec(entry);
     if (!match) continue;
     const sessionId = match[1];
-    const filePath = (0, import_node_path11.join)(project.absolutePath, entry);
-    const s = await (0, import_promises12.stat)(filePath).catch(() => null);
+    const filePath = (0, import_node_path10.join)(project.absolutePath, entry);
+    const s = await (0, import_promises11.stat)(filePath).catch(() => null);
     if (!s?.isFile()) continue;
     sessions.push({
       projectDir: project.projectDir,
@@ -21158,7 +21221,7 @@ function serializeSessionRef(s) {
     file: s.filePath,
     sizeKB: Math.round(s.sizeBytes / 1024),
     modifiedAt: s.modifiedAt.toISOString(),
-    filename: (0, import_node_path11.basename)(s.filePath)
+    filename: (0, import_node_path10.basename)(s.filePath)
   };
 }
 
@@ -21205,9 +21268,9 @@ var ListSessionsArgs = external_exports.object({
 var HEARTBEAT_ACTIVE_THRESHOLD_MS = 3e4;
 async function isSessionActive(sessionId) {
   const { stat: stat8 } = await import("node:fs/promises");
-  const { homedir: homedir5 } = await import("node:os");
-  const { join: join14 } = await import("node:path");
-  const hbPath = join14(homedir5(), ".claude-bridge", "status", `${sessionId}.json`);
+  const { homedir: homedir4 } = await import("node:os");
+  const { join: join13 } = await import("node:path");
+  const hbPath = join13(homedir4(), ".claude-bridge", "status", `${sessionId}.json`);
   try {
     const s = await stat8(hbPath);
     return Date.now() - s.mtimeMs <= HEARTBEAT_ACTIVE_THRESHOLD_MS;
@@ -22226,11 +22289,11 @@ var PeerSetContextGuardArgs = external_exports.object({
   broadcastProject: external_exports.boolean().optional()
 }).strict();
 function guardConfigFile(peerId) {
-  return (0, import_node_path12.join)(bridgeRoot(), "guard", `${peerId}.json`);
+  return (0, import_node_path11.join)(bridgeRoot(), "guard", `${peerId}.json`);
 }
 async function readContextGuard(peerId) {
   try {
-    const raw = await (0, import_promises14.readFile)(guardConfigFile(peerId), "utf-8");
+    const raw = await (0, import_promises13.readFile)(guardConfigFile(peerId), "utf-8");
     const parsed = JSON.parse(raw);
     return { ...DEFAULT_GUARD_CONFIG, ...parsed };
   } catch {
@@ -22239,7 +22302,7 @@ async function readContextGuard(peerId) {
 }
 async function writeContextGuard(peerId, cfg) {
   const file = guardConfigFile(peerId);
-  await (0, import_promises15.mkdir)((0, import_node_path12.join)(bridgeRoot(), "guard"), { recursive: true });
+  await (0, import_promises14.mkdir)((0, import_node_path11.join)(bridgeRoot(), "guard"), { recursive: true });
   await atomicWriteJson(file, cfg);
 }
 async function peerSetContextGuardTool(ctx, args) {
@@ -22274,11 +22337,11 @@ var PeerSetNotificationArgs = external_exports.object({
   minIdleSeconds: external_exports.number().int().min(5).max(3600).optional()
 }).strict();
 function notificationConfigFile(peerId) {
-  return (0, import_node_path12.join)(bridgeRoot(), "notify", `${peerId}.json`);
+  return (0, import_node_path11.join)(bridgeRoot(), "notify", `${peerId}.json`);
 }
 async function readNotificationConfig(peerId) {
   try {
-    const raw = await (0, import_promises14.readFile)(notificationConfigFile(peerId), "utf-8");
+    const raw = await (0, import_promises13.readFile)(notificationConfigFile(peerId), "utf-8");
     const parsed = JSON.parse(raw);
     return { ...DEFAULT_NOTIFICATION_CONFIG, ...parsed };
   } catch {
@@ -22287,7 +22350,7 @@ async function readNotificationConfig(peerId) {
 }
 async function writeNotificationConfig(peerId, cfg) {
   const file = notificationConfigFile(peerId);
-  await (0, import_promises15.mkdir)((0, import_node_path12.join)(bridgeRoot(), "notify"), { recursive: true });
+  await (0, import_promises14.mkdir)((0, import_node_path11.join)(bridgeRoot(), "notify"), { recursive: true });
   await atomicWriteJson(file, cfg);
 }
 async function peerSetNotificationTool(ctx, args) {
@@ -22307,11 +22370,77 @@ async function peerSetNotificationTool(ctx, args) {
 var RateLimitStatusArgs = external_exports.object({}).strict();
 async function rateLimitStatusTool() {
   try {
-    const status = await readRateLimits();
-    return ok(status);
+    const status = await readLiveRateLimits();
+    const guard = await readRateLimitGuard();
+    return ok({ ...status, ...guard ? { guard } : {} });
   } catch (e) {
     log5.error("rate_limit_status_failed", { err: e instanceof Error ? e.message : String(e) });
     return err("rate_limit_status_failed", e instanceof Error ? e.message : "unknown");
+  }
+}
+var DEFAULT_RATE_LIMIT_GUARD_CONFIG = {
+  enabled: true,
+  sessionWarnAtPercent: 0.85,
+  sessionCriticalAtPercent: 0.95,
+  weekWarnAtPercent: 0.75,
+  weekCriticalAtPercent: 0.9,
+  notifyPeerIds: []
+};
+function rateLimitGuardFile() {
+  return (0, import_node_path11.join)(bridgeRoot(), "guard-rate-limits.json");
+}
+async function readRateLimitGuard() {
+  try {
+    const raw = await (0, import_promises13.readFile)(rateLimitGuardFile(), "utf-8");
+    const parsed = JSON.parse(raw);
+    return { ...DEFAULT_RATE_LIMIT_GUARD_CONFIG, ...parsed };
+  } catch {
+    return void 0;
+  }
+}
+async function writeRateLimitGuard(cfg) {
+  const file = rateLimitGuardFile();
+  await (0, import_promises14.mkdir)(bridgeRoot(), { recursive: true });
+  await atomicWriteJson(file, cfg);
+}
+var PeerSetRateLimitGuardArgs = external_exports.object({
+  enabled: external_exports.boolean().optional(),
+  sessionWarnAtPercent: external_exports.number().min(0).max(1).optional(),
+  sessionCriticalAtPercent: external_exports.number().min(0).max(1).optional(),
+  weekWarnAtPercent: external_exports.number().min(0).max(1).optional(),
+  weekCriticalAtPercent: external_exports.number().min(0).max(1).optional(),
+  notifyPeerIds: external_exports.array(external_exports.string()).optional()
+}).strict();
+async function peerSetRateLimitGuardTool(_ctx, args) {
+  try {
+    const current = await readRateLimitGuard() ?? DEFAULT_RATE_LIMIT_GUARD_CONFIG;
+    const next = {
+      enabled: args.enabled ?? current.enabled,
+      sessionWarnAtPercent: args.sessionWarnAtPercent ?? current.sessionWarnAtPercent,
+      sessionCriticalAtPercent: args.sessionCriticalAtPercent ?? current.sessionCriticalAtPercent,
+      weekWarnAtPercent: args.weekWarnAtPercent ?? current.weekWarnAtPercent,
+      weekCriticalAtPercent: args.weekCriticalAtPercent ?? current.weekCriticalAtPercent,
+      notifyPeerIds: args.notifyPeerIds ?? current.notifyPeerIds
+    };
+    if (next.sessionWarnAtPercent > next.sessionCriticalAtPercent) {
+      return err(
+        "invalid_session_thresholds",
+        `sessionWarnAtPercent (${next.sessionWarnAtPercent}) must be <= sessionCriticalAtPercent (${next.sessionCriticalAtPercent})`
+      );
+    }
+    if (next.weekWarnAtPercent > next.weekCriticalAtPercent) {
+      return err(
+        "invalid_week_thresholds",
+        `weekWarnAtPercent (${next.weekWarnAtPercent}) must be <= weekCriticalAtPercent (${next.weekCriticalAtPercent})`
+      );
+    }
+    await writeRateLimitGuard(next);
+    return ok({ guard: next });
+  } catch (e) {
+    log5.error("peer_set_rate_limit_guard_failed", {
+      err: e instanceof Error ? e.message : String(e)
+    });
+    return err("peer_set_rate_limit_guard_failed", e instanceof Error ? e.message : "unknown");
   }
 }
 var ModelInfoArgs = external_exports.object({
@@ -22651,9 +22780,54 @@ var TOOLS = [
   },
   {
     name: "rate_limit_status",
-    description: "Read account-scoped rate limits (5-hour session + 7-day weekly budgets) from ~/.claude/.usage_cache.json. USER-scoped \u2014 all peers on the same POSIX account share one set of rate limits. \u26A0 v0.8.3 factual correction: this file is NOT maintained by Claude Code itself \u2014 it is a secondary cache written by benabraham/claude-code-status-line (MIT). Its refresh depends on the status-line project's deprecated OAuth fallback path; on CC 2.1.80+ the file stops refreshing entirely because CC uses stdin JSON for live rate limits instead. Consequence: this tool commonly returns stale data (hours-to-days old). Use `staleness` verdict + `windowExpired` per-bucket flags to detect that. v0.9.0 replaces the data source with a plugin-owned statusLine wrapper (live) + PostToolUse hook (OAuth API fallback); this fossil-cache read will be removed. Returns utilization (0-1), resets_at timestamps, hoursUntilReset, severity, optional per-model scoped limits, spend cap (if enabled), extra credits (if enabled), and passthrough for internal experiment codenames. `staleness` values: 'fresh' (< 5 min old, use as-is \u2014 rarely happens with fossil cache), 'stale' (older but windows still current \u2014 absolute utilization is orientational, resetsAt/window boundaries remain reliable), 'expired-window' (\u26A0 one or more bucket's resetsAt is in the past \u2014 utilization describes a DEAD window; consult `/rate-limits` in Claude Code and wait for v0.9.0 or install the status-line project as a stopgap refresher). Returns `hasCache: false` gracefully if the file doesn't exist (= account never invoked /rate-limits and status-line not installed).",
+    description: "Read account-scoped rate limits (5-hour session + 7-day weekly + spend + extras) from LIVE data sources (v0.9.0+, BREAKING). USER-scoped \u2014 all peers on the same POSIX account share one set. Live source priority: (1) ~/.claude-bridge/live/statusline.json \u2014 written by plugin's chained statusLine wrapper per CC render (primary, per-turn); (2) ~/.claude-bridge/live/oauth-api.json \u2014 written by PostToolUse hook calling OAuth /api/oauth/usage endpoint, throttled ~1/min (secondary, richer fields incl. spend/extras/per-model/codenames); (3) neither \u2192 `hasLiveData: false` + `setupPointer`. When both are present the newer capture wins. Fossil ~/.claude/.usage_cache.json read from v0.8.x is REMOVED. Returns: hasLiveData, source ('statusline-stdin' | 'oauth-api' | 'no-live-data'), capturedAt, capturedAgeSeconds, staleness ('fresh'/'stale'/'expired-window'), session bucket, week bucket, plus (oauth-api only) scopedLimits, spend, extraUsage, perModelWeekly, rawExperimental. Each bucket has utilization (0-1), resetsAt, hoursUntilReset, severity, isActive, windowExpired. Includes `guard` config field if `peer_set_rate_limit_guard` was configured. See docs/SETUP-LIVE-DATA.md for install.",
     inputSchema: { type: "object", properties: {}, additionalProperties: false },
     handler: async () => rateLimitStatusTool()
+  },
+  {
+    name: "peer_set_rate_limit_guard",
+    description: "Configure account-scoped rate-limit guard (v0.9.0-beta+). USER-scoped \u2014 one config shared across all peers on the account (unlike peer_set_context_guard which is per-session). Fires warn/critical when session (5h) or week (7d) utilization crosses configured thresholds. Weekly cap has lower default threshold (0.75/0.90) than session (0.85/0.95) because 7-day recovery hurts more than 5h. Notification delivery via push channel to notifyPeerIds. Defaults: enabled=true, sessionWarnAtPercent=0.85, sessionCriticalAtPercent=0.95, weekWarnAtPercent=0.75, weekCriticalAtPercent=0.90, notifyPeerIds=[]. Any field can be partially updated; unspecified fields keep current values. Returns updated config.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        enabled: { type: "boolean", description: "Master toggle (default true)." },
+        sessionWarnAtPercent: {
+          type: "number",
+          minimum: 0,
+          maximum: 1,
+          description: "First threshold for 5h session (default 0.85)."
+        },
+        sessionCriticalAtPercent: {
+          type: "number",
+          minimum: 0,
+          maximum: 1,
+          description: "Critical threshold for 5h session (default 0.95). Must be >= sessionWarnAtPercent."
+        },
+        weekWarnAtPercent: {
+          type: "number",
+          minimum: 0,
+          maximum: 1,
+          description: "First threshold for 7d weekly (default 0.75)."
+        },
+        weekCriticalAtPercent: {
+          type: "number",
+          minimum: 0,
+          maximum: 1,
+          description: "Critical threshold for 7d weekly (default 0.90). Must be >= weekWarnAtPercent."
+        },
+        notifyPeerIds: {
+          type: "array",
+          items: { type: "string" },
+          description: "Peer IDs to notify on threshold crossing (default [])."
+        }
+      },
+      additionalProperties: false
+    },
+    handler: async (args, ctx) => {
+      const parsed = PeerSetRateLimitGuardArgs.safeParse(args);
+      if (!parsed.success) return err("invalid_args", "Schema validation failed", parsed.error);
+      return peerSetRateLimitGuardTool(ctx, parsed.data);
+    }
   },
   {
     name: "model_info",
@@ -22709,7 +22883,7 @@ var TOOLS = [
 // src/mcp/server.ts
 var log6 = makeLogger("mcp-server");
 var SERVER_NAME = "claude-bridge";
-var SERVER_VERSION = "0.9.0-alpha.1";
+var SERVER_VERSION = "0.9.0-alpha.2";
 var INSTRUCTIONS = `
 claude-bridge \u2014 MCP server for orchestration across Claude Code chats.
 
@@ -22722,7 +22896,8 @@ MCP tools:
 - peer_set_context_guard (v0.7.0+) \u2014 own threshold-guard (warn/critical) + notify subscribers.
 - peer_set_notification (v0.7.0+) \u2014 own idle-beep notification.
 - model_info (v0.7.3+) \u2014 canonical Claude model metadata (context window, max output, pricing, capabilities, lifecycle).
-- rate_limit_status (v0.8.0+) \u2014 account-scoped 5h session + 7d weekly usage from Claude Code's ~/.claude/.usage_cache.json (per-model breakdown, spend, extra credits). v0.8.2+: adds staleness verdict ("fresh"/"stale"/"expired-window") + per-bucket windowExpired flag so agents don't act on utilization from dead windows.
+- rate_limit_status (v0.9.0+) \u2014 BREAKING: live-data-only. Reads ~/.claude-bridge/live/statusline.json (primary, per-turn via chained statusLine wrapper) or ~/.claude-bridge/live/oauth-api.json (secondary, throttled ~1/min via PostToolUse hook). Fossil ~/.claude/.usage_cache.json read REMOVED. Returns source ('statusline-stdin' | 'oauth-api' | 'no-live-data'), staleness ('fresh'/'stale'/'expired-window'), per-bucket windowExpired. See docs/SETUP-LIVE-DATA.md.
+- peer_set_rate_limit_guard (v0.9.0-beta+) \u2014 account-scoped rate-limit guard. Threshold config for session (5h) + week (7d) utilization + notify subscribers. Analog to peer_set_context_guard but user-scoped instead of per-session.
 - peer_context_status (v0.9.0-alpha+) \u2014 BREAKING: live-data-only. Sole source is ~/.claude-bridge/live/statusline.json written by the plugin-owned statusLine wrapper. All heuristics removed (settings-json-1m-tag, empirical-heuristic, unknown-model-fallback, canonical-lookup for context). Output has new shape: hasLiveData, effortLevel, claudeCodeVersion, contextLimitSource ('statusline-stdin' | 'no-live-data'), setupPointer. See docs/SETUP-LIVE-DATA.md.
 
 Bundled skills (load detail via skill name):

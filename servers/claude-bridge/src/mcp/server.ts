@@ -15,7 +15,7 @@ import { TOOLS, type ToolResult, piggybackInbox } from "./tools.ts";
 const log = makeLogger("mcp-server");
 
 const SERVER_NAME = "claude-bridge";
-const SERVER_VERSION = "0.9.0-alpha.1";
+const SERVER_VERSION = "0.9.0-alpha.2";
 
 const INSTRUCTIONS = `
 claude-bridge — MCP server for orchestration across Claude Code chats.
@@ -29,7 +29,8 @@ MCP tools:
 - peer_set_context_guard (v0.7.0+) — own threshold-guard (warn/critical) + notify subscribers.
 - peer_set_notification (v0.7.0+) — own idle-beep notification.
 - model_info (v0.7.3+) — canonical Claude model metadata (context window, max output, pricing, capabilities, lifecycle).
-- rate_limit_status (v0.8.0+) — account-scoped 5h session + 7d weekly usage from Claude Code's ~/.claude/.usage_cache.json (per-model breakdown, spend, extra credits). v0.8.2+: adds staleness verdict ("fresh"/"stale"/"expired-window") + per-bucket windowExpired flag so agents don't act on utilization from dead windows.
+- rate_limit_status (v0.9.0+) — BREAKING: live-data-only. Reads ~/.claude-bridge/live/statusline.json (primary, per-turn via chained statusLine wrapper) or ~/.claude-bridge/live/oauth-api.json (secondary, throttled ~1/min via PostToolUse hook). Fossil ~/.claude/.usage_cache.json read REMOVED. Returns source ('statusline-stdin' | 'oauth-api' | 'no-live-data'), staleness ('fresh'/'stale'/'expired-window'), per-bucket windowExpired. See docs/SETUP-LIVE-DATA.md.
+- peer_set_rate_limit_guard (v0.9.0-beta+) — account-scoped rate-limit guard. Threshold config for session (5h) + week (7d) utilization + notify subscribers. Analog to peer_set_context_guard but user-scoped instead of per-session.
 - peer_context_status (v0.9.0-alpha+) — BREAKING: live-data-only. Sole source is ~/.claude-bridge/live/statusline.json written by the plugin-owned statusLine wrapper. All heuristics removed (settings-json-1m-tag, empirical-heuristic, unknown-model-fallback, canonical-lookup for context). Output has new shape: hasLiveData, effortLevel, claudeCodeVersion, contextLimitSource ('statusline-stdin' | 'no-live-data'), setupPointer. See docs/SETUP-LIVE-DATA.md.
 
 Bundled skills (load detail via skill name):

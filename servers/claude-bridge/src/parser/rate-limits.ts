@@ -1,33 +1,42 @@
-import { readFile } from "node:fs/promises";
-import { homedir } from "node:os";
-import { join } from "node:path";
+import {
+  type OAuthApiLiveEnvelope,
+  type StatusLineLiveEnvelope,
+  envelopeAgeSeconds,
+  readOAuthApiLive,
+  readStatusLineLive,
+} from "./live-data.ts";
 
 /**
- * Rate-limits reader — parses `~/.claude/.usage_cache.json`.
+ * Rate-limits reader — live-data-only (v0.9.0+).
  *
- * ⚠ v0.8.3 factual correction: this file is NOT written by Claude Code.
- * It is a secondary cache maintained by benabraham/claude-code-status-line
- * (MIT). See CREDITS.md for details.
+ * Two live sources, both under `~/.claude-bridge/live/`:
  *
- * Refresh model on modern Claude Code (2.1.80+):
- *  - CC sends live `rate_limits` on stdin to statusLine hook per render.
- *  - status-line reads stdin → renders → DOES NOT write the cache file.
- *  - Cache write happens only in the deprecated OAuth API fallback path
- *    (fetch_usage_data in the status-line source), which fires only when
- *    stdin `rate_limits` is missing (CC < 2.1.80 or misconfiguration).
- *  - Result: on any current CC install, `.usage_cache.json` stops refreshing
- *    shortly after install and this reader returns stale data (hours to days).
+ *  1. `statusline.json` — written by chained statusLine wrapper on every CC
+ *     render. Contains `rate_limits.{five_hour,seven_day}.{used_percentage,resets_at}`
+ *     from CC 2.1.80+ stdin JSON. Primary source.
+ *
+ *  2. `oauth-api.json` — written by PostToolUse hook (`bin/refresh-limits`)
+ *     when the throttle window elapses. Contains the full OAuth
+ *     `/api/oauth/usage` response — richer than statusLine stdin (includes
+ *     spend, extra_usage, per-model weekly, experimental codenames, structured
+ *     limits[] with severity). Secondary source.
+ *
+ * Read priority (v0.9.0):
+ *  1. statusline live envelope's rate_limits — 1-turn latency, no extra
+ *     dependencies. `contextLimit` (session/week) available too but the
+ *     rate limits tool doesn't return it here (that's peer_context_status).
+ *  2. oauth-api live envelope — throttled to ~1/min, richer fields.
+ *  3. `hasLiveData: false` + setup pointer if neither is available.
+ *
+ * Removed from v0.9.0 (breaking):
+ *  - `~/.claude/.usage_cache.json` fossil read (was benabraham's cache, not CC's — see CREDITS.md v0.8.3).
+ *  - `readRateLimits(path)` signature that accepted an arbitrary file path.
  *
  * Data is USER-SCOPED (per POSIX account), not per-session. All peers on
  * the same user account share exactly one set of rate limits.
  *
- * v0.9.0 removes this fossil read entirely in favor of:
- *  1. Plugin-owned statusLine wrapper writing ~/.claude-bridge/live/statusline.json
- *  2. PostToolUse hook calling OAuth /api/oauth/usage endpoint (throttled)
- * See docs/HOOKS-STATUSLINE-ARCHITECTURE.md (v0.9.0+).
- *
- * Source structure (verified 2026-07-05 against Anthropic account with
- * Claude Code v2.1.201). Keys:
+ * Structure of the OAuth API response (verified 2026-07-05 against
+ * Anthropic account with Claude Code v2.1.201). Keys:
  *  - five_hour           — 5-hour session budget (utilization %, resets_at)
  *  - seven_day           — 7-day weekly budget
  *  - seven_day_{model}   — per-model weekly (opus / sonnet / oauth_apps / …)
@@ -91,7 +100,11 @@ interface RawExtraUsage {
   weekly: unknown | null;
 }
 
-interface RawUsageCacheData {
+/**
+ * OAuth API response shape. This is the JSON body of GET
+ * https://api.anthropic.com/api/oauth/usage.
+ */
+export interface RawOAuthUsageData {
   five_hour: RawFiveHourSevenDay;
   seven_day: RawFiveHourSevenDay;
   seven_day_oauth_apps: number | null;
@@ -106,15 +119,10 @@ interface RawUsageCacheData {
   [key: string]: unknown; // for codename passthrough
 }
 
-interface RawUsageCache {
-  timestamp: number;
-  data: RawUsageCacheData;
-}
-
 /**
  * Normalized bucket (session or week).
  * `utilization` in 0-1 fraction (source is 0-100).
- * `hoursUntilReset` may be NEGATIVE if the cache is stale.
+ * `hoursUntilReset` may be NEGATIVE if the source is stale.
  * `windowExpired` is true when `resetsAt` is in the past (v0.8.2+) — the
  * utilization number describes a DEAD window and is not meaningful for
  * decisions about the current period.
@@ -141,16 +149,7 @@ export interface ScopedLimit {
 }
 
 /**
- * Overall freshness of the cache (v0.8.2+).
- *
- *  - `fresh`           — cache < 5 min old, no expired windows
- *  - `stale`           — cache >= 5 min old but session + week windows still
- *                        current; utilization is orientational, `resetsAt`
- *                        and window boundaries remain reliable
- *  - `expired-window`  — one or more buckets have `windowExpired: true`;
- *                        utilization describes a dead window, consult
- *                        `/rate-limits` in Claude Code or wait for the next
- *                        cache refresh event
+ * Overall freshness of the live data (v0.8.2+).
  */
 export type Staleness = "fresh" | "stale" | "expired-window";
 
@@ -171,17 +170,23 @@ export interface RateLimitExtraUsage {
   currency?: string;
 }
 
+/**
+ * Which live source was chosen. v0.9.0 no longer reads fossil cache; either
+ * source can be missing (returns `hasLiveData: false`).
+ */
+export type RateLimitSource = "statusline-stdin" | "oauth-api" | "no-live-data";
+
 export interface RateLimitStatus {
-  hasCache: boolean;
-  cacheTimestamp?: string;
-  cacheAgeSeconds?: number;
-  /**
-   * Overall freshness verdict (v0.8.2+). Absent when `hasCache=false`.
-   * Consumers should treat `expired-window` as "utilization numbers are
-   * from a dead time window — do not act on them".
-   */
+  hasLiveData: boolean;
+  /** Which live source produced this result. v0.9.0+. */
+  source: RateLimitSource;
+  /** ISO timestamp when the source envelope was captured (statusLine render
+   * or OAuth refresh). */
+  capturedAt?: string;
+  /** How many seconds ago the envelope was captured. */
+  capturedAgeSeconds?: number;
+  /** Overall freshness verdict. Absent when `hasLiveData=false`. */
   staleness?: Staleness;
-  cachePath?: string;
   session?: RateLimitBucket;
   week?: RateLimitBucket;
   scopedLimits?: ScopedLimit[];
@@ -189,9 +194,9 @@ export interface RateLimitStatus {
   extraUsage?: RateLimitExtraUsage;
   perModelWeekly?: Record<string, number>;
   rawExperimental?: Record<string, unknown>;
+  /** Setup instruction pointer when hasLiveData=false. */
+  setupPointer?: string;
 }
-
-const USAGE_CACHE_PATH = join(homedir(), ".claude", ".usage_cache.json");
 
 /**
  * Internal experiment/promo codenames — passed through raw if non-null.
@@ -214,6 +219,12 @@ const PER_MODEL_WEEKLY_KEYS: Record<string, string> = {
   seven_day_cowork: "cowork",
   seven_day_omelette: "omelette",
 };
+
+const FRESH_THRESHOLD_SECONDS = 300;
+
+const SETUP_POINTER =
+  "Install the plugin's statusLine wrapper AND/OR enable the PostToolUse " +
+  "refresh-limits hook. See docs/SETUP-LIVE-DATA.md.";
 
 function hoursBetween(iso: string, now: Date): number {
   const target = Date.parse(iso);
@@ -252,11 +263,38 @@ function minorToMajor(used: RawSpendUsed): number {
   return used.amount_minor / 10 ** used.exponent;
 }
 
-export function normalizeUsageCache(raw: RawUsageCache, now: Date = new Date()): RateLimitStatus {
-  const cacheTimestamp = new Date(raw.timestamp * 1000).toISOString();
-  const cacheAgeSeconds = Math.max(0, Math.floor((now.getTime() - raw.timestamp * 1000) / 1000));
+function computeStaleness(
+  session: RateLimitBucket | undefined,
+  week: RateLimitBucket | undefined,
+  scopedLimits: ScopedLimit[],
+  ageSeconds: number,
+): Staleness {
+  const anyExpired =
+    (session?.windowExpired ?? false) ||
+    (week?.windowExpired ?? false) ||
+    scopedLimits.some((l) => l.windowExpired);
+  if (anyExpired) return "expired-window";
+  return ageSeconds < FRESH_THRESHOLD_SECONDS ? "fresh" : "stale";
+}
 
-  const data = raw.data;
+/**
+ * Normalize the rich OAuth API response into RateLimitStatus. Preserves
+ * all optional fields (spend, extra_usage, per-model, codenames).
+ *
+ * `capturedAt` and derived staleness are set from the envelope timestamp.
+ */
+export function normalizeFromOAuth(
+  envelope: OAuthApiLiveEnvelope,
+  now: Date = new Date(),
+): RateLimitStatus {
+  const data = envelope.data as RawOAuthUsageData | undefined;
+  if (!data) {
+    return {
+      hasLiveData: false,
+      source: "no-live-data",
+      setupPointer: SETUP_POINTER,
+    };
+  }
   const limits = data.limits ?? [];
 
   const sessionLimit = limits.find((l) => l.kind === "session");
@@ -284,25 +322,14 @@ export function normalizeUsageCache(raw: RawUsageCache, now: Date = new Date()):
       return entry;
     });
 
-  // v0.8.2 staleness verdict — priority: expired-window > fresh/stale by age.
-  // The window check dominates: a 60-second-old cache with resets_at in the
-  // past is still expired-window; a 24-hour-old cache with both windows in
-  // the future is just stale (utilization is orientational, windows reliable).
-  const anyExpired =
-    (session?.windowExpired ?? false) ||
-    (week?.windowExpired ?? false) ||
-    scopedLimits.some((l) => l.windowExpired);
-  const FRESH_THRESHOLD_SECONDS = 300;
-  const staleness: Staleness = anyExpired
-    ? "expired-window"
-    : cacheAgeSeconds < FRESH_THRESHOLD_SECONDS
-      ? "fresh"
-      : "stale";
+  const ageSeconds = envelopeAgeSeconds(envelope, now);
+  const staleness = computeStaleness(session, week, scopedLimits, ageSeconds);
 
   const status: RateLimitStatus = {
-    hasCache: true,
-    cacheTimestamp,
-    cacheAgeSeconds,
+    hasLiveData: true,
+    source: "oauth-api",
+    capturedAt: envelope.capturedAt,
+    capturedAgeSeconds: ageSeconds,
     staleness,
   };
 
@@ -358,29 +385,100 @@ export function normalizeUsageCache(raw: RawUsageCache, now: Date = new Date()):
 }
 
 /**
- * Read + parse the usage cache. Returns `{ hasCache: false }` if the file
- * doesn't exist or is unreadable (= graceful degrade for accounts that have
- * never invoked /rate-limits or aren't logged in).
- *
- * Path defaults to ~/.claude/.usage_cache.json but is injectable for tests.
+ * Normalize the compact rate_limits payload from statusLine stdin JSON.
+ * CC 2.1.80+ sends `rate_limits.{five_hour,seven_day}.{used_percentage,
+ * resets_at (unix timestamp)}`. Much smaller than OAuth response — no
+ * spend, extra_usage, per-model, or codenames. But it's per-render, so
+ * it's the most current source.
  */
-export async function readRateLimits(
-  path: string = USAGE_CACHE_PATH,
+export function normalizeFromStatusLine(
+  envelope: StatusLineLiveEnvelope,
   now: Date = new Date(),
-): Promise<RateLimitStatus> {
-  let raw: string;
-  try {
-    raw = await readFile(path, "utf-8");
-  } catch {
-    return { hasCache: false, cachePath: path };
+): RateLimitStatus {
+  const rl = envelope.payload.rate_limits;
+  if (!rl) {
+    return {
+      hasLiveData: false,
+      source: "no-live-data",
+      setupPointer: SETUP_POINTER,
+    };
   }
-  let parsed: RawUsageCache;
-  try {
-    parsed = JSON.parse(raw) as RawUsageCache;
-  } catch {
-    return { hasCache: false, cachePath: path };
+
+  function bucketFromStatusLine(
+    w: { used_percentage?: number; resets_at?: number } | undefined,
+    now: Date,
+  ): RateLimitBucket | undefined {
+    if (!w || w.used_percentage == null || w.resets_at == null) return undefined;
+    const resetsAtIso = new Date(w.resets_at * 1000).toISOString();
+    return {
+      utilization: w.used_percentage / 100,
+      resetsAt: resetsAtIso,
+      hoursUntilReset: hoursBetween(resetsAtIso, now),
+      severity: "normal", // statusLine payload doesn't carry per-bucket severity
+      isActive: true, // statusLine payload doesn't carry is_active either
+      windowExpired: isWindowExpired(resetsAtIso, now),
+    };
   }
-  const status = normalizeUsageCache(parsed, now);
-  status.cachePath = path;
+
+  const session = bucketFromStatusLine(rl.five_hour, now);
+  const week = bucketFromStatusLine(rl.seven_day, now);
+  const ageSeconds = envelopeAgeSeconds(envelope, now);
+  const staleness = computeStaleness(session, week, [], ageSeconds);
+
+  const status: RateLimitStatus = {
+    hasLiveData: true,
+    source: "statusline-stdin",
+    capturedAt: envelope.capturedAt,
+    capturedAgeSeconds: ageSeconds,
+    staleness,
+  };
+  if (session) status.session = session;
+  if (week) status.week = week;
   return status;
+}
+
+/**
+ * Read the current rate limit status from live data sources.
+ *
+ * Priority:
+ *  1. statusLine capture (if it has a rate_limits field) — primary, per-turn
+ *  2. OAuth API capture — richer fields, throttled ~1/min
+ *  3. Neither → hasLiveData:false with setup pointer
+ *
+ * When both are present, the newer one wins by capturedAt. Rationale:
+ * statusLine is the primary but statusLine payload can lack the rate_limits
+ * field entirely (older CC), and OAuth is fresher when it fires between
+ * statusLine renders.
+ */
+export async function readLiveRateLimits(now: Date = new Date()): Promise<RateLimitStatus> {
+  const [statusEnv, oauthEnv] = await Promise.all([readStatusLineLive(), readOAuthApiLive()]);
+
+  const statusResult = statusEnv ? normalizeFromStatusLine(statusEnv, now) : null;
+  const oauthResult = oauthEnv ? normalizeFromOAuth(oauthEnv, now) : null;
+
+  const statusOk = statusResult?.hasLiveData ?? false;
+  const oauthOk = oauthResult?.hasLiveData ?? false;
+
+  if (!statusOk && !oauthOk) {
+    return {
+      hasLiveData: false,
+      source: "no-live-data",
+      setupPointer: SETUP_POINTER,
+    };
+  }
+
+  if (statusOk && !oauthOk) {
+    return statusResult as RateLimitStatus;
+  }
+  if (!statusOk && oauthOk) {
+    return oauthResult as RateLimitStatus;
+  }
+
+  // Both present: prefer the newer one. OAuth response is richer, but a
+  // fresh statusLine capture is more current than a stale OAuth cache.
+  const statusAge = statusResult?.capturedAgeSeconds ?? Number.POSITIVE_INFINITY;
+  const oauthAge = oauthResult?.capturedAgeSeconds ?? Number.POSITIVE_INFINITY;
+  return statusAge <= oauthAge
+    ? (statusResult as RateLimitStatus)
+    : (oauthResult as RateLimitStatus);
 }

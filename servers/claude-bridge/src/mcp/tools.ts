@@ -11,7 +11,7 @@ import {
 } from "../parser/context-usage.ts";
 import { parseSessionFile, parseSessionFileRaw, readSessionFile } from "../parser/jsonl.ts";
 import { MODELS, MODEL_METADATA_SOURCE, lookupModel } from "../parser/model-metadata.ts";
-import { readRateLimits } from "../parser/rate-limits.ts";
+import { readLiveRateLimits } from "../parser/rate-limits.ts";
 import type { AssistantEvent, ContentBlock, SessionEvent, UserEvent } from "../parser/schemas.ts";
 import {
   type SessionRef,
@@ -1642,11 +1642,112 @@ export const RateLimitStatusArgs = z.object({}).strict();
 
 export async function rateLimitStatusTool(): Promise<ToolResult> {
   try {
-    const status = await readRateLimits();
-    return ok(status);
+    const status = await readLiveRateLimits();
+    const guard = await readRateLimitGuard();
+    return ok({ ...status, ...(guard ? { guard } : {}) });
   } catch (e) {
     log.error("rate_limit_status_failed", { err: e instanceof Error ? e.message : String(e) });
     return err("rate_limit_status_failed", e instanceof Error ? e.message : "unknown");
+  }
+}
+
+// ============================================================================
+// peer_set_rate_limit_guard — user-wide guard config (v0.9.0-beta+)
+// Analog to peer_set_context_guard but for rate limits. Since rate limits
+// are USER-scoped (all peers on the account share one), the guard config
+// is stored in ~/.claude-bridge/guard-rate-limits.json (not per-session).
+// ============================================================================
+
+export interface RateLimitGuardConfig {
+  enabled: boolean;
+  /** Warn threshold for session (5h) utilization, 0-1. Default 0.85. */
+  sessionWarnAtPercent: number;
+  /** Critical threshold for session utilization, 0-1. Default 0.95. */
+  sessionCriticalAtPercent: number;
+  /** Warn threshold for week utilization, 0-1. Default 0.75. Weekly caps
+   * hurt more (7-day recovery vs 5h) so bar for concern is lower. */
+  weekWarnAtPercent: number;
+  /** Critical threshold for week utilization, 0-1. Default 0.90. */
+  weekCriticalAtPercent: number;
+  /** Peer ids to notify on threshold crossing (broadcast to sibling chats). */
+  notifyPeerIds: string[];
+}
+
+const DEFAULT_RATE_LIMIT_GUARD_CONFIG: RateLimitGuardConfig = {
+  enabled: true,
+  sessionWarnAtPercent: 0.85,
+  sessionCriticalAtPercent: 0.95,
+  weekWarnAtPercent: 0.75,
+  weekCriticalAtPercent: 0.9,
+  notifyPeerIds: [],
+};
+
+function rateLimitGuardFile(): string {
+  return join(bridgeRoot(), "guard-rate-limits.json");
+}
+
+export async function readRateLimitGuard(): Promise<RateLimitGuardConfig | undefined> {
+  try {
+    const raw = await readFile(rateLimitGuardFile(), "utf-8");
+    const parsed = JSON.parse(raw);
+    return { ...DEFAULT_RATE_LIMIT_GUARD_CONFIG, ...parsed };
+  } catch {
+    return undefined;
+  }
+}
+
+async function writeRateLimitGuard(cfg: RateLimitGuardConfig): Promise<void> {
+  const file = rateLimitGuardFile();
+  await mkdir(bridgeRoot(), { recursive: true });
+  await atomicWriteJson(file, cfg);
+}
+
+export const PeerSetRateLimitGuardArgs = z
+  .object({
+    enabled: z.boolean().optional(),
+    sessionWarnAtPercent: z.number().min(0).max(1).optional(),
+    sessionCriticalAtPercent: z.number().min(0).max(1).optional(),
+    weekWarnAtPercent: z.number().min(0).max(1).optional(),
+    weekCriticalAtPercent: z.number().min(0).max(1).optional(),
+    notifyPeerIds: z.array(z.string()).optional(),
+  })
+  .strict();
+
+export async function peerSetRateLimitGuardTool(
+  _ctx: ServerContext,
+  args: z.infer<typeof PeerSetRateLimitGuardArgs>,
+): Promise<ToolResult> {
+  try {
+    const current = (await readRateLimitGuard()) ?? DEFAULT_RATE_LIMIT_GUARD_CONFIG;
+    const next: RateLimitGuardConfig = {
+      enabled: args.enabled ?? current.enabled,
+      sessionWarnAtPercent: args.sessionWarnAtPercent ?? current.sessionWarnAtPercent,
+      sessionCriticalAtPercent: args.sessionCriticalAtPercent ?? current.sessionCriticalAtPercent,
+      weekWarnAtPercent: args.weekWarnAtPercent ?? current.weekWarnAtPercent,
+      weekCriticalAtPercent: args.weekCriticalAtPercent ?? current.weekCriticalAtPercent,
+      notifyPeerIds: args.notifyPeerIds ?? current.notifyPeerIds,
+    };
+
+    if (next.sessionWarnAtPercent > next.sessionCriticalAtPercent) {
+      return err(
+        "invalid_session_thresholds",
+        `sessionWarnAtPercent (${next.sessionWarnAtPercent}) must be <= sessionCriticalAtPercent (${next.sessionCriticalAtPercent})`,
+      );
+    }
+    if (next.weekWarnAtPercent > next.weekCriticalAtPercent) {
+      return err(
+        "invalid_week_thresholds",
+        `weekWarnAtPercent (${next.weekWarnAtPercent}) must be <= weekCriticalAtPercent (${next.weekCriticalAtPercent})`,
+      );
+    }
+
+    await writeRateLimitGuard(next);
+    return ok({ guard: next });
+  } catch (e) {
+    log.error("peer_set_rate_limit_guard_failed", {
+      err: e instanceof Error ? e.message : String(e),
+    });
+    return err("peer_set_rate_limit_guard_failed", e instanceof Error ? e.message : "unknown");
   }
 }
 
@@ -2033,9 +2134,57 @@ export const TOOLS: ToolSpec[] = [
   {
     name: "rate_limit_status",
     description:
-      "Read account-scoped rate limits (5-hour session + 7-day weekly budgets) from ~/.claude/.usage_cache.json. USER-scoped — all peers on the same POSIX account share one set of rate limits. ⚠ v0.8.3 factual correction: this file is NOT maintained by Claude Code itself — it is a secondary cache written by benabraham/claude-code-status-line (MIT). Its refresh depends on the status-line project's deprecated OAuth fallback path; on CC 2.1.80+ the file stops refreshing entirely because CC uses stdin JSON for live rate limits instead. Consequence: this tool commonly returns stale data (hours-to-days old). Use `staleness` verdict + `windowExpired` per-bucket flags to detect that. v0.9.0 replaces the data source with a plugin-owned statusLine wrapper (live) + PostToolUse hook (OAuth API fallback); this fossil-cache read will be removed. Returns utilization (0-1), resets_at timestamps, hoursUntilReset, severity, optional per-model scoped limits, spend cap (if enabled), extra credits (if enabled), and passthrough for internal experiment codenames. `staleness` values: 'fresh' (< 5 min old, use as-is — rarely happens with fossil cache), 'stale' (older but windows still current — absolute utilization is orientational, resetsAt/window boundaries remain reliable), 'expired-window' (⚠ one or more bucket's resetsAt is in the past — utilization describes a DEAD window; consult `/rate-limits` in Claude Code and wait for v0.9.0 or install the status-line project as a stopgap refresher). Returns `hasCache: false` gracefully if the file doesn't exist (= account never invoked /rate-limits and status-line not installed).",
+      "Read account-scoped rate limits (5-hour session + 7-day weekly + spend + extras) from LIVE data sources (v0.9.0+, BREAKING). USER-scoped — all peers on the same POSIX account share one set. Live source priority: (1) ~/.claude-bridge/live/statusline.json — written by plugin's chained statusLine wrapper per CC render (primary, per-turn); (2) ~/.claude-bridge/live/oauth-api.json — written by PostToolUse hook calling OAuth /api/oauth/usage endpoint, throttled ~1/min (secondary, richer fields incl. spend/extras/per-model/codenames); (3) neither → `hasLiveData: false` + `setupPointer`. When both are present the newer capture wins. Fossil ~/.claude/.usage_cache.json read from v0.8.x is REMOVED. Returns: hasLiveData, source ('statusline-stdin' | 'oauth-api' | 'no-live-data'), capturedAt, capturedAgeSeconds, staleness ('fresh'/'stale'/'expired-window'), session bucket, week bucket, plus (oauth-api only) scopedLimits, spend, extraUsage, perModelWeekly, rawExperimental. Each bucket has utilization (0-1), resetsAt, hoursUntilReset, severity, isActive, windowExpired. Includes `guard` config field if `peer_set_rate_limit_guard` was configured. See docs/SETUP-LIVE-DATA.md for install.",
     inputSchema: { type: "object", properties: {}, additionalProperties: false },
     handler: async () => rateLimitStatusTool(),
+  },
+  {
+    name: "peer_set_rate_limit_guard",
+    description:
+      "Configure account-scoped rate-limit guard (v0.9.0-beta+). USER-scoped — one config shared across all peers on the account (unlike peer_set_context_guard which is per-session). Fires warn/critical when session (5h) or week (7d) utilization crosses configured thresholds. Weekly cap has lower default threshold (0.75/0.90) than session (0.85/0.95) because 7-day recovery hurts more than 5h. Notification delivery via push channel to notifyPeerIds. Defaults: enabled=true, sessionWarnAtPercent=0.85, sessionCriticalAtPercent=0.95, weekWarnAtPercent=0.75, weekCriticalAtPercent=0.90, notifyPeerIds=[]. Any field can be partially updated; unspecified fields keep current values. Returns updated config.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        enabled: { type: "boolean", description: "Master toggle (default true)." },
+        sessionWarnAtPercent: {
+          type: "number",
+          minimum: 0,
+          maximum: 1,
+          description: "First threshold for 5h session (default 0.85).",
+        },
+        sessionCriticalAtPercent: {
+          type: "number",
+          minimum: 0,
+          maximum: 1,
+          description:
+            "Critical threshold for 5h session (default 0.95). Must be >= sessionWarnAtPercent.",
+        },
+        weekWarnAtPercent: {
+          type: "number",
+          minimum: 0,
+          maximum: 1,
+          description: "First threshold for 7d weekly (default 0.75).",
+        },
+        weekCriticalAtPercent: {
+          type: "number",
+          minimum: 0,
+          maximum: 1,
+          description:
+            "Critical threshold for 7d weekly (default 0.90). Must be >= weekWarnAtPercent.",
+        },
+        notifyPeerIds: {
+          type: "array",
+          items: { type: "string" },
+          description: "Peer IDs to notify on threshold crossing (default []).",
+        },
+      },
+      additionalProperties: false,
+    },
+    handler: async (args, ctx) => {
+      const parsed = PeerSetRateLimitGuardArgs.safeParse(args);
+      if (!parsed.success) return err("invalid_args", "Schema validation failed", parsed.error);
+      return peerSetRateLimitGuardTool(ctx, parsed.data);
+    },
   },
   {
     name: "model_info",
