@@ -19105,9 +19105,9 @@ var NodeFsHandler = class {
     if (this.fsw.closed) {
       return;
     }
-    const dirname6 = sysPath.dirname(file);
+    const dirname7 = sysPath.dirname(file);
     const basename5 = sysPath.basename(file);
-    const parent = this.fsw._getWatchedDir(dirname6);
+    const parent = this.fsw._getWatchedDir(dirname7);
     let prevStats = stats;
     if (parent.has(basename5))
       return;
@@ -19134,7 +19134,7 @@ var NodeFsHandler = class {
             prevStats = newStats2;
           }
         } catch (error2) {
-          this.fsw._remove(dirname6, basename5);
+          this.fsw._remove(dirname7, basename5);
         }
       } else if (parent.has(basename5)) {
         const at = newStats.atimeMs;
@@ -19942,8 +19942,8 @@ var FSWatcher = class extends import_events.EventEmitter {
     }
     return this._userIgnored(path, stats);
   }
-  _isntIgnored(path, stat9) {
-    return !this._isIgnored(path, stat9);
+  _isntIgnored(path, stat8) {
+    return !this._isIgnored(path, stat8);
   }
   /**
    * Provides a set of common helpers and properties relating to symlink handling.
@@ -20241,10 +20241,10 @@ function createPeerRegistry(opts = {}) {
 var import_node_child_process = require("node:child_process");
 var import_node_fs = require("node:fs");
 var log2 = makeLogger("terminal-title");
-function parseTtyNrFromProcStat(stat9) {
-  const lastParen = stat9.lastIndexOf(")");
+function parseTtyNrFromProcStat(stat8) {
+  const lastParen = stat8.lastIndexOf(")");
   if (lastParen === -1) return null;
-  const after = stat9.slice(lastParen + 2);
+  const after = stat8.slice(lastParen + 2);
   const fields = after.split(" ");
   const ttyNrStr = fields[4];
   if (!ttyNrStr) return null;
@@ -20258,8 +20258,8 @@ function parseTtyNrFromProcStat(stat9) {
 }
 function findLinuxParentTty(ppid) {
   try {
-    const stat9 = (0, import_node_fs.readFileSync)(`/proc/${ppid}/stat`, "utf-8");
-    const parsed = parseTtyNrFromProcStat(stat9);
+    const stat8 = (0, import_node_fs.readFileSync)(`/proc/${ppid}/stat`, "utf-8");
+    const parsed = parseTtyNrFromProcStat(stat8);
     if (!parsed) return null;
     if (parsed.major === 136) {
       return `/dev/pts/${parsed.minor}`;
@@ -20522,12 +20522,85 @@ async function shutdownContext(ctx) {
 }
 
 // src/mcp/tools.ts
+var import_promises14 = require("node:fs/promises");
 var import_promises15 = require("node:fs/promises");
-var import_promises16 = require("node:fs/promises");
 var import_node_path12 = require("node:path");
 
+// src/parser/live-data.ts
+var import_promises10 = require("node:fs/promises");
+var import_node_path9 = require("node:path");
+function liveDir() {
+  return (0, import_node_path9.join)(bridgeRoot(), "live");
+}
+function statusLineLivePath() {
+  return (0, import_node_path9.join)(liveDir(), "statusline.json");
+}
+async function readEnvelope2(path) {
+  try {
+    const raw = await (0, import_promises10.readFile)(path, "utf-8");
+    const parsed = JSON.parse(raw);
+    if (typeof parsed !== "object" || parsed === null) return null;
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+async function readStatusLineLive() {
+  return readEnvelope2(statusLineLivePath());
+}
+
 // src/parser/context-usage.ts
-var import_promises11 = require("node:fs/promises");
+var SETUP_POINTER = "Install the chained statusLine wrapper: set settings.json.statusLine.command to `node ${CLAUDE_PLUGIN_ROOT}/dist/statusline.cjs`. See docs/SETUP-LIVE-DATA.md.";
+function riskBucket(percent) {
+  if (percent < 0.6) return "low";
+  if (percent < 0.85) return "medium";
+  return "high";
+}
+async function readContextUsage(_sessionRef) {
+  const envelope = await readStatusLineLive();
+  if (!envelope) return null;
+  const payload = envelope.payload;
+  const cw = payload.context_window;
+  const contextLimit = cw?.context_window_size ?? 0;
+  const usage = cw?.current_usage;
+  const tokensUsed = (usage?.input_tokens ?? 0) + (usage?.output_tokens ?? 0) + (usage?.cache_read_input_tokens ?? 0) + (usage?.cache_creation_input_tokens ?? 0);
+  const percentFromPayload = typeof cw?.used_percentage === "number" ? cw.used_percentage / 100 : null;
+  const percentUsed = percentFromPayload ?? (contextLimit > 0 ? tokensUsed / contextLimit : 0);
+  const tokensRemaining = Math.max(0, contextLimit - tokensUsed);
+  return {
+    hasLiveData: true,
+    tokensUsed,
+    model: payload.model?.display_name ?? null,
+    contextLimit,
+    contextLimitSource: "statusline-stdin",
+    lastTurnAt: envelope.capturedAt,
+    percentUsed,
+    tokensRemaining,
+    autocompactRisk: contextLimit > 0 ? riskBucket(percentUsed) : "unknown",
+    effortLevel: payload.effort?.level ?? null,
+    claudeCodeVersion: payload.version ?? null
+  };
+}
+async function readContextUsageForSession(sessions) {
+  if (sessions.length === 0) return null;
+  return readContextUsage(sessions[0]);
+}
+function noLiveDataStatus() {
+  return {
+    hasLiveData: false,
+    tokensUsed: 0,
+    model: null,
+    contextLimit: 0,
+    contextLimitSource: "no-live-data",
+    lastTurnAt: null,
+    percentUsed: 0,
+    tokensRemaining: 0,
+    autocompactRisk: "unknown",
+    effortLevel: null,
+    claudeCodeVersion: null,
+    setupPointer: SETUP_POINTER
+  };
+}
 
 // src/parser/jsonl.ts
 var import_node_fs2 = require("node:fs");
@@ -20880,112 +20953,8 @@ var MODEL_METADATA_SOURCE = {
   verifiedAt: "2026-06-29"
 };
 
-// src/parser/settings.ts
-var import_promises10 = require("node:fs/promises");
-var import_node_path9 = require("node:path");
-function claudeSettingsPath() {
-  return (0, import_node_path9.join)(claudeHome(), "settings.json");
-}
-async function readClaudeSettings() {
-  try {
-    const raw = await (0, import_promises10.readFile)(claudeSettingsPath(), "utf-8");
-    const parsed = JSON.parse(raw);
-    if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return null;
-    const record2 = parsed;
-    const rawModel = record2["model"];
-    const model = typeof rawModel === "string" ? rawModel : void 0;
-    return { ...model !== void 0 ? { model } : {} };
-  } catch {
-    return null;
-  }
-}
-
-// src/parser/context-usage.ts
-var ONE_M_PATTERN = /\[1m\]/i;
-var STANDARD_LIMIT2 = 2e5;
-var ONE_M_LIMIT2 = 1e6;
-function detectContextLimitWithSource(jsonlModel, tokensUsed, settingsModel) {
-  if (settingsModel && ONE_M_PATTERN.test(settingsModel)) {
-    return { limit: ONE_M_LIMIT2, source: "settings-json-1m-tag" };
-  }
-  if (jsonlModel && ONE_M_PATTERN.test(jsonlModel)) {
-    return { limit: ONE_M_LIMIT2, source: "explicit-1m-tag" };
-  }
-  const knownFromSettings = settingsModel ? lookupModel(settingsModel) : null;
-  if (knownFromSettings) {
-    return { limit: knownFromSettings.contextWindow, source: "canonical-lookup" };
-  }
-  const knownFromJsonl = jsonlModel ? lookupModel(jsonlModel) : null;
-  if (knownFromJsonl) {
-    return { limit: knownFromJsonl.contextWindow, source: "canonical-lookup" };
-  }
-  if (tokensUsed > STANDARD_LIMIT2) {
-    return { limit: ONE_M_LIMIT2, source: "empirical-heuristic" };
-  }
-  return { limit: STANDARD_LIMIT2, source: "unknown-model-fallback" };
-}
-function riskBucket(percent) {
-  if (percent < 0.6) return "low";
-  if (percent < 0.85) return "medium";
-  return "high";
-}
-async function readContextUsage(sessionRef) {
-  let lastUsage = null;
-  let lastModel = null;
-  let lastTimestamp = null;
-  const settings = await readClaudeSettings();
-  const settingsModel = settings?.model ?? null;
-  try {
-    for await (const event of parseSessionFileRaw(sessionRef.filePath)) {
-      if (event.type !== "assistant") continue;
-      const usage = event.message?.usage;
-      if (!usage) continue;
-      const hasAnyUsage = typeof usage.cache_read_input_tokens === "number" || typeof usage.cache_creation_input_tokens === "number" || typeof usage.input_tokens === "number";
-      if (!hasAnyUsage) continue;
-      lastUsage = usage;
-      lastModel = event.message?.model ?? null;
-      if (typeof event.timestamp === "string") {
-        lastTimestamp = event.timestamp;
-      }
-    }
-  } catch {
-    return null;
-  }
-  if (!lastUsage) {
-    return null;
-  }
-  const tokensUsed = (lastUsage.cache_read_input_tokens ?? 0) + (lastUsage.cache_creation_input_tokens ?? 0) + (lastUsage.input_tokens ?? 0) + (lastUsage.output_tokens ?? 0);
-  const { limit: contextLimit, source: contextLimitSource } = detectContextLimitWithSource(
-    lastModel,
-    tokensUsed,
-    settingsModel
-  );
-  const percentUsed = contextLimit > 0 ? tokensUsed / contextLimit : 0;
-  const tokensRemaining = Math.max(0, contextLimit - tokensUsed);
-  return {
-    tokensUsed,
-    model: lastModel,
-    contextLimit,
-    contextLimitSource,
-    lastTurnAt: lastTimestamp,
-    percentUsed,
-    tokensRemaining,
-    autocompactRisk: riskBucket(percentUsed)
-  };
-}
-async function readContextUsageForSession(sessions) {
-  if (sessions.length === 0) return null;
-  const sessionRef = sessions[0];
-  try {
-    await (0, import_promises11.stat)(sessionRef.filePath);
-  } catch {
-    return null;
-  }
-  return readContextUsage(sessionRef);
-}
-
 // src/parser/rate-limits.ts
-var import_promises12 = require("node:fs/promises");
+var import_promises11 = require("node:fs/promises");
 var import_node_os4 = require("node:os");
 var import_node_path10 = require("node:path");
 var USAGE_CACHE_PATH = (0, import_node_path10.join)((0, import_node_os4.homedir)(), ".claude", ".usage_cache.json");
@@ -21110,7 +21079,7 @@ function normalizeUsageCache(raw, now = /* @__PURE__ */ new Date()) {
 async function readRateLimits(path = USAGE_CACHE_PATH, now = /* @__PURE__ */ new Date()) {
   let raw;
   try {
-    raw = await (0, import_promises12.readFile)(path, "utf-8");
+    raw = await (0, import_promises11.readFile)(path, "utf-8");
   } catch {
     return { hasCache: false, cachePath: path };
   }
@@ -21126,15 +21095,15 @@ async function readRateLimits(path = USAGE_CACHE_PATH, now = /* @__PURE__ */ new
 }
 
 // src/parser/session.ts
+var import_promises12 = require("node:fs/promises");
 var import_promises13 = require("node:fs/promises");
-var import_promises14 = require("node:fs/promises");
 var import_node_path11 = require("node:path");
 var JSONL_PATTERN = /^([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.jsonl$/;
 async function listProjects() {
   const root = projectsRoot();
   let entries;
   try {
-    entries = await (0, import_promises14.readdir)(root);
+    entries = await (0, import_promises13.readdir)(root);
   } catch (e) {
     if (e.code === "ENOENT") return [];
     throw e;
@@ -21142,7 +21111,7 @@ async function listProjects() {
   const projects = [];
   for (const entry of entries) {
     const absolutePath = (0, import_node_path11.join)(root, entry);
-    const s = await (0, import_promises13.stat)(absolutePath).catch(() => null);
+    const s = await (0, import_promises12.stat)(absolutePath).catch(() => null);
     if (!s?.isDirectory()) continue;
     projects.push({ projectDir: entry, absolutePath });
   }
@@ -21151,7 +21120,7 @@ async function listProjects() {
 async function listSessionsInProject(project) {
   let entries;
   try {
-    entries = await (0, import_promises14.readdir)(project.absolutePath);
+    entries = await (0, import_promises13.readdir)(project.absolutePath);
   } catch {
     return [];
   }
@@ -21161,7 +21130,7 @@ async function listSessionsInProject(project) {
     if (!match) continue;
     const sessionId = match[1];
     const filePath = (0, import_node_path11.join)(project.absolutePath, entry);
-    const s = await (0, import_promises13.stat)(filePath).catch(() => null);
+    const s = await (0, import_promises12.stat)(filePath).catch(() => null);
     if (!s?.isFile()) continue;
     sessions.push({
       projectDir: project.projectDir,
@@ -21235,12 +21204,12 @@ var ListSessionsArgs = external_exports.object({
 }).strict();
 var HEARTBEAT_ACTIVE_THRESHOLD_MS = 3e4;
 async function isSessionActive(sessionId) {
-  const { stat: stat9 } = await import("node:fs/promises");
+  const { stat: stat8 } = await import("node:fs/promises");
   const { homedir: homedir5 } = await import("node:os");
   const { join: join14 } = await import("node:path");
   const hbPath = join14(homedir5(), ".claude-bridge", "status", `${sessionId}.json`);
   try {
-    const s = await stat9(hbPath);
+    const s = await stat8(hbPath);
     return Date.now() - s.mtimeMs <= HEARTBEAT_ACTIVE_THRESHOLD_MS;
   } catch {
     return false;
@@ -22137,41 +22106,29 @@ var PeerContextStatusArgs = external_exports.object({
   to: external_exports.union([external_exports.string(), external_exports.array(external_exports.string())]).optional()
 }).strict();
 async function buildContextStatusEntry(ctx, peerId, peerName) {
-  const sessions = await findSessions(peerId);
   const isSelf = peerId === ctx.self.id;
   const guard = await readContextGuard(peerId);
-  if (sessions.length === 0) {
-    return {
-      id: peerId,
-      name: peerName,
-      isSelf,
-      model: null,
-      contextLimit: 2e5,
-      contextLimitSource: "no-data",
-      tokensUsed: 0,
-      tokensRemaining: 2e5,
-      percentUsed: 0,
-      autocompactRisk: "low",
-      lastTurnAt: null,
-      hasSession: false,
-      ...guard ? { guard } : {}
-    };
-  }
-  const usage = await readContextUsageForSession(sessions);
+  const usage = await readContextUsageForSession([
+    { sessionId: peerId }
+  ]);
   if (!usage) {
+    const placeholder = noLiveDataStatus();
     return {
       id: peerId,
       name: peerName,
       isSelf,
+      hasLiveData: false,
       model: null,
-      contextLimit: 2e5,
-      contextLimitSource: "no-data",
+      contextLimit: 0,
+      contextLimitSource: "no-live-data",
       tokensUsed: 0,
-      tokensRemaining: 2e5,
+      tokensRemaining: 0,
       percentUsed: 0,
       autocompactRisk: "unknown",
       lastTurnAt: null,
-      hasSession: true,
+      effortLevel: null,
+      claudeCodeVersion: null,
+      ...placeholder.setupPointer ? { setupPointer: placeholder.setupPointer } : {},
       ...guard ? { guard } : {}
     };
   }
@@ -22179,6 +22136,7 @@ async function buildContextStatusEntry(ctx, peerId, peerName) {
     id: peerId,
     name: peerName,
     isSelf,
+    hasLiveData: usage.hasLiveData,
     model: usage.model,
     contextLimit: usage.contextLimit,
     contextLimitSource: usage.contextLimitSource,
@@ -22187,7 +22145,9 @@ async function buildContextStatusEntry(ctx, peerId, peerName) {
     percentUsed: Math.round(usage.percentUsed * 1e3) / 1e3,
     autocompactRisk: usage.autocompactRisk,
     lastTurnAt: usage.lastTurnAt,
-    hasSession: true,
+    effortLevel: usage.effortLevel,
+    claudeCodeVersion: usage.claudeCodeVersion,
+    ...usage.setupPointer ? { setupPointer: usage.setupPointer } : {},
     ...guard ? { guard } : {}
   };
 }
@@ -22270,7 +22230,7 @@ function guardConfigFile(peerId) {
 }
 async function readContextGuard(peerId) {
   try {
-    const raw = await (0, import_promises15.readFile)(guardConfigFile(peerId), "utf-8");
+    const raw = await (0, import_promises14.readFile)(guardConfigFile(peerId), "utf-8");
     const parsed = JSON.parse(raw);
     return { ...DEFAULT_GUARD_CONFIG, ...parsed };
   } catch {
@@ -22279,7 +22239,7 @@ async function readContextGuard(peerId) {
 }
 async function writeContextGuard(peerId, cfg) {
   const file = guardConfigFile(peerId);
-  await (0, import_promises16.mkdir)((0, import_node_path12.join)(bridgeRoot(), "guard"), { recursive: true });
+  await (0, import_promises15.mkdir)((0, import_node_path12.join)(bridgeRoot(), "guard"), { recursive: true });
   await atomicWriteJson(file, cfg);
 }
 async function peerSetContextGuardTool(ctx, args) {
@@ -22318,7 +22278,7 @@ function notificationConfigFile(peerId) {
 }
 async function readNotificationConfig(peerId) {
   try {
-    const raw = await (0, import_promises15.readFile)(notificationConfigFile(peerId), "utf-8");
+    const raw = await (0, import_promises14.readFile)(notificationConfigFile(peerId), "utf-8");
     const parsed = JSON.parse(raw);
     return { ...DEFAULT_NOTIFICATION_CONFIG, ...parsed };
   } catch {
@@ -22327,7 +22287,7 @@ async function readNotificationConfig(peerId) {
 }
 async function writeNotificationConfig(peerId, cfg) {
   const file = notificationConfigFile(peerId);
-  await (0, import_promises16.mkdir)((0, import_node_path12.join)(bridgeRoot(), "notify"), { recursive: true });
+  await (0, import_promises15.mkdir)((0, import_node_path12.join)(bridgeRoot(), "notify"), { recursive: true });
   await atomicWriteJson(file, cfg);
 }
 async function peerSetNotificationTool(ctx, args) {
@@ -22625,7 +22585,7 @@ var TOOLS = [
   },
   {
     name: "peer_context_status",
-    description: "Read autocompact-relevant context statistics for self or other peer(s). Returns tokensUsed (= cache_read + cache_creation + input + output), contextLimit, contextLimitSource, percentUsed, autocompactRisk (low/medium/high), model, lastTurnAt. Data source: sum of usage fields on the most recent assistant event in peer's JSONL \u2014 matches `/context` Total across mature + fresh sessions. `to` omitted = self only. `to: 'all'` = all active peers + self. `to: ['alice', 'bob', 'self']` = specified peers (mix of names/UUIDs/'self'). `to: 'alice'` = single peer by name or UUID. Includes `guard` config field if peer has one configured. contextLimitSource values (priority order): 'settings-json-1m-tag' (v0.8.1+, authoritative \u2014 user set [1m] in ~/.claude/settings.json), 'explicit-1m-tag' (JSONL model carried [1m], rare), 'canonical-lookup' (model matched the table), 'empirical-heuristic' (unknown model but tokens > 200k), 'unknown-model-fallback' (\u26A0 model not in canonical table \u2014 percentUsed may be inflated; check the flag before trusting the ratio; absolute tokensUsed is always reliable).",
+    description: "Read autocompact-relevant context statistics for self or other peer(s). \u26A0 v0.9.0 BREAKING: sole data source is now ~/.claude-bridge/live/statusline.json, written by the plugin-owned statusLine wrapper on every Claude Code render. All heuristics (canonical model lookup, [1m] tag detection, empirical fallback, unknown-model-fallback) were REMOVED. If the wrapper is not installed, returns `hasLiveData: false` with `setupPointer` \u2014 no misleading numbers. Setup: set settings.json.statusLine.command to `node ${CLAUDE_PLUGIN_ROOT}/dist/statusline.cjs` (see docs/SETUP-LIVE-DATA.md). Returns: hasLiveData, tokensUsed, contextLimit (autoritative from CC), contextLimitSource ('statusline-stdin' or 'no-live-data'), percentUsed, autocompactRisk (low/medium/high/unknown), model, effortLevel (low/medium/high/xhigh/max \u2014 from CC 2.1.119+ stdin), claudeCodeVersion, lastTurnAt. `to` omitted = self only. `to: 'all'` = all active peers + self. `to: ['alice', 'bob', 'self']` = specified peers. `to: 'alice'` = single peer. Includes `guard` config field if peer has one configured.",
     inputSchema: {
       type: "object",
       properties: {

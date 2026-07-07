@@ -6,6 +6,7 @@ import { type MessageEnvelope, type MessageKind, generateMessageId } from "../in
 import {
   type ContextLimitSource,
   type ContextUsage,
+  noLiveDataStatus,
   readContextUsageForSession,
 } from "../parser/context-usage.ts";
 import { parseSessionFile, parseSessionFileRaw, readSessionFile } from "../parser/jsonl.ts";
@@ -1342,16 +1343,27 @@ interface ContextStatusEntry {
   id: string;
   name: string | null;
   isSelf: boolean;
+  /** True when statusLine live capture is available (v0.9.0+). When false,
+   * contextLimit/tokensUsed/percentUsed are zero and the caller should
+   * consult `setupPointer` to guide the user through setup. */
+  hasLiveData: boolean;
   model: string | null;
   contextLimit: number;
-  /** How the contextLimit was derived. Consumers should treat `unknown-model-fallback` with caution — the model is not in the canonical table so `percentUsed` may be inflated. */
-  contextLimitSource: ContextLimitSource | "no-data";
+  /** How the contextLimit was derived. v0.9.0 has only two values:
+   *  - "statusline-stdin" — autoritative, from CC's per-render stdin JSON
+   *  - "no-live-data"     — statusLine wrapper not installed / capture stale */
+  contextLimitSource: ContextLimitSource;
   tokensUsed: number;
   tokensRemaining: number;
   percentUsed: number;
   autocompactRisk: "low" | "medium" | "high" | "unknown";
   lastTurnAt: string | null;
-  hasSession: boolean;
+  /** Live-data extras from statusLine (v0.9.0+). Null when hasLiveData=false
+   * or when the CC version doesn't populate the field. */
+  effortLevel: "low" | "medium" | "high" | "xhigh" | "max" | null;
+  claudeCodeVersion: string | null;
+  /** Setup instruction pointer when hasLiveData=false. Omitted otherwise. */
+  setupPointer?: string;
   guard?: ContextGuardConfig;
 }
 
@@ -1360,43 +1372,35 @@ async function buildContextStatusEntry(
   peerId: string,
   peerName: string | null,
 ): Promise<ContextStatusEntry> {
-  const sessions = await findSessions(peerId);
   const isSelf = peerId === ctx.self.id;
   const guard = await readContextGuard(peerId);
 
-  if (sessions.length === 0) {
-    return {
-      id: peerId,
-      name: peerName,
-      isSelf,
-      model: null,
-      contextLimit: 200_000,
-      contextLimitSource: "no-data",
-      tokensUsed: 0,
-      tokensRemaining: 200_000,
-      percentUsed: 0,
-      autocompactRisk: "low",
-      lastTurnAt: null,
-      hasSession: false,
-      ...(guard ? { guard } : {}),
-    };
-  }
+  // v0.9.0: single account-wide statusLine live file — same call whether
+  // this peer has a session JSONL on disk or not. Rate limits are user-
+  // scoped, so all peers on this account see the same latest capture.
+  // Per-session live data is a v0.10.0 candidate.
+  const usage: ContextUsage | null = await readContextUsageForSession([
+    { sessionId: peerId } as never,
+  ]);
 
-  const usage: ContextUsage | null = await readContextUsageForSession(sessions);
   if (!usage) {
+    const placeholder = noLiveDataStatus();
     return {
       id: peerId,
       name: peerName,
       isSelf,
+      hasLiveData: false,
       model: null,
-      contextLimit: 200_000,
-      contextLimitSource: "no-data",
+      contextLimit: 0,
+      contextLimitSource: "no-live-data",
       tokensUsed: 0,
-      tokensRemaining: 200_000,
+      tokensRemaining: 0,
       percentUsed: 0,
       autocompactRisk: "unknown",
       lastTurnAt: null,
-      hasSession: true,
+      effortLevel: null,
+      claudeCodeVersion: null,
+      ...(placeholder.setupPointer ? { setupPointer: placeholder.setupPointer } : {}),
       ...(guard ? { guard } : {}),
     };
   }
@@ -1405,6 +1409,7 @@ async function buildContextStatusEntry(
     id: peerId,
     name: peerName,
     isSelf,
+    hasLiveData: usage.hasLiveData,
     model: usage.model,
     contextLimit: usage.contextLimit,
     contextLimitSource: usage.contextLimitSource,
@@ -1413,7 +1418,9 @@ async function buildContextStatusEntry(
     percentUsed: Math.round(usage.percentUsed * 1000) / 1000,
     autocompactRisk: usage.autocompactRisk,
     lastTurnAt: usage.lastTurnAt,
-    hasSession: true,
+    effortLevel: usage.effortLevel,
+    claudeCodeVersion: usage.claudeCodeVersion,
+    ...(usage.setupPointer ? { setupPointer: usage.setupPointer } : {}),
     ...(guard ? { guard } : {}),
   };
 }
@@ -1955,7 +1962,7 @@ export const TOOLS: ToolSpec[] = [
   {
     name: "peer_context_status",
     description:
-      "Read autocompact-relevant context statistics for self or other peer(s). Returns tokensUsed (= cache_read + cache_creation + input + output), contextLimit, contextLimitSource, percentUsed, autocompactRisk (low/medium/high), model, lastTurnAt. Data source: sum of usage fields on the most recent assistant event in peer's JSONL — matches `/context` Total across mature + fresh sessions. `to` omitted = self only. `to: 'all'` = all active peers + self. `to: ['alice', 'bob', 'self']` = specified peers (mix of names/UUIDs/'self'). `to: 'alice'` = single peer by name or UUID. Includes `guard` config field if peer has one configured. contextLimitSource values (priority order): 'settings-json-1m-tag' (v0.8.1+, authoritative — user set [1m] in ~/.claude/settings.json), 'explicit-1m-tag' (JSONL model carried [1m], rare), 'canonical-lookup' (model matched the table), 'empirical-heuristic' (unknown model but tokens > 200k), 'unknown-model-fallback' (⚠ model not in canonical table — percentUsed may be inflated; check the flag before trusting the ratio; absolute tokensUsed is always reliable).",
+      "Read autocompact-relevant context statistics for self or other peer(s). ⚠ v0.9.0 BREAKING: sole data source is now ~/.claude-bridge/live/statusline.json, written by the plugin-owned statusLine wrapper on every Claude Code render. All heuristics (canonical model lookup, [1m] tag detection, empirical fallback, unknown-model-fallback) were REMOVED. If the wrapper is not installed, returns `hasLiveData: false` with `setupPointer` — no misleading numbers. Setup: set settings.json.statusLine.command to `node ${CLAUDE_PLUGIN_ROOT}/dist/statusline.cjs` (see docs/SETUP-LIVE-DATA.md). Returns: hasLiveData, tokensUsed, contextLimit (autoritative from CC), contextLimitSource ('statusline-stdin' or 'no-live-data'), percentUsed, autocompactRisk (low/medium/high/unknown), model, effortLevel (low/medium/high/xhigh/max — from CC 2.1.119+ stdin), claudeCodeVersion, lastTurnAt. `to` omitted = self only. `to: 'all'` = all active peers + self. `to: ['alice', 'bob', 'self']` = specified peers. `to: 'alice'` = single peer. Includes `guard` config field if peer has one configured.",
     inputSchema: {
       type: "object",
       properties: {

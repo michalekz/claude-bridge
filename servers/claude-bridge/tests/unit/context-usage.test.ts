@@ -1,168 +1,33 @@
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 
-// Mock homedir BEFORE importing modules under test so `claudeHome()` in
-// settings.ts resolves to a per-test temp directory. Prevents the real
-// ~/.claude/settings.json on the dev/CI machine from polluting expectations
-// (e.g., a machine with `model: "claude-fable-5[1m]"` would give every
-// readContextUsage call a settings-json-1m-tag override).
-let mockHome: string = tmpdir();
+// Mock homedir BEFORE importing modules under test so bridgeRoot() (via
+// util/paths.ts) resolves to a per-test temp directory. Prevents the real
+// ~/.claude-bridge/live/statusline.json from polluting expectations.
+// Use vi.hoisted so the mutable holder is available when vi.mock's factory
+// (which is itself hoisted to top of file) evaluates — plain `let` at module
+// scope is not initialized in time.
+const homeHolder = vi.hoisted(() => ({ current: "" }));
 
 vi.mock("node:os", async () => {
   const actual = await vi.importActual<typeof import("node:os")>("node:os");
   return {
     ...actual,
-    homedir: () => mockHome,
+    homedir: () => homeHolder.current || actual.tmpdir(),
   };
 });
 
 import {
-  detectContextLimit,
-  detectContextLimitWithSource,
+  type ContextUsage,
+  noLiveDataStatus,
   readContextUsage,
+  readContextUsageForSession,
   riskBucket,
 } from "../../src/parser/context-usage.ts";
+import { type StatusLineLiveEnvelope, writeStatusLineLive } from "../../src/parser/live-data.ts";
 import type { SessionRef } from "../../src/parser/session.ts";
-import { claudeSettingsPath } from "../../src/parser/settings.ts";
-
-describe("detectContextLimit", () => {
-  test("returns 1M for Sonnet 5 (canonical lookup, added 2026-07-07)", () => {
-    // Regression: pre-v0.8.0 this returned 200_000 because Sonnet 5 was
-    // missing from MODEL_CONTEXT_WINDOWS — caused 5× inflated percentUsed
-    // in jira-architect HMH incident (jira-gui-tester session).
-    expect(detectContextLimit("claude-sonnet-5")).toBe(1_000_000);
-  });
-
-  test("returns 1M for Opus 4.6/4.7/4.8 (canonical lookup)", () => {
-    expect(detectContextLimit("claude-opus-4-6")).toBe(1_000_000);
-    expect(detectContextLimit("claude-opus-4-7")).toBe(1_000_000);
-    expect(detectContextLimit("claude-opus-4-8")).toBe(1_000_000);
-  });
-
-  test("returns 1M for Sonnet 4.6 (canonical lookup)", () => {
-    expect(detectContextLimit("claude-sonnet-4-6")).toBe(1_000_000);
-  });
-
-  test("returns 1M for Fable 5 / Mythos 5 (canonical lookup)", () => {
-    expect(detectContextLimit("claude-fable-5")).toBe(1_000_000);
-    expect(detectContextLimit("claude-mythos-5")).toBe(1_000_000);
-  });
-
-  test("returns 200k for Haiku 4.5 (only standard-window model)", () => {
-    expect(detectContextLimit("claude-haiku-4-5")).toBe(200_000);
-    // Date suffix is stripped before lookup.
-    expect(detectContextLimit("claude-haiku-4-5-20251001")).toBe(200_000);
-  });
-
-  test("explicit [1m] tag still works (legacy)", () => {
-    expect(detectContextLimit("claude-opus-4-7-[1m]")).toBe(1_000_000);
-    expect(detectContextLimit("claude-haiku-4-5-[1m]")).toBe(1_000_000); // override
-  });
-
-  test("returns 200k default for null/undefined/empty/unknown", () => {
-    expect(detectContextLimit(null)).toBe(200_000);
-    expect(detectContextLimit(undefined)).toBe(200_000);
-    expect(detectContextLimit("")).toBe(200_000);
-    expect(detectContextLimit("future-unknown-model")).toBe(200_000);
-  });
-});
-
-describe("detectContextLimitWithSource", () => {
-  test("known model → canonical-lookup", () => {
-    const r = detectContextLimitWithSource("claude-sonnet-5", 500_000);
-    expect(r.limit).toBe(1_000_000);
-    expect(r.source).toBe("canonical-lookup");
-  });
-
-  test("explicit [1m] tag → explicit-1m-tag", () => {
-    const r = detectContextLimitWithSource("claude-opus-4-7-[1m]", 100_000);
-    expect(r.limit).toBe(1_000_000);
-    expect(r.source).toBe("explicit-1m-tag");
-  });
-
-  test("unknown model + tokensUsed > 200k → empirical-heuristic (bumps to 1M)", () => {
-    const r = detectContextLimitWithSource("claude-future-model-xyz", 350_000);
-    expect(r.limit).toBe(1_000_000);
-    expect(r.source).toBe("empirical-heuristic");
-  });
-
-  test("unknown model + tokensUsed <= 200k → unknown-model-fallback (⚠ possibly wrong)", () => {
-    // This is the bug scenario. Reactive heuristic doesn't fire under 200k,
-    // so source flag is the only way consumer knows to distrust percentUsed.
-    const r = detectContextLimitWithSource("claude-future-model-xyz", 156_000);
-    expect(r.limit).toBe(200_000);
-    expect(r.source).toBe("unknown-model-fallback");
-  });
-
-  test("null model → unknown-model-fallback", () => {
-    const r = detectContextLimitWithSource(null, 50_000);
-    expect(r.source).toBe("unknown-model-fallback");
-  });
-});
-
-describe("detectContextLimitWithSource — settings.json integration (v0.8.1)", () => {
-  test("settings.json has [1m] tag → settings-json-1m-tag (priority 1, beats canonical)", () => {
-    // JSONL model "claude-haiku-4-5" would resolve to 200k via canonical lookup,
-    // but settings.json says "[1m]" — user opted into the 1M variant.
-    const r = detectContextLimitWithSource("claude-haiku-4-5", 50_000, "claude-haiku-4-5[1m]");
-    expect(r.limit).toBe(1_000_000);
-    expect(r.source).toBe("settings-json-1m-tag");
-  });
-
-  test("settings-json-1m-tag beats explicit-1m-tag priority when both present", () => {
-    // Both signals point at 1M; settings.json wins the source attribution
-    // because it's the authoritative user configuration.
-    const r = detectContextLimitWithSource("claude-opus-4-7-[1m]", 100_000, "claude-opus-4-7[1m]");
-    expect(r.limit).toBe(1_000_000);
-    expect(r.source).toBe("settings-json-1m-tag");
-  });
-
-  test("settings.json bare id + JSONL bare id → canonical-lookup (unchanged behavior)", () => {
-    // The Sonnet 5 case: JSONL says "claude-sonnet-5", settings.json says
-    // "claude-sonnet-5" (no [1m]). Canonical table resolves to 1M for both.
-    const r = detectContextLimitWithSource("claude-sonnet-5", 500_000, "claude-sonnet-5");
-    expect(r.limit).toBe(1_000_000);
-    expect(r.source).toBe("canonical-lookup");
-  });
-
-  test("settings.json has known model that JSONL lacks → canonical-lookup wins", () => {
-    // Fresh session, JSONL has no assistant events yet or model isn't in the
-    // canonical table, but settings.json names a known model.
-    const r = detectContextLimitWithSource(null, 0, "claude-fable-5");
-    expect(r.limit).toBe(1_000_000);
-    expect(r.source).toBe("canonical-lookup");
-  });
-
-  test("settings.json null/undefined falls through to jsonl-based detection", () => {
-    // Regression guard: without settings signal, behavior matches pre-v0.8.1.
-    const r1 = detectContextLimitWithSource("claude-sonnet-5", 100_000, null);
-    expect(r1.source).toBe("canonical-lookup");
-    const r2 = detectContextLimitWithSource("claude-sonnet-5", 100_000, undefined);
-    expect(r2.source).toBe("canonical-lookup");
-  });
-
-  test("settings.json with unknown [1m] model still wins → settings-json-1m-tag", () => {
-    // Future frontier model not yet in canonical table, user opted into [1m]
-    // via settings.json — trust the user's signal over the fallback.
-    const r = detectContextLimitWithSource(
-      "claude-future-model",
-      50_000,
-      "claude-future-model[1m]",
-    );
-    expect(r.limit).toBe(1_000_000);
-    expect(r.source).toBe("settings-json-1m-tag");
-  });
-
-  test("settings.json unknown bare id + JSONL unknown → falls through to fallback", () => {
-    // Neither model is in the canonical table, no [1m] anywhere, tokens under
-    // 200k → still unknown-model-fallback.
-    const r = detectContextLimitWithSource("claude-future-model", 50_000, "claude-future-model");
-    expect(r.limit).toBe(200_000);
-    expect(r.source).toBe("unknown-model-fallback");
-  });
-});
 
 describe("riskBucket", () => {
   test("low below 60%", () => {
@@ -184,282 +49,225 @@ describe("riskBucket", () => {
   });
 });
 
-describe("readContextUsage", () => {
+describe("noLiveDataStatus", () => {
+  test("returns placeholder with hasLiveData=false and setup pointer", () => {
+    const s = noLiveDataStatus();
+    expect(s.hasLiveData).toBe(false);
+    expect(s.contextLimitSource).toBe("no-live-data");
+    expect(s.contextLimit).toBe(0);
+    expect(s.tokensUsed).toBe(0);
+    expect(s.autocompactRisk).toBe("unknown");
+    expect(s.setupPointer).toBeTruthy();
+    expect(s.setupPointer).toMatch(/statusLine/);
+  });
+});
+
+describe("readContextUsage — live-data-only (v0.9.0)", () => {
   let tmp: string;
-  let jsonlPath: string;
 
   beforeEach(async () => {
-    tmp = await mkdtemp(join(tmpdir(), "ctx-usage-test-"));
-    jsonlPath = join(tmp, "session.jsonl");
-    // Route homedir() to this test's tmp so readClaudeSettings() naturally
-    // returns null (no settings.json unless a specific test writes one).
-    mockHome = tmp;
-    await import("node:fs/promises").then((fs) =>
-      fs.mkdir(join(tmp, ".claude"), { recursive: true }),
-    );
+    tmp = await mkdtemp(join(tmpdir(), "ctx-usage-v09-test-"));
+    homeHolder.current = tmp;
+    await mkdir(join(tmp, ".claude-bridge", "live"), { recursive: true });
   });
 
   afterEach(async () => {
     await rm(tmp, { recursive: true, force: true }).catch(() => undefined);
-    mockHome = tmpdir();
+    homeHolder.current = "";
   });
 
   function makeSessionRef(): SessionRef {
     return {
       projectDir: "-tmp-test",
       sessionId: "00000000-0000-0000-0000-000000000000",
-      filePath: jsonlPath,
+      filePath: join(tmp, "session.jsonl"),
       sizeBytes: 0,
       modifiedAt: new Date(),
     };
   }
 
-  test("returns null for empty JSONL", async () => {
-    await writeFile(jsonlPath, "");
+  test("returns null when no live/statusline.json exists", async () => {
     const usage = await readContextUsage(makeSessionRef());
     expect(usage).toBeNull();
   });
 
-  test("returns null when no assistant event has usage", async () => {
-    const lines = [
-      JSON.stringify({ type: "user", message: { content: "hi" } }),
-      JSON.stringify({ type: "assistant", message: { role: "assistant" } }), // no usage
-    ];
-    await writeFile(jsonlPath, lines.join("\n"));
+  test("returns null when live file is malformed JSON", async () => {
+    await writeFile(join(tmp, ".claude-bridge", "live", "statusline.json"), "{not valid");
     const usage = await readContextUsage(makeSessionRef());
     expect(usage).toBeNull();
   });
 
-  test("sums all 4 usage fields from latest assistant event (Opus 4.7 = 1M)", async () => {
-    const lines = [
-      JSON.stringify({
-        type: "assistant",
-        timestamp: "2026-06-29T10:00:00Z",
-        message: {
-          model: "claude-opus-4-7",
-          usage: { cache_read_input_tokens: 50_000 },
-        },
-      }),
-      JSON.stringify({
-        type: "assistant",
-        timestamp: "2026-06-29T11:00:00Z",
-        message: {
-          model: "claude-opus-4-7",
-          usage: {
-            cache_read_input_tokens: 740_000,
-            cache_creation_input_tokens: 8_000,
-            input_tokens: 1_500,
+  test("returns full usage from live envelope with context_window + used_percentage", async () => {
+    const envelope: StatusLineLiveEnvelope = {
+      capturedAt: "2026-07-07T12:00:00Z",
+      sessionId: "test-session",
+      payload: {
+        cwd: "/opt/claude-bridge",
+        version: "2.1.201",
+        model: { display_name: "Claude Fable 5" },
+        effort: { level: "high" },
+        context_window: {
+          context_window_size: 1_000_000,
+          used_percentage: 25.9,
+          current_usage: {
+            input_tokens: 3500,
             output_tokens: 500,
+            cache_read_input_tokens: 200_000,
+            cache_creation_input_tokens: 55_000,
           },
         },
-      }),
-    ];
-    await writeFile(jsonlPath, lines.join("\n"));
+      },
+    };
+    await writeStatusLineLive(envelope);
+
     const usage = await readContextUsage(makeSessionRef());
     expect(usage).not.toBeNull();
-    expect(usage?.tokensUsed).toBe(750_000); // 740k + 8k + 1.5k + 500 = 750k (latest, not earliest)
-    expect(usage?.model).toBe("claude-opus-4-7");
-    expect(usage?.contextLimit).toBe(1_000_000); // canonical lookup
-    expect(usage?.percentUsed).toBe(0.75);
-    expect(usage?.tokensRemaining).toBe(250_000);
+    const u = usage as ContextUsage;
+    expect(u.hasLiveData).toBe(true);
+    expect(u.contextLimit).toBe(1_000_000);
+    expect(u.contextLimitSource).toBe("statusline-stdin");
+    expect(u.tokensUsed).toBe(259_000); // 3500 + 500 + 200_000 + 55_000
+    expect(u.percentUsed).toBe(0.259); // from used_percentage directly
+    expect(u.tokensRemaining).toBe(741_000);
+    expect(u.model).toBe("Claude Fable 5");
+    expect(u.effortLevel).toBe("high");
+    expect(u.claudeCodeVersion).toBe("2.1.201");
+    expect(u.autocompactRisk).toBe("low");
+    expect(u.lastTurnAt).toBe("2026-07-07T12:00:00Z");
+  });
+
+  test("falls back to token-based percent when used_percentage missing", async () => {
+    const envelope: StatusLineLiveEnvelope = {
+      capturedAt: "2026-07-07T12:00:00Z",
+      sessionId: "test-session",
+      payload: {
+        model: { display_name: "Sonnet 5" },
+        context_window: {
+          context_window_size: 200_000,
+          // no used_percentage — must compute from tokens
+          current_usage: {
+            input_tokens: 1_000,
+            output_tokens: 200,
+            cache_read_input_tokens: 100_000,
+            cache_creation_input_tokens: 20_000,
+          },
+        },
+      },
+    };
+    await writeStatusLineLive(envelope);
+
+    const usage = await readContextUsage(makeSessionRef());
+    expect(usage?.tokensUsed).toBe(121_200);
+    expect(usage?.percentUsed).toBeCloseTo(0.606, 3);
     expect(usage?.autocompactRisk).toBe("medium");
-    expect(usage?.lastTurnAt).toBe("2026-06-29T11:00:00Z");
   });
 
-  test("CRITICAL: counts cache_creation for fresh / post-clear sessions", async () => {
-    // Real-world scenario: jira-transition-head session post-autocompact.
-    // cache_read is tiny (cache invalidated), cache_creation is huge (re-filling).
-    // Old algorithm (cache_read alone) showed 23k/1M = 2.3% — wildly wrong.
-    // Correct: 23,060 + 806,186 + 3,989 + 301 = 833,536 (= 83.4%).
-    const line = JSON.stringify({
-      type: "assistant",
-      timestamp: "2026-06-30T10:01:22Z",
-      message: {
-        model: "claude-opus-4-8",
-        usage: {
-          cache_read_input_tokens: 23_060,
-          cache_creation_input_tokens: 806_186,
-          input_tokens: 3_989,
-          output_tokens: 301,
+  test("classifies high risk correctly", async () => {
+    const envelope: StatusLineLiveEnvelope = {
+      capturedAt: "2026-07-07T12:00:00Z",
+      sessionId: "test-session",
+      payload: {
+        model: { display_name: "Haiku 4.5" },
+        context_window: {
+          context_window_size: 200_000,
+          used_percentage: 90,
+          current_usage: {
+            cache_read_input_tokens: 180_000,
+          },
         },
       },
-    });
-    await writeFile(jsonlPath, line);
-    const usage = await readContextUsage(makeSessionRef());
-    expect(usage?.tokensUsed).toBe(833_536);
-    expect(usage?.percentUsed).toBeCloseTo(0.834, 2);
-    expect(usage?.autocompactRisk).toBe("medium"); // 83.4% → medium
-  });
+    };
+    await writeStatusLineLive(envelope);
 
-  test("detects [1m] variant", async () => {
-    const line = JSON.stringify({
-      type: "assistant",
-      timestamp: "2026-06-29T10:00:00Z",
-      message: {
-        model: "claude-opus-4-7-[1m]",
-        usage: { cache_read_input_tokens: 500_000 },
-      },
-    });
-    await writeFile(jsonlPath, line);
     const usage = await readContextUsage(makeSessionRef());
-    expect(usage?.contextLimit).toBe(1_000_000);
-    expect(usage?.percentUsed).toBe(0.5);
-    expect(usage?.autocompactRisk).toBe("low");
-  });
-
-  test("classifies high risk correctly (Haiku 4.5 = 200k)", async () => {
-    const line = JSON.stringify({
-      type: "assistant",
-      timestamp: "2026-06-29T10:00:00Z",
-      message: {
-        model: "claude-haiku-4-5",
-        usage: { cache_read_input_tokens: 180_000 },
-      },
-    });
-    await writeFile(jsonlPath, line);
-    const usage = await readContextUsage(makeSessionRef());
-    expect(usage?.contextLimit).toBe(200_000);
-    expect(usage?.tokensUsed).toBe(180_000); // cache_read alone (others 0)
+    expect(usage?.autocompactRisk).toBe("high");
     expect(usage?.percentUsed).toBe(0.9);
-    expect(usage?.autocompactRisk).toBe("high");
   });
 
-  test("classifies high risk correctly (Opus 4.7 at 95% of 1M)", async () => {
-    const line = JSON.stringify({
-      type: "assistant",
-      timestamp: "2026-06-29T10:00:00Z",
-      message: {
-        model: "claude-opus-4-7",
-        usage: { cache_read_input_tokens: 950_000 },
-      },
-    });
-    await writeFile(jsonlPath, line);
-    const usage = await readContextUsage(makeSessionRef());
-    expect(usage?.contextLimit).toBe(1_000_000);
-    expect(usage?.percentUsed).toBe(0.95);
-    expect(usage?.autocompactRisk).toBe("high");
-  });
-
-  test("heuristic: tokensUsed > 200k without [1m] tag → assume 1M variant", async () => {
-    // Real-world case: model string "claude-opus-4-7" doesn't carry [1m] suffix
-    // (it's a session-level setting), but usage clearly exceeds 200k → must be [1m].
-    const line = JSON.stringify({
-      type: "assistant",
-      timestamp: "2026-06-29T10:00:00Z",
-      message: {
-        model: "claude-opus-4-7",
-        usage: { cache_read_input_tokens: 511_699 },
-      },
-    });
-    await writeFile(jsonlPath, line);
-    const usage = await readContextUsage(makeSessionRef());
-    expect(usage?.contextLimit).toBe(1_000_000); // heuristic flipped to 1M
-    expect(usage?.tokensUsed).toBe(511_699);
-    expect(usage?.percentUsed).toBeCloseTo(0.512, 2);
-    expect(usage?.autocompactRisk).toBe("low"); // < 60%
-  });
-
-  test("ignores user events", async () => {
-    const lines = [
-      JSON.stringify({
-        type: "user",
-        message: { content: "hi" },
-        usage: { cache_read_input_tokens: 99_999 },
-      }),
-      JSON.stringify({
-        type: "assistant",
-        timestamp: "2026-06-29T10:00:00Z",
-        message: {
-          model: "claude-opus-4-7",
-          usage: { cache_read_input_tokens: 42_000 },
+  test("effortLevel is null when payload has no effort field (older CC)", async () => {
+    const envelope: StatusLineLiveEnvelope = {
+      capturedAt: "2026-07-07T12:00:00Z",
+      sessionId: "test-session",
+      payload: {
+        model: { display_name: "Opus 4.7" },
+        context_window: {
+          context_window_size: 1_000_000,
+          used_percentage: 10,
+          current_usage: { input_tokens: 100_000 },
         },
-      }),
-    ];
-    await writeFile(jsonlPath, lines.join("\n"));
-    const usage = await readContextUsage(makeSessionRef());
-    expect(usage?.tokensUsed).toBe(42_000); // user event's 99_999 ignored
-  });
-
-  test("missing usage fields default to 0 (= partial usage object)", async () => {
-    const line = JSON.stringify({
-      type: "assistant",
-      timestamp: "2026-06-29T10:00:00Z",
-      message: {
-        model: "claude-opus-4-7",
-        usage: { cache_creation_input_tokens: 500_000 }, // ONLY cache_creation, others missing
       },
-    });
-    await writeFile(jsonlPath, line);
+    };
+    await writeStatusLineLive(envelope);
+
     const usage = await readContextUsage(makeSessionRef());
-    expect(usage?.tokensUsed).toBe(500_000); // missing fields treated as 0
-    expect(usage?.percentUsed).toBe(0.5);
+    expect(usage?.effortLevel).toBeNull();
   });
 
-  test("returns null for non-existent file", async () => {
+  test("returns hasLiveData=true with contextLimit=0 when context_window is missing", async () => {
+    // Edge case: stdin JSON arrived but before first assistant turn, so
+    // context_window is absent. We got the envelope (hasLiveData=true) but
+    // no numbers to report. autocompactRisk = "unknown" — no percentage
+    // makes sense yet.
+    const envelope: StatusLineLiveEnvelope = {
+      capturedAt: "2026-07-07T12:00:00Z",
+      sessionId: "test-session",
+      payload: {
+        model: { display_name: "Fable 5" },
+      },
+    };
+    await writeStatusLineLive(envelope);
+
+    const usage = await readContextUsage(makeSessionRef());
+    expect(usage?.hasLiveData).toBe(true);
+    expect(usage?.contextLimit).toBe(0);
+    expect(usage?.tokensUsed).toBe(0);
+    expect(usage?.autocompactRisk).toBe("unknown");
+    expect(usage?.model).toBe("Fable 5");
+  });
+});
+
+describe("readContextUsageForSession", () => {
+  let tmp: string;
+
+  beforeEach(async () => {
+    tmp = await mkdtemp(join(tmpdir(), "ctx-usage-v09-test-"));
+    homeHolder.current = tmp;
+    await mkdir(join(tmp, ".claude-bridge", "live"), { recursive: true });
+  });
+
+  afterEach(async () => {
+    await rm(tmp, { recursive: true, force: true }).catch(() => undefined);
+    homeHolder.current = "";
+  });
+
+  test("returns null for empty session list", async () => {
+    const usage = await readContextUsageForSession([]);
+    expect(usage).toBeNull();
+  });
+
+  test("delegates to readContextUsage when session list non-empty", async () => {
+    const envelope: StatusLineLiveEnvelope = {
+      capturedAt: "2026-07-07T12:00:00Z",
+      sessionId: "test-session",
+      payload: {
+        context_window: {
+          context_window_size: 1_000_000,
+          used_percentage: 10,
+          current_usage: { input_tokens: 100_000 },
+        },
+      },
+    };
+    await writeStatusLineLive(envelope);
+
     const ref: SessionRef = {
-      projectDir: "-nonexistent",
-      sessionId: "ffffffff-ffff-ffff-ffff-ffffffffffff",
-      filePath: join(tmp, "does-not-exist.jsonl"),
+      projectDir: "-tmp-test",
+      sessionId: "00000000-0000-0000-0000-000000000000",
+      filePath: join(tmp, "session.jsonl"),
       sizeBytes: 0,
       modifiedAt: new Date(),
     };
-    const usage = await readContextUsage(ref);
-    expect(usage).toBeNull();
-  });
-
-  test("v0.8.1: settings.json [1m] overrides canonical → contextLimitSource=settings-json-1m-tag", async () => {
-    // Real-world scenario: JSONL says "claude-haiku-4-5" (200k canonical),
-    // but user configured "claude-haiku-4-5[1m]" in ~/.claude/settings.json.
-    // Without settings.json signal, this session at 180k tokens would be
-    // flagged as high risk (90% of 200k). With it, correctly 18% of 1M.
-    await writeFile(claudeSettingsPath(), JSON.stringify({ model: "claude-haiku-4-5[1m]" }));
-    const line = JSON.stringify({
-      type: "assistant",
-      timestamp: "2026-07-07T10:00:00Z",
-      message: {
-        model: "claude-haiku-4-5",
-        usage: { cache_read_input_tokens: 180_000 },
-      },
-    });
-    await writeFile(jsonlPath, line);
-    const usage = await readContextUsage(makeSessionRef());
+    const usage = await readContextUsageForSession([ref]);
     expect(usage?.contextLimit).toBe(1_000_000);
-    expect(usage?.contextLimitSource).toBe("settings-json-1m-tag");
-    expect(usage?.percentUsed).toBe(0.18);
-    expect(usage?.autocompactRisk).toBe("low");
-  });
-
-  test("v0.8.1: settings.json bare id passes through to canonical lookup", async () => {
-    // settings.json says "claude-fable-5" (no [1m]) — behaves like the
-    // legacy path: canonical lookup on Fable 5 → 1M.
-    await writeFile(claudeSettingsPath(), JSON.stringify({ model: "claude-fable-5" }));
-    const line = JSON.stringify({
-      type: "assistant",
-      timestamp: "2026-07-07T10:00:00Z",
-      message: {
-        model: "claude-fable-5",
-        usage: { cache_read_input_tokens: 300_000 },
-      },
-    });
-    await writeFile(jsonlPath, line);
-    const usage = await readContextUsage(makeSessionRef());
-    expect(usage?.contextLimit).toBe(1_000_000);
-    expect(usage?.contextLimitSource).toBe("canonical-lookup");
-  });
-
-  test("v0.8.1: no settings.json → falls back to jsonl-based detection (regression guard)", async () => {
-    // No settings.json in mockHome — should behave exactly like pre-v0.8.1.
-    const line = JSON.stringify({
-      type: "assistant",
-      timestamp: "2026-07-07T10:00:00Z",
-      message: {
-        model: "claude-sonnet-5",
-        usage: { cache_read_input_tokens: 100_000 },
-      },
-    });
-    await writeFile(jsonlPath, line);
-    const usage = await readContextUsage(makeSessionRef());
-    expect(usage?.contextLimit).toBe(1_000_000);
-    expect(usage?.contextLimitSource).toBe("canonical-lookup");
+    expect(usage?.contextLimitSource).toBe("statusline-stdin");
   });
 });

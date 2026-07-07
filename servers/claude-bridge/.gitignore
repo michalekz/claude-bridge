@@ -1,9 +1,11 @@
 # Dependencies
 node_modules/
 
-# Build output — keep bundle.cjs as installable artifact (postinstall rebuilds it)
+# Build output — keep dist/*.cjs (installable artifacts: bundle.cjs = MCP
+# server, statusline.cjs = statusLine wrapper (v0.9.0+), and future
+# refresh-limits.cjs / setup-check.cjs)
 dist/*
-!dist/bundle.cjs
+!dist/*.cjs
 *.tsbuildinfo
 
 # Test coverage
