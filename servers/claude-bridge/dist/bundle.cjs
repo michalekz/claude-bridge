@@ -22691,7 +22691,7 @@ var TOOLS = [
   },
   {
     name: "rate_limit_status",
-    description: "Read account-scoped rate limits (5-hour session + 7-day weekly budgets) from Claude Code's own usage cache at ~/.claude/.usage_cache.json. USER-scoped \u2014 all peers on the same POSIX account share one set of rate limits. Returns utilization (0-1), resets_at timestamps, hoursUntilReset, severity, plus optional per-model scoped limits, spend cap (if enabled), extra credits (if enabled), and passthrough for internal experiment codenames. Includes `cacheAgeSeconds` \u2014 Claude Code refreshes the cache only on specific events (session start, /rate-limits invocation, threshold crossing), NOT per-turn. v0.8.2+ adds `staleness` verdict (fresh/stale/expired-window) and per-bucket `windowExpired` flags: 'fresh' (< 5 min old, use as-is), 'stale' (older but windows still current \u2014 absolute utilization is orientational, resetsAt/window boundaries remain reliable), 'expired-window' (\u26A0 one or more bucket's resetsAt is in the past \u2014 utilization describes a DEAD window; consult `/rate-limits` in Claude Code or wait for next cache refresh). Returns `hasCache: false` gracefully if the file doesn't exist yet (= account never invoked /rate-limits or not logged in).",
+    description: "Read account-scoped rate limits (5-hour session + 7-day weekly budgets) from ~/.claude/.usage_cache.json. USER-scoped \u2014 all peers on the same POSIX account share one set of rate limits. \u26A0 v0.8.3 factual correction: this file is NOT maintained by Claude Code itself \u2014 it is a secondary cache written by benabraham/claude-code-status-line (MIT). Its refresh depends on the status-line project's deprecated OAuth fallback path; on CC 2.1.80+ the file stops refreshing entirely because CC uses stdin JSON for live rate limits instead. Consequence: this tool commonly returns stale data (hours-to-days old). Use `staleness` verdict + `windowExpired` per-bucket flags to detect that. v0.9.0 replaces the data source with a plugin-owned statusLine wrapper (live) + PostToolUse hook (OAuth API fallback); this fossil-cache read will be removed. Returns utilization (0-1), resets_at timestamps, hoursUntilReset, severity, optional per-model scoped limits, spend cap (if enabled), extra credits (if enabled), and passthrough for internal experiment codenames. `staleness` values: 'fresh' (< 5 min old, use as-is \u2014 rarely happens with fossil cache), 'stale' (older but windows still current \u2014 absolute utilization is orientational, resetsAt/window boundaries remain reliable), 'expired-window' (\u26A0 one or more bucket's resetsAt is in the past \u2014 utilization describes a DEAD window; consult `/rate-limits` in Claude Code and wait for v0.9.0 or install the status-line project as a stopgap refresher). Returns `hasCache: false` gracefully if the file doesn't exist (= account never invoked /rate-limits and status-line not installed).",
     inputSchema: { type: "object", properties: {}, additionalProperties: false },
     handler: async () => rateLimitStatusTool()
   },
@@ -22749,7 +22749,7 @@ var TOOLS = [
 // src/mcp/server.ts
 var log6 = makeLogger("mcp-server");
 var SERVER_NAME = "claude-bridge";
-var SERVER_VERSION = "0.8.2";
+var SERVER_VERSION = "0.8.3";
 var INSTRUCTIONS = `
 claude-bridge \u2014 MCP server for orchestration across Claude Code chats.
 

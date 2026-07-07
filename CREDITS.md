@@ -41,11 +41,21 @@ Multi-instance Claude Code orchestration with phased delivery. We adopted:
 
 Personal-workflow status line for Claude Code (Python, statusLine hook). We adopted:
 
-- **`~/.claude/.usage_cache.json` as data source** — Claude Code maintains this cache itself; the status-line project showed us the file exists and the field layout (five_hour / seven_day / limits[] / spend / extra_usage / experimental codenames). Source of our `src/parser/rate-limits.ts` field shape and the `rate_limit_status` MCP tool (v0.8.0+).
+- **Field layout of `~/.claude/.usage_cache.json`** — five_hour / seven_day / limits[] / spend / extra_usage / experimental codenames. The status-line project's parsing code was the reference for our `src/parser/rate-limits.ts` field shape.
 
-Where we diverged: status-line is human-facing (ANSI terminal, single-user, `stdin` JSON pipeline via CC's statusLine hook). Our tool is agent-facing (JSON output, cross-peer-aware, direct file read — no statusLine setup required). Complementary, not competing — both consume the same file, different consumers.
+**Factual correction to earlier CREDITS wording (v0.8.3):** The pre-v0.8.3 attribution described `.usage_cache.json` as "Claude Code's own cache." That was wrong. Static analysis of the benabraham source (v5.4.0) confirmed:
 
-Bug-fix credit for `contextLimitSource`: **Zdeněk Michálek + jira-architect (HMH)** empirically caught the "Sonnet 5 missing from canonical table → percentUsed inflated 5×" incident on 2026-07-07 and drove the `unknown-model-fallback` flag design so the same bug surfaces as a visible caveat next time.
+- `.usage_cache.json` is **written by the status-line project itself**, not by Claude Code.
+- Writes happen only inside benabraham's `fetch_usage_data()` (line 731-735), which is a **deprecated fallback path** kept for Claude Code versions older than 2.1.80.
+- CC 2.1.80+ sends `rate_limits` via **stdin JSON to the statusLine hook** directly per render — the file cache is bypassed entirely.
+
+This makes our `rate_limit_status` tool (v0.8.0-v0.8.2) architecturally fragile: it reads a secondary cache belonging to a third-party project, which stops refreshing when CC uses the modern stdin path (i.e. always on any current CC install). The 36-hour-stale cache Zdeněk reported on 2026-07-07 was the surfacing of this design flaw.
+
+**v0.9.0 changes the data source** to (1) a plugin-owned statusLine wrapper that dumps the CC-provided stdin JSON to `~/.claude-bridge/live/statusline.json` on every render, and (2) a PostToolUse hook that calls the OAuth `/api/oauth/usage` endpoint directly as a fallback. The `.usage_cache.json` fossil read is removed in v0.9.0 (breaking change).
+
+Where we diverged from status-line at the tool level: status-line is human-facing (ANSI terminal, single-user, per-render statusLine rendering). Our tool is agent-facing (structured JSON output, cross-peer aware). v0.9.0's statusLine wrapper is designed to co-exist with an existing user statusLine (subprocess passthrough), not replace it.
+
+Bug-fix credit for `contextLimitSource`: **Zdeněk Michálek + jira-architect (HMH)** empirically caught the "Sonnet 5 missing from canonical table → percentUsed inflated 5×" incident on 2026-07-07, drove the `unknown-model-fallback` flag design for v0.8.0-v0.8.2, and — through the follow-up rate_limit_status stale-cache report — drove the v0.8.3 factual correction and the v0.9.0 architecture pivot to live data.
 
 ## Indirect references
 

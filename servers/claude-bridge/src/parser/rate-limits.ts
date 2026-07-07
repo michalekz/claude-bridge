@@ -3,14 +3,28 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 
 /**
- * Rate-limits reader — parses Claude Code's own usage cache.
+ * Rate-limits reader — parses `~/.claude/.usage_cache.json`.
  *
- * File: ~/.claude/.usage_cache.json
- * Maintained by: Claude Code itself (refreshed on specific events — session
- * start, /rate-limits invocation, threshold crossing). Not real-time.
+ * ⚠ v0.8.3 factual correction: this file is NOT written by Claude Code.
+ * It is a secondary cache maintained by benabraham/claude-code-status-line
+ * (MIT). See CREDITS.md for details.
+ *
+ * Refresh model on modern Claude Code (2.1.80+):
+ *  - CC sends live `rate_limits` on stdin to statusLine hook per render.
+ *  - status-line reads stdin → renders → DOES NOT write the cache file.
+ *  - Cache write happens only in the deprecated OAuth API fallback path
+ *    (fetch_usage_data in the status-line source), which fires only when
+ *    stdin `rate_limits` is missing (CC < 2.1.80 or misconfiguration).
+ *  - Result: on any current CC install, `.usage_cache.json` stops refreshing
+ *    shortly after install and this reader returns stale data (hours to days).
  *
  * Data is USER-SCOPED (per POSIX account), not per-session. All peers on
  * the same user account share exactly one set of rate limits.
+ *
+ * v0.9.0 removes this fossil read entirely in favor of:
+ *  1. Plugin-owned statusLine wrapper writing ~/.claude-bridge/live/statusline.json
+ *  2. PostToolUse hook calling OAuth /api/oauth/usage endpoint (throttled)
+ * See docs/HOOKS-STATUSLINE-ARCHITECTURE.md (v0.9.0+).
  *
  * Source structure (verified 2026-07-05 against Anthropic account with
  * Claude Code v2.1.201). Keys:

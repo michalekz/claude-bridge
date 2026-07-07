@@ -2,6 +2,38 @@
 
 All notable changes to this project are documented here. Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.8.3] — 2026-07-07
+
+### Fixed — CREDITS and tool description factual correction
+
+Static analysis of [benabraham/claude-code-status-line](https://github.com/benabraham/claude-code-status-line) v5.4.0 (during v0.9.0 recon) revealed that our pre-v0.8.3 documentation contained a load-bearing factual error:
+
+- We described `~/.claude/.usage_cache.json` as **"Claude Code's own cache"**.
+- In reality: **the file is written by the status-line project itself**, not by Claude Code. Writes happen only inside `fetch_usage_data()` (line 731-735 of the status-line source), which is a **deprecated OAuth API fallback path** kept for CC versions older than 2.1.80.
+- On any modern CC install (2.1.80+), `rate_limits` are sent to statusLine hook via **stdin JSON per render**; the fallback code path never fires; the cache file **stops refreshing shortly after install**.
+
+**Concrete effect:** `rate_limit_status` in v0.8.0-v0.8.2 reads a fossilized secondary cache belonging to a third-party project. The 36-hour-stale cache surfaced by Zdeněk on 2026-07-07 was not an edge case — it is the steady state on any current Claude Code install with the status-line project installed.
+
+Fixed in this release (docs only, no behavior change):
+
+- **`CREDITS.md`** — status-line attribution rewritten with the correct data ownership model (benabraham writes the cache, not CC).
+- **`rate_limit_status` tool description** — leads with the "not CC's cache" clarification and points at v0.9.0 as the architectural fix.
+- **`src/parser/rate-limits.ts` file header** — documents the deprecated fallback path and points forward to `docs/HOOKS-STATUSLINE-ARCHITECTURE.md` (which ships with v0.9.0).
+
+### Coming in v0.9.0
+
+**Breaking change.** The fossil-cache read will be removed. Live data sources:
+
+1. Plugin-owned statusLine wrapper writing `~/.claude-bridge/live/statusline.json` on every render (primary; autoritative `rate_limits` + `context_window` from CC stdin).
+2. PostToolUse hook calling `/api/oauth/usage` (secondary; throttled).
+3. If neither is configured → `hasLiveData: false` with pointer to `docs/SETUP-LIVE-DATA.md`.
+
+All context-limit heuristics in `peer_context_status` (`empirical-heuristic`, `unknown-model-fallback`, `settings-json-1m-tag`, `explicit-1m-tag`, `canonical-lookup` for context detection) will be **removed** in favor of authoritative `context_window.context_window_size` from CC stdin. Reference metadata via `model_info` tool remains.
+
+### Tests
+
+- 313/313 pass (no code behavior change).
+
 ## [0.8.2] — 2026-07-07
 
 ### Fixed — `rate_limit_status` misleading data from expired windows
