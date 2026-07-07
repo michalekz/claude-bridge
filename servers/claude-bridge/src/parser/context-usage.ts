@@ -21,8 +21,9 @@ import type { SessionRef } from "./session.ts";
  * artificially inflated.
  */
 export type ContextLimitSource =
+  | "settings-json-1m-tag" // ~/.claude/settings.json.model carried `[1m]` suffix (authoritative)
   | "canonical-lookup" // Model found in MODEL_CONTEXT_WINDOWS (high confidence)
-  | "explicit-1m-tag" // Model string carried `[1m]` suffix (legacy path)
+  | "explicit-1m-tag" // JSONL model string carried `[1m]` suffix (rare — API usually strips it)
   | "empirical-heuristic" // tokensUsed already > STANDARD_LIMIT → bumped to 1M
   | "unknown-model-fallback"; // Model unknown, using 200k default (⚠ possibly wrong)
 
@@ -46,6 +47,7 @@ export interface ContextUsage {
 }
 
 import { lookupModel } from "./model-metadata.ts";
+import { readClaudeSettings } from "./settings.ts";
 
 const ONE_M_PATTERN = /\[1m\]/i;
 const STANDARD_LIMIT = 200_000;
@@ -94,26 +96,54 @@ export function detectContextLimit(model: string | null | undefined): number {
  * canonical table; the fallback to STANDARD_LIMIT caused percentUsed to
  * inflate 5×. With `contextLimitSource` returned in the tool output, agents
  * can now see "the model was unknown to me, don't trust % blindly".
+ *
+ * Resolution order (v0.8.1):
+ *  1. `settings-json-1m-tag` — `~/.claude/settings.json.model` carries `[1m]`.
+ *     Authoritative: this is where the user set the tag. JSONL strips it.
+ *  2. `explicit-1m-tag` — JSONL model string carries `[1m]`. Rare (API strips
+ *     the suffix), kept as a legacy path in case it reappears.
+ *  3. `canonical-lookup` — settings model (if any) then JSONL model, normalized
+ *     against the canonical table.
+ *  4. `empirical-heuristic` — unknown model but tokens > 200k → must be 1M.
+ *  5. `unknown-model-fallback` — 200k default (⚠ possibly wrong).
  */
 export function detectContextLimitWithSource(
-  model: string | null | undefined,
+  jsonlModel: string | null | undefined,
   tokensUsed: number,
+  settingsModel?: string | null | undefined,
 ): { limit: number; source: ContextLimitSource } {
-  if (!model) return { limit: STANDARD_LIMIT, source: "unknown-model-fallback" };
-  if (ONE_M_PATTERN.test(model)) return { limit: ONE_M_LIMIT, source: "explicit-1m-tag" };
+  // Priority 1: settings.json authoritative [1m] tag.
+  if (settingsModel && ONE_M_PATTERN.test(settingsModel)) {
+    return { limit: ONE_M_LIMIT, source: "settings-json-1m-tag" };
+  }
 
-  const known = lookupModel(model);
-  if (known) return { limit: known.contextWindow, source: "canonical-lookup" };
+  // Priority 2: legacy [1m] on JSONL model string.
+  if (jsonlModel && ONE_M_PATTERN.test(jsonlModel)) {
+    return { limit: ONE_M_LIMIT, source: "explicit-1m-tag" };
+  }
 
-  // Unknown model. Apply empirical safety net: if usage already blew past
-  // STANDARD_LIMIT, the true window must be higher (200k variant would have
-  // rejected before reaching this size). Trust the observation.
+  // Priority 3: canonical lookup. Prefer settings model when it names a known
+  // model that JSONL didn't; otherwise fall back to JSONL model. Both are
+  // normalized inside lookupModel (date suffix + [1m] stripped).
+  const knownFromSettings = settingsModel ? lookupModel(settingsModel) : null;
+  if (knownFromSettings) {
+    return { limit: knownFromSettings.contextWindow, source: "canonical-lookup" };
+  }
+  const knownFromJsonl = jsonlModel ? lookupModel(jsonlModel) : null;
+  if (knownFromJsonl) {
+    return { limit: knownFromJsonl.contextWindow, source: "canonical-lookup" };
+  }
+
+  // Priority 4: empirical safety net. If usage already blew past STANDARD_LIMIT,
+  // the true window must be higher (200k variant would have rejected before
+  // reaching this size).
   if (tokensUsed > STANDARD_LIMIT) {
     return { limit: ONE_M_LIMIT, source: "empirical-heuristic" };
   }
 
-  // Below STANDARD_LIMIT with unknown model: return conservative default with
-  // explicit uncertainty flag. Consumer decides whether to trust the ratio.
+  // Priority 5: below STANDARD_LIMIT with unknown / missing model — conservative
+  // default with explicit uncertainty flag. Consumer decides whether to trust
+  // the ratio; absolute `tokensUsed` remains reliable regardless.
   return { limit: STANDARD_LIMIT, source: "unknown-model-fallback" };
 }
 
@@ -140,6 +170,12 @@ export async function readContextUsage(sessionRef: SessionRef): Promise<ContextU
   let lastUsage: AssistantUsage | null = null;
   let lastModel: string | null = null;
   let lastTimestamp: string | null = null;
+
+  // Read settings.json once — authoritative source for `[1m]` tag (JSONL
+  // strips it). Best-effort: null if missing / unreadable, in which case
+  // limit detection falls through to canonical lookup on jsonlModel.
+  const settings = await readClaudeSettings();
+  const settingsModel = settings?.model ?? null;
 
   try {
     for await (const event of parseSessionFileRaw(sessionRef.filePath) as AsyncGenerator<
@@ -182,10 +218,11 @@ export async function readContextUsage(sessionRef: SessionRef): Promise<ContextU
     (lastUsage.cache_creation_input_tokens ?? 0) +
     (lastUsage.input_tokens ?? 0) +
     (lastUsage.output_tokens ?? 0);
-  // Limit detection: canonical lookup + empirical fallback + explicit source tag.
+  // Limit detection: settings.json → canonical lookup → empirical fallback → source tag.
   const { limit: contextLimit, source: contextLimitSource } = detectContextLimitWithSource(
     lastModel,
     tokensUsed,
+    settingsModel,
   );
   const percentUsed = contextLimit > 0 ? tokensUsed / contextLimit : 0;
   const tokensRemaining = Math.max(0, contextLimit - tokensUsed);

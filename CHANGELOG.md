@@ -2,6 +2,40 @@
 
 All notable changes to this project are documented here. Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.8.1] — 2026-07-07
+
+### Fixed — authoritative `[1m]` detection via `~/.claude/settings.json`
+
+Follow-up patch to v0.8.0 context-limit detection. Discovery during post-release verification:
+
+- JSONL `message.model` = bare id (e.g. `"claude-fable-5"`). Anthropic's API response strips the `[1m]` suffix.
+- `~/.claude/settings.json.model` = **with** `[1m]` (e.g. `"claude-fable-5[1m]"`) — authoritative user configuration.
+
+Result: `peer_context_status` couldn't tell a 200k Haiku 4.5 session from a 1M Haiku 4.5 `[1m]` session from JSONL alone. v0.8.1 reads `settings.json` once per `readContextUsage` call and uses it as the priority-1 signal.
+
+### New `contextLimitSource` value
+
+- **`settings-json-1m-tag`** (new, priority 1) — `~/.claude/settings.json.model` carried `[1m]`. Authoritative.
+- `explicit-1m-tag` (priority 2) — JSONL model string carried `[1m]`. Rare (API strips it) but kept as legacy path.
+- `canonical-lookup` (priority 3) — settings model, then JSONL model, normalized against the canonical table.
+- `empirical-heuristic` (priority 4) — unchanged.
+- `unknown-model-fallback` (priority 5) — unchanged.
+
+### API surface
+
+`detectContextLimitWithSource(jsonlModel, tokensUsed, settingsModel?)` — third argument added, backwards-compatible (undefined ≡ no settings signal, falls through to legacy chain).
+
+`readClaudeSettings()` — new helper in `src/parser/settings.ts`. Returns `null` on missing / unreadable / malformed settings.json so callers don't need to distinguish.
+
+### Behavior notes
+
+- Settings.json is read **once per `readContextUsage` call**, not cached. Cost is one small file read (~1.5 KB in typical setups). Acceptable given `peer_context_status` isn't called on the hot path.
+- Cross-peer: `settings.json` is USER-scoped, so all peers on the same POSIX account share the same signal. Cross-user machines see the caller's own settings — same limitation as `rate_limit_status`.
+
+### Tests
+
+- 280 → 306 (+26: 8 new `settings.ts` tests, 7 new `detectContextLimitWithSource` variants covering settings-json interaction, 3 new `readContextUsage` integration paths, plus refactored suite mocks `node:os.homedir` so tests are isolated from the dev/CI machine's `~/.claude/settings.json`).
+
 ## [0.8.0] — 2026-07-07
 
 ### Added — `rate_limit_status` MCP tool

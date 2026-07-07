@@ -1,7 +1,23 @@
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, test } from "vitest";
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
+
+// Mock homedir BEFORE importing modules under test so `claudeHome()` in
+// settings.ts resolves to a per-test temp directory. Prevents the real
+// ~/.claude/settings.json on the dev/CI machine from polluting expectations
+// (e.g., a machine with `model: "claude-fable-5[1m]"` would give every
+// readContextUsage call a settings-json-1m-tag override).
+let mockHome: string = tmpdir();
+
+vi.mock("node:os", async () => {
+  const actual = await vi.importActual<typeof import("node:os")>("node:os");
+  return {
+    ...actual,
+    homedir: () => mockHome,
+  };
+});
+
 import {
   detectContextLimit,
   detectContextLimitWithSource,
@@ -9,6 +25,7 @@ import {
   riskBucket,
 } from "../../src/parser/context-usage.ts";
 import type { SessionRef } from "../../src/parser/session.ts";
+import { claudeSettingsPath } from "../../src/parser/settings.ts";
 
 describe("detectContextLimit", () => {
   test("returns 1M for Sonnet 5 (canonical lookup, added 2026-07-07)", () => {
@@ -85,6 +102,68 @@ describe("detectContextLimitWithSource", () => {
   });
 });
 
+describe("detectContextLimitWithSource — settings.json integration (v0.8.1)", () => {
+  test("settings.json has [1m] tag → settings-json-1m-tag (priority 1, beats canonical)", () => {
+    // JSONL model "claude-haiku-4-5" would resolve to 200k via canonical lookup,
+    // but settings.json says "[1m]" — user opted into the 1M variant.
+    const r = detectContextLimitWithSource("claude-haiku-4-5", 50_000, "claude-haiku-4-5[1m]");
+    expect(r.limit).toBe(1_000_000);
+    expect(r.source).toBe("settings-json-1m-tag");
+  });
+
+  test("settings-json-1m-tag beats explicit-1m-tag priority when both present", () => {
+    // Both signals point at 1M; settings.json wins the source attribution
+    // because it's the authoritative user configuration.
+    const r = detectContextLimitWithSource("claude-opus-4-7-[1m]", 100_000, "claude-opus-4-7[1m]");
+    expect(r.limit).toBe(1_000_000);
+    expect(r.source).toBe("settings-json-1m-tag");
+  });
+
+  test("settings.json bare id + JSONL bare id → canonical-lookup (unchanged behavior)", () => {
+    // The Sonnet 5 case: JSONL says "claude-sonnet-5", settings.json says
+    // "claude-sonnet-5" (no [1m]). Canonical table resolves to 1M for both.
+    const r = detectContextLimitWithSource("claude-sonnet-5", 500_000, "claude-sonnet-5");
+    expect(r.limit).toBe(1_000_000);
+    expect(r.source).toBe("canonical-lookup");
+  });
+
+  test("settings.json has known model that JSONL lacks → canonical-lookup wins", () => {
+    // Fresh session, JSONL has no assistant events yet or model isn't in the
+    // canonical table, but settings.json names a known model.
+    const r = detectContextLimitWithSource(null, 0, "claude-fable-5");
+    expect(r.limit).toBe(1_000_000);
+    expect(r.source).toBe("canonical-lookup");
+  });
+
+  test("settings.json null/undefined falls through to jsonl-based detection", () => {
+    // Regression guard: without settings signal, behavior matches pre-v0.8.1.
+    const r1 = detectContextLimitWithSource("claude-sonnet-5", 100_000, null);
+    expect(r1.source).toBe("canonical-lookup");
+    const r2 = detectContextLimitWithSource("claude-sonnet-5", 100_000, undefined);
+    expect(r2.source).toBe("canonical-lookup");
+  });
+
+  test("settings.json with unknown [1m] model still wins → settings-json-1m-tag", () => {
+    // Future frontier model not yet in canonical table, user opted into [1m]
+    // via settings.json — trust the user's signal over the fallback.
+    const r = detectContextLimitWithSource(
+      "claude-future-model",
+      50_000,
+      "claude-future-model[1m]",
+    );
+    expect(r.limit).toBe(1_000_000);
+    expect(r.source).toBe("settings-json-1m-tag");
+  });
+
+  test("settings.json unknown bare id + JSONL unknown → falls through to fallback", () => {
+    // Neither model is in the canonical table, no [1m] anywhere, tokens under
+    // 200k → still unknown-model-fallback.
+    const r = detectContextLimitWithSource("claude-future-model", 50_000, "claude-future-model");
+    expect(r.limit).toBe(200_000);
+    expect(r.source).toBe("unknown-model-fallback");
+  });
+});
+
 describe("riskBucket", () => {
   test("low below 60%", () => {
     expect(riskBucket(0)).toBe("low");
@@ -112,10 +191,17 @@ describe("readContextUsage", () => {
   beforeEach(async () => {
     tmp = await mkdtemp(join(tmpdir(), "ctx-usage-test-"));
     jsonlPath = join(tmp, "session.jsonl");
+    // Route homedir() to this test's tmp so readClaudeSettings() naturally
+    // returns null (no settings.json unless a specific test writes one).
+    mockHome = tmp;
+    await import("node:fs/promises").then((fs) =>
+      fs.mkdir(join(tmp, ".claude"), { recursive: true }),
+    );
   });
 
   afterEach(async () => {
     await rm(tmp, { recursive: true, force: true }).catch(() => undefined);
+    mockHome = tmpdir();
   });
 
   function makeSessionRef(): SessionRef {
@@ -319,5 +405,61 @@ describe("readContextUsage", () => {
     };
     const usage = await readContextUsage(ref);
     expect(usage).toBeNull();
+  });
+
+  test("v0.8.1: settings.json [1m] overrides canonical → contextLimitSource=settings-json-1m-tag", async () => {
+    // Real-world scenario: JSONL says "claude-haiku-4-5" (200k canonical),
+    // but user configured "claude-haiku-4-5[1m]" in ~/.claude/settings.json.
+    // Without settings.json signal, this session at 180k tokens would be
+    // flagged as high risk (90% of 200k). With it, correctly 18% of 1M.
+    await writeFile(claudeSettingsPath(), JSON.stringify({ model: "claude-haiku-4-5[1m]" }));
+    const line = JSON.stringify({
+      type: "assistant",
+      timestamp: "2026-07-07T10:00:00Z",
+      message: {
+        model: "claude-haiku-4-5",
+        usage: { cache_read_input_tokens: 180_000 },
+      },
+    });
+    await writeFile(jsonlPath, line);
+    const usage = await readContextUsage(makeSessionRef());
+    expect(usage?.contextLimit).toBe(1_000_000);
+    expect(usage?.contextLimitSource).toBe("settings-json-1m-tag");
+    expect(usage?.percentUsed).toBe(0.18);
+    expect(usage?.autocompactRisk).toBe("low");
+  });
+
+  test("v0.8.1: settings.json bare id passes through to canonical lookup", async () => {
+    // settings.json says "claude-fable-5" (no [1m]) — behaves like the
+    // legacy path: canonical lookup on Fable 5 → 1M.
+    await writeFile(claudeSettingsPath(), JSON.stringify({ model: "claude-fable-5" }));
+    const line = JSON.stringify({
+      type: "assistant",
+      timestamp: "2026-07-07T10:00:00Z",
+      message: {
+        model: "claude-fable-5",
+        usage: { cache_read_input_tokens: 300_000 },
+      },
+    });
+    await writeFile(jsonlPath, line);
+    const usage = await readContextUsage(makeSessionRef());
+    expect(usage?.contextLimit).toBe(1_000_000);
+    expect(usage?.contextLimitSource).toBe("canonical-lookup");
+  });
+
+  test("v0.8.1: no settings.json → falls back to jsonl-based detection (regression guard)", async () => {
+    // No settings.json in mockHome — should behave exactly like pre-v0.8.1.
+    const line = JSON.stringify({
+      type: "assistant",
+      timestamp: "2026-07-07T10:00:00Z",
+      message: {
+        model: "claude-sonnet-5",
+        usage: { cache_read_input_tokens: 100_000 },
+      },
+    });
+    await writeFile(jsonlPath, line);
+    const usage = await readContextUsage(makeSessionRef());
+    expect(usage?.contextLimit).toBe(1_000_000);
+    expect(usage?.contextLimitSource).toBe("canonical-lookup");
   });
 });
