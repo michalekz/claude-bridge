@@ -20522,9 +20522,9 @@ async function shutdownContext(ctx) {
 }
 
 // src/mcp/tools.ts
-var import_promises13 = require("node:fs/promises");
 var import_promises14 = require("node:fs/promises");
-var import_node_path10 = require("node:path");
+var import_promises15 = require("node:fs/promises");
+var import_node_path11 = require("node:path");
 
 // src/parser/context-usage.ts
 var import_promises10 = require("node:fs/promises");
@@ -20763,16 +20763,17 @@ var MODELS = [
     notes: "On Microsoft Foundry context is 200k. Default effort=high on Claude Code and API."
   },
   {
-    id: "claude-sonnet-4-6",
-    displayName: "Claude Sonnet 4.6",
+    id: "claude-sonnet-5",
+    displayName: "Claude Sonnet 5",
     family: "sonnet",
     generation: "current",
     contextWindow: ONE_M_LIMIT,
     maxOutputTokens: 128e3,
     pricing: { inputPerMTok: 3, outputPerMTok: 15 },
-    capabilities: { vision: true, extendedThinking: true, adaptiveThinking: true },
-    knowledgeCutoff: "2025-08",
-    trainingDataCutoff: "2026-01"
+    capabilities: { vision: true, extendedThinking: false, adaptiveThinking: true },
+    knowledgeCutoff: "2026-01",
+    trainingDataCutoff: "2026-01",
+    notes: "Introductory pricing $2/$10 per MTok through 2026-08-31. Default effort=high on Claude API and Claude Code."
   },
   {
     id: "claude-haiku-4-5",
@@ -20812,6 +20813,19 @@ var MODELS = [
     capabilities: { vision: true, extendedThinking: true, adaptiveThinking: true },
     knowledgeCutoff: "2025-05",
     trainingDataCutoff: "2025-08"
+  },
+  {
+    id: "claude-sonnet-4-6",
+    displayName: "Claude Sonnet 4.6 (legacy)",
+    family: "sonnet",
+    generation: "legacy",
+    contextWindow: ONE_M_LIMIT,
+    maxOutputTokens: 128e3,
+    pricing: { inputPerMTok: 3, outputPerMTok: 15 },
+    capabilities: { vision: true, extendedThinking: true, adaptiveThinking: true },
+    knowledgeCutoff: "2025-08",
+    trainingDataCutoff: "2026-01",
+    notes: "Superseded by Claude Sonnet 5 (2026-07 GA)."
   },
   {
     id: "claude-sonnet-4-5",
@@ -20870,12 +20884,15 @@ var MODEL_METADATA_SOURCE = {
 var ONE_M_PATTERN = /\[1m\]/i;
 var STANDARD_LIMIT2 = 2e5;
 var ONE_M_LIMIT2 = 1e6;
-function detectContextLimit(model) {
-  if (!model) return STANDARD_LIMIT2;
-  if (ONE_M_PATTERN.test(model)) return ONE_M_LIMIT2;
+function detectContextLimitWithSource(model, tokensUsed) {
+  if (!model) return { limit: STANDARD_LIMIT2, source: "unknown-model-fallback" };
+  if (ONE_M_PATTERN.test(model)) return { limit: ONE_M_LIMIT2, source: "explicit-1m-tag" };
   const known = lookupModel(model);
-  if (known) return known.contextWindow;
-  return STANDARD_LIMIT2;
+  if (known) return { limit: known.contextWindow, source: "canonical-lookup" };
+  if (tokensUsed > STANDARD_LIMIT2) {
+    return { limit: ONE_M_LIMIT2, source: "empirical-heuristic" };
+  }
+  return { limit: STANDARD_LIMIT2, source: "unknown-model-fallback" };
 }
 function riskBucket(percent) {
   if (percent < 0.6) return "low";
@@ -20906,16 +20923,17 @@ async function readContextUsage(sessionRef) {
     return null;
   }
   const tokensUsed = (lastUsage.cache_read_input_tokens ?? 0) + (lastUsage.cache_creation_input_tokens ?? 0) + (lastUsage.input_tokens ?? 0) + (lastUsage.output_tokens ?? 0);
-  let contextLimit = detectContextLimit(lastModel);
-  if (contextLimit === STANDARD_LIMIT2 && tokensUsed > STANDARD_LIMIT2) {
-    contextLimit = ONE_M_LIMIT2;
-  }
+  const { limit: contextLimit, source: contextLimitSource } = detectContextLimitWithSource(
+    lastModel,
+    tokensUsed
+  );
   const percentUsed = contextLimit > 0 ? tokensUsed / contextLimit : 0;
   const tokensRemaining = Math.max(0, contextLimit - tokensUsed);
   return {
     tokensUsed,
     model: lastModel,
     contextLimit,
+    contextLimitSource,
     lastTurnAt: lastTimestamp,
     percentUsed,
     tokensRemaining,
@@ -20933,24 +20951,153 @@ async function readContextUsageForSession(sessions) {
   return readContextUsage(sessionRef);
 }
 
-// src/parser/session.ts
+// src/parser/rate-limits.ts
 var import_promises11 = require("node:fs/promises");
-var import_promises12 = require("node:fs/promises");
+var import_node_os4 = require("node:os");
 var import_node_path9 = require("node:path");
+var USAGE_CACHE_PATH = (0, import_node_path9.join)((0, import_node_os4.homedir)(), ".claude", ".usage_cache.json");
+var EXPERIMENTAL_KEYS = [
+  "tangelo",
+  "iguana_necktie",
+  "omelette_promotional",
+  "nimbus_quill",
+  "cinder_cove",
+  "amber_ladder"
+];
+var PER_MODEL_WEEKLY_KEYS = {
+  seven_day_opus: "opus",
+  seven_day_sonnet: "sonnet",
+  seven_day_oauth_apps: "oauthApps",
+  seven_day_cowork: "cowork",
+  seven_day_omelette: "omelette"
+};
+function hoursBetween(iso, now) {
+  const target = Date.parse(iso);
+  if (Number.isNaN(target)) return Number.NaN;
+  return (target - now.getTime()) / (1e3 * 60 * 60);
+}
+function toBucket(raw, matchingLimit, now) {
+  if (raw.utilization == null || raw.resets_at == null) return void 0;
+  return {
+    utilization: raw.utilization / 100,
+    resetsAt: raw.resets_at,
+    hoursUntilReset: hoursBetween(raw.resets_at, now),
+    severity: matchingLimit?.severity ?? "normal",
+    isActive: matchingLimit?.is_active ?? false
+  };
+}
+function minorToMajor(used) {
+  return used.amount_minor / 10 ** used.exponent;
+}
+function normalizeUsageCache(raw, now = /* @__PURE__ */ new Date()) {
+  const cacheTimestamp = new Date(raw.timestamp * 1e3).toISOString();
+  const cacheAgeSeconds = Math.max(0, Math.floor((now.getTime() - raw.timestamp * 1e3) / 1e3));
+  const data = raw.data;
+  const limits = data.limits ?? [];
+  const sessionLimit = limits.find((l) => l.kind === "session");
+  const weeklyAllLimit = limits.find((l) => l.kind === "weekly_all");
+  const session = toBucket(data.five_hour, sessionLimit, now);
+  const week = toBucket(data.seven_day, weeklyAllLimit, now);
+  const scopedLimits = limits.filter((l) => l.scope != null && l.kind !== "session" && l.kind !== "weekly_all").map((l) => {
+    const entry = {
+      kind: l.kind,
+      utilization: l.percent / 100,
+      resetsAt: l.resets_at ?? "",
+      severity: l.severity,
+      isActive: l.is_active
+    };
+    const model = l.scope?.model;
+    if (model?.display_name) entry.modelDisplayName = model.display_name;
+    if (model?.id) entry.modelId = model.id;
+    if (l.scope?.surface) entry.surface = l.scope.surface;
+    return entry;
+  });
+  const status = {
+    hasCache: true,
+    cacheTimestamp,
+    cacheAgeSeconds
+  };
+  if (session) status.session = session;
+  if (week) status.week = week;
+  if (scopedLimits.length > 0) status.scopedLimits = scopedLimits;
+  if (data.spend?.enabled) {
+    const spend = data.spend;
+    const usedUsd = minorToMajor(spend.used);
+    const entry = {
+      enabled: true,
+      utilization: (spend.percent ?? 0) / 100,
+      severity: spend.severity,
+      usedAmountUsd: usedUsd,
+      currency: spend.used.currency
+    };
+    if (typeof spend.limit === "number") {
+      entry.limitUsd = spend.limit / 10 ** spend.used.exponent;
+    }
+    status.spend = entry;
+  }
+  if (data.extra_usage?.is_enabled) {
+    const eu = data.extra_usage;
+    const entry = { isEnabled: true };
+    if (eu.utilization != null) entry.utilization = eu.utilization / 100;
+    if (eu.monthly_limit != null) entry.monthlyLimit = eu.monthly_limit;
+    if (eu.used_credits != null) entry.usedCredits = eu.used_credits;
+    if (eu.currency != null) entry.currency = eu.currency;
+    status.extraUsage = entry;
+  }
+  const perModel = {};
+  for (const [rawKey, cleanKey] of Object.entries(PER_MODEL_WEEKLY_KEYS)) {
+    const v = data[rawKey];
+    if (typeof v === "number") perModel[cleanKey] = v;
+  }
+  if (Object.keys(perModel).length > 0) {
+    status.perModelWeekly = perModel;
+  }
+  const experimental = {};
+  for (const key of EXPERIMENTAL_KEYS) {
+    const v = data[key];
+    if (v != null) experimental[key] = v;
+  }
+  if (Object.keys(experimental).length > 0) {
+    status.rawExperimental = experimental;
+  }
+  return status;
+}
+async function readRateLimits(path = USAGE_CACHE_PATH, now = /* @__PURE__ */ new Date()) {
+  let raw;
+  try {
+    raw = await (0, import_promises11.readFile)(path, "utf-8");
+  } catch {
+    return { hasCache: false, cachePath: path };
+  }
+  let parsed;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return { hasCache: false, cachePath: path };
+  }
+  const status = normalizeUsageCache(parsed, now);
+  status.cachePath = path;
+  return status;
+}
+
+// src/parser/session.ts
+var import_promises12 = require("node:fs/promises");
+var import_promises13 = require("node:fs/promises");
+var import_node_path10 = require("node:path");
 var JSONL_PATTERN = /^([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.jsonl$/;
 async function listProjects() {
   const root = projectsRoot();
   let entries;
   try {
-    entries = await (0, import_promises12.readdir)(root);
+    entries = await (0, import_promises13.readdir)(root);
   } catch (e) {
     if (e.code === "ENOENT") return [];
     throw e;
   }
   const projects = [];
   for (const entry of entries) {
-    const absolutePath = (0, import_node_path9.join)(root, entry);
-    const s = await (0, import_promises11.stat)(absolutePath).catch(() => null);
+    const absolutePath = (0, import_node_path10.join)(root, entry);
+    const s = await (0, import_promises12.stat)(absolutePath).catch(() => null);
     if (!s?.isDirectory()) continue;
     projects.push({ projectDir: entry, absolutePath });
   }
@@ -20959,7 +21106,7 @@ async function listProjects() {
 async function listSessionsInProject(project) {
   let entries;
   try {
-    entries = await (0, import_promises12.readdir)(project.absolutePath);
+    entries = await (0, import_promises13.readdir)(project.absolutePath);
   } catch {
     return [];
   }
@@ -20968,8 +21115,8 @@ async function listSessionsInProject(project) {
     const match = JSONL_PATTERN.exec(entry);
     if (!match) continue;
     const sessionId = match[1];
-    const filePath = (0, import_node_path9.join)(project.absolutePath, entry);
-    const s = await (0, import_promises11.stat)(filePath).catch(() => null);
+    const filePath = (0, import_node_path10.join)(project.absolutePath, entry);
+    const s = await (0, import_promises12.stat)(filePath).catch(() => null);
     if (!s?.isFile()) continue;
     sessions.push({
       projectDir: project.projectDir,
@@ -20997,7 +21144,7 @@ function serializeSessionRef(s) {
     file: s.filePath,
     sizeKB: Math.round(s.sizeBytes / 1024),
     modifiedAt: s.modifiedAt.toISOString(),
-    filename: (0, import_node_path9.basename)(s.filePath)
+    filename: (0, import_node_path10.basename)(s.filePath)
   };
 }
 
@@ -21044,9 +21191,9 @@ var ListSessionsArgs = external_exports.object({
 var HEARTBEAT_ACTIVE_THRESHOLD_MS = 3e4;
 async function isSessionActive(sessionId) {
   const { stat: stat9 } = await import("node:fs/promises");
-  const { homedir: homedir4 } = await import("node:os");
-  const { join: join12 } = await import("node:path");
-  const hbPath = join12(homedir4(), ".claude-bridge", "status", `${sessionId}.json`);
+  const { homedir: homedir5 } = await import("node:os");
+  const { join: join13 } = await import("node:path");
+  const hbPath = join13(homedir5(), ".claude-bridge", "status", `${sessionId}.json`);
   try {
     const s = await stat9(hbPath);
     return Date.now() - s.mtimeMs <= HEARTBEAT_ACTIVE_THRESHOLD_MS;
@@ -21955,6 +22102,7 @@ async function buildContextStatusEntry(ctx, peerId, peerName) {
       isSelf,
       model: null,
       contextLimit: 2e5,
+      contextLimitSource: "no-data",
       tokensUsed: 0,
       tokensRemaining: 2e5,
       percentUsed: 0,
@@ -21972,6 +22120,7 @@ async function buildContextStatusEntry(ctx, peerId, peerName) {
       isSelf,
       model: null,
       contextLimit: 2e5,
+      contextLimitSource: "no-data",
       tokensUsed: 0,
       tokensRemaining: 2e5,
       percentUsed: 0,
@@ -21987,6 +22136,7 @@ async function buildContextStatusEntry(ctx, peerId, peerName) {
     isSelf,
     model: usage.model,
     contextLimit: usage.contextLimit,
+    contextLimitSource: usage.contextLimitSource,
     tokensUsed: usage.tokensUsed,
     tokensRemaining: usage.tokensRemaining,
     percentUsed: Math.round(usage.percentUsed * 1e3) / 1e3,
@@ -22071,11 +22221,11 @@ var PeerSetContextGuardArgs = external_exports.object({
   broadcastProject: external_exports.boolean().optional()
 }).strict();
 function guardConfigFile(peerId) {
-  return (0, import_node_path10.join)(bridgeRoot(), "guard", `${peerId}.json`);
+  return (0, import_node_path11.join)(bridgeRoot(), "guard", `${peerId}.json`);
 }
 async function readContextGuard(peerId) {
   try {
-    const raw = await (0, import_promises13.readFile)(guardConfigFile(peerId), "utf-8");
+    const raw = await (0, import_promises14.readFile)(guardConfigFile(peerId), "utf-8");
     const parsed = JSON.parse(raw);
     return { ...DEFAULT_GUARD_CONFIG, ...parsed };
   } catch {
@@ -22084,7 +22234,7 @@ async function readContextGuard(peerId) {
 }
 async function writeContextGuard(peerId, cfg) {
   const file = guardConfigFile(peerId);
-  await (0, import_promises14.mkdir)((0, import_node_path10.join)(bridgeRoot(), "guard"), { recursive: true });
+  await (0, import_promises15.mkdir)((0, import_node_path11.join)(bridgeRoot(), "guard"), { recursive: true });
   await atomicWriteJson(file, cfg);
 }
 async function peerSetContextGuardTool(ctx, args) {
@@ -22119,11 +22269,11 @@ var PeerSetNotificationArgs = external_exports.object({
   minIdleSeconds: external_exports.number().int().min(5).max(3600).optional()
 }).strict();
 function notificationConfigFile(peerId) {
-  return (0, import_node_path10.join)(bridgeRoot(), "notify", `${peerId}.json`);
+  return (0, import_node_path11.join)(bridgeRoot(), "notify", `${peerId}.json`);
 }
 async function readNotificationConfig(peerId) {
   try {
-    const raw = await (0, import_promises13.readFile)(notificationConfigFile(peerId), "utf-8");
+    const raw = await (0, import_promises14.readFile)(notificationConfigFile(peerId), "utf-8");
     const parsed = JSON.parse(raw);
     return { ...DEFAULT_NOTIFICATION_CONFIG, ...parsed };
   } catch {
@@ -22132,7 +22282,7 @@ async function readNotificationConfig(peerId) {
 }
 async function writeNotificationConfig(peerId, cfg) {
   const file = notificationConfigFile(peerId);
-  await (0, import_promises14.mkdir)((0, import_node_path10.join)(bridgeRoot(), "notify"), { recursive: true });
+  await (0, import_promises15.mkdir)((0, import_node_path11.join)(bridgeRoot(), "notify"), { recursive: true });
   await atomicWriteJson(file, cfg);
 }
 async function peerSetNotificationTool(ctx, args) {
@@ -22147,6 +22297,16 @@ async function peerSetNotificationTool(ctx, args) {
   } catch (e) {
     log5.error("peer_set_notification_failed", { err: e instanceof Error ? e.message : String(e) });
     return err("peer_set_notification_failed", e instanceof Error ? e.message : "unknown");
+  }
+}
+var RateLimitStatusArgs = external_exports.object({}).strict();
+async function rateLimitStatusTool() {
+  try {
+    const status = await readRateLimits();
+    return ok(status);
+  } catch (e) {
+    log5.error("rate_limit_status_failed", { err: e instanceof Error ? e.message : String(e) });
+    return err("rate_limit_status_failed", e instanceof Error ? e.message : "unknown");
   }
 }
 var ModelInfoArgs = external_exports.object({
@@ -22420,7 +22580,7 @@ var TOOLS = [
   },
   {
     name: "peer_context_status",
-    description: "Read autocompact-relevant context statistics for self or other peer(s). Returns tokensUsed, contextLimit, percentUsed, autocompactRisk (low/medium/high), model, lastTurnAt. Data source: `usage.cache_read_input_tokens` on most recent assistant event in peer's JSONL \u2014 matches `/context` Total exactly. `to` omitted = self only. `to: 'all'` = all active peers + self. `to: ['alice', 'bob', 'self']` = specified peers (mix of names/UUIDs/'self'). `to: 'alice'` = single peer by name or UUID. Includes `guard` config field if peer has one configured. For peers without JSONL yet (brand-new): returns zero usage with autocompactRisk='low'.",
+    description: "Read autocompact-relevant context statistics for self or other peer(s). Returns tokensUsed (= cache_read + cache_creation + input + output), contextLimit, contextLimitSource, percentUsed, autocompactRisk (low/medium/high), model, lastTurnAt. Data source: sum of usage fields on the most recent assistant event in peer's JSONL \u2014 matches `/context` Total across mature + fresh sessions. `to` omitted = self only. `to: 'all'` = all active peers + self. `to: ['alice', 'bob', 'self']` = specified peers (mix of names/UUIDs/'self'). `to: 'alice'` = single peer by name or UUID. Includes `guard` config field if peer has one configured. \u26A0 contextLimitSource='unknown-model-fallback' means the model was not in the canonical table \u2014 percentUsed may be inflated (e.g. new frontier model with 1M window reported as 200k default). Check contextLimitSource before trusting the ratio; absolute tokensUsed is always reliable.",
     inputSchema: {
       type: "object",
       properties: {
@@ -22485,6 +22645,12 @@ var TOOLS = [
     }
   },
   {
+    name: "rate_limit_status",
+    description: "Read account-scoped rate limits (5-hour session + 7-day weekly budgets) from Claude Code's own usage cache at ~/.claude/.usage_cache.json. USER-scoped \u2014 all peers on the same POSIX account share one set of rate limits. Returns utilization (0-1), resets_at timestamps, hoursUntilReset, severity, plus optional per-model scoped limits, spend cap (if enabled), extra credits (if enabled), and passthrough for internal experiment codenames. Includes `cacheAgeSeconds` \u2014 Claude Code refreshes the cache only on specific events (session start, /rate-limits invocation, threshold crossing), NOT per-turn. Agents should check cacheAgeSeconds and treat old data with caution. Returns `hasCache: false` gracefully if the file doesn't exist yet (= account never invoked /rate-limits or not logged in).",
+    inputSchema: { type: "object", properties: {}, additionalProperties: false },
+    handler: async () => rateLimitStatusTool()
+  },
+  {
     name: "model_info",
     description: "Return canonical Claude model metadata: context window, max output, pricing, capabilities (vision / extended thinking / adaptive thinking), knowledge cutoff, lifecycle status (current/legacy/deprecated). Static lookup \u2014 no JSONL scan, no network calls. Source: Anthropic platform docs (https://platform.claude.com/docs/en/about-claude/models/overview), verified 2026-06-29. Pass `model` to query specific id (date suffix and [1m] tag are stripped automatically). Pass `generation` to filter (current/legacy/deprecated). No args = list all known models.",
     inputSchema: {
@@ -22538,7 +22704,7 @@ var TOOLS = [
 // src/mcp/server.ts
 var log6 = makeLogger("mcp-server");
 var SERVER_NAME = "claude-bridge";
-var SERVER_VERSION = "0.7.6";
+var SERVER_VERSION = "0.8.0";
 var INSTRUCTIONS = `
 claude-bridge \u2014 MCP server for orchestration across Claude Code chats.
 
@@ -22551,6 +22717,7 @@ MCP tools:
 - peer_set_context_guard (v0.7.0+) \u2014 own threshold-guard (warn/critical) + notify subscribers.
 - peer_set_notification (v0.7.0+) \u2014 own idle-beep notification.
 - model_info (v0.7.3+) \u2014 canonical Claude model metadata (context window, max output, pricing, capabilities, lifecycle).
+- rate_limit_status (v0.8.0+) \u2014 account-scoped 5h session + 7d weekly usage from Claude Code's ~/.claude/.usage_cache.json (per-model breakdown, spend, extra credits).
 
 Bundled skills (load detail via skill name):
 - claude-bridge \u2014 overview / quick decision tree

@@ -2,7 +2,10 @@
  * Canonical Claude model metadata.
  *
  * Source of truth: https://platform.claude.com/docs/en/about-claude/models/overview
- * Verified 2026-06-29. Update when Anthropic releases new models or migrates lifecycle.
+ * Verified 2026-07-07 (Sonnet 5 GA, Sonnet 4.6 → legacy). Update when Anthropic
+ * releases new models or migrates lifecycle. Bug reports for missing models
+ * are welcome — see `contextLimitSource` on `peer_context_status` output for
+ * how consumers detect unknown models.
  *
  * Lifecycle terms:
  *  - current     = Anthropic's recommended models in latest generation
@@ -105,16 +108,18 @@ export const MODELS: ModelMetadata[] = [
     notes: "On Microsoft Foundry context is 200k. Default effort=high on Claude Code and API.",
   },
   {
-    id: "claude-sonnet-4-6",
-    displayName: "Claude Sonnet 4.6",
+    id: "claude-sonnet-5",
+    displayName: "Claude Sonnet 5",
     family: "sonnet",
     generation: "current",
     contextWindow: ONE_M_LIMIT,
     maxOutputTokens: 128_000,
     pricing: { inputPerMTok: 3, outputPerMTok: 15 },
-    capabilities: { vision: true, extendedThinking: true, adaptiveThinking: true },
-    knowledgeCutoff: "2025-08",
+    capabilities: { vision: true, extendedThinking: false, adaptiveThinking: true },
+    knowledgeCutoff: "2026-01",
     trainingDataCutoff: "2026-01",
+    notes:
+      "Introductory pricing $2/$10 per MTok through 2026-08-31. Default effort=high on Claude API and Claude Code.",
   },
   {
     id: "claude-haiku-4-5",
@@ -155,6 +160,19 @@ export const MODELS: ModelMetadata[] = [
     capabilities: { vision: true, extendedThinking: true, adaptiveThinking: true },
     knowledgeCutoff: "2025-05",
     trainingDataCutoff: "2025-08",
+  },
+  {
+    id: "claude-sonnet-4-6",
+    displayName: "Claude Sonnet 4.6 (legacy)",
+    family: "sonnet",
+    generation: "legacy",
+    contextWindow: ONE_M_LIMIT,
+    maxOutputTokens: 128_000,
+    pricing: { inputPerMTok: 3, outputPerMTok: 15 },
+    capabilities: { vision: true, extendedThinking: true, adaptiveThinking: true },
+    knowledgeCutoff: "2025-08",
+    trainingDataCutoff: "2026-01",
+    notes: "Superseded by Claude Sonnet 5 (2026-07 GA).",
   },
   {
     id: "claude-sonnet-4-5",

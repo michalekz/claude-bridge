@@ -2,6 +2,51 @@
 
 All notable changes to this project are documented here. Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.8.0] — 2026-07-07
+
+### Added — `rate_limit_status` MCP tool
+
+New tool exposing account-scoped rate limits, read from Claude Code's own usage cache at `~/.claude/.usage_cache.json`. **USER-scoped** — all peers on the same POSIX account share exactly one set of rate limits.
+
+Discovery credit: inspired by [benabraham/claude-code-status-line](https://github.com/benabraham/claude-code-status-line) (MIT). Their status-line tool taught us the structure. Our tool is complementary — agent-facing (JSON, cross-peer-aware) rather than human-facing (ANSI terminal).
+
+Output fields:
+- **`session`** (5-hour window) — utilization (0-1), resetsAt, hoursUntilReset, severity, isActive
+- **`week`** (7-day window) — same shape
+- **`scopedLimits[]`** — per-model / per-surface breakdowns (e.g., "Fable weekly: 11%")
+- **`spend`** — cost cap details when `enabled=true` (usedAmountUsd, limitUsd, currency, severity)
+- **`extraUsage`** — extra credits pool when `is_enabled=true`
+- **`perModelWeekly`** — non-null per-model weekly quotas (opus / sonnet / oauthApps / cowork / omelette)
+- **`rawExperimental`** — passthrough for internal codenames (tangelo, iguana_necktie, ...) that may become active in the future
+- **`cacheAgeSeconds`** — Claude Code refreshes the cache only on specific events (session start, `/rate-limits`, threshold crossing), NOT per-turn. Consumers should reason about staleness.
+
+Behavior when the cache file doesn't exist: returns `{ hasCache: false, cachePath }` — graceful degrade for accounts that have never invoked `/rate-limits` or aren't logged in.
+
+**Manager use case:** before dispatching a long task, `rate_limit_status` shows whether the account has weekly headroom + when the 5-hour session refreshes. Combined with `peer_context_status` (per-peer context %), the orchestrator has full visibility to pre-empt autocompact AND rate-limit exhaustion.
+
+### Naming convention update
+
+New pattern documented in `docs/NAMING-CONVENTION.md`: **`<resource>_status`** without `peer_` prefix for account-scoped tools (single-result, not per-peer). First member: `rate_limit_status`. Justified because rate limits are per-user, not per-peer — the parallel `peer_rate_limit_status` would be misleading.
+
+### Fixed — `peer_context_status` unknown-model fallback
+
+Bug found by Zdeněk Michálek + jira-architect (HMH) on 2026-07-07: **Claude Sonnet 5** (new frontier model with 1M window) was missing from the canonical table. Fallback to `STANDARD_LIMIT` (200k) inflated `percentUsed` by 5× — a session at real 16% showed as 76-78% ("medium risk" bucket), triggering unwarranted context-management escalations.
+
+Two coordinated fixes:
+
+1. **Metadata table updated** — added Claude Sonnet 5 (1M context) + refreshed related entries. Sonnet 4.6 marked superseded.
+2. **New field `contextLimitSource` on `peer_context_status` output** — explicit trace of how `contextLimit` was derived:
+   - `canonical-lookup` — model matched the table (trust the ratio)
+   - `explicit-1m-tag` — model string carried `[1m]` (trust)
+   - `empirical-heuristic` — model unknown but tokens > 200k, so it must be a 1M variant (trust)
+   - `unknown-model-fallback` — **⚠ model unknown, tokens ≤ 200k, defaulted to 200k; `percentUsed` may be artificially inflated**
+
+Reactive heuristic alone (>200k tokens → assume 1M) doesn't help below the threshold, so the flag is the load-bearing safety net for future frontier models: `percentUsed` is still returned, but the source tells the consumer whether to trust the ratio. Absolute `tokensUsed` remains reliable in every case.
+
+### Tests
+
+- 265 → 280 (+15 covering real-world sample parse, spend/extra-usage/per-model/codenames toggles, file I/O).
+
 ## [0.7.6] — 2026-06-30
 
 ### Changed

@@ -13,13 +13,28 @@ import type { SessionRef } from "./session.ts";
  *   real-time during own turn).
  */
 
+/**
+ * How the contextLimit was determined. Consumers should treat
+ * `unknown-model-fallback` results with caution — the model is not in the
+ * canonical table, so 200k is a conservative guess; the real window may
+ * be higher (e.g. 1M for new frontier models), making `percentUsed`
+ * artificially inflated.
+ */
+export type ContextLimitSource =
+  | "canonical-lookup" // Model found in MODEL_CONTEXT_WINDOWS (high confidence)
+  | "explicit-1m-tag" // Model string carried `[1m]` suffix (legacy path)
+  | "empirical-heuristic" // tokensUsed already > STANDARD_LIMIT → bumped to 1M
+  | "unknown-model-fallback"; // Model unknown, using 200k default (⚠ possibly wrong)
+
 export interface ContextUsage {
-  /** Total tokens used (= /context Total). Equal to last assistant turn's cache_read_input_tokens. */
+  /** Total tokens used (= /context Total). Sum of cache_read + cache_creation + input + output. */
   tokensUsed: number;
   /** Model id from the same assistant event, e.g. "claude-opus-4-7" or "claude-opus-4-7-[1m]". */
   model: string | null;
   /** Detected context limit based on model variant. 200_000 standard, 1_000_000 for [1m]. */
   contextLimit: number;
+  /** Trace of how contextLimit was derived. Agents should treat `unknown-model-fallback` with caution. */
+  contextLimitSource: ContextLimitSource;
   /** ISO timestamp of the assistant event whose usage we read. */
   lastTurnAt: string | null;
   /** Percent used (0-1). */
@@ -68,6 +83,38 @@ export function detectContextLimit(model: string | null | undefined): number {
   if (known) return known.contextWindow;
 
   return STANDARD_LIMIT;
+}
+
+/**
+ * Same resolution as `detectContextLimit` but also reports the SOURCE of the
+ * decision, so consumers can flag `unknown-model-fallback` cases as untrusted.
+ *
+ * Root cause of past bug (jira-architect HMH incident 2026-07-07): a new
+ * Anthropic model (Claude Sonnet 5) with a 1M window was missing from the
+ * canonical table; the fallback to STANDARD_LIMIT caused percentUsed to
+ * inflate 5×. With `contextLimitSource` returned in the tool output, agents
+ * can now see "the model was unknown to me, don't trust % blindly".
+ */
+export function detectContextLimitWithSource(
+  model: string | null | undefined,
+  tokensUsed: number,
+): { limit: number; source: ContextLimitSource } {
+  if (!model) return { limit: STANDARD_LIMIT, source: "unknown-model-fallback" };
+  if (ONE_M_PATTERN.test(model)) return { limit: ONE_M_LIMIT, source: "explicit-1m-tag" };
+
+  const known = lookupModel(model);
+  if (known) return { limit: known.contextWindow, source: "canonical-lookup" };
+
+  // Unknown model. Apply empirical safety net: if usage already blew past
+  // STANDARD_LIMIT, the true window must be higher (200k variant would have
+  // rejected before reaching this size). Trust the observation.
+  if (tokensUsed > STANDARD_LIMIT) {
+    return { limit: ONE_M_LIMIT, source: "empirical-heuristic" };
+  }
+
+  // Below STANDARD_LIMIT with unknown model: return conservative default with
+  // explicit uncertainty flag. Consumer decides whether to trust the ratio.
+  return { limit: STANDARD_LIMIT, source: "unknown-model-fallback" };
 }
 
 /**
@@ -135,13 +182,11 @@ export async function readContextUsage(sessionRef: SessionRef): Promise<ContextU
     (lastUsage.cache_creation_input_tokens ?? 0) +
     (lastUsage.input_tokens ?? 0) +
     (lastUsage.output_tokens ?? 0);
-  // Limit detection: canonical lookup table for known models; defensive
-  // empirical fallback for unknown/future models — if usage exceeds 200k,
-  // the model must be on a 1M-capable variant (200k would have rejected).
-  let contextLimit = detectContextLimit(lastModel);
-  if (contextLimit === STANDARD_LIMIT && tokensUsed > STANDARD_LIMIT) {
-    contextLimit = ONE_M_LIMIT;
-  }
+  // Limit detection: canonical lookup + empirical fallback + explicit source tag.
+  const { limit: contextLimit, source: contextLimitSource } = detectContextLimitWithSource(
+    lastModel,
+    tokensUsed,
+  );
   const percentUsed = contextLimit > 0 ? tokensUsed / contextLimit : 0;
   const tokensRemaining = Math.max(0, contextLimit - tokensUsed);
 
@@ -149,6 +194,7 @@ export async function readContextUsage(sessionRef: SessionRef): Promise<ContextU
     tokensUsed,
     model: lastModel,
     contextLimit,
+    contextLimitSource,
     lastTurnAt: lastTimestamp,
     percentUsed,
     tokensRemaining,

@@ -3,9 +3,14 @@ import { mkdir } from "node:fs/promises";
 import { join } from "node:path";
 import { z } from "zod";
 import { type MessageEnvelope, type MessageKind, generateMessageId } from "../inbox/store.ts";
-import { type ContextUsage, readContextUsageForSession } from "../parser/context-usage.ts";
+import {
+  type ContextLimitSource,
+  type ContextUsage,
+  readContextUsageForSession,
+} from "../parser/context-usage.ts";
 import { parseSessionFile, parseSessionFileRaw, readSessionFile } from "../parser/jsonl.ts";
 import { MODELS, MODEL_METADATA_SOURCE, lookupModel } from "../parser/model-metadata.ts";
+import { readRateLimits } from "../parser/rate-limits.ts";
 import type { AssistantEvent, ContentBlock, SessionEvent, UserEvent } from "../parser/schemas.ts";
 import {
   type SessionRef,
@@ -1339,6 +1344,8 @@ interface ContextStatusEntry {
   isSelf: boolean;
   model: string | null;
   contextLimit: number;
+  /** How the contextLimit was derived. Consumers should treat `unknown-model-fallback` with caution — the model is not in the canonical table so `percentUsed` may be inflated. */
+  contextLimitSource: ContextLimitSource | "no-data";
   tokensUsed: number;
   tokensRemaining: number;
   percentUsed: number;
@@ -1364,6 +1371,7 @@ async function buildContextStatusEntry(
       isSelf,
       model: null,
       contextLimit: 200_000,
+      contextLimitSource: "no-data",
       tokensUsed: 0,
       tokensRemaining: 200_000,
       percentUsed: 0,
@@ -1382,6 +1390,7 @@ async function buildContextStatusEntry(
       isSelf,
       model: null,
       contextLimit: 200_000,
+      contextLimitSource: "no-data",
       tokensUsed: 0,
       tokensRemaining: 200_000,
       percentUsed: 0,
@@ -1398,6 +1407,7 @@ async function buildContextStatusEntry(
     isSelf,
     model: usage.model,
     contextLimit: usage.contextLimit,
+    contextLimitSource: usage.contextLimitSource,
     tokensUsed: usage.tokensUsed,
     tokensRemaining: usage.tokensRemaining,
     percentUsed: Math.round(usage.percentUsed * 1000) / 1000,
@@ -1614,6 +1624,22 @@ export async function peerSetNotificationTool(
   } catch (e) {
     log.error("peer_set_notification_failed", { err: e instanceof Error ? e.message : String(e) });
     return err("peer_set_notification_failed", e instanceof Error ? e.message : "unknown");
+  }
+}
+
+// ============================================================================
+// rate_limit_status — account-scoped rate limits (5h session + 7d weekly + spend)
+// ============================================================================
+
+export const RateLimitStatusArgs = z.object({}).strict();
+
+export async function rateLimitStatusTool(): Promise<ToolResult> {
+  try {
+    const status = await readRateLimits();
+    return ok(status);
+  } catch (e) {
+    log.error("rate_limit_status_failed", { err: e instanceof Error ? e.message : String(e) });
+    return err("rate_limit_status_failed", e instanceof Error ? e.message : "unknown");
   }
 }
 
@@ -1929,7 +1955,7 @@ export const TOOLS: ToolSpec[] = [
   {
     name: "peer_context_status",
     description:
-      "Read autocompact-relevant context statistics for self or other peer(s). Returns tokensUsed, contextLimit, percentUsed, autocompactRisk (low/medium/high), model, lastTurnAt. Data source: `usage.cache_read_input_tokens` on most recent assistant event in peer's JSONL — matches `/context` Total exactly. `to` omitted = self only. `to: 'all'` = all active peers + self. `to: ['alice', 'bob', 'self']` = specified peers (mix of names/UUIDs/'self'). `to: 'alice'` = single peer by name or UUID. Includes `guard` config field if peer has one configured. For peers without JSONL yet (brand-new): returns zero usage with autocompactRisk='low'.",
+      "Read autocompact-relevant context statistics for self or other peer(s). Returns tokensUsed (= cache_read + cache_creation + input + output), contextLimit, contextLimitSource, percentUsed, autocompactRisk (low/medium/high), model, lastTurnAt. Data source: sum of usage fields on the most recent assistant event in peer's JSONL — matches `/context` Total across mature + fresh sessions. `to` omitted = self only. `to: 'all'` = all active peers + self. `to: ['alice', 'bob', 'self']` = specified peers (mix of names/UUIDs/'self'). `to: 'alice'` = single peer by name or UUID. Includes `guard` config field if peer has one configured. ⚠ contextLimitSource='unknown-model-fallback' means the model was not in the canonical table — percentUsed may be inflated (e.g. new frontier model with 1M window reported as 200k default). Check contextLimitSource before trusting the ratio; absolute tokensUsed is always reliable.",
     inputSchema: {
       type: "object",
       properties: {
@@ -1996,6 +2022,13 @@ export const TOOLS: ToolSpec[] = [
       if (!parsed.success) return err("invalid_args", "Schema validation failed", parsed.error);
       return peerSetContextGuardTool(ctx, parsed.data);
     },
+  },
+  {
+    name: "rate_limit_status",
+    description:
+      "Read account-scoped rate limits (5-hour session + 7-day weekly budgets) from Claude Code's own usage cache at ~/.claude/.usage_cache.json. USER-scoped — all peers on the same POSIX account share one set of rate limits. Returns utilization (0-1), resets_at timestamps, hoursUntilReset, severity, plus optional per-model scoped limits, spend cap (if enabled), extra credits (if enabled), and passthrough for internal experiment codenames. Includes `cacheAgeSeconds` — Claude Code refreshes the cache only on specific events (session start, /rate-limits invocation, threshold crossing), NOT per-turn. Agents should check cacheAgeSeconds and treat old data with caution. Returns `hasCache: false` gracefully if the file doesn't exist yet (= account never invoked /rate-limits or not logged in).",
+    inputSchema: { type: "object", properties: {}, additionalProperties: false },
+    handler: async () => rateLimitStatusTool(),
   },
   {
     name: "model_info",

@@ -37,6 +37,16 @@ Multi-instance Claude Code orchestration with phased delivery. We adopted:
 
 - **Phase planning approach** — feature delivery in explicit ordered phases (A: file-based inbox, C: push channel, B: search index). Helped us defer FTS5 work until real demand appeared.
 
+### [claude-code-status-line](https://github.com/benabraham/claude-code-status-line) by [@benabraham](https://github.com/benabraham) — MIT
+
+Personal-workflow status line for Claude Code (Python, statusLine hook). We adopted:
+
+- **`~/.claude/.usage_cache.json` as data source** — Claude Code maintains this cache itself; the status-line project showed us the file exists and the field layout (five_hour / seven_day / limits[] / spend / extra_usage / experimental codenames). Source of our `src/parser/rate-limits.ts` field shape and the `rate_limit_status` MCP tool (v0.8.0+).
+
+Where we diverged: status-line is human-facing (ANSI terminal, single-user, `stdin` JSON pipeline via CC's statusLine hook). Our tool is agent-facing (JSON output, cross-peer-aware, direct file read — no statusLine setup required). Complementary, not competing — both consume the same file, different consumers.
+
+Bug-fix credit for `contextLimitSource`: **Zdeněk Michálek + jira-architect (HMH)** empirically caught the "Sonnet 5 missing from canonical table → percentUsed inflated 5×" incident on 2026-07-07 and drove the `unknown-model-fallback` flag design so the same bug surfaces as a visible caveat next time.
+
 ## Indirect references
 
 - [Roo-Code](https://github.com/RooCodeInc/Roo-Code) — Apache 2.0. Studied as a VS Code chat extension reference (multi-mode chat UI, custom agent personas) for understanding the alternative-IDE-side of the multi-agent space. We didn't import code from it.
