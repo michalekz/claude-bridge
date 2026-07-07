@@ -1,0 +1,15 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node ${CLAUDE_PLUGIN_ROOT}/servers/claude-bridge/dist/setup-check.cjs",
+            "timeout": 5
+          }
+        ]
+      }
+    ]
+  }
+}

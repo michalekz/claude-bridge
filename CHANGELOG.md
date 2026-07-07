@@ -2,7 +2,69 @@
 
 All notable changes to this project are documented here. Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-## [0.9.0-alpha.2] — 2026-07-07 (pre-release, beta phase)
+## [0.9.0] — 2026-07-07
+
+**Major release. Breaking change.** Live-data-only architecture replaces the v0.8.x heuristic chain and fossil-cache read. `peer_context_status` and `rate_limit_status` now source their data from Claude Code's own per-render stdin JSON (via a chained statusLine wrapper) plus a PostToolUse hook against Anthropic's OAuth `/api/oauth/usage` endpoint. When neither source is configured, both tools return `hasLiveData: false` with a `setupPointer` — no misleading numbers.
+
+### Breaking changes
+
+- **`peer_context_status`** — `contextLimitSource` enum reduced from 5 values to 2 (`"statusline-stdin"` | `"no-live-data"`). All heuristics REMOVED: `empirical-heuristic` (tokens > 200k → assume 1M), `unknown-model-fallback` (200k default when model unknown), `settings-json-1m-tag` (v0.8.1 `[1m]` detection via `~/.claude/settings.json`), `explicit-1m-tag` (v0.8.0 `[1m]` detection in JSONL), `canonical-lookup` for context detection. Output shape adds `hasLiveData`, `effortLevel`, `claudeCodeVersion`, `setupPointer` (when no live data).
+- **`rate_limit_status`** — fossil `~/.claude/.usage_cache.json` read REMOVED (was benabraham's cache, not CC's — see CREDITS.md v0.8.3). Output shape adds `source` enum (`"statusline-stdin"` | `"oauth-api"` | `"no-live-data"`), `capturedAt`, `capturedAgeSeconds`, `hasLiveData`, `setupPointer` (when no live data). `staleness` verdict + per-bucket `windowExpired` preserved from v0.8.2.
+- **`src/parser/settings.ts` removed** entirely (v0.8.1 helper for `~/.claude/settings.json.model` reading — no longer needed since `context_window_size` arrives via CC stdin authoritatively).
+- **`detectContextLimit` and `detectContextLimitWithSource` removed** from `src/parser/context-usage.ts`. Canonical model table remains in `model_info` tool as read-only reference for agents that want model metadata, but NOT for context detection.
+
+### Migration
+
+Set up the two live sources (either via the bundled SessionStart hook or manually). See [docs/SETUP-LIVE-DATA.md](docs/SETUP-LIVE-DATA.md) for step-by-step instructions. Until setup is complete, both tools return `hasLiveData: false` — this is intentional and safer than the v0.8.x heuristic guesses.
+
+### Added — live data pipeline
+
+- **`bin/claude-bridge-statusline`** (`dist/statusline.cjs`) — chained statusLine wrapper. Reads CC stdin per render (`rate_limits`, `context_window`, `effort`, `model`, `version`), atomically writes envelope to `~/.claude-bridge/live/statusline.json`, then optionally spawns `CLAUDE_BRIDGE_UNDERLYING_STATUSLINE` command as subprocess with stdin forward + stdout stream-through. Preserves user's existing status line (e.g. benabraham's) transparently.
+- **`bin/claude-bridge-refresh-limits`** (`dist/refresh-limits.cjs`) — PostToolUse hook. Reads OAuth token via `~/.claude/.credentials.json` or macOS Keychain (`security find-generic-password -s "Claude Code-credentials"`). Token character-set validated to prevent HTTP header injection from a corrupted credentials file. Calls `/api/oauth/usage` via `curl --config` stdin — token never appears in `ps` or environ. Throttled to ~1/min via `~/.claude-bridge/live/last-oauth-refresh` marker. Writes rich response (spend, extra_usage, per-model quotas, structured limits, codenames) to `~/.claude-bridge/live/oauth-api.json`.
+- **`bin/setup-check`** (`dist/setup-check.cjs`) + bundled SessionStart hook (`.claude-plugin/hooks/hooks.json`) — auto-activates on plugin install/update. Refreshes stable symlinks at `~/.claude/claude-bridge-{statusline,refresh-limits}.cjs` → cache dir. Auto-generates `~/.claude/claude-bridge-statusline-wrapper.sh` preserving user's original statusLine command. Prints a stderr banner with copy-paste snippets when setup is incomplete or version changed since last banner. Silent no-op when setup is complete and version unchanged. State file `~/.claude-bridge/setup-state.json`.
+- **`src/parser/live-data.ts`** — shared reader/writer for `live/{statusline,oauth-api}.json` envelopes with lazy path resolution (respects mocked homedir in tests).
+- **`src/parser/oauth-token.ts`** — token reader with platform-appropriate sources + safety validation.
+
+### Added — new MCP tool
+
+- **`peer_set_rate_limit_guard`** — account-scoped guard config for session (5h) + week (7d) utilization thresholds. Analog to existing `peer_set_context_guard` but USER-scoped (rate limits are per-account, not per-session). Defaults: session warn 0.85 / crit 0.95, week warn 0.75 / crit 0.90 (week is stricter because 7-day recovery hurts more than 5h). Config at `~/.claude-bridge/guard-rate-limits.json`. `rate_limit_status` output now includes `guard` field when configured.
+
+### Added — new fields on `peer_context_status`
+
+- **`effortLevel`** — `"low" | "medium" | "high" | "xhigh" | "max" | null`. From CC 2.1.119+ stdin `effort.level`. Reflects mid-session `/effort` changes, `null` on older CC or models without effort support.
+- **`claudeCodeVersion`** — CC version string from stdin `version` field. Diagnostic aid for cross-peer compatibility checks.
+- **`hasLiveData`** — boolean. True when the statusLine capture is readable and non-empty.
+- **`setupPointer`** — string, present only when `hasLiveData: false`.
+
+### Added — docs & skill
+
+- **`docs/SETUP-LIVE-DATA.md`** (EN) + **`docs/cs/SETUP-LIVE-DATA.md`** (CS) — end-user setup instructions with copy-paste blocks, verification steps, troubleshooting section.
+- **`docs/HOOKS-STATUSLINE-ARCHITECTURE.md`** — architectural explainer: data flow diagram, per-component responsibilities, failure-mode handling, rationale for file-based (not IPC / daemon) design.
+- **`skills/claude-bridge-setup/SKILL.md`** — new bundled skill. Auto-triggers on "setup live data", "hasLiveData false", "install claude-bridge hooks" and related phrases. Decision tree for the four common failure modes (banner persists, hasLiveData=false after setup, rich fields missing, OAuth path never fires).
+
+### Removed
+
+- `src/parser/settings.ts` + `tests/unit/settings.test.ts`
+- `detectContextLimit`, `detectContextLimitWithSource` functions from `src/parser/context-usage.ts`
+- JSONL usage-field scan (`context-usage.ts` no longer imports `parseSessionFileRaw`)
+- `readRateLimits(path)` signature in `src/parser/rate-limits.ts` — replaced by `readLiveRateLimits()` with no arguments (single canonical source)
+
+### Tests
+
+- 313 → 298 (net: -30 dead heuristic path tests, +15 live-data path tests covering statusLine capture, OAuth normalization, source priority, setup-check version comparison + config detection).
+
+### Development
+
+- Two new build targets in `package.json`: `build:refresh-limits`, `build:setup-check`.
+- `dist/` gitignore updated to keep `dist/*.cjs` (previously only `dist/bundle.cjs`).
+- 4 esbuild bundles now ship: `bundle.cjs` (MCP server ~795 KB), `statusline.cjs` (~8 KB), `refresh-limits.cjs` (~11 KB), `setup-check.cjs` (~11 KB).
+
+### Verification (2026-07-07)
+
+- End-to-end verified on maintainer setup: `peer_context_status` returns `contextLimitSource: "statusline-stdin"` with live model/effort/version fields; `rate_limit_status` returns `source: "statusline-stdin"` (immediately) and `source: "oauth-api"` (after ~60s PostToolUse throttle window elapses).
+- Passthrough tested with benabraham's status-line (Python) as `CLAUDE_BRIDGE_UNDERLYING_STATUSLINE` — native ANSI rendering preserved, live capture happens in parallel.
+
+## [0.9.0-alpha.2] — 2026-07-07 (pre-release, superseded by 0.9.0)
 
 Continues the v0.9.0 breaking-change series. Alpha 1 shipped the statusLine wrapper + `peer_context_status` refactor; alpha 2 completes the rate-limits half.
 
