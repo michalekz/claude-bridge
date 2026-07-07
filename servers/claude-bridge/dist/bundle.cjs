@@ -22709,7 +22709,7 @@ var TOOLS = [
 // src/mcp/server.ts
 var log6 = makeLogger("mcp-server");
 var SERVER_NAME = "claude-bridge";
-var SERVER_VERSION = "0.8.3";
+var SERVER_VERSION = "0.9.0-alpha.1";
 var INSTRUCTIONS = `
 claude-bridge \u2014 MCP server for orchestration across Claude Code chats.
 
@@ -22723,7 +22723,7 @@ MCP tools:
 - peer_set_notification (v0.7.0+) \u2014 own idle-beep notification.
 - model_info (v0.7.3+) \u2014 canonical Claude model metadata (context window, max output, pricing, capabilities, lifecycle).
 - rate_limit_status (v0.8.0+) \u2014 account-scoped 5h session + 7d weekly usage from Claude Code's ~/.claude/.usage_cache.json (per-model breakdown, spend, extra credits). v0.8.2+: adds staleness verdict ("fresh"/"stale"/"expired-window") + per-bucket windowExpired flag so agents don't act on utilization from dead windows.
-- peer_context_status (v0.8.1+) \u2014 now reads ~/.claude/settings.json for authoritative [1m] tag detection; new contextLimitSource value 'settings-json-1m-tag' takes priority when settings.model carries [1m]. Fixes bare-id ambiguity where JSONL strips the [1m] suffix from message.model.
+- peer_context_status (v0.9.0-alpha+) \u2014 BREAKING: live-data-only. Sole source is ~/.claude-bridge/live/statusline.json written by the plugin-owned statusLine wrapper. All heuristics removed (settings-json-1m-tag, empirical-heuristic, unknown-model-fallback, canonical-lookup for context). Output has new shape: hasLiveData, effortLevel, claudeCodeVersion, contextLimitSource ('statusline-stdin' | 'no-live-data'), setupPointer. See docs/SETUP-LIVE-DATA.md.
 
 Bundled skills (load detail via skill name):
 - claude-bridge \u2014 overview / quick decision tree

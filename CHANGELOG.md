@@ -2,6 +2,51 @@
 
 All notable changes to this project are documented here. Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.9.0-alpha.1] — 2026-07-07 (pre-release)
+
+⚠ **Pre-release for internal live-testing only.** Not the full v0.9.0.
+Beta (PostToolUse OAuth hook + `peer_set_rate_limit_guard`) and RC (bundled
+SessionStart hook + banner + `claude-bridge-setup` skill) still pending.
+
+### Breaking change (partial)
+
+`peer_context_status` is now live-data-only. All heuristics removed:
+
+- `settings-json-1m-tag` — removed (JSONL bare-id ambiguity is now moot, we read `context_window_size` directly)
+- `explicit-1m-tag` — removed
+- `canonical-lookup` for context detection — removed (canonical model table kept in `model_info` tool as read-only reference)
+- `empirical-heuristic` — removed
+- `unknown-model-fallback` — removed
+
+New output shape:
+- `hasLiveData: boolean` — true when `~/.claude-bridge/live/statusline.json` is readable
+- `contextLimitSource: "statusline-stdin" | "no-live-data"` (was 5-way enum)
+- `effortLevel: "low" | "medium" | "high" | "xhigh" | "max" | null` (new — from CC 2.1.119+ stdin)
+- `claudeCodeVersion: string | null` (new — from CC stdin)
+- `setupPointer: string` (only when `hasLiveData: false`) — instructs the user how to install the statusLine wrapper
+
+### Added
+
+- **`bin/claude-bridge-statusline`** — chained statusLine wrapper. Install by setting `settings.json.statusLine.command` to `node ${CLAUDE_PLUGIN_ROOT}/dist/statusline.cjs`. Optional passthrough to user's existing statusLine (e.g. benabraham's) via `CLAUDE_BRIDGE_UNDERLYING_STATUSLINE` env var — subprocess with stdin forward, stdout stream-through.
+- **`src/parser/live-data.ts`** — shared reader/writer for `~/.claude-bridge/live/{statusline,oauth-api}.json` envelopes.
+
+### Removed (dead code)
+
+- `src/parser/settings.ts` + tests
+- `detectContextLimit` / `detectContextLimitWithSource` from `src/parser/context-usage.ts`
+- JSONL usage-field scan (context-usage.ts no longer imports parseSessionFileRaw)
+
+### Still pending for v0.9.0 stable
+
+- beta: PostToolUse hook + OAuth API fallback (`bin/claude-bridge-refresh-limits`), `peer_set_rate_limit_guard` tool
+- rc: bundled SessionStart hook + `bin/setup-check` + banner, `claude-bridge-setup` skill
+- docs: `docs/SETUP-LIVE-DATA.md` (EN + CS), `docs/HOOKS-STATUSLINE-ARCHITECTURE.md`
+- rate_limit_status refactor to read `live/{statusline,oauth-api}.json` primary sources (still reads fossil `.usage_cache.json` in alpha)
+
+### Tests
+
+- 282/282 pass (dead heuristic tests removed, +13 new live-data path tests)
+
 ## [0.8.3] — 2026-07-07
 
 ### Fixed — CREDITS and tool description factual correction
