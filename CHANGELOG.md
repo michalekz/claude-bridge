@@ -2,6 +2,35 @@
 
 All notable changes to this project are documented here. Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.9.2] — 2026-07-09
+
+### Fixed — v0.9.1 fix distribution broken by `/mcp reconnect` update flow
+
+Follow-up to v0.9.1. Zdeněk + jira-architect observed 2026-07-09 that after the whole HMH team updated + reloaded + reconnected, only architect's own session had live data — six other peers reported `hasLiveData: false` even for their own self-reads. Root cause: **the `setup-check` SessionStart hook (which refreshes the version-tracking symlinks) does not fire on `/reload-plugins` + `/mcp reconnect`**. It only fires on a fresh CC session start.
+
+Consequence: after the update, symlinks at `~/.claude/claude-bridge-statusline.cjs` and `~/.claude/claude-bridge-refresh-limits.cjs` still pointed at the previous version's bundle. The statusLine wrapper kept running the OLD binary, which wrote to the pre-v0.9.1 shared `live/statusline.json` (user-scoped). The new v0.9.1 MCP server correctly read `live/statusline/{sessionId}.json`, found nothing, and returned `hasLiveData: false` for most peers — only the single peer whose sessionId happened to match the shared file's content saw legacy-fallback data (which then flickered as other renders overwrote it).
+
+### Fix
+
+`startStdioServer` now runs `setup-check` inline immediately after backlog drain (non-blocking, best-effort). Since `/mcp reconnect` always spawns a new MCP server process, symlinks get refreshed on every reconnect, and the wrapper's next render uses the new binary.
+
+- **`src/mcp/server.ts`**: dynamic import of `setup-check/main.ts` after startup, wrapped in try/catch. Failure logged as warning, never crashes the server.
+- No SessionStart-only reliance. Both trigger points (real session start + MCP reconnect) refresh symlinks.
+
+### Architecture lesson
+
+Depending on external event delivery (SessionStart hook) for critical state updates is fragile — the event doesn't fire on all lifecycles that need it. Self-refresh on server startup is more robust because it aligns with the server's own lifecycle.
+
+### No test changes
+
+The startup call is idempotent (setup-check silently no-ops when setup is complete + version unchanged). Existing setup-check tests still valid.
+
+### Migration for existing users
+
+After updating to v0.9.2, `/plugin marketplace update` + `/reload-plugins` + `/mcp reconnect` will properly refresh symlinks. Then the next statusLine render writes to `live/statusline/{sessionId}.json` and `peer_context_status` returns clean per-session data.
+
+Users who already have v0.9.1 broken symlinks: v0.9.2 fixes them automatically on the first reconnect.
+
 ## [0.9.1] — 2026-07-09
 
 ### Fixed — cross-session context contamination in v0.9.0

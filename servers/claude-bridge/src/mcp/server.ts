@@ -15,7 +15,7 @@ import { TOOLS, type ToolResult, piggybackInbox } from "./tools.ts";
 const log = makeLogger("mcp-server");
 
 const SERVER_NAME = "claude-bridge";
-const SERVER_VERSION = "0.9.1";
+const SERVER_VERSION = "0.9.2";
 
 const INSTRUCTIONS = `
 claude-bridge — MCP server for orchestration across Claude Code chats.
@@ -171,6 +171,22 @@ export async function startStdioServer(): Promise<void> {
   // Drain backlog: messages that arrived while we were offline
   const { pushed } = await pumpInboxToChannel(ctx);
   if (pushed > 0) log.info("backlog_drained", { pushed });
+
+  // v0.9.2: run setup-check inline on MCP startup so /mcp reconnect
+  // (which does NOT trigger SessionStart hooks) still refreshes symlinks
+  // after a plugin update. Non-blocking, best-effort — a failure here
+  // must not break the server. Silently no-ops when setup is complete
+  // and version unchanged; prints banner when incomplete.
+  void (async () => {
+    try {
+      const { main: setupCheckMain } = await import("../setup-check/main.ts");
+      await setupCheckMain();
+    } catch (e) {
+      log.warn("setup_check_startup_failed", {
+        err: e instanceof Error ? e.message : String(e),
+      });
+    }
+  })();
 
   const shutdown = async (signal: string) => {
     log.info("shutdown", { signal });
