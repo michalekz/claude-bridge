@@ -13,10 +13,10 @@
       "source": {
         "source": "github",
         "repo": "michalekz/claude-bridge",
-        "ref": "v0.9.0"
+        "ref": "v0.9.1"
       },
-      "description": "MCP server for cross-Claude-Code-chat orchestration. Peer messaging, chat read/search, live context + rate-limits monitoring via chained statusLine wrapper + PostToolUse OAuth hook, peer_set_context_guard + peer_set_rate_limit_guard, idle-beep notification, bundled role skills (manager, memory-keeper, setup). v0.9.0: live-data-only architecture (breaking).",
-      "version": "0.9.0",
+      "description": "MCP server for cross-Claude-Code-chat orchestration. Peer messaging, chat read/search, live context + rate-limits monitoring via chained statusLine wrapper + PostToolUse OAuth hook, peer_set_context_guard + peer_set_rate_limit_guard, idle-beep notification, bundled role skills (manager, memory-keeper, setup). v0.9.1: per-session statusline capture (fixes cross-peer context leak).",
+      "version": "0.9.1",
       "author": {
         "name": "Zed Michalek",
         "url": "https://github.com/michalekz"

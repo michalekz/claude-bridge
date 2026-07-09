@@ -57,13 +57,21 @@ interface StdinWithSession {
 }
 
 function extractSessionId(payload: StatusLineStdinPayload): string {
-  // CC 2.1.80+ does not include session_id in statusLine stdin JSON (verified
-  // 2026-07-07 via static analysis of benabraham/claude-code-status-line).
-  // Fallback to env var — CC exposes CLAUDE_CODE_SESSION_ID to hook children.
+  // CC 2.1.205+ verified 2026-07-09: payload.session_id IS present on stdin
+  // (contrary to what we assumed on 2026-07-07 from static-only analysis of
+  // benabraham's script). This is the AUTHORITATIVE source and is essential
+  // for the v0.9.1 per-session partition — without it, every peer's wrapper
+  // would write into a shared file and cross-contaminate reads.
+  if (payload.session_id && typeof payload.session_id === "string") {
+    return payload.session_id;
+  }
+  // Fallback #1: env var (older CC versions may not populate session_id in
+  // stdin but still expose CLAUDE_CODE_SESSION_ID to hook children).
   const fromEnv = process.env["CLAUDE_CODE_SESSION_ID"];
   if (fromEnv) return fromEnv;
-  // As a last resort, derive a stable id from cwd + version so multiple
-  // sessions in the same repo don't overwrite each other's captures.
+  // Fallback #2: derive a stable id from cwd so different repos don't
+  // overwrite each other. Multiple sessions in the same cwd collide here —
+  // acceptable on truly ancient CC that provides neither signal.
   const cwd = payload.cwd ?? "unknown-cwd";
   return `unknown-${cwd.replace(/[^a-zA-Z0-9]/g, "-").slice(-40)}`;
 }

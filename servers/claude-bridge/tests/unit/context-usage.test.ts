@@ -76,23 +76,54 @@ describe("readContextUsage — live-data-only (v0.9.0)", () => {
     homeHolder.current = "";
   });
 
+  const TEST_SESSION_ID = "test-session";
+
   function makeSessionRef(): SessionRef {
     return {
       projectDir: "-tmp-test",
-      sessionId: "00000000-0000-0000-0000-000000000000",
+      // v0.9.1: sessionRef.sessionId is used to partition per-session
+      // reads. Tests use the same id as the envelopes they write below.
+      sessionId: TEST_SESSION_ID,
       filePath: join(tmp, "session.jsonl"),
       sizeBytes: 0,
       modifiedAt: new Date(),
     };
   }
 
-  test("returns null when no live/statusline.json exists", async () => {
+  test("returns null when no per-session live file exists", async () => {
     const usage = await readContextUsage(makeSessionRef());
     expect(usage).toBeNull();
   });
 
-  test("returns null when live file is malformed JSON", async () => {
-    await writeFile(join(tmp, ".claude-bridge", "live", "statusline.json"), "{not valid");
+  test("returns null when per-session live file is malformed JSON", async () => {
+    // v0.9.1 layout: per-session dir. Write a malformed file at the exact
+    // path readStatusLineLive(sessionId) would consult.
+    await mkdir(join(tmp, ".claude-bridge", "live", "statusline"), { recursive: true });
+    await writeFile(
+      join(tmp, ".claude-bridge", "live", "statusline", `${TEST_SESSION_ID}.json`),
+      "{not valid",
+    );
+    const usage = await readContextUsage(makeSessionRef());
+    expect(usage).toBeNull();
+  });
+
+  test("v0.9.1 cross-session isolation — reading sessionA does NOT return sessionB's envelope", async () => {
+    // Write sessionB's envelope (would previously have contaminated any
+    // caller due to shared file). Ask for sessionA — should be null.
+    const envelopeB: StatusLineLiveEnvelope = {
+      capturedAt: "2026-07-09T20:00:00Z",
+      sessionId: "session-B",
+      payload: {
+        model: { display_name: "Opus 4.7" },
+        context_window: {
+          context_window_size: 1_000_000,
+          used_percentage: 80,
+        },
+      },
+    };
+    await writeStatusLineLive(envelopeB);
+
+    // sessionA (= TEST_SESSION_ID) never wrote — should read as null.
     const usage = await readContextUsage(makeSessionRef());
     expect(usage).toBeNull();
   });
@@ -261,7 +292,8 @@ describe("readContextUsageForSession", () => {
 
     const ref: SessionRef = {
       projectDir: "-tmp-test",
-      sessionId: "00000000-0000-0000-0000-000000000000",
+      // Match the envelope's sessionId so per-session read finds it.
+      sessionId: "test-session",
       filePath: join(tmp, "session.jsonl"),
       sizeBytes: 0,
       modifiedAt: new Date(),

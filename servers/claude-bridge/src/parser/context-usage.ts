@@ -73,28 +73,42 @@ export function riskBucket(percent: number): "low" | "medium" | "high" {
 }
 
 /**
- * v0.9.0: live-data-only context usage.
+ * v0.9.1: per-session live context usage.
  *
- * `sessionRef` is kept in the signature for API compatibility with
- * pre-v0.9.0 callers, but it's no longer used — rate limits are user-scoped
- * (single live file for all peers on this account). Cross-peer differences
- * in current session's context usage will be addressed in v0.10.0 by
- * storing per-session live envelopes (statusline.json → statusline/<id>.json).
- * For now, the last-written statusline.json wins.
+ * Reads `~/.claude-bridge/live/statusline/<sessionRef.sessionId>.json`.
+ * Falls back to legacy user-scoped file only if it matches the requested
+ * sessionId (see `readStatusLineLive` for the compat rules).
+ *
+ * v0.9.0 (superseded) shared one user-scoped file across all peers, which
+ * caused cross-session contamination (jira-architect empirically saw
+ * int-dev ground-truth 83% report as 40% via last-writer-wins). v0.9.1
+ * partitions per session so each peer's capture stays isolated.
+ *
+ * tokensUsed preference:
+ *  1. `context_window.total_input_tokens + total_output_tokens` (CC 2.1.205+
+ *     — matches /context header exactly).
+ *  2. Sum over `current_usage.{input,output,cache_read,cache_creation}`
+ *     tokens (older CC / matches when the sum happens to align).
  */
-export async function readContextUsage(_sessionRef: SessionRef): Promise<ContextUsage | null> {
-  const envelope = await readStatusLineLive();
+export async function readContextUsage(sessionRef: SessionRef): Promise<ContextUsage | null> {
+  const envelope = await readStatusLineLive(sessionRef.sessionId);
   if (!envelope) return null;
 
   const payload = envelope.payload;
   const cw = payload.context_window;
   const contextLimit = cw?.context_window_size ?? 0;
+
   const usage = cw?.current_usage;
-  const tokensUsed =
+  const sumOfCurrent =
     (usage?.input_tokens ?? 0) +
     (usage?.output_tokens ?? 0) +
     (usage?.cache_read_input_tokens ?? 0) +
     (usage?.cache_creation_input_tokens ?? 0);
+  const totalFromPayload =
+    typeof cw?.total_input_tokens === "number" && typeof cw?.total_output_tokens === "number"
+      ? cw.total_input_tokens + cw.total_output_tokens
+      : null;
+  const tokensUsed = totalFromPayload ?? sumOfCurrent;
 
   const percentFromPayload =
     typeof cw?.used_percentage === "number" ? cw.used_percentage / 100 : null;

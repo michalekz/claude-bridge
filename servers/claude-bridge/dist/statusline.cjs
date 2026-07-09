@@ -101,12 +101,16 @@ function bridgeRoot() {
 function liveDir() {
   return (0, import_node_path3.join)(bridgeRoot(), "live");
 }
-function statusLineLivePath() {
-  return (0, import_node_path3.join)(liveDir(), "statusline.json");
+function statusLineDir() {
+  return (0, import_node_path3.join)(liveDir(), "statusline");
+}
+function statusLineSessionPath(sessionId) {
+  return (0, import_node_path3.join)(statusLineDir(), `${sessionId}.json`);
 }
 async function writeStatusLineLive(envelope) {
-  await (0, import_promises2.mkdir)((0, import_node_path3.dirname)(statusLineLivePath()), { recursive: true });
-  await atomicWriteJson(statusLineLivePath(), envelope);
+  const path = statusLineSessionPath(envelope.sessionId);
+  await (0, import_promises2.mkdir)((0, import_node_path3.dirname)(path), { recursive: true });
+  await atomicWriteJson(path, envelope);
 }
 
 // src/util/logger.ts
@@ -151,6 +155,9 @@ async function readAllStdin() {
   });
 }
 function extractSessionId(payload) {
+  if (payload.session_id && typeof payload.session_id === "string") {
+    return payload.session_id;
+  }
   const fromEnv = process.env["CLAUDE_CODE_SESSION_ID"];
   if (fromEnv) return fromEnv;
   const cwd = payload.cwd ?? "unknown-cwd";

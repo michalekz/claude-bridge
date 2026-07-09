@@ -19942,8 +19942,8 @@ var FSWatcher = class extends import_events.EventEmitter {
     }
     return this._userIgnored(path, stats);
   }
-  _isntIgnored(path, stat8) {
-    return !this._isIgnored(path, stat8);
+  _isntIgnored(path, stat9) {
+    return !this._isIgnored(path, stat9);
   }
   /**
    * Provides a set of common helpers and properties relating to symlink handling.
@@ -20241,10 +20241,10 @@ function createPeerRegistry(opts = {}) {
 var import_node_child_process = require("node:child_process");
 var import_node_fs = require("node:fs");
 var log2 = makeLogger("terminal-title");
-function parseTtyNrFromProcStat(stat8) {
-  const lastParen = stat8.lastIndexOf(")");
+function parseTtyNrFromProcStat(stat9) {
+  const lastParen = stat9.lastIndexOf(")");
   if (lastParen === -1) return null;
-  const after = stat8.slice(lastParen + 2);
+  const after = stat9.slice(lastParen + 2);
   const fields = after.split(" ");
   const ttyNrStr = fields[4];
   if (!ttyNrStr) return null;
@@ -20258,8 +20258,8 @@ function parseTtyNrFromProcStat(stat8) {
 }
 function findLinuxParentTty(ppid) {
   try {
-    const stat8 = (0, import_node_fs.readFileSync)(`/proc/${ppid}/stat`, "utf-8");
-    const parsed = parseTtyNrFromProcStat(stat8);
+    const stat9 = (0, import_node_fs.readFileSync)(`/proc/${ppid}/stat`, "utf-8");
+    const parsed = parseTtyNrFromProcStat(stat9);
     if (!parsed) return null;
     if (parsed.major === 136) {
       return `/dev/pts/${parsed.minor}`;
@@ -20532,7 +20532,13 @@ var import_node_path9 = require("node:path");
 function liveDir() {
   return (0, import_node_path9.join)(bridgeRoot(), "live");
 }
-function statusLineLivePath() {
+function statusLineDir() {
+  return (0, import_node_path9.join)(liveDir(), "statusline");
+}
+function statusLineSessionPath(sessionId) {
+  return (0, import_node_path9.join)(statusLineDir(), `${sessionId}.json`);
+}
+function legacyStatusLinePath() {
   return (0, import_node_path9.join)(liveDir(), "statusline.json");
 }
 function oauthLivePath() {
@@ -20548,8 +20554,40 @@ async function readEnvelope2(path) {
     return null;
   }
 }
-async function readStatusLineLive() {
-  return readEnvelope2(statusLineLivePath());
+async function readStatusLineLive(sessionId) {
+  if (sessionId) {
+    const perSession = await readEnvelope2(
+      statusLineSessionPath(sessionId)
+    );
+    if (perSession) return perSession;
+    const legacy = await readEnvelope2(legacyStatusLinePath());
+    if (legacy && legacy.sessionId === sessionId) return legacy;
+    return null;
+  }
+  return findNewestStatusLine();
+}
+async function findNewestStatusLine() {
+  let newest = null;
+  let newestMs = 0;
+  try {
+    const entries = await (0, import_promises10.readdir)(statusLineDir());
+    for (const entry of entries) {
+      if (!entry.endsWith(".json")) continue;
+      const envelope = await readEnvelope2(
+        (0, import_node_path9.join)(statusLineDir(), entry)
+      );
+      if (!envelope) continue;
+      const capturedMs = Date.parse(envelope.capturedAt);
+      if (Number.isNaN(capturedMs)) continue;
+      if (capturedMs > newestMs) {
+        newestMs = capturedMs;
+        newest = envelope;
+      }
+    }
+  } catch {
+  }
+  if (newest) return newest;
+  return readEnvelope2(legacyStatusLinePath());
 }
 async function readOAuthApiLive() {
   return readEnvelope2(oauthLivePath());
@@ -20567,14 +20605,16 @@ function riskBucket(percent) {
   if (percent < 0.85) return "medium";
   return "high";
 }
-async function readContextUsage(_sessionRef) {
-  const envelope = await readStatusLineLive();
+async function readContextUsage(sessionRef) {
+  const envelope = await readStatusLineLive(sessionRef.sessionId);
   if (!envelope) return null;
   const payload = envelope.payload;
   const cw = payload.context_window;
   const contextLimit = cw?.context_window_size ?? 0;
   const usage = cw?.current_usage;
-  const tokensUsed = (usage?.input_tokens ?? 0) + (usage?.output_tokens ?? 0) + (usage?.cache_read_input_tokens ?? 0) + (usage?.cache_creation_input_tokens ?? 0);
+  const sumOfCurrent = (usage?.input_tokens ?? 0) + (usage?.output_tokens ?? 0) + (usage?.cache_read_input_tokens ?? 0) + (usage?.cache_creation_input_tokens ?? 0);
+  const totalFromPayload = typeof cw?.total_input_tokens === "number" && typeof cw?.total_output_tokens === "number" ? cw.total_input_tokens + cw.total_output_tokens : null;
+  const tokensUsed = totalFromPayload ?? sumOfCurrent;
   const percentFromPayload = typeof cw?.used_percentage === "number" ? cw.used_percentage / 100 : null;
   const percentUsed = percentFromPayload ?? (contextLimit > 0 ? tokensUsed / contextLimit : 0);
   const tokensRemaining = Math.max(0, contextLimit - tokensUsed);
@@ -21134,7 +21174,7 @@ function normalizeFromStatusLine(envelope, now = /* @__PURE__ */ new Date()) {
   return status;
 }
 async function readLiveRateLimits(now = /* @__PURE__ */ new Date()) {
-  const [statusEnv, oauthEnv] = await Promise.all([readStatusLineLive(), readOAuthApiLive()]);
+  const [statusEnv, oauthEnv] = await Promise.all([findNewestStatusLine(), readOAuthApiLive()]);
   const statusResult = statusEnv ? normalizeFromStatusLine(statusEnv, now) : null;
   const oauthResult = oauthEnv ? normalizeFromOAuth(oauthEnv, now) : null;
   const statusOk = statusResult?.hasLiveData ?? false;
@@ -21267,12 +21307,12 @@ var ListSessionsArgs = external_exports.object({
 }).strict();
 var HEARTBEAT_ACTIVE_THRESHOLD_MS = 3e4;
 async function isSessionActive(sessionId) {
-  const { stat: stat8 } = await import("node:fs/promises");
+  const { stat: stat9 } = await import("node:fs/promises");
   const { homedir: homedir4 } = await import("node:os");
   const { join: join13 } = await import("node:path");
   const hbPath = join13(homedir4(), ".claude-bridge", "status", `${sessionId}.json`);
   try {
-    const s = await stat8(hbPath);
+    const s = await stat9(hbPath);
     return Date.now() - s.mtimeMs <= HEARTBEAT_ACTIVE_THRESHOLD_MS;
   } catch {
     return false;
@@ -22883,7 +22923,7 @@ var TOOLS = [
 // src/mcp/server.ts
 var log6 = makeLogger("mcp-server");
 var SERVER_NAME = "claude-bridge";
-var SERVER_VERSION = "0.9.0";
+var SERVER_VERSION = "0.9.1";
 var INSTRUCTIONS = `
 claude-bridge \u2014 MCP server for orchestration across Claude Code chats.
 

@@ -2,6 +2,49 @@
 
 All notable changes to this project are documented here. Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.9.1] — 2026-07-09
+
+### Fixed — cross-session context contamination in v0.9.0
+
+**Critical bug.** v0.9.0's chained statusLine wrapper wrote to a single user-scoped file `~/.claude-bridge/live/statusline.json`. Every session's statusLine render overwrote every other session's capture. `peer_context_status` for any peer therefore returned whatever was in the shared file — typically the last renderer's data.
+
+Empirically observed by jira-architect (HMH) on 2026-07-09:
+- `peer_context_status({to: 'all'})` returned identical `tokensUsed` across all 31 peers.
+- `int-dev` ground-truth `/context` reported 83 %, but `peer_context_status` reported 40 % (**43 percentage-point delta**).
+- Self-reads flipped model string between adjacent calls (`Opus 4.8` → `Opus 4.7`) because a different session's render overwrote the file between them.
+
+### Root cause
+
+`context_window` is **per-session** (each Claude Code chat has its own conversation, thus its own context tokens). `rate_limits` is **user-scoped** (per POSIX account). v0.9.0 conflated the two under one file, breaking `context_window` reads.
+
+### Fix
+
+- **`writeStatusLineLive`** now writes to `~/.claude-bridge/live/statusline/<sessionId>.json` (per-session partition).
+- **`readStatusLineLive(sessionId)`** takes an explicit `sessionId` and reads that session's capture only. No cross-session bleed.
+- **`readContextUsage(sessionRef)`** passes `sessionRef.sessionId` down, so `peer_context_status` for peer A never returns peer B's numbers.
+- **`readLiveRateLimits`** uses new `findNewestStatusLine()` helper that scans the per-session dir and returns the newest envelope. Rate limits are user-scoped, so any recent capture reflects the account's current state.
+- **StatusLine wrapper** reads `session_id` directly from CC's stdin payload (verified 2026-07-09 that CC 2.1.205+ includes it). Env-var fallback preserved for older CC.
+
+### `tokensUsed` accuracy improvement
+
+CC 2.1.205+ exposes `context_window.total_input_tokens` and `total_output_tokens` at the same level as `current_usage`. These are the exact same numbers CC's own `/context` header uses. `readContextUsage` now prefers `total_input + total_output` when available, falls back to summing `current_usage.*` fields for older CC.
+
+### Legacy compat
+
+If `~/.claude-bridge/live/statusline.json` exists (v0.9.0 shared file), `readStatusLineLive(sessionId)` uses it as fallback IFF its `sessionId` matches the requested one. Ensures upgrade path from v0.9.0 without waiting for a fresh statusLine render.
+
+### Migration for users
+
+No settings.json changes needed. The bundled `setup-check` SessionStart hook already refreshes symlinks on plugin update, and the new statusLine wrapper writes to the new per-session location automatically. The single shared file becomes cold data after the first per-session render.
+
+### Tests
+
+- 298 → 299 (+1 new: cross-session isolation test verifying `readContextUsage` for session A does NOT return session B's envelope when only B has written).
+
+### Credit
+
+Reported by Zdeněk Michálek + jira-architect (HMH) with concrete numbers (int-dev 83 % vs. 40 %) that unmistakably identified last-writer-wins. Same bug pattern as v0.8.3 fossil-cache surprise (secondary cache masquerading as authoritative data) — different mechanism, same design lesson: **user-scoped storage for per-session state is unsafe**.
+
 ## [0.9.0] — 2026-07-07
 
 **Major release. Breaking change.** Live-data-only architecture replaces the v0.8.x heuristic chain and fossil-cache read. `peer_context_status` and `rate_limit_status` now source their data from Claude Code's own per-render stdin JSON (via a chained statusLine wrapper) plus a PostToolUse hook against Anthropic's OAuth `/api/oauth/usage` endpoint. When neither source is configured, both tools return `hasLiveData: false` with a `setupPointer` — no misleading numbers.

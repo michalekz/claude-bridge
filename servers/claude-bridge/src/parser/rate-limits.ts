@@ -2,8 +2,8 @@ import {
   type OAuthApiLiveEnvelope,
   type StatusLineLiveEnvelope,
   envelopeAgeSeconds,
+  findNewestStatusLine,
   readOAuthApiLive,
-  readStatusLineLive,
 } from "./live-data.ts";
 
 /**
@@ -451,7 +451,12 @@ export function normalizeFromStatusLine(
  * statusLine renders.
  */
 export async function readLiveRateLimits(now: Date = new Date()): Promise<RateLimitStatus> {
-  const [statusEnv, oauthEnv] = await Promise.all([readStatusLineLive(), readOAuthApiLive()]);
+  // Rate limits are USER-scoped (per POSIX account), so we aggregate across
+  // per-session statusLine captures by taking the newest one — its rate_limits
+  // payload reflects the account's current state regardless of which session
+  // wrote it. Context_window on the same envelope is per-session and NOT used
+  // by this reader (see readContextUsage for per-session context reads).
+  const [statusEnv, oauthEnv] = await Promise.all([findNewestStatusLine(), readOAuthApiLive()]);
 
   const statusResult = statusEnv ? normalizeFromStatusLine(statusEnv, now) : null;
   const oauthResult = oauthEnv ? normalizeFromOAuth(oauthEnv, now) : null;

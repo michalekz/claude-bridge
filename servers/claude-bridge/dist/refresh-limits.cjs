@@ -212,8 +212,8 @@ function throttleMarkerPath() {
 }
 async function shouldThrottle(now = /* @__PURE__ */ new Date()) {
   try {
-    const { stat } = await import("node:fs/promises");
-    const s = await stat(throttleMarkerPath());
+    const { stat: stat2 } = await import("node:fs/promises");
+    const s = await stat2(throttleMarkerPath());
     const ageSeconds = (now.getTime() - s.mtimeMs) / 1e3;
     return ageSeconds < THROTTLE_SECONDS;
   } catch {
