@@ -204,6 +204,33 @@ We considered several patterns during the pre-implementation phase:
 
 File-based, atomic-writes, POSIX-scoped is the simplest thing that works cross-session for user-scoped data (rate limits, context usage). Same design principle carries through the whole plugin (peer inbox, guard configs, notification settings).
 
+## Known transient behavior — race window after reconnect
+
+Between `/mcp reconnect` and the **first** statusLine render of the session, there's a race window (~1-3 seconds) during which `peer_context_status` may return `hasLiveData: false` for self even though the plugin is working correctly. Explanation:
+
+1. `/mcp reconnect` spawns a fresh MCP server process. Its self identity has a new `sessionId`.
+2. The statusLine wrapper (spawned separately by Claude Code per render) hasn't yet been triggered for this session's new lifecycle — no `live/statusline/<newSessionId>.json` exists.
+3. The legacy fallback (`live/statusline.json`, from v0.9.0) still exists but its `sessionId` matches a **previous** session, so `readStatusLineLive(newSessionId)` correctly rejects it (no cross-session contamination).
+4. Result: `hasLiveData: false` until the first statusLine render lands.
+
+This is **not a bug** — it's the plugin correctly refusing to fabricate a number it doesn't have. `hasLiveData: false + setupPointer` is more useful than a stale/foreign capture.
+
+**Observed empirically 2026-07-09** (jira-architect HMH setup): two `peer_context_status` calls fired in parallel within the same turn. The `to` omitted (self-only) call returned `hasLiveData: false`; the simultaneous `to: 'all'` call returned correct self data with `tokensUsed: 524286`. Difference: the all-scan path spends ~500ms enumerating active peers via the registry, giving the statusLine wrapper time to complete its atomic write. The self-only path checks disk immediately and finds nothing there yet.
+
+### Recommended agent pattern for consumers
+
+If `peer_context_status` (self) returns `hasLiveData: false` immediately after a `/mcp reconnect` or plugin update, treat it as transient:
+
+```
+1. First call → hasLiveData: false + setupPointer
+2. Wait for the next natural tool call OR sleep ~3 seconds
+3. Retry — should return live data
+4. If still hasLiveData: false → invoke the claude-bridge-setup skill
+   (setup is genuinely incomplete, not just transient)
+```
+
+Do not add unbounded retry loops — beyond 3 seconds, `hasLiveData: false` is authoritative and reflects real setup gaps.
+
 ## Related documents
 
 - [SETUP-LIVE-DATA.md](SETUP-LIVE-DATA.md) — user-facing setup instructions.
