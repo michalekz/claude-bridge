@@ -2,6 +2,52 @@
 
 All notable changes to this project are documented here. Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.9.3] — 2026-07-10
+
+### Fixed — Windows stdio probe-close crash-loop (claude-bridge unusable on Windows since v0.9.0)
+
+**Severity: high, Windows only.** Reported by Zdeněk 2026-07-10 while onboarding a Windows Claude Code session. Root cause diagnosed by his Windows agent from CC MCP debug log.
+
+### Symptoms
+
+- `/mcp` shows `claude-bridge` as `failed`.
+- MCP tools (`peer_*`, `rate_limit_status`, etc.) do not appear in the ToolSearch index.
+- CC MCP debug log shows an endless cycle: `started, tools:15` → `Successfully connected in 110ms` → `hasTools:true` → `UNKNOWN connection closed after Xms` → respawn with new pid → repeat.
+- Notifications (channel push) somehow work — because every short-lived reconnect re-pushes the backlog once.
+- Not reproducible on Linux.
+
+### Root cause
+
+Windows CC harness spawns the MCP server, completes the `initialize` + `tools/list` handshake to discover capabilities, then **closes the stdio pipe**. Node.js sees `stdin` EOF, all listeners (data/error from MCP SDK) drain, event loop empties, process exits. CC reads the exit as "server crashed" and re-spawns — the tools/list result is lost from the session index in the process.
+
+MCP SDK stdio server transport (`@modelcontextprotocol/sdk`) does not install any `stdin.on('end')` handler, and neither did our code. The plugin was effectively deleted from the session index on the first probe-close on Windows, at every CC startup.
+
+Not a regression per se — pre-v0.9.0 claude-bridge was probably affected too, but the older tool set was less critical, and the pattern wasn't isolated until now.
+
+### Fix
+
+`startStdioServer` now installs:
+
+1. **`setInterval` keep-alive** (60-second no-op ticks) to hold the event loop against EOF.
+2. **`process.stdin.on('end')`** + **`.on('close')`** handlers that log and no-op, refusing to terminate the server just because the pipe closed.
+3. **Shutdown** stays gated on explicit `SIGINT` / `SIGTERM` (CC's real shutdown path — always sent, on both platforms).
+
+Linux impact: none. The probe-close pattern is Windows-only; on Linux, the pipe stays open until real shutdown, so keep-alive is a no-op and the stdin handlers never fire.
+
+### Behavior after fix
+
+Windows startup now:
+
+- Server spawns, boots (~3s), attaches transport.
+- CC probe: `initialize` + `tools/list` → server responds.
+- CC closes probe pipe → server sees EOF but **stays alive**.
+- CC opens the real persistent pipe → server accepts new stdio → tools stay registered.
+- `/mcp` shows `claude-bridge` connected with 15 tools. `peer_*` calls work.
+
+### Credit
+
+Zdeněk's Windows agent parsed the CC MCP log and identified the probe-close pattern by comparing `UNKNOWN connection closed after Xms` timing with each subsequent spawn's pid delta. Without that log discipline the bug would still be misattributed to timeout / channel-plugin / bundled-hooks hypotheses (all three were considered and ruled out).
+
 ## [0.9.2] — 2026-07-09
 
 ### Fixed — v0.9.1 fix distribution broken by `/mcp reconnect` update flow

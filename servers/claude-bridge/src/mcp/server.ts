@@ -15,7 +15,7 @@ import { TOOLS, type ToolResult, piggybackInbox } from "./tools.ts";
 const log = makeLogger("mcp-server");
 
 const SERVER_NAME = "claude-bridge";
-const SERVER_VERSION = "0.9.2";
+const SERVER_VERSION = "0.9.3";
 
 const INSTRUCTIONS = `
 claude-bridge — MCP server for orchestration across Claude Code chats.
@@ -160,6 +160,34 @@ export async function startStdioServer(): Promise<void> {
   const transport = new StdioServerTransport();
   await server.connect(transport);
 
+  // v0.9.3 — Windows stdio survival.
+  //
+  // Empirical bug reported 2026-07-10 (Zdeněk on Windows): CC harness
+  // spawns the MCP server, completes initialize + tools/list handshake,
+  // then closes the stdio pipe. Node.js sees stdin EOF, event loop
+  // drains, process exits. CC harness reads that as "server crashed" and
+  // re-spawns — infinite short-connection loop, tools never register.
+  //
+  // Pattern in the CC MCP log:
+  //   started, tools:15 → Successfully connected in 110ms → hasTools:true
+  //   → UNKNOWN connection closed after Xms → (respawn)
+  //
+  // Linux doesn't do this (probe-and-close is Windows-specific). We keep
+  // the event loop alive so the transport survives the probe close,
+  // and shutdown only on explicit SIGINT/SIGTERM (CC's real shutdown path).
+  const keepAlive = setInterval(() => undefined, 60_000);
+  process.on("beforeExit", () => clearInterval(keepAlive));
+  process.stdin.on("end", () => {
+    log.warn("stdin_eof_ignored", {
+      reason: "windows-stdio-probe-close-survival",
+    });
+  });
+  process.stdin.on("close", () => {
+    log.warn("stdin_close_ignored", {
+      reason: "windows-stdio-probe-close-survival",
+    });
+  });
+
   log.info("started", {
     name: SERVER_NAME,
     version: SERVER_VERSION,
@@ -175,18 +203,39 @@ export async function startStdioServer(): Promise<void> {
   // v0.9.2: run setup-check inline on MCP startup so /mcp reconnect
   // (which does NOT trigger SessionStart hooks) still refreshes symlinks
   // after a plugin update. Non-blocking, best-effort — a failure here
-  // must not break the server. Silently no-ops when setup is complete
-  // and version unchanged; prints banner when incomplete.
-  void (async () => {
-    try {
-      const { main: setupCheckMain } = await import("../setup-check/main.ts");
-      await setupCheckMain();
-    } catch (e) {
-      log.warn("setup_check_startup_failed", {
-        err: e instanceof Error ? e.message : String(e),
+  // must not break the server.
+  //
+  // v0.9.3 (2026-07-10): spawn as detached subprocess instead of
+  // in-process dynamic import. Reason — the in-process form caused a
+  // 22-second crash-loop on Windows (empirically reported by Zdeněk):
+  // server would boot, connect, then something inside the setup-check
+  // path terminated the MCP server process. Not reproducible on Linux,
+  // but the subprocess isolation makes the whole thing bulletproof:
+  // whatever setup-check does (or dies from) cannot kill the MCP server.
+  //
+  // Subprocess is fully detached (stdio: 'ignore', detached: true,
+  // child.unref()) so it doesn't hold the parent alive and no output
+  // pipe can back-pressure the MCP stdio channel.
+  try {
+    const { spawn } = await import("node:child_process");
+    const { join, dirname } = await import("node:path");
+    // setup-check.cjs sits next to bundle.cjs. process.argv[1] on the
+    // MCP server is the bundle path, so setup-check.cjs is right there.
+    const bundlePath = process.argv[1] ?? "";
+    if (bundlePath) {
+      const setupCheckPath = join(dirname(bundlePath), "setup-check.cjs");
+      const child = spawn(process.execPath, [setupCheckPath], {
+        stdio: "ignore",
+        detached: true,
       });
+      child.unref();
+      child.on("error", () => undefined); // never propagate
     }
-  })();
+  } catch (e) {
+    log.warn("setup_check_spawn_failed", {
+      err: e instanceof Error ? e.message : String(e),
+    });
+  }
 
   const shutdown = async (signal: string) => {
     log.info("shutdown", { signal });

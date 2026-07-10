@@ -6,9 +6,6 @@ var __getOwnPropDesc = Object.getOwnPropertyDescriptor;
 var __getOwnPropNames = Object.getOwnPropertyNames;
 var __getProtoOf = Object.getPrototypeOf;
 var __hasOwnProp = Object.prototype.hasOwnProperty;
-var __esm = (fn, res) => function __init() {
-  return fn && (res = (0, fn[__getOwnPropNames(fn)[0]])(fn = 0)), res;
-};
 var __commonJS = (cb, mod) => function __require() {
   return mod || (0, cb[__getOwnPropNames(cb)[0]])((mod = { exports: {} }).exports, mod), mod.exports;
 };
@@ -2984,7 +2981,7 @@ var require_compile = __commonJS({
       const schOrFunc = root.refs[ref];
       if (schOrFunc)
         return schOrFunc;
-      let _sch = resolve5.call(this, root, ref);
+      let _sch = resolve4.call(this, root, ref);
       if (_sch === void 0) {
         const schema = (_a = root.localRefs) === null || _a === void 0 ? void 0 : _a[ref];
         const { schemaId } = this.opts;
@@ -3011,7 +3008,7 @@ var require_compile = __commonJS({
     function sameSchemaEnv(s1, s2) {
       return s1.schema === s2.schema && s1.root === s2.root && s1.baseId === s2.baseId;
     }
-    function resolve5(root, ref) {
+    function resolve4(root, ref) {
       let sch;
       while (typeof (sch = this.refs[ref]) == "string")
         ref = sch;
@@ -3642,7 +3639,7 @@ var require_fast_uri = __commonJS({
       }
       return uri;
     }
-    function resolve5(baseURI, relativeURI, options) {
+    function resolve4(baseURI, relativeURI, options) {
       const schemelessOptions = options ? Object.assign({ scheme: "null" }, options) : { scheme: "null" };
       const resolved = resolveComponent(parse3(baseURI, schemelessOptions), parse3(relativeURI, schemelessOptions), schemelessOptions, true);
       schemelessOptions.skipEscape = true;
@@ -3900,7 +3897,7 @@ var require_fast_uri = __commonJS({
     var fastUri = {
       SCHEMES,
       normalize: normalize2,
-      resolve: resolve5,
+      resolve: resolve4,
       resolveComponent,
       equal,
       serialize,
@@ -4404,11 +4401,11 @@ var require_core = __commonJS({
     Ajv2.ValidationError = validation_error_1.default;
     Ajv2.MissingRefError = ref_error_1.default;
     exports2.default = Ajv2;
-    function checkOptions(checkOpts, options, msg, log9 = "error") {
+    function checkOptions(checkOpts, options, msg, log8 = "error") {
       for (const key in checkOpts) {
         const opt = key;
         if (opt in options)
-          this.logger[log9](`${msg}: option ${key}. ${checkOpts[opt]}`);
+          this.logger[log8](`${msg}: option ${key}. ${checkOpts[opt]}`);
       }
     }
     function getSchEnv(keyRef) {
@@ -6886,319 +6883,6 @@ var require_dist = __commonJS({
     module2.exports = exports2 = formatsPlugin;
     Object.defineProperty(exports2, "__esModule", { value: true });
     exports2.default = formatsPlugin;
-  }
-});
-
-// src/util/paths.ts
-function currentPlatform() {
-  const p = (0, import_node_os.platform)();
-  if (p === "linux" || p === "darwin" || p === "win32") return p;
-  throw new Error(`Unsupported platform: ${p}`);
-}
-function claudeHome() {
-  return (0, import_node_path.join)((0, import_node_os.homedir)(), ".claude");
-}
-function projectsRoot() {
-  return (0, import_node_path.join)(claudeHome(), "projects");
-}
-function encodeProjectDir(absoluteCwd, plat = currentPlatform()) {
-  const dropColon = plat === "win32" ? absoluteCwd.replace(/:/g, "-") : absoluteCwd;
-  const collapseSeparators = plat === "win32" ? dropColon.replace(/[\\/]+/g, "-") : dropColon.replace(/\/+/g, "-");
-  return collapseSeparators.replace(/[^a-zA-Z0-9-]/g, "-");
-}
-function bridgeRoot() {
-  return (0, import_node_path.join)((0, import_node_os.homedir)(), ".claude-bridge");
-}
-var import_node_os, import_node_path;
-var init_paths = __esm({
-  "src/util/paths.ts"() {
-    "use strict";
-    import_node_os = require("node:os");
-    import_node_path = require("node:path");
-  }
-});
-
-// src/util/logger.ts
-function emit(level, component, msg, fields) {
-  if (LEVELS[level] < minLevel) return;
-  const entry = {
-    ts: (/* @__PURE__ */ new Date()).toISOString(),
-    level,
-    component,
-    msg,
-    ...fields
-  };
-  const line = pretty ? `[${entry.ts}] ${level.toUpperCase()} (${component}) ${msg}${fields ? ` ${JSON.stringify(fields)}` : ""}` : JSON.stringify(entry);
-  process.stderr.write(`${line}
-`);
-}
-function makeLogger(component) {
-  return {
-    debug: (m, f) => emit("debug", component, m, f),
-    info: (m, f) => emit("info", component, m, f),
-    warn: (m, f) => emit("warn", component, m, f),
-    error: (m, f) => emit("error", component, m, f),
-    child: (c) => makeLogger(`${component}.${c}`)
-  };
-}
-var LEVELS, envLevel, minLevel, pretty;
-var init_logger = __esm({
-  "src/util/logger.ts"() {
-    "use strict";
-    LEVELS = { debug: 10, info: 20, warn: 30, error: 40 };
-    envLevel = process.env["LOG_LEVEL"] || "info";
-    minLevel = LEVELS[envLevel] ?? LEVELS.info;
-    pretty = process.env["LOG_FORMAT"] === "pretty";
-  }
-});
-
-// src/setup-check/main.ts
-var main_exports = {};
-__export(main_exports, {
-  main: () => main
-});
-function compareVersions(a, b) {
-  const [aBase, aPre] = a.split("-", 2);
-  const [bBase, bPre] = b.split("-", 2);
-  const aParts = (aBase ?? "").split(".").map((n) => Number.parseInt(n, 10) || 0);
-  const bParts = (bBase ?? "").split(".").map((n) => Number.parseInt(n, 10) || 0);
-  const len = Math.max(aParts.length, bParts.length);
-  for (let i = 0; i < len; i++) {
-    const diff = (aParts[i] ?? 0) - (bParts[i] ?? 0);
-    if (diff !== 0) return diff;
-  }
-  if (aPre && !bPre) return -1;
-  if (!aPre && bPre) return 1;
-  if (aPre && bPre) return aPre.localeCompare(bPre);
-  return 0;
-}
-async function findLatestCacheVersion() {
-  try {
-    const { readdir: readdir7 } = await import("node:fs/promises");
-    const entries = await readdir7(CACHE_DIR);
-    if (entries.length === 0) return null;
-    return entries.sort(compareVersions).pop() ?? null;
-  } catch {
-    return null;
-  }
-}
-async function readState() {
-  try {
-    const raw = await (0, import_promises15.readFile)(STATE_FILE, "utf-8");
-    return JSON.parse(raw);
-  } catch {
-    return {};
-  }
-}
-async function writeState(state) {
-  await (0, import_promises15.mkdir)((0, import_node_path12.dirname)(STATE_FILE), { recursive: true });
-  await (0, import_promises15.writeFile)(STATE_FILE, `${JSON.stringify(state, null, 2)}
-`);
-}
-async function readSettings() {
-  try {
-    const raw = await (0, import_promises15.readFile)(SETTINGS_FILE, "utf-8");
-    return JSON.parse(raw);
-  } catch {
-    return null;
-  }
-}
-async function refreshSymlinks(cacheVersion) {
-  const statusLineTarget = (0, import_node_path12.join)(
-    CACHE_DIR,
-    cacheVersion,
-    "servers",
-    "claude-bridge",
-    "dist",
-    "statusline.cjs"
-  );
-  const refreshLimitsTarget = (0, import_node_path12.join)(
-    CACHE_DIR,
-    cacheVersion,
-    "servers",
-    "claude-bridge",
-    "dist",
-    "refresh-limits.cjs"
-  );
-  for (const [linkPath, target] of [
-    [STATUSLINE_SYMLINK, statusLineTarget],
-    [REFRESH_LIMITS_SYMLINK, refreshLimitsTarget]
-  ]) {
-    if (!(0, import_node_fs3.existsSync)(target)) {
-      log6.warn("setup_check_symlink_target_missing", { linkPath, target });
-      continue;
-    }
-    try {
-      try {
-        await (0, import_promises15.unlink)(linkPath);
-      } catch {
-      }
-      await (0, import_promises15.symlink)(target, linkPath);
-    } catch (e) {
-      log6.warn("setup_check_symlink_failed", {
-        linkPath,
-        target,
-        err: e instanceof Error ? e.message : String(e)
-      });
-    }
-  }
-}
-async function detectOriginalStatusLine(currentCommand, savedOriginal) {
-  const looksLikeUs = (cmd) => !!cmd && (cmd.includes("claude-bridge-statusline") || cmd.includes("claude-bridge-statusline-wrapper"));
-  if (savedOriginal && !looksLikeUs(savedOriginal)) return savedOriginal;
-  if (currentCommand && !looksLikeUs(currentCommand)) return currentCommand;
-  return null;
-}
-async function writeWrapperScript(originalStatusLine) {
-  if (originalStatusLine === null && (0, import_node_fs3.existsSync)(WRAPPER_SCRIPT)) {
-    return;
-  }
-  const originalExport = originalStatusLine ? `export CLAUDE_BRIDGE_UNDERLYING_STATUSLINE="${originalStatusLine.replace(/"/g, '\\"')}"` : "# no underlying statusLine detected (setup-check found only plugin commands)\n# to add one, set CLAUDE_BRIDGE_UNDERLYING_STATUSLINE below or edit settings.json";
-  const body = `#!/bin/sh
-# claude-bridge statusLine wrapper \u2014 auto-generated by setup-check hook.
-# DO NOT EDIT MANUALLY \u2014 the SessionStart hook overwrites this file on
-# every plugin update. To customize, edit ~/.claude/settings.json
-# statusLine.command directly (which will disable auto-generation).
-${originalExport}
-
-exec node "${STATUSLINE_SYMLINK}"
-`;
-  await (0, import_promises15.writeFile)(WRAPPER_SCRIPT, body);
-  await (0, import_promises15.chmod)(WRAPPER_SCRIPT, 493);
-}
-function isStatusLineConfigured(settings) {
-  const cmd = settings?.statusLine?.command;
-  if (!cmd) return false;
-  return cmd.includes("claude-bridge-statusline") || cmd.includes("claude-bridge-statusline-wrapper");
-}
-function isHookConfigured(settings) {
-  const groups = settings?.hooks?.PostToolUse ?? [];
-  for (const group of groups) {
-    for (const h of group.hooks ?? []) {
-      if (h.command?.includes("claude-bridge-refresh-limits")) return true;
-    }
-  }
-  return false;
-}
-function banner(state) {
-  const missing = [];
-  if (!state.statusLineConfigured) missing.push("statusLine wrapper");
-  if (!state.hookConfigured) missing.push("PostToolUse hook");
-  if (missing.length === 0 && !state.isVersionChange) return null;
-  const header = `\u2501\u2501\u2501\u2501\u2501\u2501\u2501 claude-bridge v${state.cacheVersion} setup \u2501\u2501\u2501\u2501\u2501\u2501\u2501`;
-  const footer = "\u2501".repeat(header.length);
-  const lines = [header];
-  if (state.isVersionChange && missing.length === 0) {
-    lines.push(`\u2713 Live-data hooks active. Symlinks refreshed for v${state.cacheVersion}.`);
-    lines.push("");
-    lines.push("What's new \u2014 see CHANGELOG.md in the plugin repo.");
-    lines.push(footer);
-    return lines.join("\n");
-  }
-  lines.push("\u26A0 Live-data setup incomplete. peer_context_status / rate_limit_status");
-  lines.push("  will return `hasLiveData: false` until you finish setup.");
-  lines.push("");
-  lines.push(`Missing: ${missing.join(" + ")}`);
-  lines.push("");
-  lines.push("Add to ~/.claude/settings.json:");
-  lines.push("");
-  if (!state.statusLineConfigured) {
-    lines.push('  "statusLine": {');
-    lines.push('    "type": "command",');
-    lines.push(`    "command": "${WRAPPER_SCRIPT.replace((0, import_node_os4.homedir)(), "~")}"`);
-    lines.push("  },");
-    lines.push("");
-  }
-  if (!state.hookConfigured) {
-    lines.push('  "hooks": {');
-    lines.push('    "PostToolUse": [{');
-    lines.push('      "matcher": ".*",');
-    lines.push('      "hooks": [{');
-    lines.push('        "type": "command",');
-    lines.push(`        "command": "node ${REFRESH_LIMITS_SYMLINK.replace((0, import_node_os4.homedir)(), "~")}",`);
-    lines.push('        "timeout": 6');
-    lines.push("      }]");
-    lines.push("    }]");
-    lines.push("  }");
-    lines.push("");
-  }
-  lines.push("Full guide: docs/SETUP-LIVE-DATA.md in the claude-bridge repo.");
-  lines.push(footer);
-  return lines.join("\n");
-}
-async function main() {
-  const cacheVersion = await findLatestCacheVersion();
-  if (!cacheVersion) {
-    log6.warn("setup_check_no_cache_version");
-    return 0;
-  }
-  await refreshSymlinks(cacheVersion);
-  const [state, settings] = await Promise.all([readState(), readSettings()]);
-  const statusLineConfigured = isStatusLineConfigured(settings);
-  const hookConfigured = isHookConfigured(settings);
-  const originalStatusLine = await detectOriginalStatusLine(
-    settings?.statusLine?.command,
-    state.originalStatusLine
-  );
-  await writeWrapperScript(originalStatusLine);
-  const isVersionChange = !state.lastBannerShownForVersion || compareVersions(cacheVersion, state.lastBannerShownForVersion) > 0;
-  const bannerText = banner({
-    cacheVersion,
-    statusLineConfigured,
-    hookConfigured,
-    isVersionChange: isVersionChange && statusLineConfigured && hookConfigured
-  });
-  if (bannerText) {
-    process.stderr.write(`
-${bannerText}
-
-`);
-  }
-  const nextState = {
-    pluginVersion: cacheVersion,
-    lastBannerShownForVersion: bannerText ? cacheVersion : state.lastBannerShownForVersion,
-    ...originalStatusLine ? { originalStatusLine } : {},
-    statusLineConfigured,
-    hookConfigured,
-    lastCheckedAt: (/* @__PURE__ */ new Date()).toISOString()
-  };
-  try {
-    await writeState(nextState);
-  } catch (e) {
-    log6.warn("setup_check_state_write_failed", {
-      err: e instanceof Error ? e.message : String(e)
-    });
-  }
-  return 0;
-}
-var import_node_fs3, import_promises15, import_node_os4, import_node_path12, log6, CACHE_DIR, STATUSLINE_SYMLINK, REFRESH_LIMITS_SYMLINK, WRAPPER_SCRIPT, STATE_FILE, SETTINGS_FILE;
-var init_main = __esm({
-  "src/setup-check/main.ts"() {
-    "use strict";
-    import_node_fs3 = require("node:fs");
-    import_promises15 = require("node:fs/promises");
-    import_node_os4 = require("node:os");
-    import_node_path12 = require("node:path");
-    init_logger();
-    init_paths();
-    log6 = makeLogger("setup-check");
-    CACHE_DIR = (0, import_node_path12.join)(claudeHome(), "plugins", "cache", "claude-bridge", "claude-bridge");
-    STATUSLINE_SYMLINK = (0, import_node_path12.join)(claudeHome(), "claude-bridge-statusline.cjs");
-    REFRESH_LIMITS_SYMLINK = (0, import_node_path12.join)(claudeHome(), "claude-bridge-refresh-limits.cjs");
-    WRAPPER_SCRIPT = (0, import_node_path12.join)(claudeHome(), "claude-bridge-statusline-wrapper.sh");
-    STATE_FILE = (0, import_node_path12.join)(bridgeRoot(), "setup-state.json");
-    SETTINGS_FILE = (0, import_node_path12.join)(claudeHome(), "settings.json");
-    if (require.main === module) {
-      main().then(
-        (code) => process.exit(code),
-        (e) => {
-          log6.error("setup_check_fatal", {
-            err: e instanceof Error ? e.message : String(e)
-          });
-          process.exit(0);
-        }
-      );
-    }
   }
 });
 
@@ -17089,7 +16773,7 @@ var Protocol = class {
           return;
         }
         const pollInterval = task2.pollInterval ?? this._options?.defaultTaskPollInterval ?? 1e3;
-        await new Promise((resolve5) => setTimeout(resolve5, pollInterval));
+        await new Promise((resolve4) => setTimeout(resolve4, pollInterval));
         options?.signal?.throwIfAborted();
       }
     } catch (error2) {
@@ -17106,7 +16790,7 @@ var Protocol = class {
    */
   request(request, resultSchema, options) {
     const { relatedRequestId, resumptionToken, onresumptiontoken, task, relatedTask } = options ?? {};
-    return new Promise((resolve5, reject) => {
+    return new Promise((resolve4, reject) => {
       const earlyReject = (error2) => {
         reject(error2);
       };
@@ -17184,7 +16868,7 @@ var Protocol = class {
           if (!parseResult.success) {
             reject(parseResult.error);
           } else {
-            resolve5(parseResult.data);
+            resolve4(parseResult.data);
           }
         } catch (error2) {
           reject(error2);
@@ -17445,12 +17129,12 @@ var Protocol = class {
       }
     } catch {
     }
-    return new Promise((resolve5, reject) => {
+    return new Promise((resolve4, reject) => {
       if (signal.aborted) {
         reject(new McpError(ErrorCode.InvalidRequest, "Request cancelled"));
         return;
       }
-      const timeoutId = setTimeout(resolve5, interval);
+      const timeoutId = setTimeout(resolve4, interval);
       signal.addEventListener("abort", () => {
         clearTimeout(timeoutId);
         reject(new McpError(ErrorCode.InvalidRequest, "Request cancelled"));
@@ -18320,12 +18004,12 @@ var StdioServerTransport = class {
     this.onclose?.();
   }
   send(message) {
-    return new Promise((resolve5) => {
+    return new Promise((resolve4) => {
       const json = serializeMessage(message);
       if (this._stdout.write(json)) {
-        resolve5();
+        resolve4();
       } else {
-        this._stdout.once("drain", resolve5);
+        this._stdout.once("drain", resolve4);
       }
     });
   }
@@ -18335,7 +18019,31 @@ var StdioServerTransport = class {
 var import_promises = require("node:fs/promises");
 var import_node_os2 = require("node:os");
 var import_node_path2 = require("node:path");
-init_paths();
+
+// src/util/paths.ts
+var import_node_os = require("node:os");
+var import_node_path = require("node:path");
+function currentPlatform() {
+  const p = (0, import_node_os.platform)();
+  if (p === "linux" || p === "darwin" || p === "win32") return p;
+  throw new Error(`Unsupported platform: ${p}`);
+}
+function claudeHome() {
+  return (0, import_node_path.join)((0, import_node_os.homedir)(), ".claude");
+}
+function projectsRoot() {
+  return (0, import_node_path.join)(claudeHome(), "projects");
+}
+function encodeProjectDir(absoluteCwd, plat = currentPlatform()) {
+  const dropColon = plat === "win32" ? absoluteCwd.replace(/:/g, "-") : absoluteCwd;
+  const collapseSeparators = plat === "win32" ? dropColon.replace(/[\\/]+/g, "-") : dropColon.replace(/\/+/g, "-");
+  return collapseSeparators.replace(/[^a-zA-Z0-9-]/g, "-");
+}
+function bridgeRoot() {
+  return (0, import_node_path.join)((0, import_node_os.homedir)(), ".claude-bridge");
+}
+
+// src/identity.ts
 var NAME_MAX_LEN = 64;
 var NAME_VALID = /^[a-z0-9][a-z0-9._-]{0,63}$/;
 function sanitizePeerName(raw) {
@@ -18454,8 +18162,33 @@ async function resolvePeerIdentityWithRetry(opts = {}) {
   throw lastError;
 }
 
-// src/mcp/server.ts
-init_logger();
+// src/util/logger.ts
+var LEVELS = { debug: 10, info: 20, warn: 30, error: 40 };
+var envLevel = process.env["LOG_LEVEL"] || "info";
+var minLevel = LEVELS[envLevel] ?? LEVELS.info;
+var pretty = process.env["LOG_FORMAT"] === "pretty";
+function emit(level, component, msg, fields) {
+  if (LEVELS[level] < minLevel) return;
+  const entry = {
+    ts: (/* @__PURE__ */ new Date()).toISOString(),
+    level,
+    component,
+    msg,
+    ...fields
+  };
+  const line = pretty ? `[${entry.ts}] ${level.toUpperCase()} (${component}) ${msg}${fields ? ` ${JSON.stringify(fields)}` : ""}` : JSON.stringify(entry);
+  process.stderr.write(`${line}
+`);
+}
+function makeLogger(component) {
+  return {
+    debug: (m, f) => emit("debug", component, m, f),
+    info: (m, f) => emit("info", component, m, f),
+    warn: (m, f) => emit("warn", component, m, f),
+    error: (m, f) => emit("error", component, m, f),
+    child: (c) => makeLogger(`${component}.${c}`)
+  };
+}
 
 // src/mcp/context.ts
 var import_promises9 = require("node:fs/promises");
@@ -19173,10 +18906,10 @@ var foreach = (val, fn) => {
     fn(val);
   }
 };
-var addAndConvert = (main3, prop, item) => {
-  let container = main3[prop];
+var addAndConvert = (main2, prop, item) => {
+  let container = main2[prop];
   if (!(container instanceof Set)) {
-    main3[prop] = container = /* @__PURE__ */ new Set([container]);
+    main2[prop] = container = /* @__PURE__ */ new Set([container]);
   }
   container.add(item);
 };
@@ -19188,12 +18921,12 @@ var clearItem = (cont) => (key) => {
     delete cont[key];
   }
 };
-var delFromSet = (main3, prop, item) => {
-  const container = main3[prop];
+var delFromSet = (main2, prop, item) => {
+  const container = main2[prop];
   if (container instanceof Set) {
     container.delete(item);
   } else if (container === item) {
-    delete main3[prop];
+    delete main2[prop];
   }
 };
 var isEmptySet = (val) => val instanceof Set ? val.size === 0 : !val;
@@ -19372,9 +19105,9 @@ var NodeFsHandler = class {
     if (this.fsw.closed) {
       return;
     }
-    const dirname8 = sysPath.dirname(file);
+    const dirname7 = sysPath.dirname(file);
     const basename5 = sysPath.basename(file);
-    const parent = this.fsw._getWatchedDir(dirname8);
+    const parent = this.fsw._getWatchedDir(dirname7);
     let prevStats = stats;
     if (parent.has(basename5))
       return;
@@ -19401,7 +19134,7 @@ var NodeFsHandler = class {
             prevStats = newStats2;
           }
         } catch (error2) {
-          this.fsw._remove(dirname8, basename5);
+          this.fsw._remove(dirname7, basename5);
         }
       } else if (parent.has(basename5)) {
         const at = newStats.atimeMs;
@@ -19497,7 +19230,7 @@ var NodeFsHandler = class {
         this._addToNodeFs(path, initialAdd, wh, depth + 1);
       }
     }).on(EV.ERROR, this._boundHandleError);
-    return new Promise((resolve5, reject) => {
+    return new Promise((resolve4, reject) => {
       if (!stream)
         return reject();
       stream.once(STR_END, () => {
@@ -19506,7 +19239,7 @@ var NodeFsHandler = class {
           return;
         }
         const wasThrottled = throttler ? throttler.clear() : false;
-        resolve5(void 0);
+        resolve4(void 0);
         previous.getChildren().filter((item) => {
           return item !== directory && !current.has(item);
         }).forEach((item) => {
@@ -20209,8 +19942,8 @@ var FSWatcher = class extends import_events.EventEmitter {
     }
     return this._userIgnored(path, stats);
   }
-  _isntIgnored(path, stat10) {
-    return !this._isIgnored(path, stat10);
+  _isntIgnored(path, stat9) {
+    return !this._isIgnored(path, stat9);
   }
   /**
    * Provides a set of common helpers and properties relating to symlink handling.
@@ -20335,7 +20068,6 @@ function watch(paths, options = {}) {
 var esm_default = { watch, FSWatcher };
 
 // src/inbox/watcher.ts
-init_logger();
 var log = makeLogger("inbox-watcher");
 function startInboxWatcher(peerId, onArrived, opts = {}) {
   const dir = (0, import_node_path6.join)(opts.baseDir ?? defaultBridgeRoot(), "inbox", peerId, "pending");
@@ -20393,7 +20125,6 @@ function startInboxWatcher(peerId, onArrived, opts = {}) {
 // src/registry/peers.ts
 var import_promises8 = require("node:fs/promises");
 var import_node_path7 = require("node:path");
-init_paths();
 var HEARTBEAT_INTERVAL_MS = 5e3;
 var ONLINE_THRESHOLD_MS = 3e4;
 var STALE_THRESHOLD_MS = 60 * 60 * 1e3;
@@ -20506,18 +20237,14 @@ function createPeerRegistry(opts = {}) {
   };
 }
 
-// src/mcp/context.ts
-init_logger();
-
 // src/util/terminal-title.ts
 var import_node_child_process = require("node:child_process");
 var import_node_fs = require("node:fs");
-init_logger();
 var log2 = makeLogger("terminal-title");
-function parseTtyNrFromProcStat(stat10) {
-  const lastParen = stat10.lastIndexOf(")");
+function parseTtyNrFromProcStat(stat9) {
+  const lastParen = stat9.lastIndexOf(")");
   if (lastParen === -1) return null;
-  const after = stat10.slice(lastParen + 2);
+  const after = stat9.slice(lastParen + 2);
   const fields = after.split(" ");
   const ttyNrStr = fields[4];
   if (!ttyNrStr) return null;
@@ -20531,8 +20258,8 @@ function parseTtyNrFromProcStat(stat10) {
 }
 function findLinuxParentTty(ppid) {
   try {
-    const stat10 = (0, import_node_fs.readFileSync)(`/proc/${ppid}/stat`, "utf-8");
-    const parsed = parseTtyNrFromProcStat(stat10);
+    const stat9 = (0, import_node_fs.readFileSync)(`/proc/${ppid}/stat`, "utf-8");
+    const parsed = parseTtyNrFromProcStat(stat9);
     if (!parsed) return null;
     if (parsed.major === 136) {
       return `/dev/pts/${parsed.minor}`;
@@ -20583,7 +20310,6 @@ function isTerminalTitleEnabled(env = process.env) {
 }
 
 // src/mcp/channel.ts
-init_logger();
 var log3 = makeLogger("channel");
 var CHANNEL_METHOD = "notifications/claude/channel";
 function buildChannelNotification(envelope) {
@@ -20803,7 +20529,6 @@ var import_node_path11 = require("node:path");
 // src/parser/live-data.ts
 var import_promises10 = require("node:fs/promises");
 var import_node_path9 = require("node:path");
-init_paths();
 function liveDir() {
   return (0, import_node_path9.join)(bridgeRoot(), "live");
 }
@@ -21472,7 +21197,6 @@ async function readLiveRateLimits(now = /* @__PURE__ */ new Date()) {
 var import_promises11 = require("node:fs/promises");
 var import_promises12 = require("node:fs/promises");
 var import_node_path10 = require("node:path");
-init_paths();
 var JSONL_PATTERN = /^([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.jsonl$/;
 async function listProjects() {
   const root = projectsRoot();
@@ -21538,8 +21262,6 @@ function serializeSessionRef(s) {
 }
 
 // src/mcp/tools.ts
-init_logger();
-init_paths();
 var log5 = makeLogger("tools");
 function ok(data) {
   return {
@@ -21581,12 +21303,12 @@ var ListSessionsArgs = external_exports.object({
 }).strict();
 var HEARTBEAT_ACTIVE_THRESHOLD_MS = 3e4;
 async function isSessionActive(sessionId) {
-  const { stat: stat10 } = await import("node:fs/promises");
-  const { homedir: homedir5 } = await import("node:os");
-  const { join: join14 } = await import("node:path");
-  const hbPath = join14(homedir5(), ".claude-bridge", "status", `${sessionId}.json`);
+  const { stat: stat9 } = await import("node:fs/promises");
+  const { homedir: homedir4 } = await import("node:os");
+  const { join: join13 } = await import("node:path");
+  const hbPath = join13(homedir4(), ".claude-bridge", "status", `${sessionId}.json`);
   try {
-    const s = await stat10(hbPath);
+    const s = await stat9(hbPath);
     return Date.now() - s.mtimeMs <= HEARTBEAT_ACTIVE_THRESHOLD_MS;
   } catch {
     return false;
@@ -23195,9 +22917,9 @@ var TOOLS = [
 ];
 
 // src/mcp/server.ts
-var log7 = makeLogger("mcp-server");
+var log6 = makeLogger("mcp-server");
 var SERVER_NAME = "claude-bridge";
-var SERVER_VERSION = "0.9.2";
+var SERVER_VERSION = "0.9.3";
 var INSTRUCTIONS = `
 claude-bridge \u2014 MCP server for orchestration across Claude Code chats.
 
@@ -23260,10 +22982,10 @@ function wireTools(server, ctx) {
     const toolName = request.params.name;
     const args = request.params.arguments ?? {};
     const started = Date.now();
-    log7.debug("tool_call", { tool: toolName });
+    log6.debug("tool_call", { tool: toolName });
     const spec = TOOLS.find((t) => t.name === toolName);
     if (!spec) {
-      log7.warn("tool_not_found", { tool: toolName });
+      log6.warn("tool_not_found", { tool: toolName });
       const result = {
         isError: true,
         content: [
@@ -23278,14 +23000,14 @@ function wireTools(server, ctx) {
     try {
       let result = await spec.handler(args, ctx);
       result = await piggybackInbox(ctx, toolName, result);
-      log7.debug("tool_result", {
+      log6.debug("tool_result", {
         tool: toolName,
         ok: !result.isError,
         duration_ms: Date.now() - started
       });
       return result;
     } catch (e) {
-      log7.error("tool_call_err", {
+      log6.error("tool_call_err", {
         tool: toolName,
         err: e instanceof Error ? e.message : String(e),
         duration_ms: Date.now() - started
@@ -23313,14 +23035,14 @@ async function startStdioServer() {
     ctx = await buildContext({ version: SERVER_VERSION });
   } catch (e) {
     if (e instanceof IdentityError) {
-      log7.error("identity_unresolvable", { message: e.message, hint: e.hint });
+      log6.error("identity_unresolvable", { message: e.message, hint: e.hint });
       process.stderr.write(`
 claude-bridge fatal: ${e.message}
 Hint: ${e.hint}
 
 `);
     } else {
-      log7.error("boot_failed", { err: e instanceof Error ? e.message : String(e) });
+      log6.error("boot_failed", { err: e instanceof Error ? e.message : String(e) });
     }
     process.exit(1);
   }
@@ -23329,7 +23051,19 @@ Hint: ${e.hint}
   wireTools(server, ctx);
   const transport = new StdioServerTransport();
   await server.connect(transport);
-  log7.info("started", {
+  const keepAlive = setInterval(() => void 0, 6e4);
+  process.on("beforeExit", () => clearInterval(keepAlive));
+  process.stdin.on("end", () => {
+    log6.warn("stdin_eof_ignored", {
+      reason: "windows-stdio-probe-close-survival"
+    });
+  });
+  process.stdin.on("close", () => {
+    log6.warn("stdin_close_ignored", {
+      reason: "windows-stdio-probe-close-survival"
+    });
+  });
+  log6.info("started", {
     name: SERVER_NAME,
     version: SERVER_VERSION,
     tools: TOOLS.length,
@@ -23337,19 +23071,27 @@ Hint: ${e.hint}
     selfName: ctx.self.name
   });
   const { pushed } = await pumpInboxToChannel(ctx);
-  if (pushed > 0) log7.info("backlog_drained", { pushed });
-  void (async () => {
-    try {
-      const { main: setupCheckMain } = await Promise.resolve().then(() => (init_main(), main_exports));
-      await setupCheckMain();
-    } catch (e) {
-      log7.warn("setup_check_startup_failed", {
-        err: e instanceof Error ? e.message : String(e)
+  if (pushed > 0) log6.info("backlog_drained", { pushed });
+  try {
+    const { spawn } = await import("node:child_process");
+    const { join: join13, dirname: dirname7 } = await import("node:path");
+    const bundlePath = process.argv[1] ?? "";
+    if (bundlePath) {
+      const setupCheckPath = join13(dirname7(bundlePath), "setup-check.cjs");
+      const child = spawn(process.execPath, [setupCheckPath], {
+        stdio: "ignore",
+        detached: true
       });
+      child.unref();
+      child.on("error", () => void 0);
     }
-  })();
+  } catch (e) {
+    log6.warn("setup_check_spawn_failed", {
+      err: e instanceof Error ? e.message : String(e)
+    });
+  }
   const shutdown = async (signal) => {
-    log7.info("shutdown", { signal });
+    log6.info("shutdown", { signal });
     await shutdownContext(ctx).catch(() => void 0);
     await server.close().catch(() => void 0);
     process.exit(0);
@@ -23359,18 +23101,17 @@ Hint: ${e.hint}
 }
 
 // src/index.ts
-init_logger();
-var log8 = makeLogger("entry");
-async function main2() {
-  log8.info("boot");
+var log7 = makeLogger("entry");
+async function main() {
+  log7.info("boot");
   try {
     await startStdioServer();
   } catch (e) {
-    log8.error("fatal", { err: e instanceof Error ? e.message : String(e) });
+    log7.error("fatal", { err: e instanceof Error ? e.message : String(e) });
     process.exit(1);
   }
 }
-void main2();
+void main();
 /*! Bundled license information:
 
 chokidar/esm/index.js:
