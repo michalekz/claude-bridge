@@ -138,6 +138,8 @@ For each event listed, the daemon drops a `lifecycle-event` message into that pe
 
 Reconcile with `team_layout({ team: "hmh", apply: true })`. Add `prune: true` to also stop peers that aren't in the spec. Preview with `apply: false`.
 
+**displayName canonicalization (v0.10.0-rc.2):** `displayName` is used as the tmux session name. Characters outside `[A-Za-z0-9_-]` (notably `:` and `.` — both reserved by tmux target syntax) are silently replaced with `_` when the daemon talks to tmux; the canonical form is returned as `sessionKey` in the spawn response and stored in `state.peers[].tmuxTarget`. `name` keeps the raw string. So `"hmh:node.1"` becomes `hmh_node_1` on the tmux side while still showing as `hmh:node.1` in `team_status`.
+
 ## Auditing
 
 Everything the daemon does lands in `events.jsonl` — append-only, `schemaVersion: 1`. Tail it live during operations:
