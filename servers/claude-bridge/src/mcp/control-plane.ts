@@ -213,9 +213,11 @@ async function pollForResult(requestId: string, timeoutMs: number): Promise<unkn
   return null;
 }
 
-export async function peerStopTool(
+async function submitDaemonRequest(
   ctx: ServerContext,
-  args: z.infer<typeof PeerStopArgs>,
+  tool: string,
+  args: Record<string, unknown>,
+  opts: { wait?: boolean; timeoutMs?: number },
 ): Promise<ToolResult> {
   const presence = await probeDaemon();
   if (!presence.running) {
@@ -229,12 +231,8 @@ export async function peerStopTool(
     schemaVersion: 1,
     id: requestId,
     ts: new Date().toISOString(),
-    tool: "peer_stop",
-    args: {
-      peer: args.peer,
-      ...(args.reason !== undefined ? { reason: args.reason } : {}),
-      ...(args.force !== undefined ? { force: args.force } : {}),
-    },
+    tool,
+    args,
     requestedBy: {
       sessionId: ctx.self.id,
       name: ctx.self.name,
@@ -245,8 +243,8 @@ export async function peerStopTool(
   } catch (e) {
     return err("request_write_failed", e instanceof Error ? e.message : String(e));
   }
-  if (args.wait) {
-    const timeoutMs = args.timeoutMs ?? 10_000;
+  if (opts.wait) {
+    const timeoutMs = opts.timeoutMs ?? 10_000;
     const result = await pollForResult(requestId, timeoutMs);
     if (!result) {
       return ok({ requestId, queuedAt: envelope.ts, waited: true, timedOut: true });
@@ -254,4 +252,119 @@ export async function peerStopTool(
     return ok({ requestId, queuedAt: envelope.ts, waited: true, result });
   }
   return ok({ requestId, queuedAt: envelope.ts });
+}
+
+export async function peerStopTool(
+  ctx: ServerContext,
+  args: z.infer<typeof PeerStopArgs>,
+): Promise<ToolResult> {
+  const daemonArgs: Record<string, unknown> = { peer: args.peer };
+  if (args.reason !== undefined) daemonArgs["reason"] = args.reason;
+  if (args.force !== undefined) daemonArgs["force"] = args.force;
+  return submitDaemonRequest(ctx, "peer_stop", daemonArgs, {
+    wait: args.wait,
+    timeoutMs: args.timeoutMs,
+  });
+}
+
+// ============================================================================
+// peer_spawn — start a new peer through the daemon
+// ============================================================================
+
+export const PeerSpawnArgs = z
+  .object({
+    sessionId: z.string().min(1),
+    displayName: z.string().min(1),
+    cwd: z.string().min(1),
+    command: z.string().min(1),
+    args: z.array(z.string()).optional(),
+    resume: z.boolean().optional(),
+    model: z.string().optional(),
+    accountProfile: z.string().optional(),
+    extraAllowEnv: z.array(z.string()).optional(),
+    extraEnv: z.record(z.string()).optional(),
+    wait: z.boolean().optional(),
+    timeoutMs: z.number().int().positive().max(60_000).optional(),
+  })
+  .strict();
+
+export async function peerSpawnTool(
+  ctx: ServerContext,
+  args: z.infer<typeof PeerSpawnArgs>,
+): Promise<ToolResult> {
+  const daemonArgs: Record<string, unknown> = {
+    sessionId: args.sessionId,
+    displayName: args.displayName,
+    cwd: args.cwd,
+    command: args.command,
+    args: args.args ?? [],
+    resume: args.resume ?? false,
+    extraAllowEnv: args.extraAllowEnv ?? [],
+    extraEnv: args.extraEnv ?? {},
+  };
+  if (args.model !== undefined) daemonArgs["model"] = args.model;
+  if (args.accountProfile !== undefined) daemonArgs["accountProfile"] = args.accountProfile;
+  return submitDaemonRequest(ctx, "peer_spawn", daemonArgs, {
+    wait: args.wait,
+    timeoutMs: args.timeoutMs,
+  });
+}
+
+// ============================================================================
+// peer_restart
+// ============================================================================
+
+export const PeerRestartArgs = z
+  .object({
+    peer: z.string().min(1),
+    reason: z.string().optional(),
+    force: z.boolean().optional(),
+    model: z.string().optional(),
+    accountProfile: z.string().optional(),
+    wait: z.boolean().optional(),
+    timeoutMs: z.number().int().positive().max(60_000).optional(),
+  })
+  .strict();
+
+export async function peerRestartTool(
+  ctx: ServerContext,
+  args: z.infer<typeof PeerRestartArgs>,
+): Promise<ToolResult> {
+  const daemonArgs: Record<string, unknown> = { peer: args.peer };
+  if (args.reason !== undefined) daemonArgs["reason"] = args.reason;
+  if (args.force !== undefined) daemonArgs["force"] = args.force;
+  if (args.model !== undefined) daemonArgs["model"] = args.model;
+  if (args.accountProfile !== undefined) daemonArgs["accountProfile"] = args.accountProfile;
+  return submitDaemonRequest(ctx, "peer_restart", daemonArgs, {
+    wait: args.wait,
+    timeoutMs: args.timeoutMs,
+  });
+}
+
+// ============================================================================
+// team_status — read-only aggregation of state.peers + host driver
+// ============================================================================
+
+export const TeamStatusArgs = z
+  .object({
+    team: z.string().optional(),
+    verbose: z.boolean().optional(),
+    wait: z.boolean().optional(),
+    timeoutMs: z.number().int().positive().max(60_000).optional(),
+  })
+  .strict();
+
+export async function teamStatusTool(
+  ctx: ServerContext,
+  args: z.infer<typeof TeamStatusArgs>,
+): Promise<ToolResult> {
+  const daemonArgs: Record<string, unknown> = {};
+  if (args.team !== undefined) daemonArgs["team"] = args.team;
+  if (args.verbose !== undefined) daemonArgs["verbose"] = args.verbose;
+  // team_status is read-only; default `wait:true` so callers get data,
+  // not just an ack — matches the mental model of "gimme the status".
+  return submitDaemonRequest(ctx, "team_status", daemonArgs, {
+    wait: args.wait ?? true,
+    timeoutMs: args.timeoutMs ?? 5_000,
+  });
 }

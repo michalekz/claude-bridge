@@ -2,6 +2,91 @@
 
 All notable changes to this project are documented here. Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.10.0-beta] — 2026-07-23 (pre-release)
+
+### Added — peer lifecycle + fork-guard + SessionHostDriver (fáze 2/3)
+
+Alpha shipped the daemon skeleton (lock, state, RPC, events, systemd install). Beta connects it to real Claude Code processes: **spawn, stop, restart, team_status** with a proper host-driver abstraction and the hard-earned safeguards from the 22.-23. 7. 2026 incidents.
+
+### SessionHostDriver abstraction (§6/10 zadání)
+
+- New `servers/claude-bridge-daemon/src/hosts/`:
+  - `driver.ts` — `SessionHostDriver` interface (`hasSession / spawn / kill / listSessions / sendKeys?`)
+  - `tmux-driver.ts` — Linux / macOS / WSL2 MVP. Kills sessions by **name** so daemon restart can re-attach (§6/6 state recovery). `kill()` polls post-kill for the respawn class of failure — bg-pty-host lesson from msg mrxe9t7d — and throws a distinctive error the handler surfaces as `supervisor_respawn`.
+  - `mock-driver.ts` — in-memory driver for tests; `hostRespawnHook` option simulates supervisor respawn so acceptance tests can exercise the detection path.
+- Lifecycle handlers never call tmux directly — all traffic flows through the driver interface (§6/10).
+
+### Env whitelist (§6/8 zadání — blacklist nestačil dvakrát)
+
+`src/env-whitelist.ts` composes a fresh env for every spawn:
+- `BASE_ALLOWLIST` — PATH, HOME, USER, TERM, LANG, LC_*, TMPDIR, TMUX, XDG_*, …
+- `HARD_STRIP_PREFIXES` — `ANTHROPIC_`, `CLAUDE_`, `CC_`, `CLAUDE_CODE_` — stripped even when the caller explicitly allows them
+- `overrides` — the daemon may inject `CLAUDE_CONFIG_DIR` (subscription profile) but nothing else in the Claude/Anthropic namespace
+
+Closes the 22. 7. regression where `ANTHROPIC_API_KEY` from the operator's shell hitched a ride into a resumed session and pushed billing onto API credits.
+
+### fork-guard (§5.1 zadání)
+
+`src/handlers/fork-guard.ts` refuses a spawn/resume when either:
+- daemon state records the sessionId as `live` or `starting`, or
+- the host driver still holds the sessionKey (catches supervisor respawn immediately after a crash-restart cycle)
+
+Emits `peer_spawn_rejected` with the specific reason (`state_live` vs `host_alive`) so the audit trail shows which safeguard fired.
+
+### Handlers (split from monolithic `handlers.ts`)
+
+New `src/handlers/` directory:
+- `context.ts` — HandlerContext (`state, hostDriver, daemonVersion`)
+- `state-writer.ts` — `applyStateChange` funnels every mutation through atomic save
+- `control-status.ts` — read-only daemon summary (from alpha, kept)
+- `peer-spawn.ts` — fork-guard → sanitized env → driver.spawn → state + `peer_started` event
+- `peer-stop.ts` — mark stopping → driver.kill (tears down the whole tree + post-kill verify) → state delete → `peer_stopped` event. Emits `peer_stop_respawn_detected` (error level) when the driver catches a bg-pty-shaped supervisor
+- `peer-restart.ts` — snapshot record → peer_stop → peer_spawn with `--resume` and carry-over of model + account profile
+- `team-status.ts` — read-only aggregation of `state.peers` + `driver.listSessions()`; `verbose:true` for full fields
+
+### MCP wire (bridge → daemon)
+
+`servers/claude-bridge/src/mcp/control-plane.ts` gains three tools:
+- `peer_spawn` — fire-and-forget or `wait:true` opt-in poll (§4.3)
+- `peer_restart` — same semantics; carries model/account profile from state unless overridden
+- `team_status` — default `wait:true, timeoutMs:5000` (read query → callers expect data, not an ack)
+
+All three return `daemon_not_running` + `setupPointer` when the daemon isn't installed. `peer_stop` was already wired in alpha; the request envelope shape didn't change.
+
+### Acceptance tests — 4× PASS
+
+**Live smoke on real tmux** (post-install verification, not vitest):
+1. `team_status` — peerCount:0
+2. `peer_spawn` (sleep 60) → new tmux session `beta-smoke-window` (verified `tmux list-sessions`)
+3. `team_status` — 1 peer, `hostAlive:true, hostPid:<matches spawn>`, status `live`
+4. `peer_stop` → tmux `kill-session` → post-kill verify PASS (no respawn)
+5. Post-stop `team_status` — peerCount:0, tmux session gone
+
+**Vitest coverage** (21 daemon tests, all pass):
+- **sanitized-env spawn** (22. 7. regression) — process.env with `ANTHROPIC_API_KEY` + `CLAUDE_CODE_SESSION_ID` set → MockDriver's spy on `spawn.env` confirms both stripped, PATH preserved
+- **fork-guard state_live** — pre-populated `state.peers[X].status = "live"` → spawn refused with `session_already_live`
+- **fork-guard host_alive** — orphan session in driver (state empty) → spawn refused with `session_already_live`
+- **bg-pty respawn coverage** — MockDriver `hostRespawnHook` re-inserts session after kill → daemon surfaces `supervisor_respawn` error (state stays `stopping`, alarm-loud event)
+- **concurrent (serialized) requests** — sequential dispatch of duplicate peer_spawn → first ok, second `session_already_live` (daemon queue is sequential via for-await; this test mirrors that)
+- **happy path** — spawn → team_status shows peer with `hostAlive:true` → stop cleans state
+
+### Version bump
+
+- Daemon: `0.10.0-alpha.0` → `0.10.0-beta.0`. Bundle size 24kB → 158kB (zod schemas). Daemon is a background service; bundle size does not affect steady-state cost.
+- Plugin: stays at 0.9.4 for the marketplace (daemon distribution + activation via `install --systemd` is opt-in; nothing about the marketplace-facing plugin has changed).
+
+### Not in scope for beta (F2 / rc)
+
+- Compact watchdog (`peer_compact`)
+- Telemetry cache (`~/.claude-bridge/control/telemetry/<sessionId>.json`) — plugin still uses v0.9.4 dual-source chain
+- Account profiles (`peer_login`, `~/.claude-bridge/control/accounts/`)
+- Lifecycle events streamed into bridge inboxes of offline subscribers
+- GO-registr verification for gated ops — daemon prints authRef but doesn't verify yet
+
+### Coordination
+
+Milestone report `[milestone] v0.10.0-beta` posted to designer thread `control-plane-zadani-2026-07-23` at release. STOP-gate before rc respected — no rc work until designer takeover.
+
 ## [0.10.0-alpha] — 2026-07-23 (pre-release)
 
 ### Added — control-plane daemon MVP (fáze 1/3)

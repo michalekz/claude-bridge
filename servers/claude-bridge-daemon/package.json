@@ -1,6 +1,6 @@
 {
   "name": "claude-bridge-daemon",
-  "version": "0.10.0-alpha.0",
+  "version": "0.10.0-beta.0",
   "private": true,
   "description": "Control-plane daemon for the claude-bridge plugin: peer lifecycle, telemetry, audit. Distributed as opt-in artefact — see ADR-008.",
   "type": "module",

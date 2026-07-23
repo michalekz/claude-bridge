@@ -21409,7 +21409,11 @@ async function readHeartbeatAgeMs() {
   }
 }
 async function probeDaemon() {
-  const [lock, state, heartbeatAgeMs] = await Promise.all([readLock(), readState(), readHeartbeatAgeMs()]);
+  const [lock, state, heartbeatAgeMs] = await Promise.all([
+    readLock(),
+    readState(),
+    readHeartbeatAgeMs()
+  ]);
   if (!lock) {
     return { running: false, reason: "no_lock_file", lock, heartbeatAgeMs, state };
   }
@@ -21483,7 +21487,7 @@ async function pollForResult(requestId, timeoutMs) {
   }
   return null;
 }
-async function peerStopTool(ctx, args) {
+async function submitDaemonRequest(ctx, tool, args, opts) {
   const presence = await probeDaemon();
   if (!presence.running) {
     return err("daemon_not_running", SETUP_POINTER3, {
@@ -21496,12 +21500,8 @@ async function peerStopTool(ctx, args) {
     schemaVersion: 1,
     id: requestId,
     ts: (/* @__PURE__ */ new Date()).toISOString(),
-    tool: "peer_stop",
-    args: {
-      peer: args.peer,
-      ...args.reason !== void 0 ? { reason: args.reason } : {},
-      ...args.force !== void 0 ? { force: args.force } : {}
-    },
+    tool,
+    args,
     requestedBy: {
       sessionId: ctx.self.id,
       name: ctx.self.name
@@ -21512,8 +21512,8 @@ async function peerStopTool(ctx, args) {
   } catch (e) {
     return err("request_write_failed", e instanceof Error ? e.message : String(e));
   }
-  if (args.wait) {
-    const timeoutMs = args.timeoutMs ?? 1e4;
+  if (opts.wait) {
+    const timeoutMs = opts.timeoutMs ?? 1e4;
     const result = await pollForResult(requestId, timeoutMs);
     if (!result) {
       return ok({ requestId, queuedAt: envelope.ts, waited: true, timedOut: true });
@@ -21521,6 +21521,82 @@ async function peerStopTool(ctx, args) {
     return ok({ requestId, queuedAt: envelope.ts, waited: true, result });
   }
   return ok({ requestId, queuedAt: envelope.ts });
+}
+async function peerStopTool(ctx, args) {
+  const daemonArgs = { peer: args.peer };
+  if (args.reason !== void 0) daemonArgs["reason"] = args.reason;
+  if (args.force !== void 0) daemonArgs["force"] = args.force;
+  return submitDaemonRequest(ctx, "peer_stop", daemonArgs, {
+    wait: args.wait,
+    timeoutMs: args.timeoutMs
+  });
+}
+var PeerSpawnArgs = external_exports.object({
+  sessionId: external_exports.string().min(1),
+  displayName: external_exports.string().min(1),
+  cwd: external_exports.string().min(1),
+  command: external_exports.string().min(1),
+  args: external_exports.array(external_exports.string()).optional(),
+  resume: external_exports.boolean().optional(),
+  model: external_exports.string().optional(),
+  accountProfile: external_exports.string().optional(),
+  extraAllowEnv: external_exports.array(external_exports.string()).optional(),
+  extraEnv: external_exports.record(external_exports.string()).optional(),
+  wait: external_exports.boolean().optional(),
+  timeoutMs: external_exports.number().int().positive().max(6e4).optional()
+}).strict();
+async function peerSpawnTool(ctx, args) {
+  const daemonArgs = {
+    sessionId: args.sessionId,
+    displayName: args.displayName,
+    cwd: args.cwd,
+    command: args.command,
+    args: args.args ?? [],
+    resume: args.resume ?? false,
+    extraAllowEnv: args.extraAllowEnv ?? [],
+    extraEnv: args.extraEnv ?? {}
+  };
+  if (args.model !== void 0) daemonArgs["model"] = args.model;
+  if (args.accountProfile !== void 0) daemonArgs["accountProfile"] = args.accountProfile;
+  return submitDaemonRequest(ctx, "peer_spawn", daemonArgs, {
+    wait: args.wait,
+    timeoutMs: args.timeoutMs
+  });
+}
+var PeerRestartArgs = external_exports.object({
+  peer: external_exports.string().min(1),
+  reason: external_exports.string().optional(),
+  force: external_exports.boolean().optional(),
+  model: external_exports.string().optional(),
+  accountProfile: external_exports.string().optional(),
+  wait: external_exports.boolean().optional(),
+  timeoutMs: external_exports.number().int().positive().max(6e4).optional()
+}).strict();
+async function peerRestartTool(ctx, args) {
+  const daemonArgs = { peer: args.peer };
+  if (args.reason !== void 0) daemonArgs["reason"] = args.reason;
+  if (args.force !== void 0) daemonArgs["force"] = args.force;
+  if (args.model !== void 0) daemonArgs["model"] = args.model;
+  if (args.accountProfile !== void 0) daemonArgs["accountProfile"] = args.accountProfile;
+  return submitDaemonRequest(ctx, "peer_restart", daemonArgs, {
+    wait: args.wait,
+    timeoutMs: args.timeoutMs
+  });
+}
+var TeamStatusArgs = external_exports.object({
+  team: external_exports.string().optional(),
+  verbose: external_exports.boolean().optional(),
+  wait: external_exports.boolean().optional(),
+  timeoutMs: external_exports.number().int().positive().max(6e4).optional()
+}).strict();
+async function teamStatusTool(ctx, args) {
+  const daemonArgs = {};
+  if (args.team !== void 0) daemonArgs["team"] = args.team;
+  if (args.verbose !== void 0) daemonArgs["verbose"] = args.verbose;
+  return submitDaemonRequest(ctx, "team_status", daemonArgs, {
+    wait: args.wait ?? true,
+    timeoutMs: args.timeoutMs ?? 5e3
+  });
 }
 
 // src/mcp/tools.ts
@@ -23228,6 +23304,138 @@ var TOOLS = [
       const parsed = PeerStopArgs.safeParse(args);
       if (!parsed.success) return err2("invalid_args", "Schema validation failed", parsed.error);
       return peerStopTool(ctx, parsed.data);
+    }
+  },
+  {
+    name: "peer_spawn",
+    description: "Ask the control-plane daemon to spawn a new peer inside a supervised tmux session (v0.10.0-beta). Env is sanitized \u2014 ANTHROPIC_*/CLAUDE_* leaked from the caller's shell are stripped (regression fix for the 22. 7. 2026 contaminated spawn). Pass `resume:true` to reuse an existing sessionId \u2014 fork-guard refuses if it's already live. Fire-and-forget by default; opt in to `wait:true, timeoutMs:N` to receive the daemon's result envelope inline. Requires daemon installed (see docs/architecture.md ADR-008).",
+    inputSchema: {
+      type: "object",
+      properties: {
+        sessionId: {
+          type: "string",
+          description: "Session UUID for --resume; a stable name for a fresh spawn."
+        },
+        displayName: {
+          type: "string",
+          description: "Human name for the tmux session (used as the sessionKey)."
+        },
+        cwd: {
+          type: "string",
+          description: "Working directory the peer should start in."
+        },
+        command: {
+          type: "string",
+          description: "Absolute path to the executable (typically `claude`)."
+        },
+        args: {
+          type: "array",
+          items: { type: "string" },
+          description: "Additional CLI arguments for the executable."
+        },
+        resume: {
+          type: "boolean",
+          description: "Append `--resume <sessionId>` to args. Fork-guard applies."
+        },
+        model: {
+          type: "string",
+          description: "Optional --model override."
+        },
+        accountProfile: {
+          type: "string",
+          description: "Name of the account profile under ~/.claude-bridge/control/accounts/. Sets CLAUDE_CONFIG_DIR \u2014 the one Claude-namespaced env var the daemon is allowed to inject."
+        },
+        extraAllowEnv: {
+          type: "array",
+          items: { type: "string" },
+          description: "Extra env variable NAMES from the caller's process to pass through in addition to the base whitelist. `ANTHROPIC_*`/`CLAUDE_*` are always stripped regardless."
+        },
+        extraEnv: {
+          type: "object",
+          additionalProperties: { type: "string" },
+          description: "Fully-formed env overrides applied last (bypass whitelist for those names, except the hard-strip prefixes)."
+        },
+        wait: {
+          type: "boolean",
+          description: "Poll for result envelope before returning. Default false."
+        },
+        timeoutMs: {
+          type: "number",
+          minimum: 1,
+          maximum: 6e4,
+          description: "Wait budget in ms (default 10000)."
+        }
+      },
+      required: ["sessionId", "displayName", "cwd", "command"],
+      additionalProperties: false
+    },
+    handler: async (args, ctx) => {
+      const parsed = PeerSpawnArgs.safeParse(args);
+      if (!parsed.success) return err2("invalid_args", "Schema validation failed", parsed.error);
+      return peerSpawnTool(ctx, parsed.data);
+    }
+  },
+  {
+    name: "peer_restart",
+    description: "Stop and re-spawn a peer via the daemon, carrying model + account profile from state.peers unless overridden. Uses `--resume` so the session id stays stable. Wait/timeout semantics identical to peer_spawn.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        peer: {
+          type: "string",
+          description: "Peer sessionId (UUID) or display name."
+        },
+        reason: {
+          type: "string",
+          description: "Free-text reason recorded in events.jsonl."
+        },
+        force: {
+          type: "boolean",
+          description: "Kill immediately instead of graceful signal."
+        },
+        model: {
+          type: "string",
+          description: "Override the model on the new instance (default: carry over from state)."
+        },
+        accountProfile: {
+          type: "string",
+          description: "Override account profile (default: carry over from state)."
+        },
+        wait: { type: "boolean" },
+        timeoutMs: { type: "number", minimum: 1, maximum: 6e4 }
+      },
+      required: ["peer"],
+      additionalProperties: false
+    },
+    handler: async (args, ctx) => {
+      const parsed = PeerRestartArgs.safeParse(args);
+      if (!parsed.success) return err2("invalid_args", "Schema validation failed", parsed.error);
+      return peerRestartTool(ctx, parsed.data);
+    }
+  },
+  {
+    name: "team_status",
+    description: "Read-only view over the daemon's state.peers + host driver liveness. Returns per peer: sessionId, name, status, hostAlive (true when the driver still holds the sessionKey). `verbose:true` adds tmuxTarget, pid, model, account profile, timestamps. Default `wait:true` \u2014 this is a read query, callers expect data not an ack. Telemetry fields (context %, rate limits) land in F2.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        team: {
+          type: "string",
+          description: "Optional team filter (unused in beta; reserved for F2 multi-team layout)."
+        },
+        verbose: {
+          type: "boolean",
+          description: "Include full per-peer fields (default false \u2192 compact view)."
+        },
+        wait: { type: "boolean", description: "Default true \u2014 read query expects data." },
+        timeoutMs: { type: "number", minimum: 1, maximum: 6e4 }
+      },
+      additionalProperties: false
+    },
+    handler: async (args, ctx) => {
+      const parsed = TeamStatusArgs.safeParse(args);
+      if (!parsed.success) return err2("invalid_args", "Schema validation failed", parsed.error);
+      return teamStatusTool(ctx, parsed.data);
     }
   }
 ];

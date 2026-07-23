@@ -1,7 +1,8 @@
 import { makeLogger } from "@claude-bridge/shared";
 import { writeDaemonEvent, writeEvent } from "./events.ts";
-import { dispatch } from "./handlers.ts";
+import { dispatch } from "./handlers/index.ts";
 import { startHeartbeat, stopHeartbeat } from "./heartbeat.ts";
+import { type SessionHostDriver, defaultHostDriver } from "./hosts/index.ts";
 import { LockAcquireError, acquireLock, releaseLock } from "./lock.ts";
 import {
   ensureRpcDirs,
@@ -19,6 +20,7 @@ const POLL_INTERVAL_MS = 250;
 interface RunOptions {
   daemonVersion: string;
   once?: boolean;
+  hostDriver?: SessionHostDriver;
 }
 
 export async function runDaemon(opts: RunOptions): Promise<void> {
@@ -38,6 +40,7 @@ export async function runDaemon(opts: RunOptions): Promise<void> {
   await ensureRpcDirs();
   const state = await loadState(opts.daemonVersion);
   await saveState(state);
+  const hostDriver = opts.hostDriver ?? defaultHostDriver();
   await writeDaemonEvent("daemon_started", {
     daemonVersion: opts.daemonVersion,
     pid: process.pid,
@@ -91,7 +94,11 @@ export async function runDaemon(opts: RunOptions): Promise<void> {
         requestId: req.id,
         details: { tool: req.tool },
       });
-      const result = await dispatch(req, { state, daemonVersion: opts.daemonVersion });
+      const result = await dispatch(req, {
+        state,
+        hostDriver,
+        daemonVersion: opts.daemonVersion,
+      });
       await writeResult(result);
       await markRequestDone(req.id);
       await writeEvent({

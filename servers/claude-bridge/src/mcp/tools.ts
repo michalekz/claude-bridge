@@ -29,9 +29,15 @@ import { bridgeRoot, encodeProjectDir } from "../util/paths.ts";
 import type { ServerContext } from "./context.ts";
 import {
   ControlStatusArgs,
+  PeerRestartArgs,
+  PeerSpawnArgs,
   PeerStopArgs,
+  TeamStatusArgs,
   controlStatusTool,
+  peerRestartTool,
+  peerSpawnTool,
   peerStopTool,
+  teamStatusTool,
 } from "./control-plane.ts";
 
 const log = makeLogger("tools");
@@ -2316,6 +2322,144 @@ export const TOOLS: ToolSpec[] = [
       const parsed = PeerStopArgs.safeParse(args);
       if (!parsed.success) return err("invalid_args", "Schema validation failed", parsed.error);
       return peerStopTool(ctx, parsed.data);
+    },
+  },
+  {
+    name: "peer_spawn",
+    description:
+      "Ask the control-plane daemon to spawn a new peer inside a supervised tmux session (v0.10.0-beta). Env is sanitized — ANTHROPIC_*/CLAUDE_* leaked from the caller's shell are stripped (regression fix for the 22. 7. 2026 contaminated spawn). Pass `resume:true` to reuse an existing sessionId — fork-guard refuses if it's already live. Fire-and-forget by default; opt in to `wait:true, timeoutMs:N` to receive the daemon's result envelope inline. Requires daemon installed (see docs/architecture.md ADR-008).",
+    inputSchema: {
+      type: "object",
+      properties: {
+        sessionId: {
+          type: "string",
+          description: "Session UUID for --resume; a stable name for a fresh spawn.",
+        },
+        displayName: {
+          type: "string",
+          description: "Human name for the tmux session (used as the sessionKey).",
+        },
+        cwd: {
+          type: "string",
+          description: "Working directory the peer should start in.",
+        },
+        command: {
+          type: "string",
+          description: "Absolute path to the executable (typically `claude`).",
+        },
+        args: {
+          type: "array",
+          items: { type: "string" },
+          description: "Additional CLI arguments for the executable.",
+        },
+        resume: {
+          type: "boolean",
+          description: "Append `--resume <sessionId>` to args. Fork-guard applies.",
+        },
+        model: {
+          type: "string",
+          description: "Optional --model override.",
+        },
+        accountProfile: {
+          type: "string",
+          description:
+            "Name of the account profile under ~/.claude-bridge/control/accounts/. Sets CLAUDE_CONFIG_DIR — the one Claude-namespaced env var the daemon is allowed to inject.",
+        },
+        extraAllowEnv: {
+          type: "array",
+          items: { type: "string" },
+          description:
+            "Extra env variable NAMES from the caller's process to pass through in addition to the base whitelist. `ANTHROPIC_*`/`CLAUDE_*` are always stripped regardless.",
+        },
+        extraEnv: {
+          type: "object",
+          additionalProperties: { type: "string" },
+          description:
+            "Fully-formed env overrides applied last (bypass whitelist for those names, except the hard-strip prefixes).",
+        },
+        wait: {
+          type: "boolean",
+          description: "Poll for result envelope before returning. Default false.",
+        },
+        timeoutMs: {
+          type: "number",
+          minimum: 1,
+          maximum: 60000,
+          description: "Wait budget in ms (default 10000).",
+        },
+      },
+      required: ["sessionId", "displayName", "cwd", "command"],
+      additionalProperties: false,
+    },
+    handler: async (args, ctx) => {
+      const parsed = PeerSpawnArgs.safeParse(args);
+      if (!parsed.success) return err("invalid_args", "Schema validation failed", parsed.error);
+      return peerSpawnTool(ctx, parsed.data);
+    },
+  },
+  {
+    name: "peer_restart",
+    description:
+      "Stop and re-spawn a peer via the daemon, carrying model + account profile from state.peers unless overridden. Uses `--resume` so the session id stays stable. Wait/timeout semantics identical to peer_spawn.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        peer: {
+          type: "string",
+          description: "Peer sessionId (UUID) or display name.",
+        },
+        reason: {
+          type: "string",
+          description: "Free-text reason recorded in events.jsonl.",
+        },
+        force: {
+          type: "boolean",
+          description: "Kill immediately instead of graceful signal.",
+        },
+        model: {
+          type: "string",
+          description: "Override the model on the new instance (default: carry over from state).",
+        },
+        accountProfile: {
+          type: "string",
+          description: "Override account profile (default: carry over from state).",
+        },
+        wait: { type: "boolean" },
+        timeoutMs: { type: "number", minimum: 1, maximum: 60000 },
+      },
+      required: ["peer"],
+      additionalProperties: false,
+    },
+    handler: async (args, ctx) => {
+      const parsed = PeerRestartArgs.safeParse(args);
+      if (!parsed.success) return err("invalid_args", "Schema validation failed", parsed.error);
+      return peerRestartTool(ctx, parsed.data);
+    },
+  },
+  {
+    name: "team_status",
+    description:
+      "Read-only view over the daemon's state.peers + host driver liveness. Returns per peer: sessionId, name, status, hostAlive (true when the driver still holds the sessionKey). `verbose:true` adds tmuxTarget, pid, model, account profile, timestamps. Default `wait:true` — this is a read query, callers expect data not an ack. Telemetry fields (context %, rate limits) land in F2.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        team: {
+          type: "string",
+          description: "Optional team filter (unused in beta; reserved for F2 multi-team layout).",
+        },
+        verbose: {
+          type: "boolean",
+          description: "Include full per-peer fields (default false → compact view).",
+        },
+        wait: { type: "boolean", description: "Default true — read query expects data." },
+        timeoutMs: { type: "number", minimum: 1, maximum: 60000 },
+      },
+      additionalProperties: false,
+    },
+    handler: async (args, ctx) => {
+      const parsed = TeamStatusArgs.safeParse(args);
+      if (!parsed.success) return err("invalid_args", "Schema validation failed", parsed.error);
+      return teamStatusTool(ctx, parsed.data);
     },
   },
 ];

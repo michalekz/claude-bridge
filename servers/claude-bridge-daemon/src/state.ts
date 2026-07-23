@@ -17,7 +17,7 @@ const log = makeLogger("daemon.state");
 export const STATE_VERSION = 1;
 
 export type PeerLifecycleStatus = "unknown" | "starting" | "live" | "stopping" | "stopped";
-export type PeerHostDriver = "tmux" | "bg-pty" | "unknown";
+export type PeerHostDriver = "tmux" | "bg-pty" | "mock" | "unknown";
 
 export interface PeerRecord {
   sessionId: string;
