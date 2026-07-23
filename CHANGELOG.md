@@ -2,6 +2,16 @@
 
 All notable changes to this project are documented here. Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.10.0-rc.1] — 2026-07-23 (pre-release, marketplace publish)
+
+Marketplace publication of the v0.10.0-rc line. Owner GO 2026-07-23 večer (Zdeněk in designer session `mrxitydc`) — outward-facing gate opened explicitly.
+
+- `.claude-plugin/plugin.json` — version `0.9.4` → `0.10.0-rc.1`, description updated to describe the optional daemon component.
+- `.claude-plugin/marketplace.json` — `source.ref` `v0.9.4` → `v0.10.0-rc.1`, marketplace `version` bumped to `0.10.0-rc.1`, description rewritten to explain daemon opt-in path + rc-not-stable disclaimer.
+- No code changes vs. `v0.10.0-rc` — this tag is a metadata-only bump so the marketplace can point at a self-consistent tag (previous `v0.10.0-rc` still had `plugin.json.version: 0.9.4`, which would surface as a version mismatch in `/plugin list`).
+
+**Stable release** (`0.10.0` — marketplace stable, main-branch merge, HMH deployment) remains gated on a separate owner GO. The rc lets users opt in early via `install --systemd`.
+
 ## [0.10.0-rc] — 2026-07-23 (pre-release)
 
 ### Added — peer_compact + team_layout + offline-subscriber delivery (fáze 3/3)
