@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { publishLifecycleEvent } from "../event-subscribers.ts";
 import { writeEvent } from "../events.ts";
 import type { RequestEnvelope, ResultEnvelope } from "../rpc.ts";
 import { errResult, okResult } from "../rpc.ts";
@@ -124,6 +125,12 @@ export async function handlePeerStop(
       reason: args.reason ?? null,
       force: forceFlag,
     },
+  });
+  await publishLifecycleEvent({
+    event: "peer_stopped",
+    sessionId,
+    sessionKey,
+    details: { reason: args.reason ?? null, force: forceFlag },
   });
   return okResult(req.id, req.tool, { sessionId, sessionKey, force: forceFlag });
 }

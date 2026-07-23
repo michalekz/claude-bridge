@@ -32,7 +32,9 @@ Kontext žije v memory pod slugem `strategic-pivot-agent-teams` (viz `~/.claude/
 
 **Stav:** Accepted 2026-07-23. Ratifikováno spolu se zadáním `/opt/hmh/docs/agent-platform/control-plane-zadani-2026-07-23.md` (verze 3).
 
-**Verze pluginu, kdy vstupuje v platnost:** v0.10.0-alpha (daemon core), plná funkcionalita v0.10.0 stable po dokončení fází beta a rc.
+**Verze pluginu, kdy vstupuje v platnost:** v0.10.0-alpha (daemon core, kill-test acceptance), v0.10.0-beta (peer lifecycle + fork-guard + SessionHostDriver), v0.10.0-rc (peer_compact + team_layout + offline-subscriber delivery). Stable release do marketplace = samostatné rozhodnutí ownera po převzetí rc.
+
+**Uživatelská setup dokumentace:** [`docs/SETUP-DAEMON.md`](SETUP-DAEMON.md) (od v0.10.0-rc).
 
 ### Kontext
 

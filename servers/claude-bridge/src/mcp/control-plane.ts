@@ -342,6 +342,68 @@ export async function peerRestartTool(
 }
 
 // ============================================================================
+// peer_compact — orchestrated /compact injection (charter §8 audited path)
+// ============================================================================
+
+export const PeerCompactArgs = z
+  .object({
+    peer: z.string().min(1),
+    anchorTimeoutMs: z.number().int().positive().max(300_000).optional(),
+    ackPollMs: z.number().int().positive().max(10_000).optional(),
+    skipAnchorRequest: z.boolean().optional(),
+    reason: z.string().optional(),
+    wait: z.boolean().optional(),
+    timeoutMs: z.number().int().positive().max(120_000).optional(),
+  })
+  .strict();
+
+export async function peerCompactTool(
+  ctx: ServerContext,
+  args: z.infer<typeof PeerCompactArgs>,
+): Promise<ToolResult> {
+  const daemonArgs: Record<string, unknown> = { peer: args.peer };
+  if (args.anchorTimeoutMs !== undefined) daemonArgs["anchorTimeoutMs"] = args.anchorTimeoutMs;
+  if (args.ackPollMs !== undefined) daemonArgs["ackPollMs"] = args.ackPollMs;
+  if (args.skipAnchorRequest !== undefined)
+    daemonArgs["skipAnchorRequest"] = args.skipAnchorRequest;
+  if (args.reason !== undefined) daemonArgs["reason"] = args.reason;
+  return submitDaemonRequest(ctx, "peer_compact", daemonArgs, {
+    wait: args.wait,
+    timeoutMs: args.timeoutMs,
+  });
+}
+
+// ============================================================================
+// team_layout — declarative reconcile (apply / prune)
+// ============================================================================
+
+export const TeamLayoutArgs = z
+  .object({
+    team: z.string().min(1),
+    apply: z.boolean().optional(),
+    prune: z.boolean().optional(),
+    /** Inline spec bypasses the on-disk teams/<team>.json file. */
+    inline: z.unknown().optional(),
+    wait: z.boolean().optional(),
+    timeoutMs: z.number().int().positive().max(60_000).optional(),
+  })
+  .strict();
+
+export async function teamLayoutTool(
+  ctx: ServerContext,
+  args: z.infer<typeof TeamLayoutArgs>,
+): Promise<ToolResult> {
+  const daemonArgs: Record<string, unknown> = { team: args.team };
+  if (args.apply !== undefined) daemonArgs["apply"] = args.apply;
+  if (args.prune !== undefined) daemonArgs["prune"] = args.prune;
+  if (args.inline !== undefined) daemonArgs["inline"] = args.inline;
+  return submitDaemonRequest(ctx, "team_layout", daemonArgs, {
+    wait: args.wait ?? true,
+    timeoutMs: args.timeoutMs ?? 15_000,
+  });
+}
+
+// ============================================================================
 // team_status — read-only aggregation of state.peers + host driver
 // ============================================================================
 

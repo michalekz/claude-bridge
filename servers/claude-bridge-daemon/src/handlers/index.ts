@@ -3,9 +3,11 @@ import { errResult } from "../rpc.ts";
 import type { RequestEnvelope, ResultEnvelope } from "../rpc.ts";
 import type { HandlerContext } from "./context.ts";
 import { handleControlStatus } from "./control-status.ts";
+import { handlePeerCompact } from "./peer-compact.ts";
 import { handlePeerRestart } from "./peer-restart.ts";
 import { handlePeerSpawn } from "./peer-spawn.ts";
 import { handlePeerStop } from "./peer-stop.ts";
+import { handleTeamLayout } from "./team-layout.ts";
 import { handleTeamStatus } from "./team-status.ts";
 
 export type { HandlerContext } from "./context.ts";
@@ -17,7 +19,9 @@ const HANDLERS: Record<string, Handler> = {
   peer_spawn: handlePeerSpawn,
   peer_stop: handlePeerStop,
   peer_restart: handlePeerRestart,
+  peer_compact: handlePeerCompact,
   team_status: handleTeamStatus,
+  team_layout: handleTeamLayout,
   control_status: handleControlStatus,
 };
 

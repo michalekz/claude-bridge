@@ -7,7 +7,7 @@ var __export = (target, all) => {
 };
 
 // src/index.ts
-var import_promises8 = require("node:fs/promises");
+var import_promises11 = require("node:fs/promises");
 
 // ../../packages/shared/src/atomic-write.ts
 var import_node_crypto = require("node:crypto");
@@ -137,6 +137,9 @@ function resultsDir() {
 function resultPath(requestId) {
   return (0, import_node_path3.join)(resultsDir(), `${requestId}.json`);
 }
+function teamsDir() {
+  return (0, import_node_path3.join)(controlDir(), "teams");
+}
 function heartbeatPath() {
   return (0, import_node_path3.join)(controlDir(), "heartbeat");
 }
@@ -144,7 +147,7 @@ function heartbeatPath() {
 // package.json
 var package_default = {
   name: "claude-bridge-daemon",
-  version: "0.10.0-beta.0",
+  version: "0.10.0-rc.0",
   private: true,
   description: "Control-plane daemon for the claude-bridge plugin: peer lifecycle, telemetry, audit. Distributed as opt-in artefact \u2014 see ADR-008.",
   type: "module",
@@ -293,6 +296,11 @@ async function handleControlStatus(req, ctx) {
     hostDriver: ctx.hostDriver.name
   });
 }
+
+// src/handlers/peer-compact.ts
+var import_node_crypto3 = require("node:crypto");
+var import_promises5 = require("node:fs/promises");
+var import_node_path6 = require("node:path");
 
 // ../../node_modules/zod/v3/external.js
 var external_exports = {};
@@ -4335,6 +4343,257 @@ var coerce = {
 };
 var NEVER = INVALID;
 
+// src/event-subscribers.ts
+var import_node_crypto2 = require("node:crypto");
+var import_promises4 = require("node:fs/promises");
+var import_node_path5 = require("node:path");
+var log3 = makeLogger("daemon.subscribers");
+function subscribersFilePath() {
+  return (0, import_node_path5.join)(controlDir(), "subscribers.json");
+}
+function inboxPendingDir(peerId) {
+  return (0, import_node_path5.join)(bridgeRoot(), "inbox", peerId, "pending");
+}
+async function readSubscribers() {
+  try {
+    const raw = await (0, import_promises4.readFile)(subscribersFilePath(), "utf-8");
+    const parsed = JSON.parse(raw);
+    return parsed.subscribers ?? [];
+  } catch (e) {
+    const code = e.code;
+    if (code === "ENOENT") return [];
+    log3.warn("subscribers_read_error", { err: String(e) });
+    return [];
+  }
+}
+function generateMsgId() {
+  const ms = Date.now().toString(36);
+  const rand = (0, import_node_crypto2.randomBytes)(4).toString("hex");
+  return `${ms}-${rand}`;
+}
+async function publishLifecycleEvent(payload) {
+  const subscribers = await readSubscribers();
+  const interested = subscribers.filter((s) => s.events.includes(payload.event));
+  if (interested.length === 0) return;
+  for (const sub of interested) {
+    const msgId = generateMsgId();
+    const envelope = {
+      id: msgId,
+      ts: (/* @__PURE__ */ new Date()).toISOString(),
+      from: { sessionId: "control-plane-daemon", name: "control-plane-daemon" },
+      to: { sessionId: sub.peerId, name: sub.peerId },
+      kind: "lifecycle-event",
+      content: {
+        event: payload.event,
+        sessionId: payload.sessionId,
+        sessionKey: payload.sessionKey,
+        details: payload.details
+      }
+    };
+    try {
+      const path = (0, import_node_path5.join)(inboxPendingDir(sub.peerId), `${msgId}.json`);
+      await atomicWriteJson(path, envelope);
+    } catch (e) {
+      log3.warn("subscriber_dispatch_failed", {
+        subscriber: sub.peerId,
+        event: payload.event,
+        err: String(e)
+      });
+    }
+  }
+}
+
+// src/handlers/peer-compact.ts
+var DEFAULT_ANCHOR_TIMEOUT_MS = 3e4;
+var DEFAULT_ACK_POLL_MS = 500;
+var COMPACT_ACK_FILENAME_EXTENSION = ".json";
+var PeerCompactArgsSchema = external_exports.object({
+  peer: external_exports.string().min(1),
+  anchorTimeoutMs: external_exports.number().int().positive().max(3e5).optional(),
+  ackPollMs: external_exports.number().int().positive().max(1e4).optional(),
+  /** Skip the anchor request → treat the ack file as pre-existing. */
+  skipAnchorRequest: external_exports.boolean().default(false),
+  reason: external_exports.string().optional()
+}).strict();
+function compactAckDir() {
+  return (0, import_node_path6.join)(controlDir(), "compact-ack");
+}
+function compactAckPath(sessionId) {
+  return (0, import_node_path6.join)(compactAckDir(), `${sessionId}${COMPACT_ACK_FILENAME_EXTENSION}`);
+}
+function inboxPendingDir2(peerId) {
+  return (0, import_node_path6.join)(bridgeRoot(), "inbox", peerId, "pending");
+}
+function generateMsgId2() {
+  const ms = Date.now().toString(36);
+  const rand = (0, import_node_crypto3.randomBytes)(4).toString("hex");
+  return `${ms}-${rand}`;
+}
+async function fileExists(path) {
+  try {
+    await (0, import_promises5.access)(path);
+    return true;
+  } catch {
+    return false;
+  }
+}
+async function pollForAck(sessionId, deadline, pollMs) {
+  const path = compactAckPath(sessionId);
+  while (Date.now() < deadline) {
+    if (await fileExists(path)) return true;
+    await new Promise((r) => setTimeout(r, pollMs));
+  }
+  return fileExists(path);
+}
+async function consumeAckFile(sessionId) {
+  const src = compactAckPath(sessionId);
+  const done = (0, import_node_path6.join)(compactAckDir(), "done");
+  try {
+    await (0, import_promises5.mkdir)(done, { recursive: true });
+    await (0, import_promises5.rename)(src, (0, import_node_path6.join)(done, `${sessionId}-${Date.now()}.json`));
+  } catch {
+    await (0, import_promises5.unlink)(src).catch(() => void 0);
+  }
+}
+async function writeAnchorRequestMsg(peerId, threadId) {
+  const msgId = generateMsgId2();
+  const envelope = {
+    id: msgId,
+    ts: (/* @__PURE__ */ new Date()).toISOString(),
+    from: { sessionId: "control-plane-daemon", name: "control-plane-daemon" },
+    to: { sessionId: peerId, name: peerId },
+    kind: "compact-anchor-request",
+    threadId,
+    content: {
+      instruction: "Write your compact anchor file and touch ~/.claude-bridge/control/compact-ack/<sessionId>.json when ready."
+    }
+  };
+  const path = (0, import_node_path6.join)(inboxPendingDir2(peerId), `${msgId}.json`);
+  await atomicWriteJson(path, envelope);
+  return msgId;
+}
+function findPeer(state, key) {
+  if (state.peers[key]) return { sessionId: key };
+  for (const [id, rec] of Object.entries(state.peers)) {
+    if (rec.name === key) return { sessionId: id };
+  }
+  return null;
+}
+async function handlePeerCompact(req, ctx) {
+  const parsed = PeerCompactArgsSchema.safeParse(req.args);
+  if (!parsed.success) {
+    return errResult(req.id, req.tool, "invalid_args", "Schema validation failed", {
+      issues: parsed.error.issues
+    });
+  }
+  const args = parsed.data;
+  const found = findPeer(ctx.state, args.peer);
+  if (!found) {
+    return errResult(
+      req.id,
+      req.tool,
+      "peer_not_found",
+      `No peer with id/name '${args.peer}' in daemon state`,
+      { peer: args.peer }
+    );
+  }
+  const sessionId = found.sessionId;
+  const record = ctx.state.peers[sessionId];
+  if (!record) {
+    return errResult(req.id, req.tool, "peer_gone", "Peer disappeared before compact started", {
+      sessionId
+    });
+  }
+  const sessionKey = record.tmuxTarget ?? record.name;
+  const sendKeys = ctx.hostDriver.sendKeys?.bind(ctx.hostDriver);
+  if (!sendKeys) {
+    return errResult(
+      req.id,
+      req.tool,
+      "sendkeys_unsupported",
+      `Host driver '${ctx.hostDriver.name}' does not support send-keys on this platform`,
+      { hostDriver: ctx.hostDriver.name }
+    );
+  }
+  const anchorTimeoutMs = args.anchorTimeoutMs ?? DEFAULT_ANCHOR_TIMEOUT_MS;
+  const ackPollMs = args.ackPollMs ?? DEFAULT_ACK_POLL_MS;
+  const threadId = `compact:${sessionId}:${Date.now().toString(36)}`;
+  await (0, import_promises5.mkdir)(compactAckDir(), { recursive: true });
+  let anchorMsgId = null;
+  if (!args.skipAnchorRequest) {
+    try {
+      anchorMsgId = await writeAnchorRequestMsg(sessionId, threadId);
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      await writeEvent({
+        event: "peer_compact_failed",
+        level: "error",
+        by: { sessionId: req.requestedBy.sessionId, name: req.requestedBy.name },
+        requestId: req.id,
+        details: { sessionId, stage: "anchor_request", err: msg }
+      });
+      return errResult(req.id, req.tool, "anchor_request_write_failed", msg, { sessionId });
+    }
+    await writeEvent({
+      event: "peer_compact_anchor_requested",
+      by: { sessionId: req.requestedBy.sessionId, name: req.requestedBy.name },
+      requestId: req.id,
+      details: { sessionId, sessionKey, threadId, anchorMsgId, timeoutMs: anchorTimeoutMs }
+    });
+  }
+  const deadline = Date.now() + anchorTimeoutMs;
+  const acked = await pollForAck(sessionId, deadline, ackPollMs);
+  if (!acked) {
+    await writeEvent({
+      event: "peer_compact_anchor_timeout",
+      level: "warn",
+      by: { sessionId: req.requestedBy.sessionId, name: req.requestedBy.name },
+      requestId: req.id,
+      details: { sessionId, sessionKey, threadId, timeoutMs: anchorTimeoutMs }
+    });
+    return errResult(
+      req.id,
+      req.tool,
+      "anchor_timeout",
+      `Peer '${sessionId}' did not ack anchor within ${anchorTimeoutMs}ms`,
+      { sessionId, threadId }
+    );
+  }
+  await writeEvent({
+    event: "peer_compact_inject",
+    by: { sessionId: req.requestedBy.sessionId, name: req.requestedBy.name },
+    requestId: req.id,
+    details: { sessionId, sessionKey, threadId, injectedKeys: "[daemon] /compact" }
+  });
+  try {
+    await sendKeys(sessionKey, "/compact");
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    await writeEvent({
+      event: "peer_compact_failed",
+      level: "error",
+      by: { sessionId: req.requestedBy.sessionId, name: req.requestedBy.name },
+      requestId: req.id,
+      details: { sessionId, sessionKey, stage: "send_keys", err: msg }
+    });
+    return errResult(req.id, req.tool, "send_keys_failed", msg, { sessionId, sessionKey });
+  }
+  await consumeAckFile(sessionId);
+  await writeEvent({
+    event: "peer_compacted",
+    by: { sessionId: req.requestedBy.sessionId, name: req.requestedBy.name },
+    requestId: req.id,
+    details: { sessionId, sessionKey, threadId, reason: args.reason ?? null }
+  });
+  await publishLifecycleEvent({
+    event: "peer_compacted",
+    sessionId,
+    sessionKey,
+    details: { threadId, reason: args.reason ?? null }
+  });
+  return okResult(req.id, req.tool, { sessionId, sessionKey, threadId, anchorMsgId });
+}
+
 // src/env-whitelist.ts
 var BASE_ALLOWLIST = Object.freeze([
   "PATH",
@@ -4418,8 +4677,8 @@ async function forkGuard(state, driver, opts) {
 }
 
 // src/state.ts
-var import_promises4 = require("node:fs/promises");
-var log3 = makeLogger("daemon.state");
+var import_promises6 = require("node:fs/promises");
+var log4 = makeLogger("daemon.state");
 var STATE_VERSION = 1;
 var StateVersionMismatch = class extends Error {
   constructor(onDisk, supported) {
@@ -4441,12 +4700,12 @@ function emptyState(daemonVersion) {
 }
 async function loadState(daemonVersion) {
   try {
-    const raw = await (0, import_promises4.readFile)(stateFilePath(), "utf-8");
+    const raw = await (0, import_promises6.readFile)(stateFilePath(), "utf-8");
     const parsed = JSON.parse(raw);
     const onDisk = parsed.stateVersion ?? 0;
     if (onDisk > STATE_VERSION) throw new StateVersionMismatch(onDisk, STATE_VERSION);
     if (onDisk < STATE_VERSION) {
-      log3.warn("state_migration_needed", { onDisk, target: STATE_VERSION });
+      log4.warn("state_migration_needed", { onDisk, target: STATE_VERSION });
       return emptyState(daemonVersion);
     }
     const doc = {
@@ -4460,10 +4719,10 @@ async function loadState(daemonVersion) {
     if (e instanceof StateVersionMismatch) throw e;
     const code = e.code;
     if (code === "ENOENT") {
-      log3.info("state_missing_bootstrap");
+      log4.info("state_missing_bootstrap");
       return emptyState(daemonVersion);
     }
-    log3.error("state_load_error", { err: String(e) });
+    log4.error("state_load_error", { err: String(e) });
     throw e;
   }
 }
@@ -4578,6 +4837,17 @@ async function handlePeerSpawn(req, ctx) {
         accountProfile: args.accountProfile ?? null
       }
     });
+    await publishLifecycleEvent({
+      event: "peer_started",
+      sessionId: args.sessionId,
+      sessionKey,
+      details: {
+        pid: record.pid,
+        hostDriver: hostDriverName,
+        resume: args.resume,
+        model: args.model ?? null
+      }
+    });
     return okResult(req.id, req.tool, {
       sessionId: args.sessionId,
       sessionKey,
@@ -4609,7 +4879,7 @@ var PeerStopArgsSchema = external_exports.object({
   reason: external_exports.string().optional(),
   force: external_exports.boolean().default(false)
 }).strict();
-function findPeer(state, key) {
+function findPeer2(state, key) {
   if (state.peers[key]) return { sessionId: key };
   for (const [id, rec] of Object.entries(state.peers)) {
     if (rec.name === key) return { sessionId: id };
@@ -4624,7 +4894,7 @@ async function handlePeerStop(req, ctx) {
     });
   }
   const args = parsed.data;
-  const found = findPeer(ctx.state, args.peer);
+  const found = findPeer2(ctx.state, args.peer);
   if (!found) {
     await writeEvent({
       event: "peer_stop_rejected",
@@ -4691,6 +4961,12 @@ async function handlePeerStop(req, ctx) {
       reason: args.reason ?? null,
       force: forceFlag
     }
+  });
+  await publishLifecycleEvent({
+    event: "peer_stopped",
+    sessionId,
+    sessionKey,
+    details: { reason: args.reason ?? null, force: forceFlag }
   });
   return okResult(req.id, req.tool, { sessionId, sessionKey, force: forceFlag });
 }
@@ -4785,6 +5061,184 @@ async function handlePeerRestart(req, ctx) {
   });
 }
 
+// src/handlers/team-layout.ts
+var import_promises7 = require("node:fs/promises");
+var import_node_path7 = require("node:path");
+var PeerSpecSchema = external_exports.object({
+  sessionId: external_exports.string().min(1),
+  displayName: external_exports.string().min(1),
+  cwd: external_exports.string().min(1),
+  command: external_exports.string().min(1),
+  args: external_exports.array(external_exports.string()).default([]),
+  resume: external_exports.boolean().default(false),
+  model: external_exports.string().nullable().optional(),
+  accountProfile: external_exports.string().nullable().optional(),
+  extraAllowEnv: external_exports.array(external_exports.string()).default([]),
+  extraEnv: external_exports.record(external_exports.string()).default({})
+});
+var TeamFileSchema = external_exports.object({
+  team: external_exports.string().min(1),
+  peers: external_exports.array(PeerSpecSchema)
+});
+var TeamLayoutArgsSchema = external_exports.object({
+  team: external_exports.string().min(1),
+  apply: external_exports.boolean().default(true),
+  prune: external_exports.boolean().default(false),
+  /**
+   * Explicit team spec — bypasses the on-disk file. Used by tests
+   * and by future callers who want to preview a spec before writing
+   * it to teams/.
+   */
+  inline: TeamFileSchema.optional()
+}).strict();
+function teamFilePath(team) {
+  return (0, import_node_path7.join)(teamsDir(), `${team}.json`);
+}
+async function loadTeamSpec(team) {
+  try {
+    const raw = await (0, import_promises7.readFile)(teamFilePath(team), "utf-8");
+    const parsed = TeamFileSchema.safeParse(JSON.parse(raw));
+    if (!parsed.success) throw new Error(`Team spec parse failed: ${parsed.error.message}`);
+    return parsed.data;
+  } catch (e) {
+    const code = e.code;
+    if (code === "ENOENT") return null;
+    throw e;
+  }
+}
+async function handleTeamLayout(req, ctx) {
+  const parsed = TeamLayoutArgsSchema.safeParse(req.args);
+  if (!parsed.success) {
+    return errResult(req.id, req.tool, "invalid_args", "Schema validation failed", {
+      issues: parsed.error.issues
+    });
+  }
+  const args = parsed.data;
+  let spec;
+  try {
+    spec = args.inline ?? await loadTeamSpec(args.team);
+  } catch (e) {
+    return errResult(
+      req.id,
+      req.tool,
+      "team_spec_read_failed",
+      e instanceof Error ? e.message : String(e),
+      { team: args.team }
+    );
+  }
+  if (!spec) {
+    return errResult(
+      req.id,
+      req.tool,
+      "team_spec_missing",
+      `No team file at ${teamFilePath(args.team)}`,
+      {
+        team: args.team
+      }
+    );
+  }
+  const specIds = new Set(spec.peers.map((p) => p.sessionId));
+  const stateIds = new Set(Object.keys(ctx.state.peers));
+  const toSpawn = spec.peers.filter((p) => !stateIds.has(p.sessionId));
+  const toStop = [...stateIds].filter((id) => !specIds.has(id));
+  const diff = {
+    team: spec.team,
+    plannedSpawn: toSpawn.map((p) => p.sessionId),
+    plannedStop: args.prune ? toStop : [],
+    keptExtras: args.prune ? [] : toStop
+  };
+  await writeEvent({
+    event: "team_layout_reconciling",
+    by: { sessionId: req.requestedBy.sessionId, name: req.requestedBy.name },
+    requestId: req.id,
+    details: { ...diff, apply: args.apply, prune: args.prune }
+  });
+  if (!args.apply) {
+    return okResult(req.id, req.tool, { mode: "plan", diff });
+  }
+  const spawnedOk = [];
+  const spawnedFailed = [];
+  for (const p of toSpawn) {
+    const spawnReq = {
+      schemaVersion: req.schemaVersion,
+      id: `${req.id}:spawn:${p.sessionId}`,
+      ts: req.ts,
+      tool: "peer_spawn",
+      args: {
+        sessionId: p.sessionId,
+        displayName: p.displayName,
+        cwd: p.cwd,
+        command: p.command,
+        args: p.args,
+        resume: p.resume,
+        model: p.model ?? null,
+        accountProfile: p.accountProfile ?? null,
+        extraAllowEnv: p.extraAllowEnv,
+        extraEnv: p.extraEnv
+      },
+      requestedBy: req.requestedBy
+    };
+    const res = await handlePeerSpawn(spawnReq, ctx);
+    if (res.outcome === "ok") {
+      spawnedOk.push(p.sessionId);
+    } else {
+      spawnedFailed.push({
+        sessionId: p.sessionId,
+        err: res.error?.message ?? "unknown"
+      });
+    }
+  }
+  const stoppedOk = [];
+  const stoppedFailed = [];
+  if (args.prune) {
+    for (const id of toStop) {
+      const stopReq = {
+        schemaVersion: req.schemaVersion,
+        id: `${req.id}:stop:${id}`,
+        ts: req.ts,
+        tool: "peer_stop",
+        args: { peer: id, reason: `team_layout_prune:${spec.team}` },
+        requestedBy: req.requestedBy
+      };
+      const res = await handlePeerStop(stopReq, ctx);
+      if (res.outcome === "ok") stoppedOk.push(id);
+      else stoppedFailed.push({ sessionId: id, err: res.error?.message ?? "unknown" });
+    }
+  }
+  await writeEvent({
+    event: "team_layout_applied",
+    by: { sessionId: req.requestedBy.sessionId, name: req.requestedBy.name },
+    requestId: req.id,
+    details: {
+      team: spec.team,
+      spawnedOk,
+      spawnedFailed,
+      stoppedOk,
+      stoppedFailed,
+      keptExtras: diff.keptExtras
+    }
+  });
+  const failed = spawnedFailed.length > 0 || stoppedFailed.length > 0;
+  const result = {
+    team: spec.team,
+    spawnedOk,
+    spawnedFailed,
+    stoppedOk,
+    stoppedFailed,
+    keptExtras: diff.keptExtras
+  };
+  if (failed) {
+    return errResult(
+      req.id,
+      req.tool,
+      "team_layout_partial_failure",
+      "Some peers could not be reconciled \u2014 see failed lists",
+      result
+    );
+  }
+  return okResult(req.id, req.tool, result);
+}
+
 // src/handlers/team-status.ts
 var TeamStatusArgsSchema = external_exports.object({
   team: external_exports.string().optional(),
@@ -4842,7 +5296,9 @@ var HANDLERS = {
   peer_spawn: handlePeerSpawn,
   peer_stop: handlePeerStop,
   peer_restart: handlePeerRestart,
+  peer_compact: handlePeerCompact,
   team_status: handleTeamStatus,
+  team_layout: handleTeamLayout,
   control_status: handleControlStatus
 };
 async function dispatch(req, ctx) {
@@ -4863,19 +5319,19 @@ async function dispatch(req, ctx) {
 }
 
 // src/heartbeat.ts
-var import_promises5 = require("node:fs/promises");
-var log4 = makeLogger("daemon.heartbeat");
+var import_promises8 = require("node:fs/promises");
+var log5 = makeLogger("daemon.heartbeat");
 var timer = null;
 async function touch() {
   const now = /* @__PURE__ */ new Date();
   try {
-    await (0, import_promises5.utimes)(heartbeatPath(), now, now);
+    await (0, import_promises8.utimes)(heartbeatPath(), now, now);
   } catch (e) {
     const code = e.code;
     if (code === "ENOENT") {
-      await (0, import_promises5.writeFile)(heartbeatPath(), "");
+      await (0, import_promises8.writeFile)(heartbeatPath(), "");
     } else {
-      log4.warn("heartbeat_touch_failed", { err: String(e) });
+      log5.warn("heartbeat_touch_failed", { err: String(e) });
     }
   }
 }
@@ -4897,7 +5353,7 @@ function stopHeartbeat() {
 var import_node_child_process = require("node:child_process");
 var import_node_util = require("node:util");
 var execFileAsync = (0, import_node_util.promisify)(import_node_child_process.execFile);
-var log5 = makeLogger("daemon.host.tmux");
+var log6 = makeLogger("daemon.host.tmux");
 var TmuxDriver = class {
   name = "tmux";
   tmuxBin;
@@ -4931,7 +5387,7 @@ var TmuxDriver = class {
     try {
       await execFileAsync(this.tmuxBin, args, { env });
     } catch (e) {
-      log5.error("tmux_spawn_failed", {
+      log6.error("tmux_spawn_failed", {
         sessionKey: opts.sessionKey,
         err: e instanceof Error ? e.message : String(e)
       });
@@ -4951,7 +5407,7 @@ var TmuxDriver = class {
     const budget = opts.force === true ? this.verifyTimeoutMs / 2 : this.verifyTimeoutMs;
     const respawned = !await this.verifyKilled(sessionKey, budget);
     if (respawned) {
-      log5.error("tmux_kill_respawn_detected", { sessionKey });
+      log6.error("tmux_kill_respawn_detected", { sessionKey });
       throw new Error(
         `Session '${sessionKey}' respawned within ${budget}ms after kill \u2014 investigate supervisor (bg-pty-host?)`
       );
@@ -5013,22 +5469,20 @@ var TmuxDriver = class {
 };
 
 // src/hosts/mock-driver.ts
-var log6 = makeLogger("daemon.host.mock");
+var log7 = makeLogger("daemon.host.mock");
 
 // src/hosts/index.ts
 function defaultHostDriver() {
   if (process.platform === "win32") {
-    throw new Error(
-      "Windows native host driver ships in v0.10.0 F3+. Use WSL2 (tmux) for now."
-    );
+    throw new Error("Windows native host driver ships in v0.10.0 F3+. Use WSL2 (tmux) for now.");
   }
   return new TmuxDriver();
 }
 
 // src/lock.ts
 var import_node_fs = require("node:fs");
-var import_promises6 = require("node:fs/promises");
-var log7 = makeLogger("daemon.lock");
+var import_promises9 = require("node:fs/promises");
+var log8 = makeLogger("daemon.lock");
 var LockAcquireError = class extends Error {
   constructor(message, heldBy) {
     super(message);
@@ -5068,14 +5522,14 @@ function isStale(payload) {
 }
 async function readLock() {
   try {
-    const raw = await (0, import_promises6.readFile)(daemonLockPath(), "utf-8");
+    const raw = await (0, import_promises9.readFile)(daemonLockPath(), "utf-8");
     const parsed = JSON.parse(raw);
     if (typeof parsed.pid !== "number") return null;
     return parsed;
   } catch (e) {
     const code = e.code;
     if (code === "ENOENT") return null;
-    log7.warn("lock_read_error", { code, err: String(e) });
+    log8.warn("lock_read_error", { code, err: String(e) });
     return null;
   }
 }
@@ -5083,7 +5537,7 @@ async function acquireLock() {
   const existing = await readLock();
   if (existing) {
     if (isStale(existing)) {
-      log7.warn("lock_takeover_stale", { heldBy: existing });
+      log8.warn("lock_takeover_stale", { heldBy: existing });
     } else {
       throw new LockAcquireError(
         `daemon.lock held by live pid ${existing.pid} (started ${existing.startedAt})`,
@@ -5097,28 +5551,28 @@ async function acquireLock() {
     procStart: readProcStart(process.pid)
   };
   await atomicWriteJson(daemonLockPath(), payload);
-  log7.info("lock_acquired", { pid: payload.pid });
+  log8.info("lock_acquired", { pid: payload.pid });
   return payload;
 }
 async function releaseLock() {
   try {
-    await (0, import_promises6.unlink)(daemonLockPath());
-    log7.info("lock_released");
+    await (0, import_promises9.unlink)(daemonLockPath());
+    log8.info("lock_released");
   } catch (e) {
     const code = e.code;
-    if (code !== "ENOENT") log7.warn("lock_release_error", { code, err: String(e) });
+    if (code !== "ENOENT") log8.warn("lock_release_error", { code, err: String(e) });
   }
 }
 
 // src/daemon.ts
-var log8 = makeLogger("daemon");
+var log9 = makeLogger("daemon");
 var POLL_INTERVAL_MS = 250;
 async function runDaemon(opts) {
   try {
     await acquireLock();
   } catch (e) {
     if (e instanceof LockAcquireError) {
-      log8.error("lock_held_by_another_daemon", {
+      log9.error("lock_held_by_another_daemon", {
         heldBy: e.heldBy
       });
       process.exitCode = 3;
@@ -5152,7 +5606,7 @@ async function runDaemon(opts) {
   process.on("SIGINT", () => void shutdown("SIGINT"));
   process.on("SIGTERM", () => void shutdown("SIGTERM"));
   process.on("SIGHUP", () => {
-    log8.info("sighup_reload_stub", { note: "config reload lands in v0.10.0-beta" });
+    log9.info("sighup_reload_stub", { note: "config reload lands in v0.10.0-beta" });
   });
   process.on("SIGPIPE", () => void 0);
   const processQueue = async () => {
@@ -5198,22 +5652,22 @@ async function runDaemon(opts) {
     return;
   }
   pollTimer = setInterval(() => {
-    void processQueue().catch((e) => log8.error("queue_error", { err: String(e) }));
+    void processQueue().catch((e) => log9.error("queue_error", { err: String(e) }));
   }, POLL_INTERVAL_MS);
 }
 
 // src/install.ts
 var import_node_child_process2 = require("node:child_process");
-var import_promises7 = require("node:fs/promises");
+var import_promises10 = require("node:fs/promises");
 var import_node_os2 = require("node:os");
-var import_node_path5 = require("node:path");
-var log9 = makeLogger("daemon.install");
+var import_node_path8 = require("node:path");
+var log10 = makeLogger("daemon.install");
 var UNIT_NAME = "claude-bridge-daemon.service";
 function systemdUserDir() {
-  return (0, import_node_path5.join)((0, import_node_os2.homedir)(), ".config", "systemd", "user");
+  return (0, import_node_path8.join)((0, import_node_os2.homedir)(), ".config", "systemd", "user");
 }
 function unitPath() {
-  return (0, import_node_path5.join)(systemdUserDir(), UNIT_NAME);
+  return (0, import_node_path8.join)(systemdUserDir(), UNIT_NAME);
 }
 function assertLinux() {
   if (process.platform !== "linux") {
@@ -5225,19 +5679,19 @@ function assertLinux() {
 function resolveDaemonBin() {
   const argv1 = process.argv[1];
   if (!argv1) throw new Error("process.argv[1] missing \u2014 cannot determine daemon binary path");
-  if (!argv1.startsWith("/")) return (0, import_node_path5.resolve)(process.cwd(), argv1);
+  if (!argv1.startsWith("/")) return (0, import_node_path8.resolve)(process.cwd(), argv1);
   return argv1;
 }
 async function readTemplate() {
   const anchor = resolveDaemonBin();
-  const anchorDir = (0, import_node_path5.dirname)(anchor);
+  const anchorDir = (0, import_node_path8.dirname)(anchor);
   const candidates = [
-    (0, import_node_path5.resolve)(anchorDir, "..", "templates", UNIT_NAME),
-    (0, import_node_path5.resolve)(anchorDir, "templates", UNIT_NAME)
+    (0, import_node_path8.resolve)(anchorDir, "..", "templates", UNIT_NAME),
+    (0, import_node_path8.resolve)(anchorDir, "templates", UNIT_NAME)
   ];
   for (const candidate of candidates) {
     try {
-      return await (0, import_promises7.readFile)(candidate, "utf-8");
+      return await (0, import_promises10.readFile)(candidate, "utf-8");
     } catch {
     }
   }
@@ -5253,34 +5707,34 @@ async function installSystemd() {
   await ensureBinariesExist(daemonBin, nodeBin);
   const template = await readTemplate();
   const rendered = template.replace(/__NODE_BIN__/g, nodeBin).replace(/__DAEMON_BIN__/g, daemonBin);
-  await (0, import_promises7.mkdir)(systemdUserDir(), { recursive: true });
-  await (0, import_promises7.writeFile)(unitPath(), rendered, "utf-8");
-  log9.info("unit_written", { path: unitPath() });
+  await (0, import_promises10.mkdir)(systemdUserDir(), { recursive: true });
+  await (0, import_promises10.writeFile)(unitPath(), rendered, "utf-8");
+  log10.info("unit_written", { path: unitPath() });
   runSystemctl("daemon-reload");
   runSystemctl("enable", UNIT_NAME);
   runSystemctl("start", UNIT_NAME);
-  log9.info("daemon_started_via_systemd");
+  log10.info("daemon_started_via_systemd");
 }
 async function uninstallSystemd() {
   assertLinux();
   try {
     runSystemctl("stop", UNIT_NAME);
   } catch (e) {
-    log9.warn("systemd_stop_failed", { err: String(e) });
+    log10.warn("systemd_stop_failed", { err: String(e) });
   }
   try {
     runSystemctl("disable", UNIT_NAME);
   } catch (e) {
-    log9.warn("systemd_disable_failed", { err: String(e) });
+    log10.warn("systemd_disable_failed", { err: String(e) });
   }
   try {
-    await (0, import_promises7.unlink)(unitPath());
+    await (0, import_promises10.unlink)(unitPath());
   } catch (e) {
     const code = e.code;
-    if (code !== "ENOENT") log9.warn("unit_unlink_failed", { err: String(e) });
+    if (code !== "ENOENT") log10.warn("unit_unlink_failed", { err: String(e) });
   }
   runSystemctl("daemon-reload");
-  log9.info("uninstalled");
+  log10.info("uninstalled");
 }
 function runSystemctl(...args) {
   (0, import_node_child_process2.execFileSync)("systemctl", ["--user", ...args], { stdio: "inherit" });
@@ -5291,7 +5745,7 @@ async function ensureBinariesExist(daemonBin, nodeBin) {
     ["node", nodeBin]
   ]) {
     try {
-      await (0, import_promises7.stat)(path);
+      await (0, import_promises10.stat)(path);
     } catch {
       throw new Error(`${label} binary not found at ${path} \u2014 build daemon first (npm run build)`);
     }
@@ -5299,7 +5753,7 @@ async function ensureBinariesExist(daemonBin, nodeBin) {
 }
 
 // src/index.ts
-var log10 = makeLogger("daemon.cli");
+var log11 = makeLogger("daemon.cli");
 var DAEMON_VERSION = package_default.version;
 var HELP = `claude-bridge-daemon ${DAEMON_VERSION}
 
@@ -5316,7 +5770,7 @@ async function statusCommand() {
   const lock = await readLock();
   let heartbeatAgeMs = null;
   try {
-    const s = await (0, import_promises8.stat)(heartbeatPath());
+    const s = await (0, import_promises11.stat)(heartbeatPath());
     heartbeatAgeMs = Date.now() - s.mtimeMs;
   } catch {
     heartbeatAgeMs = null;
@@ -5382,6 +5836,6 @@ ${HELP}`);
   }
 }
 main(process.argv.slice(2)).catch((e) => {
-  log10.error("cli_fatal", { err: String(e) });
+  log11.error("cli_fatal", { err: String(e) });
   process.exitCode = 1;
 });

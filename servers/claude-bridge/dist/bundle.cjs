@@ -21583,6 +21583,46 @@ async function peerRestartTool(ctx, args) {
     timeoutMs: args.timeoutMs
   });
 }
+var PeerCompactArgs = external_exports.object({
+  peer: external_exports.string().min(1),
+  anchorTimeoutMs: external_exports.number().int().positive().max(3e5).optional(),
+  ackPollMs: external_exports.number().int().positive().max(1e4).optional(),
+  skipAnchorRequest: external_exports.boolean().optional(),
+  reason: external_exports.string().optional(),
+  wait: external_exports.boolean().optional(),
+  timeoutMs: external_exports.number().int().positive().max(12e4).optional()
+}).strict();
+async function peerCompactTool(ctx, args) {
+  const daemonArgs = { peer: args.peer };
+  if (args.anchorTimeoutMs !== void 0) daemonArgs["anchorTimeoutMs"] = args.anchorTimeoutMs;
+  if (args.ackPollMs !== void 0) daemonArgs["ackPollMs"] = args.ackPollMs;
+  if (args.skipAnchorRequest !== void 0)
+    daemonArgs["skipAnchorRequest"] = args.skipAnchorRequest;
+  if (args.reason !== void 0) daemonArgs["reason"] = args.reason;
+  return submitDaemonRequest(ctx, "peer_compact", daemonArgs, {
+    wait: args.wait,
+    timeoutMs: args.timeoutMs
+  });
+}
+var TeamLayoutArgs = external_exports.object({
+  team: external_exports.string().min(1),
+  apply: external_exports.boolean().optional(),
+  prune: external_exports.boolean().optional(),
+  /** Inline spec bypasses the on-disk teams/<team>.json file. */
+  inline: external_exports.unknown().optional(),
+  wait: external_exports.boolean().optional(),
+  timeoutMs: external_exports.number().int().positive().max(6e4).optional()
+}).strict();
+async function teamLayoutTool(ctx, args) {
+  const daemonArgs = { team: args.team };
+  if (args.apply !== void 0) daemonArgs["apply"] = args.apply;
+  if (args.prune !== void 0) daemonArgs["prune"] = args.prune;
+  if (args.inline !== void 0) daemonArgs["inline"] = args.inline;
+  return submitDaemonRequest(ctx, "team_layout", daemonArgs, {
+    wait: args.wait ?? true,
+    timeoutMs: args.timeoutMs ?? 15e3
+  });
+}
 var TeamStatusArgs = external_exports.object({
   team: external_exports.string().optional(),
   verbose: external_exports.boolean().optional(),
@@ -23436,6 +23476,73 @@ var TOOLS = [
       const parsed = TeamStatusArgs.safeParse(args);
       if (!parsed.success) return err2("invalid_args", "Schema validation failed", parsed.error);
       return teamStatusTool(ctx, parsed.data);
+    }
+  },
+  {
+    name: "peer_compact",
+    description: "Ask the control-plane daemon to orchestrate `/compact` on a peer (v0.10.0-rc). Sequence: daemon writes a bridge inbox message to the peer requesting a compact anchor \u2192 peer writes `~/.claude-bridge/control/compact-ack/<sessionId>.json` when ready \u2192 daemon `send-keys /compact` into the tmux session \u2192 emits `peer_compacted`. Refuses with `anchor_timeout` if the ack file doesn't appear within `anchorTimeoutMs` (default 30 s). This is the ONLY send-keys path in the daemon (charter \xA78 amendment) \u2014 every inject is audit-logged via `peer_compact_inject`. The AUTO-watchdog framework is present but defaults OFF (`config.compactWatchdog.enabled = false`); operator must flip it explicitly.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        peer: { type: "string", description: "Peer sessionId (UUID) or display name." },
+        anchorTimeoutMs: {
+          type: "number",
+          minimum: 1,
+          maximum: 3e5,
+          description: "Wait budget for the ack file (default 30000)."
+        },
+        ackPollMs: {
+          type: "number",
+          minimum: 1,
+          maximum: 1e4,
+          description: "Ack file poll interval (default 500)."
+        },
+        skipAnchorRequest: {
+          type: "boolean",
+          description: "Skip the anchor request bridge message \u2014 assume the ack file is already present. For tests / operators who bypass the standard playbook."
+        },
+        reason: { type: "string", description: "Free-text reason recorded in events.jsonl." },
+        wait: { type: "boolean" },
+        timeoutMs: { type: "number", minimum: 1, maximum: 12e4 }
+      },
+      required: ["peer"],
+      additionalProperties: false
+    },
+    handler: async (args, ctx) => {
+      const parsed = PeerCompactArgs.safeParse(args);
+      if (!parsed.success) return err2("invalid_args", "Schema validation failed", parsed.error);
+      return peerCompactTool(ctx, parsed.data);
+    }
+  },
+  {
+    name: "team_layout",
+    description: "Declarative team reconcile against `~/.claude-bridge/control/teams/<team>.json` (or an inline spec). `apply:true` (default) spawns any peer in the spec that is not already in `state.peers`. `prune:true` also stops any peer in `state.peers` that is not in the spec \u2014 extras are KEPT by default (safe reconcile). Set `apply:false` to preview the diff without changing anything. Response includes spawnedOk / spawnedFailed / stoppedOk / stoppedFailed / keptExtras arrays. Team spec schema documented in docs/SETUP-DAEMON.md.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        team: { type: "string", description: "Team name \u2014 matches `teams/<team>.json`." },
+        apply: {
+          type: "boolean",
+          description: "Actually reconcile (default true). Pass false for a preview (spawnedOk/stoppedOk stay empty; plannedSpawn/plannedStop populated)."
+        },
+        prune: {
+          type: "boolean",
+          description: "Stop peers not in the spec. Default false = safe (keep extras)."
+        },
+        inline: {
+          type: "object",
+          description: "Provide the team spec inline instead of reading from teams/<team>.json. Same schema \u2014 { team, peers[] }."
+        },
+        wait: { type: "boolean", description: "Default true \u2014 reconcile is a query." },
+        timeoutMs: { type: "number", minimum: 1, maximum: 6e4 }
+      },
+      required: ["team"],
+      additionalProperties: false
+    },
+    handler: async (args, ctx) => {
+      const parsed = TeamLayoutArgs.safeParse(args);
+      if (!parsed.success) return err2("invalid_args", "Schema validation failed", parsed.error);
+      return teamLayoutTool(ctx, parsed.data);
     }
   }
 ];

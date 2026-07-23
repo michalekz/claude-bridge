@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { sanitizeEnv } from "../env-whitelist.ts";
+import { publishLifecycleEvent } from "../event-subscribers.ts";
 import { writeEvent } from "../events.ts";
 import type { RequestEnvelope, ResultEnvelope } from "../rpc.ts";
 import { errResult, okResult } from "../rpc.ts";
@@ -159,6 +160,17 @@ export async function handlePeerSpawn(
         resume: args.resume,
         model: args.model ?? null,
         accountProfile: args.accountProfile ?? null,
+      },
+    });
+    await publishLifecycleEvent({
+      event: "peer_started",
+      sessionId: args.sessionId,
+      sessionKey,
+      details: {
+        pid: record.pid,
+        hostDriver: hostDriverName,
+        resume: args.resume,
+        model: args.model ?? null,
       },
     });
     return okResult(req.id, req.tool, {

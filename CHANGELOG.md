@@ -2,6 +2,107 @@
 
 All notable changes to this project are documented here. Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.10.0-rc] — 2026-07-23 (pre-release)
+
+### Added — peer_compact + team_layout + offline-subscriber delivery (fáze 3/3)
+
+Rc closes the MVP scope. Alpha shipped the daemon skeleton, beta connected it to real peer lifecycle, rc adds the orchestrated `/compact` path, declarative team reconcile, lifecycle event routing into inboxes, and user-facing setup docs.
+
+**Marketplace stays at 0.9.4** — the daemon distribution model is fully opt-in via `install --systemd`. Promotion to stable + marketplace ref bump remains an owner decision (per designer's mrxg4nsh directive).
+
+### `peer_compact` orchestrated injection (§5.3 zadání)
+
+New `src/handlers/peer-compact.ts`:
+1. Write bridge inbox message to the peer with `kind: "compact-anchor-request"` (skippable via `skipAnchorRequest:true` for tests / manual paths).
+2. Poll `~/.claude-bridge/control/compact-ack/<sessionId>.json` within `anchorTimeoutMs` (default 30 s, `ackPollMs` default 500 ms).
+3. On ack: emit `peer_compact_inject` event (charter §8 audit checkpoint) → `driver.sendKeys(sessionKey, "/compact")` — the **only** send-keys path in the daemon.
+4. Consume the ack file into `compact-ack/done/` and emit `peer_compacted` + lifecycle event to subscribers.
+
+Timeouts return `anchor_timeout` with a `peer_compact_anchor_timeout` audit event; send-keys errors return `send_keys_failed`. Drivers without send-keys (`NotSupportedByDriverError`) surface as `sendkeys_unsupported`.
+
+### AUTO compact-watchdog framework — DEFAULT OFF
+
+`src/config.ts` reads `~/.claude-bridge/control/config.json`:
+
+```json
+{
+  "compactWatchdog": {
+    "enabled": false,
+    "warnAtPercent": 0.85,
+    "criticalAtPercent": 0.95
+  }
+}
+```
+
+`enabled` defaults `false`. Only the operator flips it — the reasoning is documented in `docs/SETUP-DAEMON.md` (charter §8 amendment: send-keys injection is the most sensitive daemon operation, we want manual runs first).
+
+### `team_layout` declarative reconcile
+
+New `src/handlers/team-layout.ts`:
+- Reads `~/.claude-bridge/control/teams/<team>.json` (or accepts an inline spec).
+- `apply:true` (default) → dispatches `peer_spawn` for every peer in the spec not currently in `state.peers`. Extras (in state, not in spec) are KEPT.
+- `prune:true` → also dispatches `peer_stop` for extras.
+- `apply:false` → plan-only diff (`plannedSpawn`, `plannedStop`, `keptExtras`), no mutation.
+
+Returns `{spawnedOk, spawnedFailed, stoppedOk, stoppedFailed, keptExtras}`. Partial failure → `team_layout_partial_failure` err with the same fields. Emits `team_layout_reconciling` (plan) + `team_layout_applied` (result) audit events.
+
+### Offline-subscriber lifecycle delivery
+
+New `src/event-subscribers.ts` reads `~/.claude-bridge/control/subscribers.json`:
+
+```json
+{
+  "subscribers": [
+    { "peerId": "keeper-uuid", "events": ["peer_started", "peer_stopped", "peer_compacted"] }
+  ]
+}
+```
+
+For each matching event, the daemon writes a `lifecycle-event`-kind message into the subscriber's bridge inbox (`~/.claude-bridge/inbox/<peerId>/pending/`). Persistent — survives peer sleep, drained on next bridge tool call (piggyback). Owner-only writable file; agents can read but not mutate. Wired into `peer_started`, `peer_stopped`, `peer_compacted` events; `peer_crashed` lands in F2 alongside crash detection.
+
+### MCP wire (bridge → daemon)
+
+`servers/claude-bridge/src/mcp/control-plane.ts` gains two more tools:
+- `peer_compact` — with `anchorTimeoutMs`, `ackPollMs`, `skipAnchorRequest`, `reason`, and standard `wait/timeoutMs`
+- `team_layout` — `team`, `apply`, `prune`, `inline`, `wait/timeoutMs`. Default `wait:true` — reconcile is a query.
+
+Bridge total MCP tools = 21 (was 19 in beta).
+
+### Acceptance tests — 5 PASS
+
+**Vitest** (25/25 daemon tests, +4 for rc):
+1. **team_layout apply without prune** — spawns missing peers, keeps extras. `keptExtras` correctly populated.
+2. **team_layout prune:true** — extras removed, `stoppedOk` populated.
+3. **offline-subscriber delivery** — subscribers config → peer_started event → lifecycle-event message in the subscriber's inbox with correct `kind`, `content.event`, `content.sessionId`.
+4. **peer_compact orchestrace** — pre-write ack file → `handlePeerCompact` calls `driver.sendKeys(sessionKey, "/compact")` exactly once; ack file consumed (moved to `done/` or unlinked).
+5. **peer_compact anchor_timeout** — no ack file → sendKeys spy asserts NOT called; result `anchor_timeout`.
+
+**Live smoke** (daemon 0.10.0-rc.0 installed via systemd, verified in this repo):
+- `control_status` alive, heartbeat fresh, `daemonVersion:"0.10.0-rc.0"`.
+
+### Docs
+
+- `docs/SETUP-DAEMON.md` — user-facing setup guide (install, layout, config files, tools table, audit events, uninstall, troubleshooting).
+- `docs/architecture.md` — ADR-008 status updated with alpha/beta/rc progression; stable release explicitly gated on owner GO.
+
+### Version bump
+
+- Daemon `0.10.0-beta.0` → `0.10.0-rc.0`. Bundle 158kB → 174kB (rc handlers + config + subscribers).
+- Plugin stays at 0.9.4 for marketplace. Daemon distribution is opt-in via `install --systemd`.
+
+### Not in scope for rc (F2+)
+
+- `peer_crashed` detection + crash policy (restart / wait / escalate)
+- Telemetry cache (`control/telemetry/<sessionId>.json`) as source #1 in `contextLimitSource` chain
+- Account profiles (`peer_login`, `~/.claude-bridge/control/accounts/`)
+- GO-registr verification (`authRef` gating for destructive ops)
+- Rate-limit window detection + revive
+- Extended acceptance: end-to-end multi-peer team spawn from `teams/hmh.json` on a real machine
+
+### Coordination
+
+Milestone report `[milestone] v0.10.0-rc — SHIPPED` posted to designer thread `control-plane-zadani-2026-07-23` at release. STOP-gate after rc: stable + marketplace + HMH deployment are Zdeňkovo rozhodnutí — no further daemon work without his GO.
+
 ## [0.10.0-beta] — 2026-07-23 (pre-release)
 
 ### Added — peer lifecycle + fork-guard + SessionHostDriver (fáze 2/3)
