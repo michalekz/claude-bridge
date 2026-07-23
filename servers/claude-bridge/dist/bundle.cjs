@@ -1299,21 +1299,21 @@ var require_errors = __commonJS({
     function extendErrors({ gen, keyword, schemaValue, data, errsCount, it }) {
       if (errsCount === void 0)
         throw new Error("ajv implementation error");
-      const err2 = gen.name("err");
+      const err3 = gen.name("err");
       gen.forRange("i", errsCount, names_1.default.errors, (i) => {
-        gen.const(err2, (0, codegen_1._)`${names_1.default.vErrors}[${i}]`);
-        gen.if((0, codegen_1._)`${err2}.instancePath === undefined`, () => gen.assign((0, codegen_1._)`${err2}.instancePath`, (0, codegen_1.strConcat)(names_1.default.instancePath, it.errorPath)));
-        gen.assign((0, codegen_1._)`${err2}.schemaPath`, (0, codegen_1.str)`${it.errSchemaPath}/${keyword}`);
+        gen.const(err3, (0, codegen_1._)`${names_1.default.vErrors}[${i}]`);
+        gen.if((0, codegen_1._)`${err3}.instancePath === undefined`, () => gen.assign((0, codegen_1._)`${err3}.instancePath`, (0, codegen_1.strConcat)(names_1.default.instancePath, it.errorPath)));
+        gen.assign((0, codegen_1._)`${err3}.schemaPath`, (0, codegen_1.str)`${it.errSchemaPath}/${keyword}`);
         if (it.opts.verbose) {
-          gen.assign((0, codegen_1._)`${err2}.schema`, schemaValue);
-          gen.assign((0, codegen_1._)`${err2}.data`, data);
+          gen.assign((0, codegen_1._)`${err3}.schema`, schemaValue);
+          gen.assign((0, codegen_1._)`${err3}.data`, data);
         }
       });
     }
     exports2.extendErrors = extendErrors;
     function addError(gen, errObj) {
-      const err2 = gen.const("err", errObj);
-      gen.if((0, codegen_1._)`${names_1.default.vErrors} === null`, () => gen.assign(names_1.default.vErrors, (0, codegen_1._)`[${err2}]`), (0, codegen_1._)`${names_1.default.vErrors}.push(${err2})`);
+      const err3 = gen.const("err", errObj);
+      gen.if((0, codegen_1._)`${names_1.default.vErrors} === null`, () => gen.assign(names_1.default.vErrors, (0, codegen_1._)`[${err3}]`), (0, codegen_1._)`${names_1.default.vErrors}.push(${err3})`);
       gen.code((0, codegen_1._)`${names_1.default.errors}++`);
     }
     function returnErrors(it, errs) {
@@ -4401,11 +4401,11 @@ var require_core = __commonJS({
     Ajv2.ValidationError = validation_error_1.default;
     Ajv2.MissingRefError = ref_error_1.default;
     exports2.default = Ajv2;
-    function checkOptions(checkOpts, options, msg, log8 = "error") {
+    function checkOptions(checkOpts, options, msg, log9 = "error") {
       for (const key in checkOpts) {
         const opt = key;
         if (opt in options)
-          this.logger[log8](`${msg}: option ${key}. ${checkOpts[opt]}`);
+          this.logger[log9](`${msg}: option ${key}. ${checkOpts[opt]}`);
       }
     }
     function getSchEnv(keyRef) {
@@ -6886,7 +6886,7 @@ var require_dist = __commonJS({
   }
 });
 
-// node_modules/zod/v3/external.js
+// ../../node_modules/zod/v3/external.js
 var external_exports = {};
 __export(external_exports, {
   BRAND: () => BRAND,
@@ -6998,7 +6998,7 @@ __export(external_exports, {
   void: () => voidType
 });
 
-// node_modules/zod/v3/helpers/util.js
+// ../../node_modules/zod/v3/helpers/util.js
 var util;
 (function(util2) {
   util2.assertEqual = (_) => {
@@ -7132,7 +7132,7 @@ var getParsedType = (data) => {
   }
 };
 
-// node_modules/zod/v3/ZodError.js
+// ../../node_modules/zod/v3/ZodError.js
 var ZodIssueCode = util.arrayToEnum([
   "invalid_type",
   "invalid_literal",
@@ -7250,7 +7250,7 @@ ZodError.create = (issues) => {
   return error2;
 };
 
-// node_modules/zod/v3/locales/en.js
+// ../../node_modules/zod/v3/locales/en.js
 var errorMap = (issue2, _ctx) => {
   let message;
   switch (issue2.code) {
@@ -7353,7 +7353,7 @@ var errorMap = (issue2, _ctx) => {
 };
 var en_default = errorMap;
 
-// node_modules/zod/v3/errors.js
+// ../../node_modules/zod/v3/errors.js
 var overrideErrorMap = en_default;
 function setErrorMap(map) {
   overrideErrorMap = map;
@@ -7362,7 +7362,7 @@ function getErrorMap() {
   return overrideErrorMap;
 }
 
-// node_modules/zod/v3/helpers/parseUtil.js
+// ../../node_modules/zod/v3/helpers/parseUtil.js
 var makeIssue = (params) => {
   const { data, path, errorMaps, issueData } = params;
   const fullPath = [...path, ...issueData.path || []];
@@ -7472,14 +7472,14 @@ var isDirty = (x) => x.status === "dirty";
 var isValid = (x) => x.status === "valid";
 var isAsync = (x) => typeof Promise !== "undefined" && x instanceof Promise;
 
-// node_modules/zod/v3/helpers/errorUtil.js
+// ../../node_modules/zod/v3/helpers/errorUtil.js
 var errorUtil;
 (function(errorUtil2) {
   errorUtil2.errToObj = (message) => typeof message === "string" ? { message } : message || {};
   errorUtil2.toString = (message) => typeof message === "string" ? message : message?.message;
 })(errorUtil || (errorUtil = {}));
 
-// node_modules/zod/v3/types.js
+// ../../node_modules/zod/v3/types.js
 var ParseInputLazyPath = class {
   constructor(parent, value, path, key) {
     this._cachedPath = [];
@@ -7624,8 +7624,8 @@ var ZodType = class {
         } : {
           issues: ctx.common.issues
         };
-      } catch (err2) {
-        if (err2?.message?.toLowerCase()?.includes("encountered")) {
+      } catch (err3) {
+        if (err3?.message?.toLowerCase()?.includes("encountered")) {
           this["~standard"].async = true;
         }
         ctx.common = {
@@ -10927,7 +10927,7 @@ var coerce = {
 };
 var NEVER = INVALID;
 
-// node_modules/zod/v4/core/core.js
+// ../../node_modules/zod/v4/core/core.js
 var NEVER2 = Object.freeze({
   status: "aborted"
 });
@@ -10987,7 +10987,7 @@ function config(newConfig) {
   return globalConfig;
 }
 
-// node_modules/zod/v4/core/util.js
+// ../../node_modules/zod/v4/core/util.js
 var util_exports = {};
 __export(util_exports, {
   BIGINT_FORMAT_RANGES: () => BIGINT_FORMAT_RANGES,
@@ -11508,7 +11508,7 @@ var Class = class {
   }
 };
 
-// node_modules/zod/v4/core/errors.js
+// ../../node_modules/zod/v4/core/errors.js
 var initializer = (inst, def) => {
   inst.name = "$ZodError";
   Object.defineProperty(inst, "_zod", {
@@ -11583,7 +11583,7 @@ function formatError(error2, _mapper) {
   return fieldErrors;
 }
 
-// node_modules/zod/v4/core/parse.js
+// ../../node_modules/zod/v4/core/parse.js
 var _parse = (_Err) => (schema, value, _ctx, _params) => {
   const ctx = _ctx ? Object.assign(_ctx, { async: false }) : { async: false };
   const result = schema._zod.run({ value, issues: [] }, ctx);
@@ -11633,7 +11633,7 @@ var _safeParseAsync = (_Err) => async (schema, value, _ctx) => {
 };
 var safeParseAsync = /* @__PURE__ */ _safeParseAsync($ZodRealError);
 
-// node_modules/zod/v4/core/regexes.js
+// ../../node_modules/zod/v4/core/regexes.js
 var cuid = /^[cC][^\s-]{8,}$/;
 var cuid2 = /^[0-9a-z]+$/;
 var ulid = /^[0-9A-HJKMNP-TV-Za-hjkmnp-tv-z]{26}$/;
@@ -11691,7 +11691,7 @@ var _null = /null/i;
 var lowercase = /^[^A-Z]*$/;
 var uppercase = /^[^a-z]*$/;
 
-// node_modules/zod/v4/core/checks.js
+// ../../node_modules/zod/v4/core/checks.js
 var $ZodCheck = /* @__PURE__ */ $constructor("$ZodCheck", (inst, def) => {
   var _a;
   inst._zod ?? (inst._zod = {});
@@ -12076,7 +12076,7 @@ var $ZodCheckOverwrite = /* @__PURE__ */ $constructor("$ZodCheckOverwrite", (ins
   };
 });
 
-// node_modules/zod/v4/core/doc.js
+// ../../node_modules/zod/v4/core/doc.js
 var Doc = class {
   constructor(args = []) {
     this.content = [];
@@ -12112,14 +12112,14 @@ var Doc = class {
   }
 };
 
-// node_modules/zod/v4/core/versions.js
+// ../../node_modules/zod/v4/core/versions.js
 var version = {
   major: 4,
   minor: 0,
   patch: 0
 };
 
-// node_modules/zod/v4/core/schemas.js
+// ../../node_modules/zod/v4/core/schemas.js
 var $ZodType = /* @__PURE__ */ $constructor("$ZodType", (inst, def) => {
   var _a;
   inst ?? (inst = {});
@@ -13357,7 +13357,7 @@ function handleRefineResult(result, payload, input, inst) {
   }
 }
 
-// node_modules/zod/v4/locales/en.js
+// ../../node_modules/zod/v4/locales/en.js
 var parsedType = (data) => {
   const t = typeof data;
   switch (t) {
@@ -13475,7 +13475,7 @@ function en_default2() {
   };
 }
 
-// node_modules/zod/v4/core/registries.js
+// ../../node_modules/zod/v4/core/registries.js
 var $output = Symbol("ZodOutput");
 var $input = Symbol("ZodInput");
 var $ZodRegistry = class {
@@ -13525,7 +13525,7 @@ function registry() {
 }
 var globalRegistry = /* @__PURE__ */ registry();
 
-// node_modules/zod/v4/core/api.js
+// ../../node_modules/zod/v4/core/api.js
 function _string(Class2, params) {
   return new Class2({
     type: "string",
@@ -14027,7 +14027,7 @@ function getLiteralValue(schema) {
   return void 0;
 }
 
-// node_modules/zod/v4/classic/iso.js
+// ../../node_modules/zod/v4/classic/iso.js
 var iso_exports = {};
 __export(iso_exports, {
   ZodISODate: () => ZodISODate,
@@ -14068,7 +14068,7 @@ function duration2(params) {
   return _isoDuration(ZodISODuration, params);
 }
 
-// node_modules/zod/v4/classic/errors.js
+// ../../node_modules/zod/v4/classic/errors.js
 var initializer2 = (inst, issues) => {
   $ZodError.init(inst, issues);
   inst.name = "ZodError";
@@ -14102,13 +14102,13 @@ var ZodRealError = $constructor("ZodError", initializer2, {
   Parent: Error
 });
 
-// node_modules/zod/v4/classic/parse.js
+// ../../node_modules/zod/v4/classic/parse.js
 var parse2 = /* @__PURE__ */ _parse(ZodRealError);
 var parseAsync2 = /* @__PURE__ */ _parseAsync(ZodRealError);
 var safeParse3 = /* @__PURE__ */ _safeParse(ZodRealError);
 var safeParseAsync2 = /* @__PURE__ */ _safeParseAsync(ZodRealError);
 
-// node_modules/zod/v4/classic/schemas.js
+// ../../node_modules/zod/v4/classic/schemas.js
 var ZodType2 = /* @__PURE__ */ $constructor("ZodType", (inst, def) => {
   $ZodType.init(inst, def);
   inst.def = def;
@@ -14719,7 +14719,7 @@ function preprocess(fn, schema) {
   return pipe(transform(fn), schema);
 }
 
-// node_modules/zod/v4/classic/external.js
+// ../../node_modules/zod/v4/classic/external.js
 config(en_default2());
 
 // node_modules/@modelcontextprotocol/sdk/dist/esm/types.js
@@ -18534,17 +18534,17 @@ var ReaddirpStream = class extends import_node_stream.Readable {
       const fullPath = (0, import_node_path5.resolve)((0, import_node_path5.join)(path, basename5));
       entry = { path: (0, import_node_path5.relative)(this._root, fullPath), fullPath, basename: basename5 };
       entry[this._statsProp] = this._isDirent ? dirent : await this._stat(fullPath);
-    } catch (err2) {
-      this._onError(err2);
+    } catch (err3) {
+      this._onError(err3);
       return;
     }
     return entry;
   }
-  _onError(err2) {
-    if (isNormalFlowError(err2) && !this.destroyed) {
-      this.emit("warn", err2);
+  _onError(err3) {
+    if (isNormalFlowError(err3) && !this.destroyed) {
+      this.emit("warn", err3);
     } else {
-      this.destroy(err2);
+      this.destroy(err3);
     }
   }
   async _getEntryType(entry) {
@@ -18990,7 +18990,7 @@ var setFsWatchListener = (path, fullPath, options, handlers) => {
           const fd = await (0, import_promises5.open)(path, "r");
           await fd.close();
           broadcastErr(error2);
-        } catch (err2) {
+        } catch (err3) {
         }
       } else {
         broadcastErr(error2);
@@ -19491,7 +19491,7 @@ var DirEntry = class {
     const dir = this.path;
     try {
       await (0, import_promises6.readdir)(dir);
-    } catch (err2) {
+    } catch (err3) {
       if (this._removeWatcher) {
         this._removeWatcher(sysPath2.dirname(dir), sysPath2.basename(dir));
       }
@@ -19789,10 +19789,10 @@ var FSWatcher = class extends import_events.EventEmitter {
       }
     }
     if (awf && (event === EVENTS.ADD || event === EVENTS.CHANGE) && this._readyEmitted) {
-      const awfEmit = (err2, stats2) => {
-        if (err2) {
+      const awfEmit = (err3, stats2) => {
+        if (err3) {
           event = EVENTS.ERROR;
-          args[0] = err2;
+          args[0] = err3;
           this.emitWithAll(event, args);
         } else if (stats2) {
           if (args.length > 1) {
@@ -19816,7 +19816,7 @@ var FSWatcher = class extends import_events.EventEmitter {
       let stats2;
       try {
         stats2 = await (0, import_promises6.stat)(fullPath);
-      } catch (err2) {
+      } catch (err3) {
       }
       if (!stats2 || this.closed)
         return;
@@ -19894,10 +19894,10 @@ var FSWatcher = class extends import_events.EventEmitter {
     const now = /* @__PURE__ */ new Date();
     const writes = this._pendingWrites;
     function awaitWriteFinishFn(prevStat) {
-      (0, import_fs2.stat)(fullPath, (err2, curStat) => {
-        if (err2 || !writes.has(path)) {
-          if (err2 && err2.code !== "ENOENT")
-            awfEmit(err2);
+      (0, import_fs2.stat)(fullPath, (err3, curStat) => {
+        if (err3 || !writes.has(path)) {
+          if (err3 && err3.code !== "ENOENT")
+            awfEmit(err3);
           return;
         }
         const now2 = Number(/* @__PURE__ */ new Date());
@@ -19942,8 +19942,8 @@ var FSWatcher = class extends import_events.EventEmitter {
     }
     return this._userIgnored(path, stats);
   }
-  _isntIgnored(path, stat10) {
-    return !this._isIgnored(path, stat10);
+  _isntIgnored(path, stat11) {
+    return !this._isIgnored(path, stat11);
   }
   /**
    * Provides a set of common helpers and properties relating to symlink handling.
@@ -20241,10 +20241,10 @@ function createPeerRegistry(opts = {}) {
 var import_node_child_process = require("node:child_process");
 var import_node_fs = require("node:fs");
 var log2 = makeLogger("terminal-title");
-function parseTtyNrFromProcStat(stat10) {
-  const lastParen = stat10.lastIndexOf(")");
+function parseTtyNrFromProcStat(stat11) {
+  const lastParen = stat11.lastIndexOf(")");
   if (lastParen === -1) return null;
-  const after = stat10.slice(lastParen + 2);
+  const after = stat11.slice(lastParen + 2);
   const fields = after.split(" ");
   const ttyNrStr = fields[4];
   if (!ttyNrStr) return null;
@@ -20258,8 +20258,8 @@ function parseTtyNrFromProcStat(stat10) {
 }
 function findLinuxParentTty(ppid) {
   try {
-    const stat10 = (0, import_node_fs.readFileSync)(`/proc/${ppid}/stat`, "utf-8");
-    const parsed = parseTtyNrFromProcStat(stat10);
+    const stat11 = (0, import_node_fs.readFileSync)(`/proc/${ppid}/stat`, "utf-8");
+    const parsed = parseTtyNrFromProcStat(stat11);
     if (!parsed) return null;
     if (parsed.major === 136) {
       return `/dev/pts/${parsed.minor}`;
@@ -20522,9 +20522,9 @@ async function shutdownContext(ctx) {
 }
 
 // src/mcp/tools.ts
-var import_promises14 = require("node:fs/promises");
 var import_promises15 = require("node:fs/promises");
-var import_node_path11 = require("node:path");
+var import_promises16 = require("node:fs/promises");
+var import_node_path12 = require("node:path");
 
 // src/parser/jsonl-context.ts
 var import_promises10 = require("node:fs/promises");
@@ -21353,9 +21353,179 @@ function serializeSessionRef(s) {
   };
 }
 
-// src/mcp/tools.ts
-var log5 = makeLogger("tools");
+// src/mcp/control-plane.ts
+var import_node_crypto3 = require("node:crypto");
+var import_promises14 = require("node:fs/promises");
+var import_node_os4 = require("node:os");
+var import_node_path11 = require("node:path");
+var log5 = makeLogger("control-plane");
+function controlDir() {
+  return (0, import_node_path11.join)((0, import_node_os4.homedir)(), ".claude-bridge", "control");
+}
+function daemonLockPath() {
+  return (0, import_node_path11.join)(controlDir(), "daemon.lock");
+}
+function stateFilePath() {
+  return (0, import_node_path11.join)(controlDir(), "state.json");
+}
+function heartbeatPath2() {
+  return (0, import_node_path11.join)(controlDir(), "heartbeat");
+}
+function requestPath(id) {
+  return (0, import_node_path11.join)(controlDir(), "requests", `${id}.json`);
+}
+function resultPath(id) {
+  return (0, import_node_path11.join)(controlDir(), "results", `${id}.json`);
+}
+var HEARTBEAT_STALE_MS = 3e4;
+async function readLock() {
+  try {
+    const raw = await (0, import_promises14.readFile)(daemonLockPath(), "utf-8");
+    return JSON.parse(raw);
+  } catch (e) {
+    const code = e.code;
+    if (code === "ENOENT") return null;
+    log5.warn("lock_read_failed", { err: String(e) });
+    return null;
+  }
+}
+async function readState() {
+  try {
+    const raw = await (0, import_promises14.readFile)(stateFilePath(), "utf-8");
+    return JSON.parse(raw);
+  } catch (e) {
+    const code = e.code;
+    if (code === "ENOENT") return null;
+    log5.warn("state_read_failed", { err: String(e) });
+    return null;
+  }
+}
+async function readHeartbeatAgeMs() {
+  try {
+    const s = await (0, import_promises14.stat)(heartbeatPath2());
+    return Date.now() - s.mtimeMs;
+  } catch {
+    return null;
+  }
+}
+async function probeDaemon() {
+  const [lock, state, heartbeatAgeMs] = await Promise.all([readLock(), readState(), readHeartbeatAgeMs()]);
+  if (!lock) {
+    return { running: false, reason: "no_lock_file", lock, heartbeatAgeMs, state };
+  }
+  if (heartbeatAgeMs === null || heartbeatAgeMs > HEARTBEAT_STALE_MS) {
+    return { running: false, reason: "heartbeat_stale", lock, heartbeatAgeMs, state };
+  }
+  return { running: true, lock, heartbeatAgeMs, state };
+}
 function ok(data) {
+  return {
+    content: [{ type: "text", text: JSON.stringify({ ok: true, ...data }) }]
+  };
+}
+function err(code, message, details) {
+  return {
+    isError: true,
+    content: [{ type: "text", text: JSON.stringify({ ok: false, code, message, details }) }]
+  };
+}
+var SETUP_POINTER3 = "Daemon not detected. Install with `node ~/.claude/claude-bridge-daemon.cjs install --systemd` (Linux) \u2014 see docs/architecture.md ADR-008.";
+var ControlStatusArgs = external_exports.object({}).strict();
+async function controlStatusTool() {
+  const presence = await probeDaemon();
+  if (!presence.running) {
+    return err("daemon_not_running", SETUP_POINTER3, {
+      reason: presence.reason,
+      lock: presence.lock,
+      heartbeatAgeMs: presence.heartbeatAgeMs,
+      state: presence.state
+    });
+  }
+  return ok({
+    daemon: {
+      running: true,
+      pid: presence.lock?.pid ?? null,
+      startedAt: presence.lock?.startedAt ?? null,
+      procStart: presence.lock?.procStart ?? null,
+      heartbeatAgeMs: presence.heartbeatAgeMs
+    },
+    state: presence.state ? {
+      stateVersion: presence.state.stateVersion,
+      daemonVersion: presence.state.daemonVersion,
+      daemonStartedAt: presence.state.daemonStartedAt,
+      peerCount: Object.keys(presence.state.peers ?? {}).length
+    } : null
+  });
+}
+var PeerStopArgs = external_exports.object({
+  peer: external_exports.string().describe("Peer sessionId or display name"),
+  reason: external_exports.string().optional(),
+  force: external_exports.boolean().optional(),
+  wait: external_exports.boolean().optional(),
+  timeoutMs: external_exports.number().int().positive().max(6e4).optional()
+}).strict();
+function generateRequestId() {
+  const ms = Date.now().toString(36);
+  const rand = (0, import_node_crypto3.randomBytes)(2).toString("hex");
+  return `${ms}-${rand}`;
+}
+async function pollForResult(requestId, timeoutMs) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    try {
+      const raw = await (0, import_promises14.readFile)(resultPath(requestId), "utf-8");
+      return JSON.parse(raw);
+    } catch (e) {
+      const code = e.code;
+      if (code !== "ENOENT") throw e;
+    }
+    await new Promise((r) => setTimeout(r, 250));
+  }
+  return null;
+}
+async function peerStopTool(ctx, args) {
+  const presence = await probeDaemon();
+  if (!presence.running) {
+    return err("daemon_not_running", SETUP_POINTER3, {
+      reason: presence.reason,
+      heartbeatAgeMs: presence.heartbeatAgeMs
+    });
+  }
+  const requestId = generateRequestId();
+  const envelope = {
+    schemaVersion: 1,
+    id: requestId,
+    ts: (/* @__PURE__ */ new Date()).toISOString(),
+    tool: "peer_stop",
+    args: {
+      peer: args.peer,
+      ...args.reason !== void 0 ? { reason: args.reason } : {},
+      ...args.force !== void 0 ? { force: args.force } : {}
+    },
+    requestedBy: {
+      sessionId: ctx.self.id,
+      name: ctx.self.name
+    }
+  };
+  try {
+    await atomicWriteJson(requestPath(requestId), envelope);
+  } catch (e) {
+    return err("request_write_failed", e instanceof Error ? e.message : String(e));
+  }
+  if (args.wait) {
+    const timeoutMs = args.timeoutMs ?? 1e4;
+    const result = await pollForResult(requestId, timeoutMs);
+    if (!result) {
+      return ok({ requestId, queuedAt: envelope.ts, waited: true, timedOut: true });
+    }
+    return ok({ requestId, queuedAt: envelope.ts, waited: true, result });
+  }
+  return ok({ requestId, queuedAt: envelope.ts });
+}
+
+// src/mcp/tools.ts
+var log6 = makeLogger("tools");
+function ok2(data) {
   return {
     content: [{ type: "text", text: JSON.stringify({ ok: true, ...data }) }]
   };
@@ -21363,7 +21533,7 @@ function ok(data) {
 function okText(text) {
   return { content: [{ type: "text", text }] };
 }
-function err(code, message, details) {
+function err2(code, message, details) {
   return {
     isError: true,
     content: [
@@ -21378,13 +21548,13 @@ var ListProjectsArgs = external_exports.object({}).strict();
 async function listProjectsTool() {
   try {
     const projects = await listProjects();
-    return ok({
+    return ok2({
       count: projects.length,
       projects: projects.map((p) => ({ projectDir: p.projectDir, path: p.absolutePath }))
     });
   } catch (e) {
-    log5.error("list_projects_failed", { err: e instanceof Error ? e.message : String(e) });
-    return err("list_projects_failed", e instanceof Error ? e.message : "unknown");
+    log6.error("list_projects_failed", { err: e instanceof Error ? e.message : String(e) });
+    return err2("list_projects_failed", e instanceof Error ? e.message : "unknown");
   }
 }
 var ListSessionsArgs = external_exports.object({
@@ -21395,12 +21565,12 @@ var ListSessionsArgs = external_exports.object({
 }).strict();
 var HEARTBEAT_ACTIVE_THRESHOLD_MS = 3e4;
 async function isSessionActive(sessionId) {
-  const { stat: stat10 } = await import("node:fs/promises");
-  const { homedir: homedir4 } = await import("node:os");
-  const { join: join13 } = await import("node:path");
-  const hbPath = join13(homedir4(), ".claude-bridge", "status", `${sessionId}.json`);
+  const { stat: stat11 } = await import("node:fs/promises");
+  const { homedir: homedir5 } = await import("node:os");
+  const { join: join14 } = await import("node:path");
+  const hbPath = join14(homedir5(), ".claude-bridge", "status", `${sessionId}.json`);
   try {
-    const s = await stat10(hbPath);
+    const s = await stat11(hbPath);
     return Date.now() - s.mtimeMs <= HEARTBEAT_ACTIVE_THRESHOLD_MS;
   } catch {
     return false;
@@ -21449,7 +21619,7 @@ async function listSessionsTool(args) {
             extras.userPrompts = meta.userPrompts;
             extras.assistantReplies = meta.assistantReplies;
           } catch (e) {
-            log5.warn("list_sessions_meta_scan_failed", {
+            log6.warn("list_sessions_meta_scan_failed", {
               file: s.filePath,
               err: e instanceof Error ? e.message : String(e)
             });
@@ -21458,10 +21628,10 @@ async function listSessionsTool(args) {
         return { ...serializeSessionRef(s), ...extras };
       })
     );
-    return ok({ count: enriched.length, sessions: enriched });
+    return ok2({ count: enriched.length, sessions: enriched });
   } catch (e) {
-    log5.error("list_sessions_failed", { err: e instanceof Error ? e.message : String(e) });
-    return err("list_sessions_failed", e instanceof Error ? e.message : "unknown");
+    log6.error("list_sessions_failed", { err: e instanceof Error ? e.message : String(e) });
+    return err2("list_sessions_failed", e instanceof Error ? e.message : "unknown");
   }
 }
 var SessionStatsArgs = external_exports.object({
@@ -21473,7 +21643,7 @@ async function sessionStatsTool(args) {
     const matches = await findSessions(args.sessionId);
     const filtered = args.project ? matches.filter((m) => m.projectDir === args.project) : matches;
     if (filtered.length === 0) {
-      return err("session_not_found", `No session ${args.sessionId} found`);
+      return err2("session_not_found", `No session ${args.sessionId} found`);
     }
     const results = await Promise.all(
       filtered.map(async (s) => {
@@ -21487,10 +21657,10 @@ async function sessionStatsTool(args) {
         };
       })
     );
-    return ok({ sessionId: args.sessionId, instances: results });
+    return ok2({ sessionId: args.sessionId, instances: results });
   } catch (e) {
-    log5.error("session_stats_failed", { err: e instanceof Error ? e.message : String(e) });
-    return err("session_stats_failed", e instanceof Error ? e.message : "unknown");
+    log6.error("session_stats_failed", { err: e instanceof Error ? e.message : String(e) });
+    return err2("session_stats_failed", e instanceof Error ? e.message : "unknown");
   }
 }
 async function resolveTargetPeer(ctx, target) {
@@ -21517,7 +21687,7 @@ var PeerListArgs = external_exports.object({}).strict();
 async function peerListTool(ctx) {
   try {
     const peers = await ctx.registry.listActivePeers();
-    return ok({
+    return ok2({
       self: {
         id: ctx.self.id,
         name: ctx.self.name,
@@ -21536,8 +21706,8 @@ async function peerListTool(ctx) {
       }))
     });
   } catch (e) {
-    log5.error("peer_list_failed", { err: e instanceof Error ? e.message : String(e) });
-    return err("peer_list_failed", e instanceof Error ? e.message : "unknown");
+    log6.error("peer_list_failed", { err: e instanceof Error ? e.message : String(e) });
+    return err2("peer_list_failed", e instanceof Error ? e.message : "unknown");
   }
 }
 var PeerAskArgs = external_exports.object({
@@ -21547,18 +21717,18 @@ var PeerAskArgs = external_exports.object({
 }).strict();
 async function peerAskTool(ctx, args) {
   if (args.to === ctx.self.id || args.to === ctx.self.name) {
-    return err("self_send", `Cannot send to self (id=${ctx.self.id} name=${ctx.self.name})`);
+    return err2("self_send", `Cannot send to self (id=${ctx.self.id} name=${ctx.self.name})`);
   }
   const resolved = await resolveTargetPeer(ctx, args.to);
   if (!resolved.ok) {
     if (resolved.code === "ambiguous_peer") {
-      return err(
+      return err2(
         "ambiguous_peer",
         `Multiple peers match name "${args.to}". Send by id instead.`,
         resolved.candidates.map((c) => ({ id: c.id, name: c.name, cwd: c.cwd }))
       );
     }
-    return err("peer_not_found", `No active peer with id or name "${args.to}"`, {
+    return err2("peer_not_found", `No active peer with id or name "${args.to}"`, {
       activePeers: resolved.activePeers.map(peerDiagShape),
       hint: PEER_NOT_FOUND_HINT
     });
@@ -21576,18 +21746,18 @@ async function peerAskTool(ctx, args) {
   };
   try {
     await ctx.inbox.send(envelope);
-    log5.info("peer_ask_sent", {
+    log6.info("peer_ask_sent", {
       to: resolved.peer.id,
       toName: resolved.peer.name,
       msgId: envelope.id
     });
-    return ok({
+    return ok2({
       msgId: envelope.id,
       to: { id: resolved.peer.id, name: resolved.peer.name }
     });
   } catch (e) {
-    log5.error("peer_ask_failed", { err: e instanceof Error ? e.message : String(e) });
-    return err("peer_ask_failed", e instanceof Error ? e.message : "unknown");
+    log6.error("peer_ask_failed", { err: e instanceof Error ? e.message : String(e) });
+    return err2("peer_ask_failed", e instanceof Error ? e.message : "unknown");
   }
 }
 var PeerReplyArgs = external_exports.object({
@@ -21597,7 +21767,7 @@ var PeerReplyArgs = external_exports.object({
 async function peerReplyTool(ctx, args) {
   const found = await ctx.inbox.findMessage(ctx.self.id, args.inReplyTo);
   if (!found) {
-    return err(
+    return err2(
       "original_not_found",
       `No message ${args.inReplyTo} found in inbox/${shortId(ctx.self.id)}/{pending,done}/`,
       {
@@ -21623,20 +21793,20 @@ async function peerReplyTool(ctx, args) {
   };
   try {
     await ctx.inbox.send(reply);
-    log5.info("peer_reply_sent", {
+    log6.info("peer_reply_sent", {
       to: original.from,
       toName: original.fromName,
       msgId: reply.id,
       inReplyTo: args.inReplyTo
     });
-    return ok({
+    return ok2({
       msgId: reply.id,
       to: { id: original.from, name: original.fromName ?? null },
       inReplyTo: args.inReplyTo
     });
   } catch (e) {
-    log5.error("peer_reply_failed", { err: e instanceof Error ? e.message : String(e) });
-    return err("peer_reply_failed", e instanceof Error ? e.message : "unknown");
+    log6.error("peer_reply_failed", { err: e instanceof Error ? e.message : String(e) });
+    return err2("peer_reply_failed", e instanceof Error ? e.message : "unknown");
   }
 }
 var PeerInboxReadArgs = external_exports.object({}).strict();
@@ -21648,10 +21818,10 @@ async function peerInboxReadTool(ctx) {
       const c = await ctx.inbox.consume(ctx.self.id, p.id);
       if (c) consumed.push(c);
     }
-    return ok({ count: consumed.length, messages: consumed });
+    return ok2({ count: consumed.length, messages: consumed });
   } catch (e) {
-    log5.error("peer_inbox_read_failed", { err: e instanceof Error ? e.message : String(e) });
-    return err("peer_inbox_read_failed", e instanceof Error ? e.message : "unknown");
+    log6.error("peer_inbox_read_failed", { err: e instanceof Error ? e.message : String(e) });
+    return err2("peer_inbox_read_failed", e instanceof Error ? e.message : "unknown");
   }
 }
 var UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -21755,7 +21925,7 @@ async function resolveSessionForRead(ctx, to, crossProject) {
     if (sessions.length === 0) {
       return {
         ok: false,
-        result: err(
+        result: err2(
           "session_file_not_found",
           `Peer ${resolved.peer.name} (${shortId(resolved.peer.id)}) has no session JSONL on disk yet`
         )
@@ -21771,7 +21941,7 @@ async function resolveSessionForRead(ctx, to, crossProject) {
   if (resolved.code === "ambiguous_peer") {
     return {
       ok: false,
-      result: err(
+      result: err2(
         "ambiguous_peer",
         `Multiple peers match name "${to}". Use peer id instead.`,
         resolved.candidates.map((c) => ({ id: c.id, name: c.name, cwd: c.cwd }))
@@ -21786,7 +21956,7 @@ async function resolveSessionForRead(ctx, to, crossProject) {
   }
   return {
     ok: false,
-    result: err(
+    result: err2(
       "peer_not_found",
       crossProject ? `No active peer and no session JSONL found for "${to}"` : `No active peer "${to}". Use crossProject:true to read dead sessions by UUID.`,
       {
@@ -21900,7 +22070,7 @@ async function peerChatReadTool(ctx, args) {
   if (args.sinceTimestamp) {
     sinceMs = Date.parse(args.sinceTimestamp);
     if (Number.isNaN(sinceMs)) {
-      return err("invalid_timestamp", `Cannot parse sinceTimestamp "${args.sinceTimestamp}"`);
+      return err2("invalid_timestamp", `Cannot parse sinceTimestamp "${args.sinceTimestamp}"`);
     }
   }
   const resolution = await resolveSessionForRead(ctx, args.to, args.crossProject);
@@ -21942,11 +22112,11 @@ async function peerChatReadTool(ctx, args) {
       }
     }
   } catch (e) {
-    log5.error("peer_chat_read_parse_err", {
+    log6.error("peer_chat_read_parse_err", {
       file: sessionFile.filePath,
       err: e instanceof Error ? e.message : String(e)
     });
-    return err("session_parse_failed", e instanceof Error ? e.message : "unknown");
+    return err2("session_parse_failed", e instanceof Error ? e.message : "unknown");
   }
   let sinceLastUserPromptTrimmed = false;
   let working = messages;
@@ -21958,7 +22128,7 @@ async function peerChatReadTool(ctx, args) {
   if (args.query) {
     const matcher = buildQueryMatcher(args.query, args.queryRegex);
     if ("error" in matcher) {
-      return err("invalid_query_regex", `Cannot compile regex: ${matcher.error}`);
+      return err2("invalid_query_regex", `Cannot compile regex: ${matcher.error}`);
     }
     const matchIndices = [];
     for (let i = 0; i < working.length; i++) {
@@ -22031,7 +22201,7 @@ async function peerChatReadTool(ctx, args) {
   };
   if (args.format === "markdown") return okText(formatMarkdown(meta, kept));
   if (args.format === "compact") return okText(formatCompact(meta, kept));
-  return ok({ ...meta, messages: kept });
+  return ok2({ ...meta, messages: kept });
 }
 var SEARCH_MAX_AGE_DAYS = 30;
 var SEARCH_MAX_BYTES_SCANNED = 200 * 1024 * 1024;
@@ -22078,11 +22248,11 @@ function buildPrefilter(query, regex) {
 async function peerChatSearchTool(ctx, args) {
   const prefilter = buildPrefilter(args.query, args.queryRegex);
   if (typeof prefilter === "string") {
-    return err("invalid_query_regex", `Cannot compile regex: ${prefilter}`);
+    return err2("invalid_query_regex", `Cannot compile regex: ${prefilter}`);
   }
   const eventMatcher = buildQueryMatcher(args.query, args.queryRegex);
   if ("error" in eventMatcher) {
-    return err("invalid_query_regex", `Cannot compile regex: ${eventMatcher.error}`);
+    return err2("invalid_query_regex", `Cannot compile regex: ${eventMatcher.error}`);
   }
   const sessions = await resolveSearchSessions(args.scope);
   if (sessions.length === 0) {
@@ -22095,7 +22265,7 @@ async function peerChatSearchTool(ctx, args) {
   }
   const totalBytesScope = sessions.reduce((sum, s) => sum + s.sizeBytes, 0);
   if (totalBytesScope > SEARCH_MAX_BYTES_SCANNED) {
-    return err(
+    return err2(
       "scope_too_large",
       `Filtered scope is ${Math.round(totalBytesScope / 1024 / 1024)} MB across ${sessions.length} sessions \u2014 over the ${Math.round(SEARCH_MAX_BYTES_SCANNED / 1024 / 1024)} MB cap. Reduce by using scope='project' or wait for FTS5 backend (v0.5+).`
     );
@@ -22136,7 +22306,7 @@ async function peerChatSearchTool(ctx, args) {
         });
       }
     } catch (e) {
-      log5.warn("peer_chat_search_parse_warning", {
+      log6.warn("peer_chat_search_parse_warning", {
         file: session.filePath,
         err: e instanceof Error ? e.message : String(e)
       });
@@ -22382,7 +22552,7 @@ async function peerContextStatusTool(ctx, args) {
           continue;
         }
         if (byName.length > 1) {
-          return err(
+          return err2(
             "ambiguous_peer",
             `Multiple peers match name "${normalized}". Use peer id instead.`,
             byName.map((c) => ({ id: c.id, name: c.name, cwd: c.cwd }))
@@ -22392,7 +22562,7 @@ async function peerContextStatusTool(ctx, args) {
           targets.push({ id: normalized, name: null });
           continue;
         }
-        return err("peer_not_found", `No active peer "${normalized}" and not a UUID`, {
+        return err2("peer_not_found", `No active peer "${normalized}" and not a UUID`, {
           activePeers: activePeers.map(peerDiagShape),
           hint: PEER_NOT_FOUND_HINT
         });
@@ -22402,10 +22572,10 @@ async function peerContextStatusTool(ctx, args) {
     for (const t of targets) {
       peers.push(await buildContextStatusEntry(ctx, t.id, t.name));
     }
-    return ok({ count: peers.length, peers });
+    return ok2({ count: peers.length, peers });
   } catch (e) {
-    log5.error("peer_context_status_failed", { err: e instanceof Error ? e.message : String(e) });
-    return err("peer_context_status_failed", e instanceof Error ? e.message : "unknown");
+    log6.error("peer_context_status_failed", { err: e instanceof Error ? e.message : String(e) });
+    return err2("peer_context_status_failed", e instanceof Error ? e.message : "unknown");
   }
 }
 var DEFAULT_GUARD_CONFIG = {
@@ -22423,11 +22593,11 @@ var PeerSetContextGuardArgs = external_exports.object({
   broadcastProject: external_exports.boolean().optional()
 }).strict();
 function guardConfigFile(peerId) {
-  return (0, import_node_path11.join)(bridgeRoot(), "guard", `${peerId}.json`);
+  return (0, import_node_path12.join)(bridgeRoot(), "guard", `${peerId}.json`);
 }
 async function readContextGuard(peerId) {
   try {
-    const raw = await (0, import_promises14.readFile)(guardConfigFile(peerId), "utf-8");
+    const raw = await (0, import_promises15.readFile)(guardConfigFile(peerId), "utf-8");
     const parsed = JSON.parse(raw);
     return { ...DEFAULT_GUARD_CONFIG, ...parsed };
   } catch {
@@ -22436,7 +22606,7 @@ async function readContextGuard(peerId) {
 }
 async function writeContextGuard(peerId, cfg) {
   const file = guardConfigFile(peerId);
-  await (0, import_promises15.mkdir)((0, import_node_path11.join)(bridgeRoot(), "guard"), { recursive: true });
+  await (0, import_promises16.mkdir)((0, import_node_path12.join)(bridgeRoot(), "guard"), { recursive: true });
   await atomicWriteJson(file, cfg);
 }
 async function peerSetContextGuardTool(ctx, args) {
@@ -22450,16 +22620,16 @@ async function peerSetContextGuardTool(ctx, args) {
       broadcastProject: args.broadcastProject ?? current.broadcastProject
     };
     if (next.warnAtPercent > next.criticalAtPercent) {
-      return err(
+      return err2(
         "invalid_thresholds",
         `warnAtPercent (${next.warnAtPercent}) must be <= criticalAtPercent (${next.criticalAtPercent})`
       );
     }
     await writeContextGuard(ctx.self.id, next);
-    return ok({ guard: next, sessionId: ctx.self.id });
+    return ok2({ guard: next, sessionId: ctx.self.id });
   } catch (e) {
-    log5.error("peer_set_context_guard_failed", { err: e instanceof Error ? e.message : String(e) });
-    return err("peer_set_context_guard_failed", e instanceof Error ? e.message : "unknown");
+    log6.error("peer_set_context_guard_failed", { err: e instanceof Error ? e.message : String(e) });
+    return err2("peer_set_context_guard_failed", e instanceof Error ? e.message : "unknown");
   }
 }
 var DEFAULT_NOTIFICATION_CONFIG = {
@@ -22471,11 +22641,11 @@ var PeerSetNotificationArgs = external_exports.object({
   minIdleSeconds: external_exports.number().int().min(5).max(3600).optional()
 }).strict();
 function notificationConfigFile(peerId) {
-  return (0, import_node_path11.join)(bridgeRoot(), "notify", `${peerId}.json`);
+  return (0, import_node_path12.join)(bridgeRoot(), "notify", `${peerId}.json`);
 }
 async function readNotificationConfig(peerId) {
   try {
-    const raw = await (0, import_promises14.readFile)(notificationConfigFile(peerId), "utf-8");
+    const raw = await (0, import_promises15.readFile)(notificationConfigFile(peerId), "utf-8");
     const parsed = JSON.parse(raw);
     return { ...DEFAULT_NOTIFICATION_CONFIG, ...parsed };
   } catch {
@@ -22484,7 +22654,7 @@ async function readNotificationConfig(peerId) {
 }
 async function writeNotificationConfig(peerId, cfg) {
   const file = notificationConfigFile(peerId);
-  await (0, import_promises15.mkdir)((0, import_node_path11.join)(bridgeRoot(), "notify"), { recursive: true });
+  await (0, import_promises16.mkdir)((0, import_node_path12.join)(bridgeRoot(), "notify"), { recursive: true });
   await atomicWriteJson(file, cfg);
 }
 async function peerSetNotificationTool(ctx, args) {
@@ -22495,10 +22665,10 @@ async function peerSetNotificationTool(ctx, args) {
       minIdleSeconds: args.minIdleSeconds ?? current.minIdleSeconds
     };
     await writeNotificationConfig(ctx.self.id, next);
-    return ok({ notification: next, sessionId: ctx.self.id });
+    return ok2({ notification: next, sessionId: ctx.self.id });
   } catch (e) {
-    log5.error("peer_set_notification_failed", { err: e instanceof Error ? e.message : String(e) });
-    return err("peer_set_notification_failed", e instanceof Error ? e.message : "unknown");
+    log6.error("peer_set_notification_failed", { err: e instanceof Error ? e.message : String(e) });
+    return err2("peer_set_notification_failed", e instanceof Error ? e.message : "unknown");
   }
 }
 var RateLimitStatusArgs = external_exports.object({}).strict();
@@ -22506,10 +22676,10 @@ async function rateLimitStatusTool() {
   try {
     const status = await readLiveRateLimits();
     const guard = await readRateLimitGuard();
-    return ok({ ...status, ...guard ? { guard } : {} });
+    return ok2({ ...status, ...guard ? { guard } : {} });
   } catch (e) {
-    log5.error("rate_limit_status_failed", { err: e instanceof Error ? e.message : String(e) });
-    return err("rate_limit_status_failed", e instanceof Error ? e.message : "unknown");
+    log6.error("rate_limit_status_failed", { err: e instanceof Error ? e.message : String(e) });
+    return err2("rate_limit_status_failed", e instanceof Error ? e.message : "unknown");
   }
 }
 var DEFAULT_RATE_LIMIT_GUARD_CONFIG = {
@@ -22521,11 +22691,11 @@ var DEFAULT_RATE_LIMIT_GUARD_CONFIG = {
   notifyPeerIds: []
 };
 function rateLimitGuardFile() {
-  return (0, import_node_path11.join)(bridgeRoot(), "guard-rate-limits.json");
+  return (0, import_node_path12.join)(bridgeRoot(), "guard-rate-limits.json");
 }
 async function readRateLimitGuard() {
   try {
-    const raw = await (0, import_promises14.readFile)(rateLimitGuardFile(), "utf-8");
+    const raw = await (0, import_promises15.readFile)(rateLimitGuardFile(), "utf-8");
     const parsed = JSON.parse(raw);
     return { ...DEFAULT_RATE_LIMIT_GUARD_CONFIG, ...parsed };
   } catch {
@@ -22534,7 +22704,7 @@ async function readRateLimitGuard() {
 }
 async function writeRateLimitGuard(cfg) {
   const file = rateLimitGuardFile();
-  await (0, import_promises15.mkdir)(bridgeRoot(), { recursive: true });
+  await (0, import_promises16.mkdir)(bridgeRoot(), { recursive: true });
   await atomicWriteJson(file, cfg);
 }
 var PeerSetRateLimitGuardArgs = external_exports.object({
@@ -22557,24 +22727,24 @@ async function peerSetRateLimitGuardTool(_ctx, args) {
       notifyPeerIds: args.notifyPeerIds ?? current.notifyPeerIds
     };
     if (next.sessionWarnAtPercent > next.sessionCriticalAtPercent) {
-      return err(
+      return err2(
         "invalid_session_thresholds",
         `sessionWarnAtPercent (${next.sessionWarnAtPercent}) must be <= sessionCriticalAtPercent (${next.sessionCriticalAtPercent})`
       );
     }
     if (next.weekWarnAtPercent > next.weekCriticalAtPercent) {
-      return err(
+      return err2(
         "invalid_week_thresholds",
         `weekWarnAtPercent (${next.weekWarnAtPercent}) must be <= weekCriticalAtPercent (${next.weekCriticalAtPercent})`
       );
     }
     await writeRateLimitGuard(next);
-    return ok({ guard: next });
+    return ok2({ guard: next });
   } catch (e) {
-    log5.error("peer_set_rate_limit_guard_failed", {
+    log6.error("peer_set_rate_limit_guard_failed", {
       err: e instanceof Error ? e.message : String(e)
     });
-    return err("peer_set_rate_limit_guard_failed", e instanceof Error ? e.message : "unknown");
+    return err2("peer_set_rate_limit_guard_failed", e instanceof Error ? e.message : "unknown");
   }
 }
 var ModelInfoArgs = external_exports.object({
@@ -22586,12 +22756,12 @@ async function modelInfoTool(args) {
     if (args.model) {
       const found = lookupModel(args.model);
       if (!found) {
-        return err("model_not_found", `No metadata for model "${args.model}".`, {
+        return err2("model_not_found", `No metadata for model "${args.model}".`, {
           knownIds: MODELS.map((m) => m.id),
           hint: "Date suffix (-YYYYMMDD) and [1m] tag are stripped before lookup. If you believe this model should exist, file an issue."
         });
       }
-      return ok({
+      return ok2({
         source: MODEL_METADATA_SOURCE,
         model: found
       });
@@ -22600,14 +22770,14 @@ async function modelInfoTool(args) {
     if (args.generation) {
       list = list.filter((m) => m.generation === args.generation);
     }
-    return ok({
+    return ok2({
       source: MODEL_METADATA_SOURCE,
       modelsCount: list.length,
       models: list
     });
   } catch (e) {
-    log5.error("model_info_failed", { err: e instanceof Error ? e.message : String(e) });
-    return err("model_info_failed", e instanceof Error ? e.message : "unknown");
+    log6.error("model_info_failed", { err: e instanceof Error ? e.message : String(e) });
+    return err2("model_info_failed", e instanceof Error ? e.message : "unknown");
   }
 }
 var TOOLS = [
@@ -22646,7 +22816,7 @@ var TOOLS = [
     },
     handler: async (args) => {
       const parsed = ListSessionsArgs.safeParse(args);
-      if (!parsed.success) return err("invalid_args", "Schema validation failed", parsed.error);
+      if (!parsed.success) return err2("invalid_args", "Schema validation failed", parsed.error);
       return listSessionsTool(parsed.data);
     }
   },
@@ -22664,7 +22834,7 @@ var TOOLS = [
     },
     handler: async (args) => {
       const parsed = SessionStatsArgs.safeParse(args);
-      if (!parsed.success) return err("invalid_args", "Schema validation failed", parsed.error);
+      if (!parsed.success) return err2("invalid_args", "Schema validation failed", parsed.error);
       return sessionStatsTool(parsed.data);
     }
   },
@@ -22692,7 +22862,7 @@ var TOOLS = [
     },
     handler: async (args, ctx) => {
       const parsed = PeerAskArgs.safeParse(args);
-      if (!parsed.success) return err("invalid_args", "Schema validation failed", parsed.error);
+      if (!parsed.success) return err2("invalid_args", "Schema validation failed", parsed.error);
       return peerAskTool(ctx, parsed.data);
     }
   },
@@ -22713,7 +22883,7 @@ var TOOLS = [
     },
     handler: async (args, ctx) => {
       const parsed = PeerReplyArgs.safeParse(args);
-      if (!parsed.success) return err("invalid_args", "Schema validation failed", parsed.error);
+      if (!parsed.success) return err2("invalid_args", "Schema validation failed", parsed.error);
       return peerReplyTool(ctx, parsed.data);
     }
   },
@@ -22795,7 +22965,7 @@ var TOOLS = [
     },
     handler: async (args, ctx) => {
       const parsed = PeerChatReadArgs.safeParse(args);
-      if (!parsed.success) return err("invalid_args", "Schema validation failed", parsed.error);
+      if (!parsed.success) return err2("invalid_args", "Schema validation failed", parsed.error);
       return peerChatReadTool(ctx, parsed.data);
     }
   },
@@ -22842,7 +23012,7 @@ var TOOLS = [
     },
     handler: async (args, ctx) => {
       const parsed = PeerChatSearchArgs.safeParse(args);
-      if (!parsed.success) return err("invalid_args", "Schema validation failed", parsed.error);
+      if (!parsed.success) return err2("invalid_args", "Schema validation failed", parsed.error);
       return peerChatSearchTool(ctx, parsed.data);
     }
   },
@@ -22868,7 +23038,7 @@ var TOOLS = [
     },
     handler: async (args, ctx) => {
       const parsed = PeerContextStatusArgs.safeParse(args);
-      if (!parsed.success) return err("invalid_args", "Schema validation failed", parsed.error);
+      if (!parsed.success) return err2("invalid_args", "Schema validation failed", parsed.error);
       return peerContextStatusTool(ctx, parsed.data);
     }
   },
@@ -22908,7 +23078,7 @@ var TOOLS = [
     },
     handler: async (args, ctx) => {
       const parsed = PeerSetContextGuardArgs.safeParse(args);
-      if (!parsed.success) return err("invalid_args", "Schema validation failed", parsed.error);
+      if (!parsed.success) return err2("invalid_args", "Schema validation failed", parsed.error);
       return peerSetContextGuardTool(ctx, parsed.data);
     }
   },
@@ -22959,7 +23129,7 @@ var TOOLS = [
     },
     handler: async (args, ctx) => {
       const parsed = PeerSetRateLimitGuardArgs.safeParse(args);
-      if (!parsed.success) return err("invalid_args", "Schema validation failed", parsed.error);
+      if (!parsed.success) return err2("invalid_args", "Schema validation failed", parsed.error);
       return peerSetRateLimitGuardTool(ctx, parsed.data);
     }
   },
@@ -22983,7 +23153,7 @@ var TOOLS = [
     },
     handler: async (args) => {
       const parsed = ModelInfoArgs.safeParse(args);
-      if (!parsed.success) return err("invalid_args", "Schema validation failed", parsed.error);
+      if (!parsed.success) return err2("invalid_args", "Schema validation failed", parsed.error);
       return modelInfoTool(parsed.data);
     }
   },
@@ -23008,14 +23178,62 @@ var TOOLS = [
     },
     handler: async (args, ctx) => {
       const parsed = PeerSetNotificationArgs.safeParse(args);
-      if (!parsed.success) return err("invalid_args", "Schema validation failed", parsed.error);
+      if (!parsed.success) return err2("invalid_args", "Schema validation failed", parsed.error);
       return peerSetNotificationTool(ctx, parsed.data);
+    }
+  },
+  {
+    name: "control_status",
+    description: "Read-only: check the v0.10.0 control-plane daemon health (pid, lock, heartbeat freshness) and summarise its state.json. Returns `daemon_not_running` with a setupPointer when the daemon isn't installed \u2014 no crash, no auto-start. See docs/architecture.md ADR-008 and the SETUP-LIVE-DATA doc for install steps.",
+    inputSchema: { type: "object", properties: {}, additionalProperties: false },
+    handler: async (args) => {
+      const parsed = ControlStatusArgs.safeParse(args);
+      if (!parsed.success) return err2("invalid_args", "Schema validation failed", parsed.error);
+      return controlStatusTool();
+    }
+  },
+  {
+    name: "peer_stop",
+    description: "Ask the control-plane daemon to stop a peer. v0.10.0-alpha ships this as a fire-and-forget wire: the MCP tool writes a request envelope to the daemon inbox and returns `{ requestId, queuedAt }`. Full lifecycle (graceful signal + host-driver cleanup) lands in v0.10.0-beta \u2014 alpha handler currently returns `not_implemented_in_alpha` for known peers and `peer_not_found` for unknown ones. Pass `wait:true, timeoutMs:N` to poll for the result envelope before returning.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        peer: {
+          type: "string",
+          description: "Peer sessionId (UUID) or display name. Prefer sessionId for uniqueness."
+        },
+        reason: {
+          type: "string",
+          description: "Optional free-text reason recorded in events.jsonl for the audit trail."
+        },
+        force: {
+          type: "boolean",
+          description: "Skip graceful signal, kill immediately. Not honoured in alpha (stub handler) \u2014 recorded for beta."
+        },
+        wait: {
+          type: "boolean",
+          description: "If true, poll for `results/<id>.json` before returning. Default false = fire-and-forget."
+        },
+        timeoutMs: {
+          type: "number",
+          minimum: 1,
+          maximum: 6e4,
+          description: "Max ms to wait when wait=true (default 10000)."
+        }
+      },
+      required: ["peer"],
+      additionalProperties: false
+    },
+    handler: async (args, ctx) => {
+      const parsed = PeerStopArgs.safeParse(args);
+      if (!parsed.success) return err2("invalid_args", "Schema validation failed", parsed.error);
+      return peerStopTool(ctx, parsed.data);
     }
   }
 ];
 
 // src/mcp/server.ts
-var log6 = makeLogger("mcp-server");
+var log7 = makeLogger("mcp-server");
 var SERVER_NAME = "claude-bridge";
 var SERVER_VERSION = "0.9.4";
 var INSTRUCTIONS = `
@@ -23080,10 +23298,10 @@ function wireTools(server, ctx) {
     const toolName = request.params.name;
     const args = request.params.arguments ?? {};
     const started = Date.now();
-    log6.debug("tool_call", { tool: toolName });
+    log7.debug("tool_call", { tool: toolName });
     const spec = TOOLS.find((t) => t.name === toolName);
     if (!spec) {
-      log6.warn("tool_not_found", { tool: toolName });
+      log7.warn("tool_not_found", { tool: toolName });
       const result = {
         isError: true,
         content: [
@@ -23098,14 +23316,14 @@ function wireTools(server, ctx) {
     try {
       let result = await spec.handler(args, ctx);
       result = await piggybackInbox(ctx, toolName, result);
-      log6.debug("tool_result", {
+      log7.debug("tool_result", {
         tool: toolName,
         ok: !result.isError,
         duration_ms: Date.now() - started
       });
       return result;
     } catch (e) {
-      log6.error("tool_call_err", {
+      log7.error("tool_call_err", {
         tool: toolName,
         err: e instanceof Error ? e.message : String(e),
         duration_ms: Date.now() - started
@@ -23133,14 +23351,14 @@ async function startStdioServer() {
     ctx = await buildContext({ version: SERVER_VERSION });
   } catch (e) {
     if (e instanceof IdentityError) {
-      log6.error("identity_unresolvable", { message: e.message, hint: e.hint });
+      log7.error("identity_unresolvable", { message: e.message, hint: e.hint });
       process.stderr.write(`
 claude-bridge fatal: ${e.message}
 Hint: ${e.hint}
 
 `);
     } else {
-      log6.error("boot_failed", { err: e instanceof Error ? e.message : String(e) });
+      log7.error("boot_failed", { err: e instanceof Error ? e.message : String(e) });
     }
     process.exit(1);
   }
@@ -23152,16 +23370,16 @@ Hint: ${e.hint}
   const keepAlive = setInterval(() => void 0, 6e4);
   process.on("beforeExit", () => clearInterval(keepAlive));
   process.stdin.on("end", () => {
-    log6.warn("stdin_eof_ignored", {
+    log7.warn("stdin_eof_ignored", {
       reason: "windows-stdio-probe-close-survival"
     });
   });
   process.stdin.on("close", () => {
-    log6.warn("stdin_close_ignored", {
+    log7.warn("stdin_close_ignored", {
       reason: "windows-stdio-probe-close-survival"
     });
   });
-  log6.info("started", {
+  log7.info("started", {
     name: SERVER_NAME,
     version: SERVER_VERSION,
     tools: TOOLS.length,
@@ -23169,13 +23387,13 @@ Hint: ${e.hint}
     selfName: ctx.self.name
   });
   const { pushed } = await pumpInboxToChannel(ctx);
-  if (pushed > 0) log6.info("backlog_drained", { pushed });
+  if (pushed > 0) log7.info("backlog_drained", { pushed });
   try {
     const { spawn } = await import("node:child_process");
-    const { join: join13, dirname: dirname7 } = await import("node:path");
+    const { join: join14, dirname: dirname7 } = await import("node:path");
     const bundlePath = process.argv[1] ?? "";
     if (bundlePath) {
-      const setupCheckPath = join13(dirname7(bundlePath), "setup-check.cjs");
+      const setupCheckPath = join14(dirname7(bundlePath), "setup-check.cjs");
       const child = spawn(process.execPath, [setupCheckPath], {
         stdio: "ignore",
         detached: true
@@ -23184,12 +23402,12 @@ Hint: ${e.hint}
       child.on("error", () => void 0);
     }
   } catch (e) {
-    log6.warn("setup_check_spawn_failed", {
+    log7.warn("setup_check_spawn_failed", {
       err: e instanceof Error ? e.message : String(e)
     });
   }
   const shutdown = async (signal) => {
-    log6.info("shutdown", { signal });
+    log7.info("shutdown", { signal });
     await shutdownContext(ctx).catch(() => void 0);
     await server.close().catch(() => void 0);
     process.exit(0);
@@ -23199,13 +23417,13 @@ Hint: ${e.hint}
 }
 
 // src/index.ts
-var log7 = makeLogger("entry");
+var log8 = makeLogger("entry");
 async function main() {
-  log7.info("boot");
+  log8.info("boot");
   try {
     await startStdioServer();
   } catch (e) {
-    log7.error("fatal", { err: e instanceof Error ? e.message : String(e) });
+    log8.error("fatal", { err: e instanceof Error ? e.message : String(e) });
     process.exit(1);
   }
 }

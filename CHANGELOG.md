@@ -2,6 +2,88 @@
 
 All notable changes to this project are documented here. Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.10.0-alpha] — 2026-07-23 (pre-release)
+
+### Added — control-plane daemon MVP (fáze 1/3)
+
+**Motivace.** Provozní incidenty autonomního HMH týmu 22.–23. 7. 2026 (noční zánik 6 peerů, kontaminovaný spawn, umřelá telemetrie, tichý crash cronu, ruční orchestrace) prokázaly, že správu životního cyklu Claude Code procesů nelze udržet na uživateli. Ratifikované zadání `/opt/hmh/docs/agent-platform/control-plane-zadani-2026-07-23.md` v3 vymezuje samostatnou opt-in komponentu — control-plane daemon — jako řešení. Alpha ships MVP core (fáze 1/3), beta a rc následují.
+
+### Workspace layout
+
+Repo přechod na npm workspaces:
+- `packages/shared/` — `@claude-bridge/shared` (paths, atomic-write, structured logger s pid trace, control-plane path helpery per §4.3 zadání)
+- `servers/claude-bridge/` — existing MCP server, unchanged v alfě (import migrace se plánuje v v0.10.0-beta/rc)
+- `servers/claude-bridge-daemon/` — nový daemon package, opt-in artefakt distribuovaný v pluginu
+
+Root `package.json` s `workspaces: ["packages/*", "servers/*"]`. Pre-push hook (`.githooks/pre-push`) rozšířen o iteraci přes všechny workspace balíčky (biome + tsc + vitest per package).
+
+### Daemon core (`servers/claude-bridge-daemon/`)
+
+- **Bundle** `dist/daemon.cjs` (~24 kB) přes esbuild, entry `src/index.ts`
+- **CLI příkazy:** `run`, `install --systemd`, `uninstall --systemd`, `status`, `version`, `help`
+- **Lock file** `~/.claude-bridge/control/daemon.lock` — atomic write s payload `{pid, startedAt, procStart}`. Stale-lock takeover přes `kill(0, pid)` + `/proc/<pid>/stat` fingerprint na Linuxu (per §6/6 zadání — state recovery kdykoliv restart)
+- **State machine** `~/.claude-bridge/control/state.json` s `stateVersion: 1`. Loader refuses to open state written by a newer daemon (no silent downgrade, per §7 zadání)
+- **Requests inbox** `~/.claude-bridge/control/requests/<id>.json`, konzumace přes rename do `requests/done/` (vzor pending/done z bridge inbox v0.2.x)
+- **Results envelope** `~/.claude-bridge/control/results/<id>.json` — outcome, finishedAt, data / error
+- **Events audit log** `~/.claude-bridge/control/events.jsonl` — append-only NDJSON s pinned polem `schemaVersion, ts, pid, level, event, by, requestId, details` (per §4.3)
+- **Heartbeat** `~/.claude-bridge/control/heartbeat` — mtime advertisement (touch every 5 s). Stale > 30 s = `daemon_not_running` signal
+- **Structured logger** — stderr NDJSON s pid trace field (per §6/5 lesson v0.9.3)
+- **Signal handling** — SIGTERM/SIGINT = graceful (drain + release lock + emit stopped event), SIGHUP = reload stub (beta), SIGPIPE = ignore, stdin EOF = ignore (per §6/3, v0.9.3 lekce)
+
+### Systemd instalace
+
+- Šablona `servers/claude-bridge-daemon/src/templates/claude-bridge-daemon.service`
+- `install --systemd` render + write do `~/.config/systemd/user/`, `daemon-reload && enable && start`
+- ExecStart používá aktuální `process.execPath` (nvm/asdf compat)
+- `Restart=always` + `RestartSec=2s` — základ pro kill-test acceptance
+
+### Alfa handlery
+
+- `control_status` — vrací daemon health + state summary
+- `peer_stop` — MVP stub: neexistující peer → `peer_not_found`, existující peer → `not_implemented_in_alpha` (plná implementace v0.10.0-beta per §5.2)
+
+Bez handlerů = `unknown_tool` s výčtem supported tools.
+
+### MCP wire (bridge strana)
+
+Nové nástroje v `servers/claude-bridge/src/mcp/tools.ts`:
+- `control_status` — read-only probe daemonu (lock + heartbeat + state.json). Vrací `daemon_not_running` + `setupPointer` když daemon není nainstalovaný — žádný crash, žádný auto-start
+- `peer_stop` — fire-and-forget (default) nebo `wait: true, timeoutMs: N` opt-in poll (per §4.3 zadání). Vrací `{ requestId, queuedAt }` v obou režimech
+
+MCP server bundle regenerován, tests 305/305 pass (nulová regrese).
+
+### ADR-008 a docs
+
+- Nový `docs/architecture.md` monolit s ADR indexem (slot ADR-007 rezervovaný pro Agent Teams pivot, ADR-008 plný text — control-plane daemon vedle file-based filozofie)
+- Amendment `docs/HOOKS-STATUSLINE-ARCHITECTURE.md` — scope note k „no daemon" pasáži + úprava „Why not IPC / daemon / socket?" (upřesnění, že platí pro data/messaging plane; process lifecycle řeší ADR-008)
+
+### Acceptance testy alfa
+
+**Kill-test PASS** (přiložen do milestone reportu do designer threadu — output.log v alfa post-mortem):
+- initial daemon (pid A) processes control_status request → result envelope OK
+- `kill -9 <pid A>` → systemd `Restart=always` respawn (pid B)
+- Stale lock takeover: nový daemon detekuje mrtvý pid + procStart mismatch → cleanup + acquire (pid B)
+- state.json persisted → recovery po restartu
+- post-crash request → result OK
+- events.jsonl audit: 12 events pinned schema (daemon_started × 2, request_received/completed × 2, lifecycle boundaries)
+
+**End-to-end request pipeline PASS:**
+- peer_stop s nonexistent peerem → `outcome:error, code:peer_not_found` v `results/<id>.json`
+- request přesunut do `requests/done/`
+- 4 events zaznamenané (request_received → peer_stop_rejected → request_completed)
+
+**Unit tests:** 10/10 pass v daemon package (lock acquire/refuse/takeover, state bootstrap/roundtrip/version mismatch, rpc dirs/read good/reject bad/markDone/writeResult).
+
+### Kompatibilita
+
+- Bez daemonu plugin funguje beze změny — nulová regrese pro stávající uživatele
+- Uninstall příběh: `daemon uninstall --systemd` zastaví service, odstraní unit, `daemon-reload`. Setup-check detekce „služba běží, plugin pryč" plánována v F2 (setup-check rozšíření o daemon symlink)
+- Cross-platform matice per §9 zadání: Linux MVP; macOS launchd + Windows Task Scheduler ship v F3+. Windows uživatelé zatím používají WSL2
+
+### Coordination
+
+Ratifikováno v designer thread `control-plane-zadani-2026-07-23`. Milestone report `[milestone] v0.10.0-alpha` s přiloženým kill-test výstupem posílán do threadu při release. STOP-gate před beta: čeká na designer převzetí alfa reportu.
+
 ## [0.9.4] — 2026-07-23
 
 ### Added — JSONL fallback for `peer_context_status` (no single point of failure)

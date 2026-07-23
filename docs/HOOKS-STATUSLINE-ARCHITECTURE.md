@@ -192,15 +192,19 @@ Skip banner when setup is complete AND version unchanged since last banner shown
 └── claude-bridge-statusline-wrapper.sh    # auto-generated shell wrapper
 ```
 
-Nothing else — the plugin is entirely file-based, no daemon, no shared memory, no network state.
+Nothing else on the **data / messaging** plane — the plugin's telemetry, inbox, registry and guard configs are entirely file-based, with no daemon, no shared memory, no network state.
 
-## Why not IPC / daemon / socket?
+> **Scope note (v0.10.0+)** — the "no daemon" rule above applies to the data/messaging plane only. **Process lifecycle** (spawn, stop, restart, compact watchdog) is a qualitatively different problem — processes need a supervisor that lives longer than they do, which CC hooks cannot provide. From v0.10.0 an opt-in **control plane daemon** (`servers/claude-bridge-daemon/`) handles that separately. Communication with the daemon is still file-based (`~/.claude-bridge/control/requests/`, `results/`, `events.jsonl`) — the file-based principle carries into the new component. See [ADR-008 in `architecture.md`](architecture.md#adr-008--control-plane-daemon-vedle-file-based-filozofie).
+
+## Why not IPC / daemon / socket for the data plane?
 
 We considered several patterns during the pre-implementation phase:
 
 - **In-memory shared state via MCP** — MCP servers can hold state, but stdio transport is per-session, so state doesn't cross Claude Code chats. And we specifically want cross-chat visibility.
 - **Unix socket + daemon** — would work, but adds a persistent process to manage, complicates uninstall, and doesn't survive session boundaries any better than file-based.
 - **Pipes / FIFOs** — one-shot, no re-read, defeats the "check any time" access pattern.
+
+The v0.10.0 control-plane daemon is intentionally scoped to lifecycle work and does not intrude on any of the above surfaces.
 
 File-based, atomic-writes, POSIX-scoped is the simplest thing that works cross-session for user-scoped data (rate limits, context usage). Same design principle carries through the whole plugin (peer inbox, guard configs, notification settings).
 

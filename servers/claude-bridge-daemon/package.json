@@ -1,0 +1,35 @@
+{
+  "name": "claude-bridge-daemon",
+  "version": "0.10.0-alpha.0",
+  "private": true,
+  "description": "Control-plane daemon for the claude-bridge plugin: peer lifecycle, telemetry, audit. Distributed as opt-in artefact — see ADR-008.",
+  "type": "module",
+  "main": "dist/daemon.cjs",
+  "bin": {
+    "claude-bridge-daemon": "dist/daemon.cjs"
+  },
+  "scripts": {
+    "build": "esbuild src/index.ts --bundle --platform=node --target=node18 --format=cjs --outfile=dist/daemon.cjs --banner:js='#!/usr/bin/env node' --loader:.json=json && mkdir -p templates && cp src/templates/claude-bridge-daemon.service templates/",
+    "dev": "tsx --watch src/index.ts",
+    "start": "node dist/daemon.cjs",
+    "test": "vitest run tests/",
+    "test:watch": "vitest tests/",
+    "typecheck": "tsc --noEmit",
+    "check": "biome check src tests"
+  },
+  "dependencies": {
+    "@claude-bridge/shared": "*",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^1.9.4",
+    "@types/node": "^22.9.0",
+    "esbuild": "^0.24.0",
+    "tsx": "^4.19.2",
+    "typescript": "^5.6.3",
+    "vitest": "^2.1.8"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

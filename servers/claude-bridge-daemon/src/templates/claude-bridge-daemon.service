@@ -1,0 +1,17 @@
+[Unit]
+Description=claude-bridge control-plane daemon
+Documentation=https://github.com/michalekz/claude-bridge/blob/main/docs/architecture.md
+After=default.target
+
+[Service]
+Type=simple
+ExecStart=__NODE_BIN__ __DAEMON_BIN__ run
+Restart=always
+RestartSec=2s
+StandardOutput=journal
+StandardError=journal
+Environment=NODE_ENV=production
+Environment=LOG_LEVEL=info
+
+[Install]
+WantedBy=default.target

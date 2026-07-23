@@ -16,44 +16,53 @@
 
 set -euo pipefail
 
-PLUGIN_DIR="servers/claude-bridge"
+# Workspace packages to check. Added incrementally as the repo grows; missing
+# dirs are skipped silently so branches predating the layout still push.
+PACKAGES=(
+  "servers/claude-bridge"
+  "servers/claude-bridge-daemon"
+  "packages/shared"
+)
 
-if [ ! -d "$PLUGIN_DIR" ]; then
-  echo "pre-push: plugin dir $PLUGIN_DIR not found, skipping checks"
-  exit 0
-fi
+REPO_ROOT="$(git rev-parse --show-toplevel)"
 
-echo "▸ pre-push: running CI-equivalent checks (biome + tsc + tests)…"
-cd "$PLUGIN_DIR"
-
-# Match CI step "Lint (Biome)" — `npm run check` is strict, no auto-fix.
-echo "  → biome check"
-if ! npm run check --silent; then
+run_checks() {
+  local pkg_dir="$1"
+  local full="$REPO_ROOT/$pkg_dir"
+  if [ ! -d "$full" ]; then
+    return 0
+  fi
   echo
-  echo "✗ biome check failed. Fix with:"
-  echo "    cd $PLUGIN_DIR && npx biome check --write src tests"
-  echo
-  echo "Or bypass with: git push --no-verify"
-  exit 1
-fi
+  echo "▸ pre-push: [$pkg_dir] biome + tsc + tests"
+  cd "$full"
 
-# Match CI step "Typecheck"
-echo "  → tsc --noEmit"
-if ! npm run typecheck --silent; then
-  echo
-  echo "✗ tsc typecheck failed. See errors above."
-  echo "Or bypass with: git push --no-verify"
-  exit 1
-fi
+  if ! npm run check --silent --if-present; then
+    echo
+    echo "✗ biome check failed in $pkg_dir. Fix with:"
+    echo "    cd $pkg_dir && npx biome check --write src tests"
+    echo
+    echo "Or bypass with: git push --no-verify"
+    exit 1
+  fi
 
-# Match CI step "Unit tests"
-echo "  → vitest"
-if ! npm test --silent; then
-  echo
-  echo "✗ tests failed. See output above."
-  echo "Or bypass with: git push --no-verify"
-  exit 1
-fi
+  if ! npm run typecheck --silent --if-present; then
+    echo
+    echo "✗ tsc typecheck failed in $pkg_dir. See errors above."
+    echo "Or bypass with: git push --no-verify"
+    exit 1
+  fi
+
+  if ! npm test --silent --if-present; then
+    echo
+    echo "✗ tests failed in $pkg_dir. See output above."
+    echo "Or bypass with: git push --no-verify"
+    exit 1
+  fi
+}
+
+for pkg in "${PACKAGES[@]}"; do
+  run_checks "$pkg"
+done
 
 echo
-echo "✓ pre-push: all checks passed"
+echo "✓ pre-push: all workspace checks passed"

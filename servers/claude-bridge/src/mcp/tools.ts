@@ -27,6 +27,12 @@ import { atomicWriteJson } from "../util/atomic-write.ts";
 import { makeLogger } from "../util/logger.ts";
 import { bridgeRoot, encodeProjectDir } from "../util/paths.ts";
 import type { ServerContext } from "./context.ts";
+import {
+  ControlStatusArgs,
+  PeerStopArgs,
+  controlStatusTool,
+  peerStopTool,
+} from "./control-plane.ts";
 
 const log = makeLogger("tools");
 
@@ -2258,6 +2264,58 @@ export const TOOLS: ToolSpec[] = [
       const parsed = PeerSetNotificationArgs.safeParse(args);
       if (!parsed.success) return err("invalid_args", "Schema validation failed", parsed.error);
       return peerSetNotificationTool(ctx, parsed.data);
+    },
+  },
+  {
+    name: "control_status",
+    description:
+      "Read-only: check the v0.10.0 control-plane daemon health (pid, lock, heartbeat freshness) and summarise its state.json. Returns `daemon_not_running` with a setupPointer when the daemon isn't installed — no crash, no auto-start. See docs/architecture.md ADR-008 and the SETUP-LIVE-DATA doc for install steps.",
+    inputSchema: { type: "object", properties: {}, additionalProperties: false },
+    handler: async (args) => {
+      const parsed = ControlStatusArgs.safeParse(args);
+      if (!parsed.success) return err("invalid_args", "Schema validation failed", parsed.error);
+      return controlStatusTool();
+    },
+  },
+  {
+    name: "peer_stop",
+    description:
+      "Ask the control-plane daemon to stop a peer. v0.10.0-alpha ships this as a fire-and-forget wire: the MCP tool writes a request envelope to the daemon inbox and returns `{ requestId, queuedAt }`. Full lifecycle (graceful signal + host-driver cleanup) lands in v0.10.0-beta — alpha handler currently returns `not_implemented_in_alpha` for known peers and `peer_not_found` for unknown ones. Pass `wait:true, timeoutMs:N` to poll for the result envelope before returning.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        peer: {
+          type: "string",
+          description: "Peer sessionId (UUID) or display name. Prefer sessionId for uniqueness.",
+        },
+        reason: {
+          type: "string",
+          description: "Optional free-text reason recorded in events.jsonl for the audit trail.",
+        },
+        force: {
+          type: "boolean",
+          description:
+            "Skip graceful signal, kill immediately. Not honoured in alpha (stub handler) — recorded for beta.",
+        },
+        wait: {
+          type: "boolean",
+          description:
+            "If true, poll for `results/<id>.json` before returning. Default false = fire-and-forget.",
+        },
+        timeoutMs: {
+          type: "number",
+          minimum: 1,
+          maximum: 60000,
+          description: "Max ms to wait when wait=true (default 10000).",
+        },
+      },
+      required: ["peer"],
+      additionalProperties: false,
+    },
+    handler: async (args, ctx) => {
+      const parsed = PeerStopArgs.safeParse(args);
+      if (!parsed.success) return err("invalid_args", "Schema validation failed", parsed.error);
+      return peerStopTool(ctx, parsed.data);
     },
   },
 ];
