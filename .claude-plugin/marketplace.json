@@ -13,10 +13,10 @@
       "source": {
         "source": "github",
         "repo": "michalekz/claude-bridge",
-        "ref": "v0.10.0-rc.1"
+        "ref": "v0.10.0-rc.2"
       },
-      "description": "MCP server for cross-Claude-Code-chat orchestration + optional control-plane daemon. Bridge features (all versions): peer messaging, chat read/search, live context + rate-limits monitoring via chained statusLine wrapper + PostToolUse OAuth hook, peer_set_context_guard + peer_set_rate_limit_guard, idle-beep notification, bundled role skills. v0.10.0-rc adds an opt-in control-plane daemon (`install --systemd`) that supervises peer lifecycle: peer_spawn/stop/restart with sanitized env + fork-guard, peer_compact orchestration (charter §8 audited path — auto-watchdog OFF default), team_layout declarative reconcile, lifecycle event routing into offline subscriber inboxes. Without the daemon the plugin behaves as v0.9.4 — no regression. See docs/SETUP-DAEMON.md and ADR-008 in docs/architecture.md. **This is a pre-release (rc)** — stable 0.10.0 will follow after live operation and owner GO.",
-      "version": "0.10.0-rc.1",
+      "description": "MCP server for cross-Claude-Code-chat orchestration + optional control-plane daemon. Bridge features (all versions): peer messaging, chat read/search, live context + rate-limits monitoring via chained statusLine wrapper + PostToolUse OAuth hook, peer_set_context_guard + peer_set_rate_limit_guard, idle-beep notification, bundled role skills. v0.10.0-rc adds an opt-in control-plane daemon (`install --systemd`) that supervises peer lifecycle: peer_spawn/stop/restart with sanitized env + fork-guard, peer_compact orchestration (charter §8 audited path — auto-watchdog OFF default), team_layout declarative reconcile, lifecycle event routing into offline subscriber inboxes. Without the daemon the plugin behaves as v0.9.4 — no regression. v0.10.0-rc.2 fixes two bugs from the rc.1 live test: session names containing `:` / `.` now canonicalize to safe tmux targets end-to-end (T1), and peer_stop is idempotent when the host session already vanished (T2). See docs/SETUP-DAEMON.md and ADR-008 in docs/architecture.md. **This is a pre-release (rc)** — stable 0.10.0 will follow after live operation and owner GO.",
+      "version": "0.10.0-rc.2",
       "author": {
         "name": "Zed Michalek",
         "url": "https://github.com/michalekz"

@@ -1,7 +1,12 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { makeLogger } from "@claude-bridge/shared";
-import type { SessionHostDriver, SessionHostRecord, SessionHostSpawnOptions } from "./driver.ts";
+import {
+  type SessionHostDriver,
+  type SessionHostRecord,
+  type SessionHostSpawnOptions,
+  sanitizeSessionKey,
+} from "./driver.ts";
 
 const execFileAsync = promisify(execFile);
 const log = makeLogger("daemon.host.tmux");
@@ -42,8 +47,9 @@ export class TmuxDriver implements SessionHostDriver {
   }
 
   async hasSession(sessionKey: string): Promise<boolean> {
+    const canonical = sanitizeSessionKey(sessionKey);
     try {
-      await execFileAsync(this.tmuxBin, ["has-session", "-t", sessionKey]);
+      await execFileAsync(this.tmuxBin, ["has-session", "-t", canonical]);
       return true;
     } catch {
       return false;
@@ -51,11 +57,14 @@ export class TmuxDriver implements SessionHostDriver {
   }
 
   async spawn(opts: SessionHostSpawnOptions): Promise<SessionHostRecord> {
+    // Canonicalize the session key so tmux never sees `:` / `.` / spaces —
+    // v0.10.0-rc.2 fix for the silent-rewrite bug caught by the test scenario.
+    const canonicalKey = sanitizeSessionKey(opts.sessionKey);
     const args = [
       "new-session",
       "-d",
       "-s",
-      opts.sessionKey,
+      canonicalKey,
       "-c",
       opts.cwd,
       opts.command,
@@ -67,33 +76,40 @@ export class TmuxDriver implements SessionHostDriver {
     } catch (e) {
       log.error("tmux_spawn_failed", {
         sessionKey: opts.sessionKey,
+        canonicalKey,
         err: e instanceof Error ? e.message : String(e),
       });
       throw e;
     }
-    const pid = await this.readSessionPid(opts.sessionKey);
-    return { sessionKey: opts.sessionKey, alive: true, pid };
+    if (canonicalKey !== opts.sessionKey) {
+      log.info("session_key_canonicalized", {
+        raw: opts.sessionKey,
+        canonical: canonicalKey,
+      });
+    }
+    const pid = await this.readSessionPid(canonicalKey);
+    return { sessionKey: canonicalKey, alive: true, pid };
   }
 
   async kill(sessionKey: string, opts: { force?: boolean } = {}): Promise<void> {
-    // tmux kill-session is already a single-step signal to the whole
-    // session's process group; `force` only affects our verify budget.
+    const canonical = sanitizeSessionKey(sessionKey);
+    // Idempotent — the caller may not know whether the session is still
+    // there (v0.10.0-rc.2 fix for T2 „stopping without host" reconcile).
+    if (!(await this.hasSession(canonical))) return;
     try {
-      await execFileAsync(this.tmuxBin, ["kill-session", "-t", sessionKey]);
+      await execFileAsync(this.tmuxBin, ["kill-session", "-t", canonical]);
     } catch (e) {
-      // If the session was already gone, treat as success — idempotent.
+      if (!(await this.hasSession(canonical))) return;
       const msg = e instanceof Error ? e.message : String(e);
       if (msg.includes("can't find session")) return;
       throw e;
     }
     const budget = opts.force === true ? this.verifyTimeoutMs / 2 : this.verifyTimeoutMs;
-    const respawned = !(await this.verifyKilled(sessionKey, budget));
+    const respawned = !(await this.verifyKilled(canonical, budget));
     if (respawned) {
-      // Something re-created the session — bg-pty-host-shaped supervisor.
-      // Surface it loudly; caller decides whether to force again or alarm.
-      log.error("tmux_kill_respawn_detected", { sessionKey });
+      log.error("tmux_kill_respawn_detected", { sessionKey: canonical });
       throw new Error(
-        `Session '${sessionKey}' respawned within ${budget}ms after kill — investigate supervisor (bg-pty-host?)`,
+        `Session '${canonical}' respawned within ${budget}ms after kill — investigate supervisor (bg-pty-host?)`,
       );
     }
   }
@@ -128,7 +144,8 @@ export class TmuxDriver implements SessionHostDriver {
   }
 
   async sendKeys(sessionKey: string, keys: string): Promise<void> {
-    await execFileAsync(this.tmuxBin, ["send-keys", "-t", sessionKey, keys, "Enter"]);
+    const canonical = sanitizeSessionKey(sessionKey);
+    await execFileAsync(this.tmuxBin, ["send-keys", "-t", canonical, keys, "Enter"]);
   }
 
   private async readSessionPid(sessionKey: string): Promise<number | null> {

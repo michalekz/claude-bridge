@@ -1,7 +1,12 @@
 import { spawn as spawnProcess } from "node:child_process";
 import type { ChildProcess } from "node:child_process";
 import { makeLogger } from "@claude-bridge/shared";
-import type { SessionHostDriver, SessionHostRecord, SessionHostSpawnOptions } from "./driver.ts";
+import {
+  type SessionHostDriver,
+  type SessionHostRecord,
+  type SessionHostSpawnOptions,
+  sanitizeSessionKey,
+} from "./driver.ts";
 
 const log = makeLogger("daemon.host.mock");
 
@@ -42,12 +47,15 @@ export class MockDriver implements SessionHostDriver {
   }
 
   async hasSession(sessionKey: string): Promise<boolean> {
-    return this.sessions.has(sessionKey);
+    return this.sessions.has(sanitizeSessionKey(sessionKey));
   }
 
   async spawn(opts: SessionHostSpawnOptions): Promise<SessionHostRecord> {
-    if (this.sessions.has(opts.sessionKey)) {
-      throw new Error(`Mock session '${opts.sessionKey}' already exists`);
+    // Mirror TmuxDriver: sanitize once at the boundary so tests exercise
+    // the same canonical-key contract callers see in production.
+    const canonicalKey = sanitizeSessionKey(opts.sessionKey);
+    if (this.sessions.has(canonicalKey)) {
+      throw new Error(`Mock session '${canonicalKey}' already exists`);
     }
     let proc: ChildProcess | null = null;
     let pid: number | null = null;
@@ -59,18 +67,20 @@ export class MockDriver implements SessionHostDriver {
         detached: true,
       });
       pid = proc.pid ?? null;
-      proc.on("exit", () => this.sessions.delete(opts.sessionKey));
+      proc.on("exit", () => this.sessions.delete(canonicalKey));
     } catch (e) {
-      log.warn("mock_spawn_failed", { sessionKey: opts.sessionKey, err: String(e) });
+      log.warn("mock_spawn_failed", { sessionKey: opts.sessionKey, canonicalKey, err: String(e) });
       // For tests we still register — some acceptance cases assert on
       // state independent of whether the binary actually runs.
     }
-    this.sessions.set(opts.sessionKey, { proc, pid, respawnPending: false });
-    return { sessionKey: opts.sessionKey, alive: true, pid };
+    this.sessions.set(canonicalKey, { proc, pid, respawnPending: false });
+    return { sessionKey: canonicalKey, alive: true, pid };
   }
 
   async kill(sessionKey: string): Promise<void> {
-    const entry = this.sessions.get(sessionKey);
+    // Idempotent — matches the TmuxDriver contract (v0.10.0-rc.2).
+    const canonical = sanitizeSessionKey(sessionKey);
+    const entry = this.sessions.get(canonical);
     if (!entry) return;
     if (entry.proc && entry.pid !== null) {
       try {
@@ -79,11 +89,11 @@ export class MockDriver implements SessionHostDriver {
         // process may already be gone; ignore
       }
     }
-    this.sessions.delete(sessionKey);
-    if (this.hostRespawnHook?.(sessionKey)) {
+    this.sessions.delete(canonical);
+    if (this.hostRespawnHook?.(canonical)) {
       // Simulated supervisor respawn — insert a synthetic record so the
       // daemon's verify step trips.
-      this.sessions.set(sessionKey, { proc: null, pid: null, respawnPending: true });
+      this.sessions.set(canonical, { proc: null, pid: null, respawnPending: true });
     }
   }
 

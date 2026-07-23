@@ -2,6 +2,42 @@
 
 All notable changes to this project are documented here. Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.10.0-rc.2] — 2026-07-23 (pre-release, hotfix rc.1 test findings)
+
+Two bugs found during the small-team live test of v0.10.0-rc.1 (designer msg `mrxk13qd`, 7/10 passed). Both stem from the same class of problem — the daemon and the host driver disagreed on what a session name looks like — but they surfaced independently.
+
+### T1 — session names with `:` / `.` broke tmux target syntax
+
+Test used `displayName: "rc-test:alice"`. tmux silently rewrote the session name to `rc-test_alice` on `new-session`, but the daemon kept using the raw string as the `-t` target for every follow-up op. Result: `hostAlive:false` immediately after spawn, `send_keys_failed "can't find window: alice"` in the compact step (because `-t rc-test:alice` was parsed as `session:window`), and `host_kill_failed` in cleanup.
+
+**Fix**: `sanitizeSessionKey()` in `hosts/driver.ts` — one canonical form (`[A-Za-z0-9_-]`, everything else → `_`) used by both drivers. `TmuxDriver.spawn()` and `MockDriver.spawn()` canonicalize on entry, return the canonical key in `SessionHostRecord.sessionKey`; every other driver op (`hasSession`, `kill`, `sendKeys`, `verifyKilled`) canonicalizes input as a defense-in-depth no-op. `peer-spawn.ts` persists `record.sessionKey` (canonical) to `state.peers[].tmuxTarget` so every subsequent handler dispatch feeds the driver the target it already owns. `state.peers[].name` keeps the raw user-facing displayName untouched.
+
+### T2 — peer_stop was not idempotent → state stuck on `stopping`
+
+When `driver.kill()` failed (as it did in T1 because the target was wrong), the peer was left in `state.peers[].status = "stopping"`. Re-running `peer_stop` produced the same error, so state couldn't be reconciled with a tool — operator had to reach for a shell.
+
+**Fix**: `TmuxDriver.kill()` and `MockDriver.kill()` now check `hasSession()` first and return success without a `kill-session` call if the target isn't there. On a real kill attempt that races with something else removing the session, they re-probe and swallow the error. From the handler's perspective a kill either succeeds or throws for a real reason (`supervisor_respawn` still surfaces loudly).
+
+### Tests
+
+- New file `tests/rc2-regression.test.ts` (4 tests):
+  1. `sanitizeSessionKey` unit — `rc-test:alice` → `rc-test_alice`, `hmh.node.1` → `hmh_node_1`, `proj/team 2` → `proj_team_2`, clean names left alone.
+  2. Spawn stores canonical `tmuxTarget` in state.peers; `name` keeps raw; `team_status.hostAlive:true`; `peer_compact.sendKeys` receives canonical; `peer_stop` cleans state.
+  3. `driver.kill("ghost")` on a non-existent session returns success (no throw).
+  4. `peer_stop` succeeds and clears state even after the host session vanished externally (regression fixture for T2).
+- Updated `tests/rc-acceptance.test.ts` peer_compact happy-path assertion — sendKeys spy now expects the canonical key (`compact_target`, not raw `compact:target`).
+- Full workspace test totals: **336 pass** (305 MCP + 29 daemon + 2 shared).
+
+### Version + docs
+
+- Daemon `0.10.0-rc.0` → `0.10.0-rc.2` (skipping `.1` — the marketplace-only bump did not touch daemon code).
+- Plugin `0.10.0-rc.1` → `0.10.0-rc.2`. Marketplace `source.ref v0.10.0-rc.1` → `v0.10.0-rc.2`; marketplace description records the T1/T2 hotfix.
+- `docs/architecture.md` — no ADR change; ADR-008 already gates stable release on owner GO after clean run.
+
+### What still gates stable
+
+Clean re-run of `docs/RC-TEST-SCENARIO.md` (10/10 pass) at the small-team level, then owner GO. No F2 items in scope.
+
 ## [0.10.0-rc.1] — 2026-07-23 (pre-release, marketplace publish)
 
 Marketplace publication of the v0.10.0-rc line. Owner GO 2026-07-23 večer (Zdeněk in designer session `mrxitydc`) — outward-facing gate opened explicitly.

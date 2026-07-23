@@ -147,7 +147,7 @@ function heartbeatPath() {
 // package.json
 var package_default = {
   name: "claude-bridge-daemon",
-  version: "0.10.0-rc.0",
+  version: "0.10.0-rc.2",
   private: true,
   description: "Control-plane daemon for the claude-bridge plugin: peer lifecycle, telemetry, audit. Distributed as opt-in artefact \u2014 see ADR-008.",
   type: "module",
@@ -4816,11 +4816,13 @@ async function handlePeerSpawn(req, ctx) {
       args: spawnArgs,
       env
     });
+    const canonicalKey = record.sessionKey;
     await applyStateChange(ctx.state, (draft) => {
       const rec = draft.peers[args.sessionId];
       if (!rec) return;
       rec.pid = record.pid;
       rec.status = "live";
+      rec.tmuxTarget = canonicalKey;
       rec.lastUpdatedAt = (/* @__PURE__ */ new Date()).toISOString();
     });
     await writeEvent({
@@ -4829,7 +4831,8 @@ async function handlePeerSpawn(req, ctx) {
       requestId: req.id,
       details: {
         sessionId: args.sessionId,
-        sessionKey,
+        sessionKey: canonicalKey,
+        rawSessionKey: sessionKey !== canonicalKey ? sessionKey : void 0,
         pid: record.pid,
         hostDriver: hostDriverName,
         resume: args.resume,
@@ -4840,7 +4843,7 @@ async function handlePeerSpawn(req, ctx) {
     await publishLifecycleEvent({
       event: "peer_started",
       sessionId: args.sessionId,
-      sessionKey,
+      sessionKey: canonicalKey,
       details: {
         pid: record.pid,
         hostDriver: hostDriverName,
@@ -4850,7 +4853,7 @@ async function handlePeerSpawn(req, ctx) {
     });
     return okResult(req.id, req.tool, {
       sessionId: args.sessionId,
-      sessionKey,
+      sessionKey: canonicalKey,
       pid: record.pid,
       hostDriver: hostDriverName
     });
@@ -5349,6 +5352,16 @@ function stopHeartbeat() {
   }
 }
 
+// src/hosts/driver.ts
+var UNSAFE_TARGET_CHARS = /[^A-Za-z0-9_-]/g;
+function sanitizeSessionKey(rawName) {
+  const sanitized = rawName.replace(UNSAFE_TARGET_CHARS, "_");
+  if (sanitized.length === 0) {
+    throw new Error(`Cannot derive a tmux target from '${rawName}' \u2014 nothing safe remained`);
+  }
+  return sanitized;
+}
+
 // src/hosts/tmux-driver.ts
 var import_node_child_process = require("node:child_process");
 var import_node_util = require("node:util");
@@ -5365,19 +5378,21 @@ var TmuxDriver = class {
     this.verifyIntervalMs = opts.verifyIntervalMs ?? 200;
   }
   async hasSession(sessionKey) {
+    const canonical = sanitizeSessionKey(sessionKey);
     try {
-      await execFileAsync(this.tmuxBin, ["has-session", "-t", sessionKey]);
+      await execFileAsync(this.tmuxBin, ["has-session", "-t", canonical]);
       return true;
     } catch {
       return false;
     }
   }
   async spawn(opts) {
+    const canonicalKey = sanitizeSessionKey(opts.sessionKey);
     const args = [
       "new-session",
       "-d",
       "-s",
-      opts.sessionKey,
+      canonicalKey,
       "-c",
       opts.cwd,
       opts.command,
@@ -5389,27 +5404,37 @@ var TmuxDriver = class {
     } catch (e) {
       log6.error("tmux_spawn_failed", {
         sessionKey: opts.sessionKey,
+        canonicalKey,
         err: e instanceof Error ? e.message : String(e)
       });
       throw e;
     }
-    const pid = await this.readSessionPid(opts.sessionKey);
-    return { sessionKey: opts.sessionKey, alive: true, pid };
+    if (canonicalKey !== opts.sessionKey) {
+      log6.info("session_key_canonicalized", {
+        raw: opts.sessionKey,
+        canonical: canonicalKey
+      });
+    }
+    const pid = await this.readSessionPid(canonicalKey);
+    return { sessionKey: canonicalKey, alive: true, pid };
   }
   async kill(sessionKey, opts = {}) {
+    const canonical = sanitizeSessionKey(sessionKey);
+    if (!await this.hasSession(canonical)) return;
     try {
-      await execFileAsync(this.tmuxBin, ["kill-session", "-t", sessionKey]);
+      await execFileAsync(this.tmuxBin, ["kill-session", "-t", canonical]);
     } catch (e) {
+      if (!await this.hasSession(canonical)) return;
       const msg = e instanceof Error ? e.message : String(e);
       if (msg.includes("can't find session")) return;
       throw e;
     }
     const budget = opts.force === true ? this.verifyTimeoutMs / 2 : this.verifyTimeoutMs;
-    const respawned = !await this.verifyKilled(sessionKey, budget);
+    const respawned = !await this.verifyKilled(canonical, budget);
     if (respawned) {
-      log6.error("tmux_kill_respawn_detected", { sessionKey });
+      log6.error("tmux_kill_respawn_detected", { sessionKey: canonical });
       throw new Error(
-        `Session '${sessionKey}' respawned within ${budget}ms after kill \u2014 investigate supervisor (bg-pty-host?)`
+        `Session '${canonical}' respawned within ${budget}ms after kill \u2014 investigate supervisor (bg-pty-host?)`
       );
     }
   }
@@ -5441,7 +5466,8 @@ var TmuxDriver = class {
     }
   }
   async sendKeys(sessionKey, keys) {
-    await execFileAsync(this.tmuxBin, ["send-keys", "-t", sessionKey, keys, "Enter"]);
+    const canonical = sanitizeSessionKey(sessionKey);
+    await execFileAsync(this.tmuxBin, ["send-keys", "-t", canonical, keys, "Enter"]);
   }
   async readSessionPid(sessionKey) {
     try {

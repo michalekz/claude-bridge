@@ -228,7 +228,9 @@ describe("rc acceptance", () => {
         { state: doc, hostDriver: driver, daemonVersion: "0.10.0-rc.0" },
       );
       expect(compactRes.outcome).toBe("ok");
-      expect(sendKeysCalls).toEqual([{ key: "compact:target", keys: "/compact" }]);
+      // v0.10.0-rc.2: sessionKey is canonicalized (`:` → `_`) before it
+      // ever reaches the driver — send-keys always receives the sanitized form.
+      expect(sendKeysCalls).toEqual([{ key: "compact_target", keys: "/compact" }]);
 
       // Ack file must have been consumed (moved to done/ or unlinked).
       const doneDir = join(shared.controlDir(), "compact-ack", "done");

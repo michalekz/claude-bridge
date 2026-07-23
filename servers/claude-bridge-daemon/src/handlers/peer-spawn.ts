@@ -74,6 +74,9 @@ export async function handlePeerSpawn(
     });
   }
   const args = parsed.data;
+  // fork-guard uses the raw name; drivers canonicalize internally so the
+  // pre-spawn hasSession() probe still matches any existing session that
+  // would collide once we canonicalize on spawn.
   const sessionKey = args.displayName;
 
   const hit = await forkGuard(ctx.state, ctx.hostDriver, {
@@ -141,11 +144,16 @@ export async function handlePeerSpawn(
       args: spawnArgs,
       env,
     });
+    // record.sessionKey is the CANONICAL (driver-sanitized) form —
+    // persist that so every subsequent host op receives the exact same
+    // target the driver already owns (T1 fix, v0.10.0-rc.2).
+    const canonicalKey = record.sessionKey;
     await applyStateChange(ctx.state, (draft) => {
       const rec = draft.peers[args.sessionId];
       if (!rec) return;
       rec.pid = record.pid;
       rec.status = "live";
+      rec.tmuxTarget = canonicalKey;
       rec.lastUpdatedAt = new Date().toISOString();
     });
     await writeEvent({
@@ -154,7 +162,8 @@ export async function handlePeerSpawn(
       requestId: req.id,
       details: {
         sessionId: args.sessionId,
-        sessionKey,
+        sessionKey: canonicalKey,
+        rawSessionKey: sessionKey !== canonicalKey ? sessionKey : undefined,
         pid: record.pid,
         hostDriver: hostDriverName,
         resume: args.resume,
@@ -165,7 +174,7 @@ export async function handlePeerSpawn(
     await publishLifecycleEvent({
       event: "peer_started",
       sessionId: args.sessionId,
-      sessionKey,
+      sessionKey: canonicalKey,
       details: {
         pid: record.pid,
         hostDriver: hostDriverName,
@@ -175,7 +184,7 @@ export async function handlePeerSpawn(
     });
     return okResult(req.id, req.tool, {
       sessionId: args.sessionId,
-      sessionKey,
+      sessionKey: canonicalKey,
       pid: record.pid,
       hostDriver: hostDriverName,
     });
