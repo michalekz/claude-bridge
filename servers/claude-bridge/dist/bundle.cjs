@@ -19942,8 +19942,8 @@ var FSWatcher = class extends import_events.EventEmitter {
     }
     return this._userIgnored(path, stats);
   }
-  _isntIgnored(path, stat9) {
-    return !this._isIgnored(path, stat9);
+  _isntIgnored(path, stat10) {
+    return !this._isIgnored(path, stat10);
   }
   /**
    * Provides a set of common helpers and properties relating to symlink handling.
@@ -20241,10 +20241,10 @@ function createPeerRegistry(opts = {}) {
 var import_node_child_process = require("node:child_process");
 var import_node_fs = require("node:fs");
 var log2 = makeLogger("terminal-title");
-function parseTtyNrFromProcStat(stat9) {
-  const lastParen = stat9.lastIndexOf(")");
+function parseTtyNrFromProcStat(stat10) {
+  const lastParen = stat10.lastIndexOf(")");
   if (lastParen === -1) return null;
-  const after = stat9.slice(lastParen + 2);
+  const after = stat10.slice(lastParen + 2);
   const fields = after.split(" ");
   const ttyNrStr = fields[4];
   if (!ttyNrStr) return null;
@@ -20258,8 +20258,8 @@ function parseTtyNrFromProcStat(stat9) {
 }
 function findLinuxParentTty(ppid) {
   try {
-    const stat9 = (0, import_node_fs.readFileSync)(`/proc/${ppid}/stat`, "utf-8");
-    const parsed = parseTtyNrFromProcStat(stat9);
+    const stat10 = (0, import_node_fs.readFileSync)(`/proc/${ppid}/stat`, "utf-8");
+    const parsed = parseTtyNrFromProcStat(stat10);
     if (!parsed) return null;
     if (parsed.major === 136) {
       return `/dev/pts/${parsed.minor}`;
@@ -20522,132 +20522,12 @@ async function shutdownContext(ctx) {
 }
 
 // src/mcp/tools.ts
-var import_promises13 = require("node:fs/promises");
 var import_promises14 = require("node:fs/promises");
+var import_promises15 = require("node:fs/promises");
 var import_node_path11 = require("node:path");
 
-// src/parser/live-data.ts
+// src/parser/jsonl-context.ts
 var import_promises10 = require("node:fs/promises");
-var import_node_path9 = require("node:path");
-function liveDir() {
-  return (0, import_node_path9.join)(bridgeRoot(), "live");
-}
-function statusLineDir() {
-  return (0, import_node_path9.join)(liveDir(), "statusline");
-}
-function statusLineSessionPath(sessionId) {
-  return (0, import_node_path9.join)(statusLineDir(), `${sessionId}.json`);
-}
-function legacyStatusLinePath() {
-  return (0, import_node_path9.join)(liveDir(), "statusline.json");
-}
-function oauthLivePath() {
-  return (0, import_node_path9.join)(liveDir(), "oauth-api.json");
-}
-async function readEnvelope2(path) {
-  try {
-    const raw = await (0, import_promises10.readFile)(path, "utf-8");
-    const parsed = JSON.parse(raw);
-    if (typeof parsed !== "object" || parsed === null) return null;
-    return parsed;
-  } catch {
-    return null;
-  }
-}
-async function readStatusLineLive(sessionId) {
-  if (sessionId) {
-    const perSession = await readEnvelope2(statusLineSessionPath(sessionId));
-    if (perSession) return perSession;
-    const legacy = await readEnvelope2(legacyStatusLinePath());
-    if (legacy && legacy.sessionId === sessionId) return legacy;
-    return null;
-  }
-  return findNewestStatusLine();
-}
-async function findNewestStatusLine() {
-  let newest = null;
-  let newestMs = 0;
-  try {
-    const entries = await (0, import_promises10.readdir)(statusLineDir());
-    for (const entry of entries) {
-      if (!entry.endsWith(".json")) continue;
-      const envelope = await readEnvelope2((0, import_node_path9.join)(statusLineDir(), entry));
-      if (!envelope) continue;
-      const capturedMs = Date.parse(envelope.capturedAt);
-      if (Number.isNaN(capturedMs)) continue;
-      if (capturedMs > newestMs) {
-        newestMs = capturedMs;
-        newest = envelope;
-      }
-    }
-  } catch {
-  }
-  if (newest) return newest;
-  return readEnvelope2(legacyStatusLinePath());
-}
-async function readOAuthApiLive() {
-  return readEnvelope2(oauthLivePath());
-}
-function envelopeAgeSeconds(envelope, now = /* @__PURE__ */ new Date()) {
-  const captured = Date.parse(envelope.capturedAt);
-  if (Number.isNaN(captured)) return Number.POSITIVE_INFINITY;
-  return Math.max(0, Math.floor((now.getTime() - captured) / 1e3));
-}
-
-// src/parser/context-usage.ts
-var SETUP_POINTER = "Install the chained statusLine wrapper: set settings.json.statusLine.command to `node ${CLAUDE_PLUGIN_ROOT}/dist/statusline.cjs`. See docs/SETUP-LIVE-DATA.md.";
-function riskBucket(percent) {
-  if (percent < 0.6) return "low";
-  if (percent < 0.85) return "medium";
-  return "high";
-}
-async function readContextUsage(sessionRef) {
-  const envelope = await readStatusLineLive(sessionRef.sessionId);
-  if (!envelope) return null;
-  const payload = envelope.payload;
-  const cw = payload.context_window;
-  const contextLimit = cw?.context_window_size ?? 0;
-  const usage = cw?.current_usage;
-  const sumOfCurrent = (usage?.input_tokens ?? 0) + (usage?.output_tokens ?? 0) + (usage?.cache_read_input_tokens ?? 0) + (usage?.cache_creation_input_tokens ?? 0);
-  const totalFromPayload = typeof cw?.total_input_tokens === "number" && typeof cw?.total_output_tokens === "number" ? cw.total_input_tokens + cw.total_output_tokens : null;
-  const tokensUsed = totalFromPayload ?? sumOfCurrent;
-  const percentFromPayload = typeof cw?.used_percentage === "number" ? cw.used_percentage / 100 : null;
-  const percentUsed = percentFromPayload ?? (contextLimit > 0 ? tokensUsed / contextLimit : 0);
-  const tokensRemaining = Math.max(0, contextLimit - tokensUsed);
-  return {
-    hasLiveData: true,
-    tokensUsed,
-    model: payload.model?.display_name ?? null,
-    contextLimit,
-    contextLimitSource: "statusline-stdin",
-    lastTurnAt: envelope.capturedAt,
-    percentUsed,
-    tokensRemaining,
-    autocompactRisk: contextLimit > 0 ? riskBucket(percentUsed) : "unknown",
-    effortLevel: payload.effort?.level ?? null,
-    claudeCodeVersion: payload.version ?? null
-  };
-}
-async function readContextUsageForSession(sessions) {
-  if (sessions.length === 0) return null;
-  return readContextUsage(sessions[0]);
-}
-function noLiveDataStatus() {
-  return {
-    hasLiveData: false,
-    tokensUsed: 0,
-    model: null,
-    contextLimit: 0,
-    contextLimitSource: "no-live-data",
-    lastTurnAt: null,
-    percentUsed: 0,
-    tokensRemaining: 0,
-    autocompactRisk: "unknown",
-    effortLevel: null,
-    claudeCodeVersion: null,
-    setupPointer: SETUP_POINTER
-  };
-}
 
 // src/parser/jsonl.ts
 var import_node_fs2 = require("node:fs");
@@ -21000,6 +20880,218 @@ var MODEL_METADATA_SOURCE = {
   verifiedAt: "2026-06-29"
 };
 
+// src/parser/jsonl-context.ts
+var STANDARD_LIMIT2 = 2e5;
+var ONE_M_LIMIT2 = 1e6;
+async function readContextFromJSONL(filePath) {
+  try {
+    await (0, import_promises10.stat)(filePath);
+  } catch {
+    return null;
+  }
+  let lastAssistantUsage = null;
+  let lastAssistantModel = null;
+  let lastAssistantTimestamp = null;
+  let lastEventTimestamp = null;
+  let lastEventType = null;
+  try {
+    for await (const event of parseSessionFileRaw(filePath)) {
+      if (typeof event.timestamp === "string") {
+        lastEventTimestamp = event.timestamp;
+        lastEventType = event.type;
+      }
+      if (event.type !== "assistant") continue;
+      const usage = event.message?.usage;
+      if (!usage) continue;
+      const hasAnyUsage = typeof usage.cache_read_input_tokens === "number" || typeof usage.cache_creation_input_tokens === "number" || typeof usage.input_tokens === "number";
+      if (!hasAnyUsage) continue;
+      lastAssistantUsage = usage;
+      lastAssistantModel = event.message?.model ?? null;
+      if (typeof event.timestamp === "string") {
+        lastAssistantTimestamp = event.timestamp;
+      }
+    }
+  } catch {
+    return null;
+  }
+  if (!lastAssistantUsage) return null;
+  const tokensUsed = (lastAssistantUsage.cache_read_input_tokens ?? 0) + (lastAssistantUsage.cache_creation_input_tokens ?? 0) + (lastAssistantUsage.input_tokens ?? 0) + (lastAssistantUsage.output_tokens ?? 0);
+  const turnInProgress = lastEventType === "user" && lastEventTimestamp !== null && lastAssistantTimestamp !== null && lastEventTimestamp > lastAssistantTimestamp;
+  return {
+    tokensUsed,
+    model: lastAssistantModel,
+    lastTurnAt: lastAssistantTimestamp,
+    turnInProgress
+  };
+}
+function canonicalContextLimit(model, tokensUsed) {
+  const known = lookupModel(model);
+  if (known) {
+    return { limit: known.contextWindow, caveat: "canonical-match" };
+  }
+  if (tokensUsed > STANDARD_LIMIT2) {
+    return { limit: ONE_M_LIMIT2, caveat: "empirical-guess-1m" };
+  }
+  return { limit: STANDARD_LIMIT2, caveat: "unknown-model-default-200k" };
+}
+
+// src/parser/live-data.ts
+var import_promises11 = require("node:fs/promises");
+var import_node_path9 = require("node:path");
+function liveDir() {
+  return (0, import_node_path9.join)(bridgeRoot(), "live");
+}
+function statusLineDir() {
+  return (0, import_node_path9.join)(liveDir(), "statusline");
+}
+function statusLineSessionPath(sessionId) {
+  return (0, import_node_path9.join)(statusLineDir(), `${sessionId}.json`);
+}
+function legacyStatusLinePath() {
+  return (0, import_node_path9.join)(liveDir(), "statusline.json");
+}
+function oauthLivePath() {
+  return (0, import_node_path9.join)(liveDir(), "oauth-api.json");
+}
+async function readEnvelope2(path) {
+  try {
+    const raw = await (0, import_promises11.readFile)(path, "utf-8");
+    const parsed = JSON.parse(raw);
+    if (typeof parsed !== "object" || parsed === null) return null;
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+async function readStatusLineLive(sessionId) {
+  if (sessionId) {
+    const perSession = await readEnvelope2(statusLineSessionPath(sessionId));
+    if (perSession && perSession.sessionId === sessionId) return perSession;
+    const legacy = await readEnvelope2(legacyStatusLinePath());
+    if (legacy && legacy.sessionId === sessionId) return legacy;
+    return null;
+  }
+  return findNewestStatusLine();
+}
+async function findNewestStatusLine() {
+  let newest = null;
+  let newestMs = 0;
+  try {
+    const entries = await (0, import_promises11.readdir)(statusLineDir());
+    for (const entry of entries) {
+      if (!entry.endsWith(".json")) continue;
+      const envelope = await readEnvelope2((0, import_node_path9.join)(statusLineDir(), entry));
+      if (!envelope) continue;
+      const capturedMs = Date.parse(envelope.capturedAt);
+      if (Number.isNaN(capturedMs)) continue;
+      if (capturedMs > newestMs) {
+        newestMs = capturedMs;
+        newest = envelope;
+      }
+    }
+  } catch {
+  }
+  if (newest) return newest;
+  return readEnvelope2(legacyStatusLinePath());
+}
+async function readOAuthApiLive() {
+  return readEnvelope2(oauthLivePath());
+}
+function envelopeAgeSeconds(envelope, now = /* @__PURE__ */ new Date()) {
+  const captured = Date.parse(envelope.capturedAt);
+  if (Number.isNaN(captured)) return Number.POSITIVE_INFINITY;
+  return Math.max(0, Math.floor((now.getTime() - captured) / 1e3));
+}
+
+// src/parser/context-usage.ts
+var SETUP_POINTER = "Install the chained statusLine wrapper for autoritative live context data, or ensure the session JSONL has at least one assistant event for the JSONL fallback path. See docs/SETUP-LIVE-DATA.md.";
+function riskBucket(percent) {
+  if (percent < 0.6) return "low";
+  if (percent < 0.85) return "medium";
+  return "high";
+}
+async function readContextUsage(sessionRef) {
+  const statuslineResult = await readFromStatusLine(sessionRef.sessionId);
+  if (statuslineResult) return statuslineResult;
+  const jsonlResult = await readFromJSONL(sessionRef.filePath);
+  if (jsonlResult) return jsonlResult;
+  return null;
+}
+async function readFromStatusLine(sessionId) {
+  const envelope = await readStatusLineLive(sessionId);
+  if (!envelope) return null;
+  const payload = envelope.payload;
+  const cw = payload.context_window;
+  const contextLimit = cw?.context_window_size ?? 0;
+  if (contextLimit === 0) return null;
+  const usage = cw?.current_usage;
+  const sumOfCurrent = (usage?.input_tokens ?? 0) + (usage?.output_tokens ?? 0) + (usage?.cache_read_input_tokens ?? 0) + (usage?.cache_creation_input_tokens ?? 0);
+  const totalFromPayload = typeof cw?.total_input_tokens === "number" && typeof cw?.total_output_tokens === "number" ? cw.total_input_tokens + cw.total_output_tokens : null;
+  const tokensUsed = totalFromPayload ?? sumOfCurrent;
+  const percentFromPayload = typeof cw?.used_percentage === "number" ? cw.used_percentage / 100 : null;
+  const percentUsed = percentFromPayload ?? tokensUsed / contextLimit;
+  const tokensRemaining = Math.max(0, contextLimit - tokensUsed);
+  return {
+    hasLiveData: true,
+    tokensUsed,
+    model: payload.model?.display_name ?? null,
+    contextLimit,
+    contextLimitSource: "statusline-stdin",
+    lastTurnAt: envelope.capturedAt,
+    percentUsed,
+    tokensRemaining,
+    autocompactRisk: riskBucket(percentUsed),
+    turnInProgress: null,
+    // statusLine reflects the API-time snapshot — no separate turn-progress signal
+    effortLevel: payload.effort?.level ?? null,
+    claudeCodeVersion: payload.version ?? null
+  };
+}
+async function readFromJSONL(filePath) {
+  const jsonl = await readContextFromJSONL(filePath);
+  if (!jsonl) return null;
+  const { limit, caveat } = canonicalContextLimit(jsonl.model, jsonl.tokensUsed);
+  const percentUsed = limit > 0 ? jsonl.tokensUsed / limit : 0;
+  const tokensRemaining = Math.max(0, limit - jsonl.tokensUsed);
+  return {
+    hasLiveData: true,
+    tokensUsed: jsonl.tokensUsed,
+    model: jsonl.model,
+    contextLimit: limit,
+    contextLimitSource: "jsonl-canonical",
+    contextLimitCaveat: caveat,
+    lastTurnAt: jsonl.lastTurnAt,
+    percentUsed,
+    tokensRemaining,
+    autocompactRisk: limit > 0 ? riskBucket(percentUsed) : "unknown",
+    turnInProgress: jsonl.turnInProgress,
+    effortLevel: null,
+    // not present in JSONL usage — statusLine required
+    claudeCodeVersion: null
+  };
+}
+async function readContextUsageForSession(sessions) {
+  if (sessions.length === 0) return null;
+  return readContextUsage(sessions[0]);
+}
+function noLiveDataStatus() {
+  return {
+    hasLiveData: false,
+    tokensUsed: 0,
+    model: null,
+    contextLimit: 0,
+    contextLimitSource: "no-live-data",
+    lastTurnAt: null,
+    percentUsed: 0,
+    tokensRemaining: 0,
+    autocompactRisk: "unknown",
+    turnInProgress: null,
+    effortLevel: null,
+    claudeCodeVersion: null,
+    setupPointer: SETUP_POINTER
+  };
+}
+
 // src/parser/rate-limits.ts
 var EXPERIMENTAL_KEYS = [
   "tangelo",
@@ -21194,15 +21286,15 @@ async function readLiveRateLimits(now = /* @__PURE__ */ new Date()) {
 }
 
 // src/parser/session.ts
-var import_promises11 = require("node:fs/promises");
 var import_promises12 = require("node:fs/promises");
+var import_promises13 = require("node:fs/promises");
 var import_node_path10 = require("node:path");
 var JSONL_PATTERN = /^([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.jsonl$/;
 async function listProjects() {
   const root = projectsRoot();
   let entries;
   try {
-    entries = await (0, import_promises12.readdir)(root);
+    entries = await (0, import_promises13.readdir)(root);
   } catch (e) {
     if (e.code === "ENOENT") return [];
     throw e;
@@ -21210,7 +21302,7 @@ async function listProjects() {
   const projects = [];
   for (const entry of entries) {
     const absolutePath = (0, import_node_path10.join)(root, entry);
-    const s = await (0, import_promises11.stat)(absolutePath).catch(() => null);
+    const s = await (0, import_promises12.stat)(absolutePath).catch(() => null);
     if (!s?.isDirectory()) continue;
     projects.push({ projectDir: entry, absolutePath });
   }
@@ -21219,7 +21311,7 @@ async function listProjects() {
 async function listSessionsInProject(project) {
   let entries;
   try {
-    entries = await (0, import_promises12.readdir)(project.absolutePath);
+    entries = await (0, import_promises13.readdir)(project.absolutePath);
   } catch {
     return [];
   }
@@ -21229,7 +21321,7 @@ async function listSessionsInProject(project) {
     if (!match) continue;
     const sessionId = match[1];
     const filePath = (0, import_node_path10.join)(project.absolutePath, entry);
-    const s = await (0, import_promises11.stat)(filePath).catch(() => null);
+    const s = await (0, import_promises12.stat)(filePath).catch(() => null);
     if (!s?.isFile()) continue;
     sessions.push({
       projectDir: project.projectDir,
@@ -21303,12 +21395,12 @@ var ListSessionsArgs = external_exports.object({
 }).strict();
 var HEARTBEAT_ACTIVE_THRESHOLD_MS = 3e4;
 async function isSessionActive(sessionId) {
-  const { stat: stat9 } = await import("node:fs/promises");
+  const { stat: stat10 } = await import("node:fs/promises");
   const { homedir: homedir4 } = await import("node:os");
   const { join: join13 } = await import("node:path");
   const hbPath = join13(homedir4(), ".claude-bridge", "status", `${sessionId}.json`);
   try {
-    const s = await stat9(hbPath);
+    const s = await stat10(hbPath);
     return Date.now() - s.mtimeMs <= HEARTBEAT_ACTIVE_THRESHOLD_MS;
   } catch {
     return false;
@@ -22207,9 +22299,12 @@ var PeerContextStatusArgs = external_exports.object({
 async function buildContextStatusEntry(ctx, peerId, peerName) {
   const isSelf = peerId === ctx.self.id;
   const guard = await readContextGuard(peerId);
-  const usage = await readContextUsageForSession([
-    { sessionId: peerId }
-  ]);
+  const sessions = await findSessions(peerId);
+  const usage = sessions.length > 0 ? await readContextUsageForSession(sessions) : (
+    // No session file yet, but statusLine capture might still exist —
+    // try with a minimal SessionRef so at least the statusLine path runs.
+    await readContextUsageForSession([{ sessionId: peerId, filePath: "" }])
+  );
   if (!usage) {
     const placeholder = noLiveDataStatus();
     return {
@@ -22225,6 +22320,7 @@ async function buildContextStatusEntry(ctx, peerId, peerName) {
       percentUsed: 0,
       autocompactRisk: "unknown",
       lastTurnAt: null,
+      turnInProgress: null,
       effortLevel: null,
       claudeCodeVersion: null,
       ...placeholder.setupPointer ? { setupPointer: placeholder.setupPointer } : {},
@@ -22239,11 +22335,13 @@ async function buildContextStatusEntry(ctx, peerId, peerName) {
     model: usage.model,
     contextLimit: usage.contextLimit,
     contextLimitSource: usage.contextLimitSource,
+    ...usage.contextLimitCaveat ? { contextLimitCaveat: usage.contextLimitCaveat } : {},
     tokensUsed: usage.tokensUsed,
     tokensRemaining: usage.tokensRemaining,
     percentUsed: Math.round(usage.percentUsed * 1e3) / 1e3,
     autocompactRisk: usage.autocompactRisk,
     lastTurnAt: usage.lastTurnAt,
+    turnInProgress: usage.turnInProgress,
     effortLevel: usage.effortLevel,
     claudeCodeVersion: usage.claudeCodeVersion,
     ...usage.setupPointer ? { setupPointer: usage.setupPointer } : {},
@@ -22329,7 +22427,7 @@ function guardConfigFile(peerId) {
 }
 async function readContextGuard(peerId) {
   try {
-    const raw = await (0, import_promises13.readFile)(guardConfigFile(peerId), "utf-8");
+    const raw = await (0, import_promises14.readFile)(guardConfigFile(peerId), "utf-8");
     const parsed = JSON.parse(raw);
     return { ...DEFAULT_GUARD_CONFIG, ...parsed };
   } catch {
@@ -22338,7 +22436,7 @@ async function readContextGuard(peerId) {
 }
 async function writeContextGuard(peerId, cfg) {
   const file = guardConfigFile(peerId);
-  await (0, import_promises14.mkdir)((0, import_node_path11.join)(bridgeRoot(), "guard"), { recursive: true });
+  await (0, import_promises15.mkdir)((0, import_node_path11.join)(bridgeRoot(), "guard"), { recursive: true });
   await atomicWriteJson(file, cfg);
 }
 async function peerSetContextGuardTool(ctx, args) {
@@ -22377,7 +22475,7 @@ function notificationConfigFile(peerId) {
 }
 async function readNotificationConfig(peerId) {
   try {
-    const raw = await (0, import_promises13.readFile)(notificationConfigFile(peerId), "utf-8");
+    const raw = await (0, import_promises14.readFile)(notificationConfigFile(peerId), "utf-8");
     const parsed = JSON.parse(raw);
     return { ...DEFAULT_NOTIFICATION_CONFIG, ...parsed };
   } catch {
@@ -22386,7 +22484,7 @@ async function readNotificationConfig(peerId) {
 }
 async function writeNotificationConfig(peerId, cfg) {
   const file = notificationConfigFile(peerId);
-  await (0, import_promises14.mkdir)((0, import_node_path11.join)(bridgeRoot(), "notify"), { recursive: true });
+  await (0, import_promises15.mkdir)((0, import_node_path11.join)(bridgeRoot(), "notify"), { recursive: true });
   await atomicWriteJson(file, cfg);
 }
 async function peerSetNotificationTool(ctx, args) {
@@ -22427,7 +22525,7 @@ function rateLimitGuardFile() {
 }
 async function readRateLimitGuard() {
   try {
-    const raw = await (0, import_promises13.readFile)(rateLimitGuardFile(), "utf-8");
+    const raw = await (0, import_promises14.readFile)(rateLimitGuardFile(), "utf-8");
     const parsed = JSON.parse(raw);
     return { ...DEFAULT_RATE_LIMIT_GUARD_CONFIG, ...parsed };
   } catch {
@@ -22436,7 +22534,7 @@ async function readRateLimitGuard() {
 }
 async function writeRateLimitGuard(cfg) {
   const file = rateLimitGuardFile();
-  await (0, import_promises14.mkdir)(bridgeRoot(), { recursive: true });
+  await (0, import_promises15.mkdir)(bridgeRoot(), { recursive: true });
   await atomicWriteJson(file, cfg);
 }
 var PeerSetRateLimitGuardArgs = external_exports.object({
@@ -22750,7 +22848,7 @@ var TOOLS = [
   },
   {
     name: "peer_context_status",
-    description: "Read autocompact-relevant context statistics for self or other peer(s). \u26A0 v0.9.0 BREAKING: sole data source is now ~/.claude-bridge/live/statusline.json, written by the plugin-owned statusLine wrapper on every Claude Code render. All heuristics (canonical model lookup, [1m] tag detection, empirical fallback, unknown-model-fallback) were REMOVED. If the wrapper is not installed, returns `hasLiveData: false` with `setupPointer` \u2014 no misleading numbers. Setup: set settings.json.statusLine.command to `node ${CLAUDE_PLUGIN_ROOT}/dist/statusline.cjs` (see docs/SETUP-LIVE-DATA.md). Returns: hasLiveData, tokensUsed, contextLimit (autoritative from CC), contextLimitSource ('statusline-stdin' or 'no-live-data'), percentUsed, autocompactRisk (low/medium/high/unknown), model, effortLevel (low/medium/high/xhigh/max \u2014 from CC 2.1.119+ stdin), claudeCodeVersion, lastTurnAt. `to` omitted = self only. `to: 'all'` = all active peers + self. `to: ['alice', 'bob', 'self']` = specified peers. `to: 'alice'` = single peer. Includes `guard` config field if peer has one configured.",
+    description: "Read autocompact-relevant context statistics for self or other peer(s). v0.9.4 dual-source priority chain (no single point of failure per Zden\u011Bk's requirement 23. 7. 2026 \u2014 telemetry must work independently of statusLine render-chain): (1) statusLine capture live/statusline/<sessionId>.json \u2014 autoritative when present, provides context_window_size + used_percentage + total_tokens directly from CC's API mirror; (2) JSONL scan fallback \u2014 sum of usage tokens on last assistant event + canonical model lookup for contextLimit (deterministic for known models via model_info table); (3) no-live-data \u2014 both sources dry, returns setupPointer. `contextLimitSource` enum: 'statusline-stdin' | 'jsonl-canonical' | 'no-live-data'. Inside jsonl-canonical branch, `contextLimitCaveat` field flags trust level: 'canonical-match' (full trust), 'empirical-guess-1m' (\u26A0 tokens>200k \u2192 assumed 1M), 'unknown-model-default-200k' (\u26A0 percentUsed may be inflated for a genuine 1M model). New `turnInProgress` boolean flags in-flight turn (JSONL last event is user postdating last assistant \u2014 tokensUsed is a lower bound). `effortLevel` + `claudeCodeVersion` set only when statusLine source is used. `to` omitted = self only. `to: 'all'` = all active peers + self. `to: ['alice', 'bob', 'self']` = specified peers. `to: 'alice'` = single peer. Includes `guard` config field if peer has one configured. Setup for autoritative statusLine data: see docs/SETUP-LIVE-DATA.md.",
     inputSchema: {
       type: "object",
       properties: {
@@ -22919,7 +23017,7 @@ var TOOLS = [
 // src/mcp/server.ts
 var log6 = makeLogger("mcp-server");
 var SERVER_NAME = "claude-bridge";
-var SERVER_VERSION = "0.9.3";
+var SERVER_VERSION = "0.9.4";
 var INSTRUCTIONS = `
 claude-bridge \u2014 MCP server for orchestration across Claude Code chats.
 
@@ -22934,7 +23032,7 @@ MCP tools:
 - model_info (v0.7.3+) \u2014 canonical Claude model metadata (context window, max output, pricing, capabilities, lifecycle).
 - rate_limit_status (v0.9.0+) \u2014 BREAKING: live-data-only. Reads ~/.claude-bridge/live/statusline.json (primary, per-turn via chained statusLine wrapper) or ~/.claude-bridge/live/oauth-api.json (secondary, throttled ~1/min via PostToolUse hook). Fossil ~/.claude/.usage_cache.json read REMOVED. Returns source ('statusline-stdin' | 'oauth-api' | 'no-live-data'), staleness ('fresh'/'stale'/'expired-window'), per-bucket windowExpired. See docs/SETUP-LIVE-DATA.md.
 - peer_set_rate_limit_guard (v0.9.0-beta+) \u2014 account-scoped rate-limit guard. Threshold config for session (5h) + week (7d) utilization + notify subscribers. Analog to peer_set_context_guard but user-scoped instead of per-session.
-- peer_context_status (v0.9.0-alpha+) \u2014 BREAKING: live-data-only. Sole source is ~/.claude-bridge/live/statusline.json written by the plugin-owned statusLine wrapper. All heuristics removed (settings-json-1m-tag, empirical-heuristic, unknown-model-fallback, canonical-lookup for context). Output has new shape: hasLiveData, effortLevel, claudeCodeVersion, contextLimitSource ('statusline-stdin' | 'no-live-data'), setupPointer. See docs/SETUP-LIVE-DATA.md.
+- peer_context_status (v0.9.4+) \u2014 dual-source priority chain (no single point of failure per Zde\u0148kovo pravidlo 23. 7. 2026): statusLine capture (autoritative when present) \u2192 JSONL scan + canonical model lookup (fallback path, deterministic for known models) \u2192 no-live-data. contextLimitSource \u2208 {statusline-stdin, jsonl-canonical, no-live-data}. Inside jsonl-canonical, contextLimitCaveat flags trust level (canonical-match / empirical-guess-1m / unknown-model-default-200k). New turnInProgress boolean signals in-flight turn. See docs/SETUP-LIVE-DATA.md.
 
 Bundled skills (load detail via skill name):
 - claude-bridge \u2014 overview / quick decision tree

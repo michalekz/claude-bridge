@@ -1,6 +1,6 @@
 {
   "name": "claude-bridge",
-  "version": "0.9.3",
+  "version": "0.9.4",
   "description": "Multi-chat orchestration for Claude Code. File-based inbox, peer messaging, peer_chat_read, peer_chat_search, enhanced list_sessions, context-usage monitoring (peer_context_status + wake-time guard), idle-beep notification, bundled role skills (manager, memory-keeper).",
   "author": {
     "name": "Zed Michalek",

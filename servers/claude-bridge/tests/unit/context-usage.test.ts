@@ -234,11 +234,12 @@ describe("readContextUsage — live-data-only (v0.9.0)", () => {
     expect(usage?.effortLevel).toBeNull();
   });
 
-  test("returns hasLiveData=true with contextLimit=0 when context_window is missing", async () => {
+  test("statusLine envelope without context_window falls through to JSONL — v0.9.4", async () => {
     // Edge case: stdin JSON arrived but before first assistant turn, so
-    // context_window is absent. We got the envelope (hasLiveData=true) but
-    // no numbers to report. autocompactRisk = "unknown" — no percentage
-    // makes sense yet.
+    // context_window is absent. v0.9.4 change: statusLine path returns null
+    // (no context_window_size = no usable data), fallback tries JSONL.
+    // No JSONL either in this test → readContextUsage returns null,
+    // caller wraps with noLiveDataStatus.
     const envelope: StatusLineLiveEnvelope = {
       capturedAt: "2026-07-07T12:00:00Z",
       sessionId: "test-session",
@@ -249,11 +250,159 @@ describe("readContextUsage — live-data-only (v0.9.0)", () => {
     await writeStatusLineLive(envelope);
 
     const usage = await readContextUsage(makeSessionRef());
+    expect(usage).toBeNull(); // both sources dry — no context_window in statusLine, no JSONL
+  });
+});
+
+describe("readContextUsage — JSONL fallback (v0.9.4)", () => {
+  let tmp: string;
+  let jsonlPath: string;
+
+  beforeEach(async () => {
+    tmp = await mkdtemp(join(tmpdir(), "ctx-usage-v094-test-"));
+    homeHolder.current = tmp;
+    await mkdir(join(tmp, ".claude-bridge", "live"), { recursive: true });
+    jsonlPath = join(tmp, "session.jsonl");
+  });
+
+  afterEach(async () => {
+    await rm(tmp, { recursive: true, force: true }).catch(() => undefined);
+    homeHolder.current = "";
+  });
+
+  function makeSessionRefWithJsonl(): SessionRef {
+    return {
+      projectDir: "-tmp-test",
+      sessionId: "test-session",
+      filePath: jsonlPath,
+      sizeBytes: 0,
+      modifiedAt: new Date(),
+    };
+  }
+
+  test("no statusLine capture + JSONL with known model → jsonl-canonical / canonical-match", async () => {
+    const line = JSON.stringify({
+      type: "assistant",
+      timestamp: "2026-07-23T10:00:00Z",
+      message: {
+        model: "claude-opus-4-7",
+        usage: {
+          cache_read_input_tokens: 400_000,
+          cache_creation_input_tokens: 50_000,
+          input_tokens: 3_000,
+          output_tokens: 500,
+        },
+      },
+    });
+    await writeFile(jsonlPath, line);
+
+    const usage = await readContextUsage(makeSessionRefWithJsonl());
+    expect(usage).not.toBeNull();
     expect(usage?.hasLiveData).toBe(true);
-    expect(usage?.contextLimit).toBe(0);
-    expect(usage?.tokensUsed).toBe(0);
-    expect(usage?.autocompactRisk).toBe("unknown");
-    expect(usage?.model).toBe("Fable 5");
+    expect(usage?.contextLimitSource).toBe("jsonl-canonical");
+    expect(usage?.contextLimitCaveat).toBe("canonical-match");
+    expect(usage?.contextLimit).toBe(1_000_000); // Opus 4.7 = 1M
+    expect(usage?.tokensUsed).toBe(453_500);
+    expect(usage?.percentUsed).toBeCloseTo(0.454, 2);
+    expect(usage?.autocompactRisk).toBe("low");
+    expect(usage?.model).toBe("claude-opus-4-7");
+    expect(usage?.turnInProgress).toBe(false); // last event = assistant, no user after
+    expect(usage?.effortLevel).toBeNull(); // JSONL branch, no statusLine data
+    expect(usage?.claudeCodeVersion).toBeNull();
+  });
+
+  test("JSONL with unknown model + tokens > 200k → jsonl-canonical / empirical-guess-1m", async () => {
+    const line = JSON.stringify({
+      type: "assistant",
+      timestamp: "2026-07-23T10:00:00Z",
+      message: {
+        model: "claude-future-frontier",
+        usage: { cache_read_input_tokens: 350_000 },
+      },
+    });
+    await writeFile(jsonlPath, line);
+
+    const usage = await readContextUsage(makeSessionRefWithJsonl());
+    expect(usage?.contextLimitSource).toBe("jsonl-canonical");
+    expect(usage?.contextLimitCaveat).toBe("empirical-guess-1m");
+    expect(usage?.contextLimit).toBe(1_000_000);
+    expect(usage?.tokensUsed).toBe(350_000);
+  });
+
+  test("JSONL with unknown model + tokens < 200k → jsonl-canonical / unknown-model-default-200k", async () => {
+    const line = JSON.stringify({
+      type: "assistant",
+      timestamp: "2026-07-23T10:00:00Z",
+      message: {
+        model: "claude-future-frontier",
+        usage: { cache_read_input_tokens: 50_000 },
+      },
+    });
+    await writeFile(jsonlPath, line);
+
+    const usage = await readContextUsage(makeSessionRefWithJsonl());
+    expect(usage?.contextLimitSource).toBe("jsonl-canonical");
+    expect(usage?.contextLimitCaveat).toBe("unknown-model-default-200k");
+    expect(usage?.contextLimit).toBe(200_000);
+  });
+
+  test("turnInProgress=true when last event is user postdating last assistant", async () => {
+    const lines = [
+      JSON.stringify({
+        type: "assistant",
+        timestamp: "2026-07-23T10:00:00Z",
+        message: {
+          model: "claude-opus-4-7",
+          usage: { cache_read_input_tokens: 100_000 },
+        },
+      }),
+      JSON.stringify({
+        type: "user",
+        timestamp: "2026-07-23T10:01:00Z",
+        message: { content: "další prompt" },
+      }),
+    ];
+    await writeFile(jsonlPath, lines.join("\n"));
+
+    const usage = await readContextUsage(makeSessionRefWithJsonl());
+    expect(usage?.turnInProgress).toBe(true);
+    expect(usage?.tokensUsed).toBe(100_000); // last assistant usage — lower bound
+  });
+
+  test("statusLine primary wins over JSONL when both present", async () => {
+    // Write both — statusLine should take priority.
+    await writeStatusLineLive({
+      capturedAt: "2026-07-23T10:05:00Z",
+      sessionId: "test-session",
+      payload: {
+        model: { display_name: "Opus 4.7" },
+        context_window: {
+          context_window_size: 1_000_000,
+          used_percentage: 30,
+          current_usage: { input_tokens: 300_000 },
+        },
+      },
+    });
+    const line = JSON.stringify({
+      type: "assistant",
+      timestamp: "2026-07-23T10:00:00Z",
+      message: {
+        model: "claude-opus-4-7",
+        usage: { cache_read_input_tokens: 999_999 }, // very different from statusLine
+      },
+    });
+    await writeFile(jsonlPath, line);
+
+    const usage = await readContextUsage(makeSessionRefWithJsonl());
+    expect(usage?.contextLimitSource).toBe("statusline-stdin");
+    expect(usage?.percentUsed).toBe(0.3); // from statusLine, not JSONL
+    expect(usage?.effortLevel).toBeNull(); // no effort in this payload but source is statusLine
+  });
+
+  test("returns null when neither source available", async () => {
+    // No statusLine capture written, no JSONL either.
+    const usage = await readContextUsage(makeSessionRefWithJsonl());
+    expect(usage).toBeNull();
   });
 });
 

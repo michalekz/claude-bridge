@@ -1,67 +1,86 @@
+import { canonicalContextLimit, readContextFromJSONL } from "./jsonl-context.ts";
+import type { ContextLimitCaveat } from "./jsonl-context.ts";
 import { readStatusLineLive } from "./live-data.ts";
 import type { SessionRef } from "./session.ts";
 
 /**
- * Context usage — live-data-only source of truth (v0.9.0+).
+ * Context usage reader — dual-source priority chain (v0.9.4+).
  *
- * Sole source: `~/.claude-bridge/live/statusline.json` written by the
- * chained statusLine wrapper (bin/claude-bridge-statusline). Claude Code
- * 2.1.80+ sends `context_window.context_window_size` and per-category
- * token counts on stdin every render — no heuristics, no lookup tables.
+ * Design principle (control-plane zadání §10, ratified 2026-07-23):
+ * telemetry must not have a single point of failure. The v0.9.0-v0.9.3
+ * era relied exclusively on the statusLine render chain (wrapper → symlink
+ * → per-session file); when any step broke, `peer_context_status` returned
+ * `hasLiveData: false` even though authoritative data was available in the
+ * session JSONL.
  *
- * Removed in v0.9.0 (breaking change):
- *  - JSONL scan via parseSessionFileRaw for usage fields
- *  - detectContextLimit / detectContextLimitWithSource with the fallback
- *    chain (empirical-heuristic, unknown-model-fallback, settings-json-1m-tag,
- *    explicit-1m-tag, canonical-lookup for context detection)
- *  - Import of settings.ts (settings-json fallback dead code)
- *  - Import of model-metadata.ts (canonical table dead code for context)
+ * Priority chain (v0.9.4):
+ *  1. **`statusline-stdin`** — statusLine capture live/statusline/<id>.json.
+ *     Autoritative when present. Provides `context_window_size` +
+ *     `used_percentage` + `total_input/output_tokens` directly from CC's
+ *     API response mirror.
+ *  2. **`jsonl-canonical`** — JSONL scan (last assistant event usage sum)
+ *     + canonical model lookup for `contextLimit`. Deterministic when the
+ *     model is in the canonical Anthropic docs table. Falls through to
+ *     explicit heuristic caveats (`contextLimitCaveat`) when the model is
+ *     unknown.
+ *  3. **`no-live-data`** — Both sources unavailable (fresh session, no
+ *     assistant turn yet, and no statusLine capture). Returns setupPointer.
  *
- * The canonical model table lives on in `model_info` MCP tool as read-only
- * reference for agents that want model metadata — pricing, capabilities,
- * lifecycle — not for context detection.
- *
- * Behavior when live data is missing:
- *  - Returns { hasLiveData: false, setupPointer } — no fallback guess.
- *  - Consumer (peer_context_status) surfaces this via contextLimitSource
- *    = "no-live-data" so the agent knows to instruct the user to install
- *    the statusLine wrapper (or the OAuth PostToolUse fallback, v0.9.0-beta).
+ * Partial reversal of v0.9.0: heuristic fallback flags return but are
+ * EXPLICITLY LABELED inside the `jsonl-canonical` branch via `contextLimitCaveat`,
+ * not as top-level `contextLimitSource` values. Consumers see one primary
+ * source per response; caveats are subordinate detail.
  */
 
-export type ContextLimitSource = "statusline-stdin" | "no-live-data";
+export type ContextLimitSource = "statusline-stdin" | "jsonl-canonical" | "no-live-data";
 
 export interface ContextUsage {
-  /** True if live/statusline.json was readable and had context_window data. */
+  /** True if any live source produced data. */
   hasLiveData: boolean;
-  /** Total tokens = sum of input + output + cache_read + cache_creation. */
+  /** Total tokens = sum of input + output + cache_read + cache_creation
+   * from the most recent assistant event (JSONL) or from statusLine
+   * capture's `total_input + total_output` when available. */
   tokensUsed: number;
-  /** Model display name from statusLine payload (may be null on very
-   * fresh sessions before first render). */
+  /** Model display name (statusLine) or id (JSONL). May be null on brand-new
+   * sessions before first assistant event. */
   model: string | null;
-  /** Context window size from statusLine payload. 0 if hasLiveData=false. */
+  /** Context window size (denominator). 0 when hasLiveData=false. */
   contextLimit: number;
-  /** How the limit was determined. Only two values in v0.9.0. */
+  /** How contextLimit was determined — one of three values per zadání §10. */
   contextLimitSource: ContextLimitSource;
-  /** ISO timestamp of the statusLine capture (= last CC render). */
+  /** Optional caveat inside `jsonl-canonical` branch: `canonical-match`
+   * (trust full), `empirical-guess-1m` (⚠ tokens>200k guess), or
+   * `unknown-model-default-200k` (⚠ percentUsed may be inflated). Absent
+   * when contextLimitSource is `statusline-stdin` (statusLine is
+   * authoritative — no caveat). */
+  contextLimitCaveat?: ContextLimitCaveat;
+  /** ISO timestamp of last data point. */
   lastTurnAt: string | null;
-  /** Percent used (0-1). Direct from statusLine used_percentage if present,
-   * else computed from tokensUsed / contextLimit. */
+  /** Percent used (0-1). Direct from statusLine `used_percentage` when
+   * available; else computed from tokensUsed / contextLimit. */
   percentUsed: number;
-  /** Tokens remaining = contextLimit - tokensUsed. */
+  /** Tokens remaining = max(0, contextLimit - tokensUsed). */
   tokensRemaining: number;
-  /** Risk bucket: "low" < 60%, "medium" 60-85%, "high" > 85%. */
+  /** Risk bucket. `unknown` when contextLimit is 0 (no-live-data). */
   autocompactRisk: "low" | "medium" | "high" | "unknown";
-  /** v0.9.0+ live-data extras from statusLine. */
+  /** True when JSONL indicates an in-flight turn — `tokensUsed` is a lower
+   * bound of the actual (in-flight) context; compact watchdog jedná on
+   * turn boundaries anyway. Only set when the JSONL source is consulted;
+   * with statusLine primary the field is null (statusLine is more current
+   * than JSONL — it captures the request payload directly). */
+  turnInProgress: boolean | null;
+  /** Effort level from statusLine payload. Null in JSONL branch. */
   effortLevel: "low" | "medium" | "high" | "xhigh" | "max" | null;
-  /** Claude Code version reported in statusLine payload. */
+  /** Claude Code version from statusLine payload. Null in JSONL branch. */
   claudeCodeVersion: string | null;
   /** Setup instruction pointer when hasLiveData=false. */
   setupPointer?: string;
 }
 
 const SETUP_POINTER =
-  "Install the chained statusLine wrapper: set settings.json.statusLine.command " +
-  "to `node ${CLAUDE_PLUGIN_ROOT}/dist/statusline.cjs`. See docs/SETUP-LIVE-DATA.md.";
+  "Install the chained statusLine wrapper for autoritative live context data, " +
+  "or ensure the session JSONL has at least one assistant event for the JSONL " +
+  "fallback path. See docs/SETUP-LIVE-DATA.md.";
 
 /**
  * Bucket usage percent into a risk label.
@@ -73,30 +92,31 @@ export function riskBucket(percent: number): "low" | "medium" | "high" {
 }
 
 /**
- * v0.9.1: per-session live context usage.
- *
- * Reads `~/.claude-bridge/live/statusline/<sessionRef.sessionId>.json`.
- * Falls back to legacy user-scoped file only if it matches the requested
- * sessionId (see `readStatusLineLive` for the compat rules).
- *
- * v0.9.0 (superseded) shared one user-scoped file across all peers, which
- * caused cross-session contamination (jira-architect empirically saw
- * int-dev ground-truth 83% report as 40% via last-writer-wins). v0.9.1
- * partitions per session so each peer's capture stays isolated.
- *
- * tokensUsed preference:
- *  1. `context_window.total_input_tokens + total_output_tokens` (CC 2.1.205+
- *     — matches /context header exactly).
- *  2. Sum over `current_usage.{input,output,cache_read,cache_creation}`
- *     tokens (older CC / matches when the sum happens to align).
+ * v0.9.4 dual-source priority chain: statusLine capture → JSONL scan →
+ * no-live-data.
  */
 export async function readContextUsage(sessionRef: SessionRef): Promise<ContextUsage | null> {
-  const envelope = await readStatusLineLive(sessionRef.sessionId);
+  // Priority 1: statusLine capture (authoritative when present).
+  const statuslineResult = await readFromStatusLine(sessionRef.sessionId);
+  if (statuslineResult) return statuslineResult;
+
+  // Priority 2: JSONL scan + canonical lookup fallback.
+  const jsonlResult = await readFromJSONL(sessionRef.filePath);
+  if (jsonlResult) return jsonlResult;
+
+  // Priority 3: both sources dry — return null so caller can wrap with
+  // noLiveDataStatus() for the peer_context_status output shape.
+  return null;
+}
+
+async function readFromStatusLine(sessionId: string): Promise<ContextUsage | null> {
+  const envelope = await readStatusLineLive(sessionId);
   if (!envelope) return null;
 
   const payload = envelope.payload;
   const cw = payload.context_window;
   const contextLimit = cw?.context_window_size ?? 0;
+  if (contextLimit === 0) return null; // capture exists but no context_window yet
 
   const usage = cw?.current_usage;
   const sumOfCurrent =
@@ -112,7 +132,7 @@ export async function readContextUsage(sessionRef: SessionRef): Promise<ContextU
 
   const percentFromPayload =
     typeof cw?.used_percentage === "number" ? cw.used_percentage / 100 : null;
-  const percentUsed = percentFromPayload ?? (contextLimit > 0 ? tokensUsed / contextLimit : 0);
+  const percentUsed = percentFromPayload ?? tokensUsed / contextLimit;
   const tokensRemaining = Math.max(0, contextLimit - tokensUsed);
 
   return {
@@ -124,16 +144,42 @@ export async function readContextUsage(sessionRef: SessionRef): Promise<ContextU
     lastTurnAt: envelope.capturedAt,
     percentUsed,
     tokensRemaining,
-    autocompactRisk: contextLimit > 0 ? riskBucket(percentUsed) : "unknown",
+    autocompactRisk: riskBucket(percentUsed),
+    turnInProgress: null, // statusLine reflects the API-time snapshot — no separate turn-progress signal
     effortLevel: payload.effort?.level ?? null,
     claudeCodeVersion: payload.version ?? null,
   };
 }
 
+async function readFromJSONL(filePath: string): Promise<ContextUsage | null> {
+  const jsonl = await readContextFromJSONL(filePath);
+  if (!jsonl) return null;
+
+  const { limit, caveat } = canonicalContextLimit(jsonl.model, jsonl.tokensUsed);
+  const percentUsed = limit > 0 ? jsonl.tokensUsed / limit : 0;
+  const tokensRemaining = Math.max(0, limit - jsonl.tokensUsed);
+
+  return {
+    hasLiveData: true,
+    tokensUsed: jsonl.tokensUsed,
+    model: jsonl.model,
+    contextLimit: limit,
+    contextLimitSource: "jsonl-canonical",
+    contextLimitCaveat: caveat,
+    lastTurnAt: jsonl.lastTurnAt,
+    percentUsed,
+    tokensRemaining,
+    autocompactRisk: limit > 0 ? riskBucket(percentUsed) : "unknown",
+    turnInProgress: jsonl.turnInProgress,
+    effortLevel: null, // not present in JSONL usage — statusLine required
+    claudeCodeVersion: null,
+  };
+}
+
 /**
- * Convenience: read usage for a peer's session. Since v0.9.0 the data
- * source is a single account-wide file (not per-session), this is a
- * thin wrapper for API compatibility.
+ * Convenience: read usage for a peer's session. Since v0.9.1 the statusLine
+ * source is per-session (partitioned by sessionId), so this is a thin
+ * wrapper for API compatibility with peer_context_status.
  */
 export async function readContextUsageForSession(
   sessions: SessionRef[],
@@ -143,10 +189,8 @@ export async function readContextUsageForSession(
 }
 
 /**
- * v0.9.0 helper: construct a "no data" placeholder for peer_context_status
- * output. Used when live/statusline.json is absent. Consumer sees clear
- * `contextLimitSource: "no-live-data"` + a setup pointer instead of a
- * misleading percentage.
+ * "No live data" placeholder for peer_context_status output. Used by
+ * tools.ts when neither statusLine nor JSONL scan yielded data.
  */
 export function noLiveDataStatus(): ContextUsage {
   return {
@@ -159,6 +203,7 @@ export function noLiveDataStatus(): ContextUsage {
     percentUsed: 0,
     tokensRemaining: 0,
     autocompactRisk: "unknown",
+    turnInProgress: null,
     effortLevel: null,
     claudeCodeVersion: null,
     setupPointer: SETUP_POINTER,

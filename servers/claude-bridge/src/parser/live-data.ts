@@ -161,7 +161,10 @@ export async function readStatusLineLive(
 ): Promise<StatusLineLiveEnvelope | null> {
   if (sessionId) {
     const perSession = await readEnvelope<StatusLineLiveEnvelope>(statusLineSessionPath(sessionId));
-    if (perSession) return perSession;
+    // v0.9.4 (§6/1): verify sessionId INSIDE the envelope matches the requested
+    // one. Do not trust the path alone — a renamed/corrupted file could serve
+    // foreign data. Same-value check for legacy fallback below.
+    if (perSession && perSession.sessionId === sessionId) return perSession;
     // Legacy compat: if the shared file matches this session, use it.
     const legacy = await readEnvelope<StatusLineLiveEnvelope>(legacyStatusLinePath());
     if (legacy && legacy.sessionId === sessionId) return legacy;

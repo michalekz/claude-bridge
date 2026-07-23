@@ -2,6 +2,77 @@
 
 All notable changes to this project are documented here. Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.9.4] — 2026-07-23
+
+### Added — JSONL fallback for `peer_context_status` (no single point of failure)
+
+**Motivation.** Zdeněk 23. 7. 2026: „vazba na CLI by měla být jen fallback, mělo by to fungovat i samostatně. Je to nespolehlivé." Evidence — na test-ai1 zamrzlý symlink na 0.9.0-alpha.2 → celá render-chain telemetrie mrtvá (`hasLiveData:false`), tým měřil kontext z obrazovek. Ratifikováno v control-plane zadání v3 (2026-07-23) §10 jako závazný design pravidlo.
+
+**Design princip.** Telemetrie kontextu nesmí mít jediný bod selhání. Statusline render-chain (wrapper → symlink → per-session file) může selhat v každém kroku — plugin musí mít nezávislý autoritativní zdroj.
+
+### Dual-source priority chain
+
+1. **`statusline-stdin`** — statusLine capture `live/statusline/<sessionId>.json`. Autoritativní když je k dispozici (`context_window_size` + `used_percentage` + `total_input/output_tokens` přímo z CC's API mirror). Beze změny proti v0.9.1.
+2. **`jsonl-canonical`** (nové) — JSONL scan `readContextFromJSONL()` sumuje `cache_read + cache_creation + input + output` z posledního assistant eventu; `canonicalContextLimit(model, tokensUsed)` použije canonical Anthropic model table (reuse `lookupModel` z v0.7.3+) pro `contextLimit`. Deterministic pro známé modely.
+3. **`no-live-data`** — oba zdroje suché (fresh session bez assistant eventu ani statusline capture).
+
+### `contextLimitCaveat` sub-field (jen v `jsonl-canonical` větvi)
+
+Když je model v canonical tabulce, `caveat: "canonical-match"` — trust full. Když model není v tabulce:
+- `empirical-guess-1m` — tokens > 200k → assume 1M variant (empirical safety net z v0.8.0)
+- `unknown-model-default-200k` — tokens ≤ 200k → conservative 200k default, ⚠ `percentUsed` může být inflated pro genuine 1M model
+
+Návrat fallback flagů z v0.8.x jako EXPLICITNĚ OZNAČENÝ SUB-FIELD (ne top-level `contextLimitSource` value), aby konzumenti viděli jednu primární třídu zdroje a caveats jako podřízený detail.
+
+### `turnInProgress` flag (§10 Zdeněk 23. 7.)
+
+Detekce probíhajícího tahu — když poslední event v JSONL je `user` s timestamp > last assistant event, agent je mid-turn a `tokensUsed` je spodní hranice. Signál pro konzumenty (compact watchdog jedná stejně jen na hranicích tahů). Null v statusLine větvi (statusLine reflects request-time snapshot, nemá separate turn-progress).
+
+### §6/1 sessionId verifikace uvnitř souboru
+
+`readStatusLineLive(sessionId)` nyní ověřuje `envelope.sessionId === sessionId` PO čtení per-session souboru, nikoli jen path. Přejmenovaný/corrupted soubor s cizím `sessionId` by dřív prošel jako valid data pro jinou session (byť velmi vzácný edge case). Fix: mismatch → `null` (treat as absent).
+
+### Částečné odvolání v0.9.0 „live-data-only"
+
+v0.9.0 breaking change odstranil BOTH heuristiky AND deterministický JSONL scan. **JSONL scan sám byl autoritativní** (matematicky správný součet usage tokens); heuristiky (`unknown-model-fallback`, `empirical-heuristic`) byly problém, ne JSONL scan. v0.9.4 vrací JSONL scan jako plnohodnotný fallback source, heuristiky se vracejí jen jako `contextLimitCaveat` — explicit signal of trust level.
+
+### API changes
+
+**Přidané pole na `peer_context_status` output:**
+- `contextLimitCaveat?: "canonical-match" | "empirical-guess-1m" | "unknown-model-default-200k"` — jen v `jsonl-canonical` větvi
+- `turnInProgress: boolean | null` — null v statusLine větvi
+
+**`ContextLimitSource` enum rozšířený:**
+- `"statusline-stdin"` (unchanged)
+- `"jsonl-canonical"` (new)
+- `"no-live-data"` (unchanged)
+
+Backwards compat pro consumery, kteří checkli jen `contextLimitSource === "statusline-stdin"` — teď taky mají jasné `"jsonl-canonical"` jako second-primary source.
+
+### Added — `src/parser/jsonl-context.ts`
+
+Nový modul:
+- `readContextFromJSONL(filePath)` — scan last assistant event usage + turnInProgress detection
+- `canonicalContextLimit(model, tokensUsed)` — canonical lookup + heuristic fallback with caveat
+- Reuses `lookupModel` z `model-metadata.ts` (žádné duplicate model table)
+
+### Cross-peer JSONL access
+
+`buildContextStatusEntry` v `tools.ts` nyní obnoveně volá `findSessions(peerId)` pro nalezení peer's JSONL file path (obnoveno z pre-v0.9.0 chování). JSONL fallback funguje pro cizí peery, nejen pro self.
+
+### Tests
+
+- 299 → 305 (+6 nových JSONL fallback testy: canonical-match, empirical-guess-1m, unknown-model-default-200k, turnInProgress, statusLine primary wins, both-dry returns null).
+- Edge case test „statusLine bez context_window" updatnut — nová sémantika: fallthrough na JSONL, když JSONL taky chybí → null (místo dřívějšího hasLiveData=true s nulami).
+
+### Coordination with control plane
+
+v0.10.0 (daemon) přidá `"control-plane"` jako nejvyšší priorita v enum: `control-plane → statusline-stdin → jsonl-canonical → no-live-data`. Bez daemonu (v0.9.4) plugin je robustní sám. S daemonem plugin má ještě rychlejší přístup skrz daemon-owned telemetry cache (single-request read). Backwards compat plná — starý enum values zůstanou.
+
+### Credit
+
+Reported by Zdeněk 23. 7. 2026. Design ratified v control-plane-zadani-2026-07-23 v3 (§10 zpřísněno, §6/1 doplněno). Implementation: bridge-dev (tento release). Design pravidlo: **no single point of failure** — trvalá zásada pro budoucí telemetry features.
+
 ## [0.9.3] — 2026-07-10
 
 ### Fixed — Windows stdio probe-close crash-loop (claude-bridge unusable on Windows since v0.9.0)
