@@ -9,6 +9,7 @@ import { handlePeerSpawn } from "./peer-spawn.ts";
 import { handlePeerStop } from "./peer-stop.ts";
 import { handleTeamLayout } from "./team-layout.ts";
 import { handleTeamStatus } from "./team-status.ts";
+import { handleTeamStop } from "./team-stop.ts";
 
 export type { HandlerContext } from "./context.ts";
 export { applyStateChange } from "./state-writer.ts";
@@ -22,6 +23,7 @@ const HANDLERS: Record<string, Handler> = {
   peer_compact: handlePeerCompact,
   team_status: handleTeamStatus,
   team_layout: handleTeamLayout,
+  team_stop: handleTeamStop,
   control_status: handleControlStatus,
 };
 
