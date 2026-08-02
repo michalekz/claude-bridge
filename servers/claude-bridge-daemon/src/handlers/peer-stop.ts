@@ -27,6 +27,19 @@ export const PeerStopArgsSchema = z
     peer: z.string().min(1),
     reason: z.string().optional(),
     force: z.boolean().default(false),
+    /**
+     * v0.10.1: keep the peer in state.peers with status:"stopped" instead
+     * of deleting it. Used by team_stop so that team_layout apply can
+     * resume the same sessionId later. Default false = original delete
+     * semantics (backward-compatible with v0.10.0-rc.2 callers).
+     */
+    keepInState: z.boolean().default(false),
+    /**
+     * Only meaningful when keepInState:true — sets the resulting
+     * PeerRecord.stoppedCleanly. Callers that don't know (plain peer_stop)
+     * pass null; team_stop passes true/false based on ack outcome.
+     */
+    stoppedCleanly: z.boolean().nullable().optional(),
   })
   .strict();
 
@@ -112,8 +125,20 @@ export async function handlePeerStop(
     return errResult(req.id, req.tool, "host_kill_failed", msg, { sessionId, sessionKey });
   }
 
+  const keepInState = args.keepInState;
+  const stoppedCleanly = keepInState ? (args.stoppedCleanly ?? null) : undefined;
   await applyStateChange(ctx.state, (draft) => {
-    delete draft.peers[sessionId];
+    if (keepInState) {
+      const rec = draft.peers[sessionId];
+      if (rec) {
+        rec.status = "stopped";
+        rec.stoppedCleanly = stoppedCleanly ?? null;
+        rec.pid = null;
+        rec.lastUpdatedAt = new Date().toISOString();
+      }
+    } else {
+      delete draft.peers[sessionId];
+    }
   });
   await writeEvent({
     event: "peer_stopped",
@@ -124,13 +149,21 @@ export async function handlePeerStop(
       sessionKey,
       reason: args.reason ?? null,
       force: forceFlag,
+      keepInState,
+      stoppedCleanly,
     },
   });
   await publishLifecycleEvent({
     event: "peer_stopped",
     sessionId,
     sessionKey,
-    details: { reason: args.reason ?? null, force: forceFlag },
+    details: { reason: args.reason ?? null, force: forceFlag, keepInState, stoppedCleanly },
   });
-  return okResult(req.id, req.tool, { sessionId, sessionKey, force: forceFlag });
+  return okResult(req.id, req.tool, {
+    sessionId,
+    sessionKey,
+    force: forceFlag,
+    keepInState,
+    stoppedCleanly,
+  });
 }

@@ -26,6 +26,16 @@ export interface PeerRecord {
   tmuxTarget: string | null;
   pid: number | null;
   status: PeerLifecycleStatus;
+  /**
+   * Set when status === "stopped" (v0.10.1 team_stop lifecycle):
+   *   true  — peer acknowledged stop-request; kill succeeded cleanly
+   *   false — peer did not ack; killed with force
+   *   null  — peer was dead (kill-idempotent) or plain peer_stop keepInState:true without explicit outcome
+   * undefined for peers that are live/starting/etc.
+   */
+  stoppedCleanly?: boolean | null;
+  /** Team identifier from team_layout apply or team_adopt; undefined for ad-hoc peer_spawn. */
+  team?: string;
   model: string | null;
   accountProfile: string | null;
   startedAt: string;
