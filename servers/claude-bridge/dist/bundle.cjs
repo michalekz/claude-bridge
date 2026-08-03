@@ -18015,6 +18015,48 @@ var StdioServerTransport = class {
   }
 };
 
+// package.json
+var package_default = {
+  name: "claude-bridge",
+  version: "0.10.1-rc.1",
+  private: true,
+  description: "MCP server for cross-Claude-Code-chat orchestration over local session JSONL files",
+  type: "module",
+  main: "dist/bundle.cjs",
+  scripts: {
+    postinstall: "npm run build",
+    dev: "tsx --watch src/index.ts",
+    start: "node dist/bundle.cjs",
+    build: "npm run build:mcp && npm run build:statusline && npm run build:refresh-limits && npm run build:setup-check",
+    "build:mcp": "esbuild src/index.ts --bundle --platform=node --target=node18 --format=cjs --outfile=dist/bundle.cjs",
+    "build:statusline": "esbuild src/statusline/main.ts --bundle --platform=node --target=node18 --format=cjs --outfile=dist/statusline.cjs",
+    "build:refresh-limits": "esbuild src/refresh-limits/main.ts --bundle --platform=node --target=node18 --format=cjs --outfile=dist/refresh-limits.cjs",
+    "build:setup-check": "esbuild src/setup-check/main.ts --bundle --platform=node --target=node18 --format=cjs --outfile=dist/setup-check.cjs",
+    test: "vitest run tests/",
+    "test:watch": "vitest tests/",
+    typecheck: "tsc --noEmit",
+    check: "biome check src tests",
+    format: "biome format --write src tests",
+    lint: "biome lint src tests"
+  },
+  dependencies: {
+    "@modelcontextprotocol/sdk": "^1.0.4",
+    chokidar: "^4.0.1",
+    zod: "^3.23.8"
+  },
+  devDependencies: {
+    "@biomejs/biome": "^1.9.4",
+    "@types/node": "^22.9.0",
+    esbuild: "^0.24.0",
+    tsx: "^4.19.2",
+    typescript: "^5.6.3",
+    vitest: "^2.1.8"
+  },
+  engines: {
+    node: ">=18"
+  }
+};
+
 // src/identity.ts
 var import_promises = require("node:fs/promises");
 var import_node_os2 = require("node:os");
@@ -21638,6 +21680,62 @@ async function teamStatusTool(ctx, args) {
     timeoutMs: args.timeoutMs ?? 5e3
   });
 }
+var TeamStopArgs = external_exports.object({
+  team: external_exports.string().min(1),
+  /**
+   * Kill peers that never acked the stop-request. Off by default: a peer
+   * that has not parked its work keeps running rather than losing it.
+   */
+  force: external_exports.boolean().optional(),
+  /**
+   * How long each peer gets to flush its anchor and memory before the
+   * daemon gives up on it. Daemon default is 120 s PER PEER.
+   */
+  anchorTimeoutMs: external_exports.number().int().positive().max(6e5).optional(),
+  ackPollMs: external_exports.number().int().positive().max(1e4).optional(),
+  /** Preview the stop order without touching anything. */
+  dryRun: external_exports.boolean().optional(),
+  inline: external_exports.unknown().optional(),
+  wait: external_exports.boolean().optional(),
+  timeoutMs: external_exports.number().int().positive().max(9e5).optional()
+}).strict();
+async function teamStopTool(ctx, args) {
+  const daemonArgs = { team: args.team };
+  if (args.force !== void 0) daemonArgs["force"] = args.force;
+  if (args.anchorTimeoutMs !== void 0) daemonArgs["anchorTimeoutMs"] = args.anchorTimeoutMs;
+  if (args.ackPollMs !== void 0) daemonArgs["ackPollMs"] = args.ackPollMs;
+  if (args.dryRun !== void 0) daemonArgs["dryRun"] = args.dryRun;
+  if (args.inline !== void 0) daemonArgs["inline"] = args.inline;
+  const perPeerBudget = args.anchorTimeoutMs ?? 12e4;
+  const defaultTimeout = args.dryRun ? 5e3 : Math.min(perPeerBudget * 6 + 3e4, 9e5);
+  return submitDaemonRequest(ctx, "team_stop", daemonArgs, {
+    wait: args.wait ?? true,
+    timeoutMs: args.timeoutMs ?? defaultTimeout
+  });
+}
+var TeamAdoptArgs = external_exports.object({
+  team: external_exports.string().min(1),
+  mode: external_exports.enum(["auto", "manual"]).optional(),
+  /** manual mode: host session key -> Claude session id. */
+  mapping: external_exports.record(external_exports.string().min(1)).optional(),
+  /**
+   * Defaults to TRUE in the daemon — adoption writes foreign processes into
+   * daemon state, so taking real ownership must be spelled out.
+   */
+  dryRun: external_exports.boolean().optional(),
+  wait: external_exports.boolean().optional(),
+  timeoutMs: external_exports.number().int().positive().max(6e4).optional()
+}).strict();
+async function teamAdoptTool(ctx, args) {
+  const daemonArgs = { team: args.team };
+  if (args.mode !== void 0) daemonArgs["mode"] = args.mode;
+  if (args.mapping !== void 0) daemonArgs["mapping"] = args.mapping;
+  if (args.dryRun !== void 0) daemonArgs["dryRun"] = args.dryRun;
+  return submitDaemonRequest(ctx, "team_adopt", daemonArgs, {
+    wait: args.wait ?? true,
+    timeoutMs: args.timeoutMs ?? 2e4
+  });
+}
 
 // src/mcp/tools.ts
 var log6 = makeLogger("tools");
@@ -23544,50 +23642,81 @@ var TOOLS = [
       if (!parsed.success) return err2("invalid_args", "Schema validation failed", parsed.error);
       return teamLayoutTool(ctx, parsed.data);
     }
+  },
+  {
+    name: "team_stop",
+    description: 'Put a whole team to sleep, gracefully. NOT a mass kill: each peer first gets a `stop-request` in its inbox telling it to park its work, flush its anchor and memory, and touch `~/.claude-bridge/control/stop-ack/<sessionId>.json`. Only then is its session killed. A peer that does not ack within `anchorTimeoutMs` (default 120 s PER PEER) KEEPS RUNNING and is reported under `skipped` \u2014 pass `force:true` to kill it anyway (recorded as `stoppedCleanly:false`). Peers whose host session is already gone are cleaned up as `stoppedDead`. Order: members first, anyone marked `role:"velitel"` last. Stopped peers stay in `state.peers` with `status:"stopped"` so `team_layout apply` can resume the SAME session ids later. Use `dryRun:true` to see the order first. A real run can take minutes \u2014 the client timeout scales with the ack window automatically.',
+    inputSchema: {
+      type: "object",
+      properties: {
+        team: { type: "string", description: "Team name \u2014 matches `teams/<team>.json`." },
+        force: {
+          type: "boolean",
+          description: "Kill peers that never acked. Default false: unacked peers keep running rather than lose unparked work."
+        },
+        anchorTimeoutMs: {
+          type: "number",
+          minimum: 1,
+          maximum: 6e5,
+          description: "Ack window per peer. Default 120000 (4x the compact ack \u2014 a peer must write its anchor and memory)."
+        },
+        ackPollMs: { type: "number", minimum: 1, maximum: 1e4 },
+        dryRun: {
+          type: "boolean",
+          description: "Preview the stop order and parameters without touching any peer."
+        },
+        inline: {
+          type: "object",
+          description: "Team spec inline instead of teams/<team>.json \u2014 { team, peers[{sessionId, displayName, role?}] }."
+        },
+        wait: { type: "boolean", description: "Default true." },
+        timeoutMs: { type: "number", minimum: 1, maximum: 9e5 }
+      },
+      required: ["team"],
+      additionalProperties: false
+    },
+    handler: async (args, ctx) => {
+      const parsed = TeamStopArgs.safeParse(args);
+      if (!parsed.success) return err2("invalid_args", "Schema validation failed", parsed.error);
+      return teamStopTool(ctx, parsed.data);
+    }
+  },
+  {
+    name: "team_adopt",
+    description: 'Bring peers the daemon did NOT spawn under its control, without restarting them. Fixes the case where a team was started by an external script (tmux + `claude --resume`) so `state.peers` is empty while `peer_list` shows the peers live \u2014 every lifecycle tool then fails with `peer_not_found`. `mode:"auto"` (default) walks the host\'s sessions, finds the Claude process inside each and reads its session id from `~/.claude/sessions/<pid>.json`. `mode:"manual"` takes an explicit `mapping` of host session key -> session id. **`dryRun` defaults to TRUE** \u2014 review the plan, then re-run with `dryRun:false` to actually take ownership. Two Claude processes under one pane are reported as `ambiguous` and never adopted, because that is the duplicate-identity failure mode and guessing would launder it. Peers the daemon already runs are skipped, never overwritten.',
+    inputSchema: {
+      type: "object",
+      properties: {
+        team: {
+          type: "string",
+          description: "Team the adopted peers are recorded under. Required \u2014 adoption stamps it."
+        },
+        mode: {
+          type: "string",
+          enum: ["auto", "manual"],
+          description: "auto (default) = discover from the process table. manual = use `mapping` (needed on hosts where /proc is unavailable)."
+        },
+        mapping: {
+          type: "object",
+          description: 'manual mode only: { "<hostSessionKey>": "<sessionId>" }.'
+        },
+        dryRun: {
+          type: "boolean",
+          description: "DEFAULT TRUE. Returns the planned adoption and changes nothing. Pass false to actually adopt."
+        },
+        wait: { type: "boolean", description: "Default true." },
+        timeoutMs: { type: "number", minimum: 1, maximum: 6e4 }
+      },
+      required: ["team"],
+      additionalProperties: false
+    },
+    handler: async (args, ctx) => {
+      const parsed = TeamAdoptArgs.safeParse(args);
+      if (!parsed.success) return err2("invalid_args", "Schema validation failed", parsed.error);
+      return teamAdoptTool(ctx, parsed.data);
+    }
   }
 ];
-
-// package.json
-var package_default = {
-  name: "claude-bridge",
-  version: "0.10.1-rc.1",
-  private: true,
-  description: "MCP server for cross-Claude-Code-chat orchestration over local session JSONL files",
-  type: "module",
-  main: "dist/bundle.cjs",
-  scripts: {
-    postinstall: "npm run build",
-    dev: "tsx --watch src/index.ts",
-    start: "node dist/bundle.cjs",
-    build: "npm run build:mcp && npm run build:statusline && npm run build:refresh-limits && npm run build:setup-check",
-    "build:mcp": "esbuild src/index.ts --bundle --platform=node --target=node18 --format=cjs --outfile=dist/bundle.cjs",
-    "build:statusline": "esbuild src/statusline/main.ts --bundle --platform=node --target=node18 --format=cjs --outfile=dist/statusline.cjs",
-    "build:refresh-limits": "esbuild src/refresh-limits/main.ts --bundle --platform=node --target=node18 --format=cjs --outfile=dist/refresh-limits.cjs",
-    "build:setup-check": "esbuild src/setup-check/main.ts --bundle --platform=node --target=node18 --format=cjs --outfile=dist/setup-check.cjs",
-    test: "vitest run tests/",
-    "test:watch": "vitest tests/",
-    typecheck: "tsc --noEmit",
-    check: "biome check src tests",
-    format: "biome format --write src tests",
-    lint: "biome lint src tests"
-  },
-  dependencies: {
-    "@modelcontextprotocol/sdk": "^1.0.4",
-    chokidar: "^4.0.1",
-    zod: "^3.23.8"
-  },
-  devDependencies: {
-    "@biomejs/biome": "^1.9.4",
-    "@types/node": "^22.9.0",
-    esbuild: "^0.24.0",
-    tsx: "^4.19.2",
-    typescript: "^5.6.3",
-    vitest: "^2.1.8"
-  },
-  engines: {
-    node: ">=18"
-  }
-};
 
 // src/mcp/server.ts
 var log7 = makeLogger("mcp-server");

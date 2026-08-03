@@ -274,8 +274,7 @@ export class TmuxDriver implements SessionHostDriver {
         err: lastError,
       });
       throw new Error(
-        `send-keys to '${canonical}' could not be verified after ${attempts - 1} attempts — text never appeared in the pane` +
-          (lastError ? ` (tmux: ${lastError.split("\n")[0]})` : ""),
+        `send-keys to '${canonical}' could not be verified after ${attempts - 1} attempts — text never appeared in the pane${lastError ? ` (tmux: ${lastError.split("\n")[0]})` : ""}`,
       );
     }
     await this.tmux(["send-keys", "-t", canonical, "Enter"], SEND_KEYS_TIMEOUT_MS);

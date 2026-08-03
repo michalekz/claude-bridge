@@ -430,3 +430,87 @@ export async function teamStatusTool(
     timeoutMs: args.timeoutMs ?? 5_000,
   });
 }
+
+// ============================================================================
+// team_stop — controlled sleep of a whole team (v0.10.1)
+// ============================================================================
+
+export const TeamStopArgs = z
+  .object({
+    team: z.string().min(1),
+    /**
+     * Kill peers that never acked the stop-request. Off by default: a peer
+     * that has not parked its work keeps running rather than losing it.
+     */
+    force: z.boolean().optional(),
+    /**
+     * How long each peer gets to flush its anchor and memory before the
+     * daemon gives up on it. Daemon default is 120 s PER PEER.
+     */
+    anchorTimeoutMs: z.number().int().positive().max(600_000).optional(),
+    ackPollMs: z.number().int().positive().max(10_000).optional(),
+    /** Preview the stop order without touching anything. */
+    dryRun: z.boolean().optional(),
+    inline: z.unknown().optional(),
+    wait: z.boolean().optional(),
+    timeoutMs: z.number().int().positive().max(900_000).optional(),
+  })
+  .strict();
+
+export async function teamStopTool(
+  ctx: ServerContext,
+  args: z.infer<typeof TeamStopArgs>,
+): Promise<ToolResult> {
+  const daemonArgs: Record<string, unknown> = { team: args.team };
+  if (args.force !== undefined) daemonArgs["force"] = args.force;
+  if (args.anchorTimeoutMs !== undefined) daemonArgs["anchorTimeoutMs"] = args.anchorTimeoutMs;
+  if (args.ackPollMs !== undefined) daemonArgs["ackPollMs"] = args.ackPollMs;
+  if (args.dryRun !== undefined) daemonArgs["dryRun"] = args.dryRun;
+  if (args.inline !== undefined) daemonArgs["inline"] = args.inline;
+
+  // A real stop walks the team one peer at a time, each with its own ack
+  // window, so the whole call can legitimately run for minutes. The default
+  // client budget has to cover that or the caller times out on work that is
+  // proceeding correctly. A dry run answers immediately.
+  const perPeerBudget = args.anchorTimeoutMs ?? 120_000;
+  const defaultTimeout = args.dryRun ? 5_000 : Math.min(perPeerBudget * 6 + 30_000, 900_000);
+  return submitDaemonRequest(ctx, "team_stop", daemonArgs, {
+    wait: args.wait ?? true,
+    timeoutMs: args.timeoutMs ?? defaultTimeout,
+  });
+}
+
+// ============================================================================
+// team_adopt — take over peers the daemon did not spawn (v0.10.1)
+// ============================================================================
+
+export const TeamAdoptArgs = z
+  .object({
+    team: z.string().min(1),
+    mode: z.enum(["auto", "manual"]).optional(),
+    /** manual mode: host session key -> Claude session id. */
+    mapping: z.record(z.string().min(1)).optional(),
+    /**
+     * Defaults to TRUE in the daemon — adoption writes foreign processes into
+     * daemon state, so taking real ownership must be spelled out.
+     */
+    dryRun: z.boolean().optional(),
+    wait: z.boolean().optional(),
+    timeoutMs: z.number().int().positive().max(60_000).optional(),
+  })
+  .strict();
+
+export async function teamAdoptTool(
+  ctx: ServerContext,
+  args: z.infer<typeof TeamAdoptArgs>,
+): Promise<ToolResult> {
+  const daemonArgs: Record<string, unknown> = { team: args.team };
+  if (args.mode !== undefined) daemonArgs["mode"] = args.mode;
+  if (args.mapping !== undefined) daemonArgs["mapping"] = args.mapping;
+  if (args.dryRun !== undefined) daemonArgs["dryRun"] = args.dryRun;
+  // Discovery scans the process table; always worth waiting for the answer.
+  return submitDaemonRequest(ctx, "team_adopt", daemonArgs, {
+    wait: args.wait ?? true,
+    timeoutMs: args.timeoutMs ?? 20_000,
+  });
+}

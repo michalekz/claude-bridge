@@ -33,15 +33,19 @@ import {
   PeerRestartArgs,
   PeerSpawnArgs,
   PeerStopArgs,
+  TeamAdoptArgs,
   TeamLayoutArgs,
   TeamStatusArgs,
+  TeamStopArgs,
   controlStatusTool,
   peerCompactTool,
   peerRestartTool,
   peerSpawnTool,
   peerStopTool,
+  teamAdoptTool,
   teamLayoutTool,
   teamStatusTool,
+  teamStopTool,
 } from "./control-plane.ts";
 
 const log = makeLogger("tools");
@@ -2536,6 +2540,86 @@ export const TOOLS: ToolSpec[] = [
       const parsed = TeamLayoutArgs.safeParse(args);
       if (!parsed.success) return err("invalid_args", "Schema validation failed", parsed.error);
       return teamLayoutTool(ctx, parsed.data);
+    },
+  },
+  {
+    name: "team_stop",
+    description:
+      'Put a whole team to sleep, gracefully. NOT a mass kill: each peer first gets a `stop-request` in its inbox telling it to park its work, flush its anchor and memory, and touch `~/.claude-bridge/control/stop-ack/<sessionId>.json`. Only then is its session killed. A peer that does not ack within `anchorTimeoutMs` (default 120 s PER PEER) KEEPS RUNNING and is reported under `skipped` — pass `force:true` to kill it anyway (recorded as `stoppedCleanly:false`). Peers whose host session is already gone are cleaned up as `stoppedDead`. Order: members first, anyone marked `role:"velitel"` last. Stopped peers stay in `state.peers` with `status:"stopped"` so `team_layout apply` can resume the SAME session ids later. Use `dryRun:true` to see the order first. A real run can take minutes — the client timeout scales with the ack window automatically.',
+    inputSchema: {
+      type: "object",
+      properties: {
+        team: { type: "string", description: "Team name — matches `teams/<team>.json`." },
+        force: {
+          type: "boolean",
+          description:
+            "Kill peers that never acked. Default false: unacked peers keep running rather than lose unparked work.",
+        },
+        anchorTimeoutMs: {
+          type: "number",
+          minimum: 1,
+          maximum: 600000,
+          description:
+            "Ack window per peer. Default 120000 (4x the compact ack — a peer must write its anchor and memory).",
+        },
+        ackPollMs: { type: "number", minimum: 1, maximum: 10000 },
+        dryRun: {
+          type: "boolean",
+          description: "Preview the stop order and parameters without touching any peer.",
+        },
+        inline: {
+          type: "object",
+          description:
+            "Team spec inline instead of teams/<team>.json — { team, peers[{sessionId, displayName, role?}] }.",
+        },
+        wait: { type: "boolean", description: "Default true." },
+        timeoutMs: { type: "number", minimum: 1, maximum: 900000 },
+      },
+      required: ["team"],
+      additionalProperties: false,
+    },
+    handler: async (args, ctx) => {
+      const parsed = TeamStopArgs.safeParse(args);
+      if (!parsed.success) return err("invalid_args", "Schema validation failed", parsed.error);
+      return teamStopTool(ctx, parsed.data);
+    },
+  },
+  {
+    name: "team_adopt",
+    description:
+      'Bring peers the daemon did NOT spawn under its control, without restarting them. Fixes the case where a team was started by an external script (tmux + `claude --resume`) so `state.peers` is empty while `peer_list` shows the peers live — every lifecycle tool then fails with `peer_not_found`. `mode:"auto"` (default) walks the host\'s sessions, finds the Claude process inside each and reads its session id from `~/.claude/sessions/<pid>.json`. `mode:"manual"` takes an explicit `mapping` of host session key -> session id. **`dryRun` defaults to TRUE** — review the plan, then re-run with `dryRun:false` to actually take ownership. Two Claude processes under one pane are reported as `ambiguous` and never adopted, because that is the duplicate-identity failure mode and guessing would launder it. Peers the daemon already runs are skipped, never overwritten.',
+    inputSchema: {
+      type: "object",
+      properties: {
+        team: {
+          type: "string",
+          description: "Team the adopted peers are recorded under. Required — adoption stamps it.",
+        },
+        mode: {
+          type: "string",
+          enum: ["auto", "manual"],
+          description:
+            "auto (default) = discover from the process table. manual = use `mapping` (needed on hosts where /proc is unavailable).",
+        },
+        mapping: {
+          type: "object",
+          description: 'manual mode only: { "<hostSessionKey>": "<sessionId>" }.',
+        },
+        dryRun: {
+          type: "boolean",
+          description:
+            "DEFAULT TRUE. Returns the planned adoption and changes nothing. Pass false to actually adopt.",
+        },
+        wait: { type: "boolean", description: "Default true." },
+        timeoutMs: { type: "number", minimum: 1, maximum: 60000 },
+      },
+      required: ["team"],
+      additionalProperties: false,
+    },
+    handler: async (args, ctx) => {
+      const parsed = TeamAdoptArgs.safeParse(args);
+      if (!parsed.success) return err("invalid_args", "Schema validation failed", parsed.error);
+      return teamAdoptTool(ctx, parsed.data);
     },
   },
 ];
