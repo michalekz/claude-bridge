@@ -10,7 +10,7 @@ import {
   readContextUsageForSession,
 } from "../parser/context-usage.ts";
 import type { ContextLimitCaveat } from "../parser/jsonl-context.ts";
-import { parseSessionFile, parseSessionFileRaw, readSessionFile } from "../parser/jsonl.ts";
+import { countEventsByType, parseSessionFile, parseSessionFileRaw } from "../parser/jsonl.ts";
 import { MODELS, MODEL_METADATA_SOURCE, lookupModel } from "../parser/model-metadata.ts";
 import { readLiveRateLimits } from "../parser/rate-limits.ts";
 import type { AssistantEvent, ContentBlock, SessionEvent, UserEvent } from "../parser/schemas.ts";
@@ -230,18 +230,24 @@ export async function sessionStatsTool(
       return err("session_not_found", `No session ${args.sessionId} found`);
     }
 
-    const results = await Promise.all(
-      filtered.map(async (s) => {
-        const events = await readSessionFile(s.filePath);
-        const byType: Record<string, number> = {};
-        for (const e of events) byType[e.type] = (byType[e.type] ?? 0) + 1;
-        return {
-          ...serializeSessionRef(s),
-          totalEvents: events.length,
-          eventsByType: byType,
-        };
-      }),
-    );
+    // Sequential, and streamed rather than materialised (fix, 2026-08-03).
+    //
+    // This used `readSessionFile`, which builds an array of every validated
+    // event in the file — its own doc comment says "small files (< 100 MB)"
+    // — and ran the sessions CONCURRENTLY through Promise.all, so several
+    // whole transcripts could be resident at once. `countEventsByType` has
+    // existed alongside it the whole time and does exactly this job by
+    // streaming. Counting does not need the events kept.
+    const results = [];
+    for (const s of filtered) {
+      const byType = await countEventsByType(s.filePath);
+      const totalEvents = Object.values(byType).reduce((a, b) => a + b, 0);
+      results.push({
+        ...serializeSessionRef(s),
+        totalEvents,
+        eventsByType: byType,
+      });
+    }
 
     return ok({ sessionId: args.sessionId, instances: results });
   } catch (e) {

@@ -184,19 +184,37 @@ export async function readStatusLineLive(
  */
 export async function findNewestStatusLine(): Promise<StatusLineLiveEnvelope | null> {
   let newest: StatusLineLiveEnvelope | null = null;
-  let newestMs = 0;
   try {
-    const entries = await readdir(statusLineDir());
+    const dir = statusLineDir();
+    const entries = (await readdir(dir)).filter((e) => e.endsWith(".json"));
+
+    // Order by mtime, newest first, and read only as far as the first usable
+    // envelope (fix, 2026-08-03).
+    //
+    // This used to readFile + JSON.parse EVERY file in the directory on every
+    // call. Nothing ever deletes those files — one per session id, and session
+    // ids are UUIDs, so the directory only grows: 49 files after eleven days,
+    // ~22 000 projected over a year with the current fleet. That turned an O(1)
+    // lookup into O(every session that ever ran). A stat is far cheaper than a
+    // read-and-parse, and `capturedAt` tracks mtime closely enough that the
+    // first readable file is the answer.
+    const stats: Array<{ path: string; mtimeMs: number }> = [];
     for (const entry of entries) {
-      if (!entry.endsWith(".json")) continue;
-      const envelope = await readEnvelope<StatusLineLiveEnvelope>(join(statusLineDir(), entry));
-      if (!envelope) continue;
-      const capturedMs = Date.parse(envelope.capturedAt);
-      if (Number.isNaN(capturedMs)) continue;
-      if (capturedMs > newestMs) {
-        newestMs = capturedMs;
-        newest = envelope;
+      const path = join(dir, entry);
+      try {
+        stats.push({ path, mtimeMs: (await stat(path)).mtimeMs });
+      } catch {
+        // vanished between readdir and stat — skip
       }
+    }
+    stats.sort((a, b) => b.mtimeMs - a.mtimeMs);
+
+    for (const { path } of stats) {
+      const envelope = await readEnvelope<StatusLineLiveEnvelope>(path);
+      if (!envelope) continue;
+      if (Number.isNaN(Date.parse(envelope.capturedAt))) continue;
+      newest = envelope;
+      break;
     }
   } catch {
     // dir doesn't exist yet — fall through to legacy check
