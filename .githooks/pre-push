@@ -64,5 +64,21 @@ for pkg in "${PACKAGES[@]}"; do
   run_checks "$pkg"
 done
 
+# Manifest consistency. The version lived in six hand-edited places and had
+# already drifted three ways before anyone noticed — including a hardcoded
+# literal in src/mcp/server.ts that made every peer misreport its version in
+# peer_list for five releases. Cheap to check, expensive to miss.
+echo
+echo "▸ pre-push: manifest version consistency"
+cd "$REPO_ROOT"
+if ! node scripts/release.mjs check; then
+  echo
+  echo "✗ manifests disagree. Fix with:"
+  echo "    node scripts/release.mjs set --version <x.y.z>"
+  echo
+  echo "Or bypass with: git push --no-verify"
+  exit 1
+fi
+
 echo
 echo "✓ pre-push: all workspace checks passed"

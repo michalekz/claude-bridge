@@ -23547,10 +23547,52 @@ var TOOLS = [
   }
 ];
 
+// package.json
+var package_default = {
+  name: "claude-bridge",
+  version: "0.10.1-rc.1",
+  private: true,
+  description: "MCP server for cross-Claude-Code-chat orchestration over local session JSONL files",
+  type: "module",
+  main: "dist/bundle.cjs",
+  scripts: {
+    postinstall: "npm run build",
+    dev: "tsx --watch src/index.ts",
+    start: "node dist/bundle.cjs",
+    build: "npm run build:mcp && npm run build:statusline && npm run build:refresh-limits && npm run build:setup-check",
+    "build:mcp": "esbuild src/index.ts --bundle --platform=node --target=node18 --format=cjs --outfile=dist/bundle.cjs",
+    "build:statusline": "esbuild src/statusline/main.ts --bundle --platform=node --target=node18 --format=cjs --outfile=dist/statusline.cjs",
+    "build:refresh-limits": "esbuild src/refresh-limits/main.ts --bundle --platform=node --target=node18 --format=cjs --outfile=dist/refresh-limits.cjs",
+    "build:setup-check": "esbuild src/setup-check/main.ts --bundle --platform=node --target=node18 --format=cjs --outfile=dist/setup-check.cjs",
+    test: "vitest run tests/",
+    "test:watch": "vitest tests/",
+    typecheck: "tsc --noEmit",
+    check: "biome check src tests",
+    format: "biome format --write src tests",
+    lint: "biome lint src tests"
+  },
+  dependencies: {
+    "@modelcontextprotocol/sdk": "^1.0.4",
+    chokidar: "^4.0.1",
+    zod: "^3.23.8"
+  },
+  devDependencies: {
+    "@biomejs/biome": "^1.9.4",
+    "@types/node": "^22.9.0",
+    esbuild: "^0.24.0",
+    tsx: "^4.19.2",
+    typescript: "^5.6.3",
+    vitest: "^2.1.8"
+  },
+  engines: {
+    node: ">=18"
+  }
+};
+
 // src/mcp/server.ts
 var log7 = makeLogger("mcp-server");
 var SERVER_NAME = "claude-bridge";
-var SERVER_VERSION = "0.9.4";
+var SERVER_VERSION = package_default.version;
 var INSTRUCTIONS = `
 claude-bridge \u2014 MCP server for orchestration across Claude Code chats.
 
