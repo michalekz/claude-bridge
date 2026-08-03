@@ -6955,6 +6955,7 @@ var init_logger = __esm({
 // src/util/hygiene.ts
 var hygiene_exports = {};
 __export(hygiene_exports, {
+  DEFAULT_CONTROL_MAX_AGE_MS: () => DEFAULT_CONTROL_MAX_AGE_MS,
   DEFAULT_DONE_MAX_AGE_MS: () => DEFAULT_DONE_MAX_AGE_MS,
   DEFAULT_STATUSLINE_MAX_AGE_MS: () => DEFAULT_STATUSLINE_MAX_AGE_MS,
   DEFAULT_THROTTLE_MS: () => DEFAULT_THROTTLE_MS,
@@ -7003,6 +7004,10 @@ function classify(relativeParts, name) {
   if (relativeParts.length === 3 && relativeParts[0] === "inbox" && relativeParts[2] === "done") {
     return "done";
   }
+  if (relativeParts[0] === "control") {
+    if (relativeParts.length === 3 && relativeParts[2] === "done") return "control";
+    if (relativeParts.length === 2 && relativeParts[1] === "results") return "control";
+  }
   return null;
 }
 async function runHygieneSweep(opts = {}) {
@@ -7014,6 +7019,7 @@ async function runHygieneSweep(opts = {}) {
     tmpRemoved: 0,
     statusLineRemoved: 0,
     doneRemoved: 0,
+    controlRemoved: 0,
     bytesFreed: 0,
     errors: 0,
     durationMs: 0
@@ -7032,7 +7038,8 @@ async function runHygieneSweep(opts = {}) {
   const maxAge = {
     tmp: opts.tmpMaxAgeMs ?? DEFAULT_TMP_MAX_AGE_MS,
     statusline: opts.statusLineMaxAgeMs ?? envDays("CLAUDE_BRIDGE_RETAIN_STATUSLINE_DAYS", DEFAULT_STATUSLINE_MAX_AGE_MS),
-    done: opts.doneMaxAgeMs ?? envDays("CLAUDE_BRIDGE_RETAIN_DONE_DAYS", DEFAULT_DONE_MAX_AGE_MS)
+    done: opts.doneMaxAgeMs ?? envDays("CLAUDE_BRIDGE_RETAIN_DONE_DAYS", DEFAULT_DONE_MAX_AGE_MS),
+    control: opts.controlMaxAgeMs ?? DEFAULT_CONTROL_MAX_AGE_MS
   };
   async function walk(dir, parts) {
     if (parts.length > MAX_DEPTH) return;
@@ -7059,6 +7066,7 @@ async function runHygieneSweep(opts = {}) {
         report.bytesFreed += s.size;
         if (rule === "tmp") report.tmpRemoved++;
         else if (rule === "statusline") report.statusLineRemoved++;
+        else if (rule === "control") report.controlRemoved++;
         else report.doneRemoved++;
       } catch {
         report.errors++;
@@ -7068,12 +7076,13 @@ async function runHygieneSweep(opts = {}) {
   await walk(baseDir, []);
   report.ran = true;
   report.durationMs = Date.now() - started;
-  const removed = report.tmpRemoved + report.statusLineRemoved + report.doneRemoved;
+  const removed = report.tmpRemoved + report.statusLineRemoved + report.doneRemoved + report.controlRemoved;
   if (removed > 0 || report.errors > 0) {
     log7.info("hygiene_sweep", {
       tmpRemoved: report.tmpRemoved,
       statusLineRemoved: report.statusLineRemoved,
       doneRemoved: report.doneRemoved,
+      controlRemoved: report.controlRemoved,
       mbFreed: Math.round(report.bytesFreed / 1024 / 1024 * 10) / 10,
       errors: report.errors,
       durationMs: report.durationMs
@@ -7081,7 +7090,7 @@ async function runHygieneSweep(opts = {}) {
   }
   return report;
 }
-var import_promises17, import_node_path13, log7, HOUR_MS, DAY_MS, DEFAULT_TMP_MAX_AGE_MS, DEFAULT_STATUSLINE_MAX_AGE_MS, DEFAULT_DONE_MAX_AGE_MS, DEFAULT_THROTTLE_MS, MAX_DEPTH, TMP_PATTERN;
+var import_promises17, import_node_path13, log7, HOUR_MS, DAY_MS, DEFAULT_TMP_MAX_AGE_MS, DEFAULT_STATUSLINE_MAX_AGE_MS, DEFAULT_DONE_MAX_AGE_MS, DEFAULT_CONTROL_MAX_AGE_MS, DEFAULT_THROTTLE_MS, MAX_DEPTH, TMP_PATTERN;
 var init_hygiene = __esm({
   "src/util/hygiene.ts"() {
     "use strict";
@@ -7095,6 +7104,7 @@ var init_hygiene = __esm({
     DEFAULT_TMP_MAX_AGE_MS = HOUR_MS;
     DEFAULT_STATUSLINE_MAX_AGE_MS = 14 * DAY_MS;
     DEFAULT_DONE_MAX_AGE_MS = 30 * DAY_MS;
+    DEFAULT_CONTROL_MAX_AGE_MS = 7 * DAY_MS;
     DEFAULT_THROTTLE_MS = 6 * HOUR_MS;
     MAX_DEPTH = 6;
     TMP_PATTERN = /^\..+\.tmp$/;

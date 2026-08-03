@@ -31,17 +31,25 @@ On the user's second proposal: after this fix a shared runtime would reclaim rou
 
 Measured on the platform machine after ~10 weeks: `inbox/<peer>/done/` held **12 686 files / 57 MB** (oldest 2026-05-25), `live/statusline/` 49 files, and there were **79 orphaned `.tmp` files**, oldest 2026-07-07. The temps are the visible symptom of a real hazard: `atomicWrite` writes then renames, so a process killed between the two leaves the temp forever — and `sweepStale` filters on `.json`, walking straight past them.
 
-A sweep now runs at MCP startup, throttled to once per 6 hours across all peers on the machine, applying three rules and touching nothing else:
+A sweep now runs at MCP startup, throttled to once per 6 hours across all peers on the machine. Below is every directory in the workspace against what the sweep does with it, and what `dryRun` reports on the live machine — so that a rule saying "nothing to do" can be told apart from a directory no rule covers. The first version of this table had that hole: `control/requests/done/`, `control/results/` and `control/*-ack/done/` were in the audit and in no rule, and their zero would have read as clean.
 
-| rule | retention | override |
-|---|---|---|
-| `.<hex>.tmp` orphans | 1 hour | — |
-| `live/statusline/<sessionId>.json` | 14 days | `CLAUDE_BRIDGE_RETAIN_STATUSLINE_DAYS` |
-| `inbox/<peer>/done/*.json` | 30 days | `CLAUDE_BRIDGE_RETAIN_DONE_DAYS` |
+| directory | inventory (2026-08-03) | retention | dry-run | reading |
+|---|---|---|---|---|
+| `inbox/<peer>/done/` | 12 662 files, 20 MB content / 57 MB on disk, oldest 2026-05-25 | 30 d | **2 197** | rest is newer |
+| `inbox/<peer>/pending/` | 31 files, oldest 2026-05-26 | **never** | 0 | invariant, not a TTL |
+| `live/statusline/` | 51 files, oldest 2026-07-23 | 14 d | **0** | oldest is 11 days — nothing is due yet |
+| `.tmp` orphans | 79 files, oldest 2026-07-07 | 1 h | **79** | all of them |
+| `control/requests/done/` | 34 files | 7 d | ┐ | |
+| `control/results/` | 34 files | 7 d | ├ **55** | 14 remaining are from today |
+| `control/compact-ack/done/` | 1 file | 7 d | ┘ | |
+| `control/requests/*.json`, `control/*-ack/*.json` | live protocol | **never** | 0 | one level above the swept paths |
+| `control/events.jsonl` | 33 KB | rotates at 16 MB | — | separate mechanism, below |
+| `status/` | 99 files | — | 0 | owned by `registry/peers.ts` `sweepStale` |
+| `guard/`, `notify/`, `live/*.json` | live state | **never** | 0 | no expiry by design |
 
-`CLAUDE_BRIDGE_HYGIENE=off` disables it entirely. **`pending/` is never swept at any age** — that is an invariant, not a default, and the test asserts it directly.
+Overrides: `CLAUDE_BRIDGE_RETAIN_DONE_DAYS`, `CLAUDE_BRIDGE_RETAIN_STATUSLINE_DAYS`, and `CLAUDE_BRIDGE_HYGIENE=off` to disable the sweep entirely. **`pending/` is never swept at any age** — an invariant, not a default, with a test that was checked by removing the guard and watching it fail.
 
-**What the first sweep will remove on the platform machine** (measured via `dryRun`, nothing deleted): 79 temps, 0 statusline captures, **2 197 of 12 686 archived messages, 3.97 MB**. Anyone who wants a longer archive should set the retention variable before updating.
+**Total the first sweep removes on the platform machine:** 79 temps + 2 197 archived messages + 55 spent RPC files = 3.98 MB. Nothing was deleted to produce these numbers. Anyone who wants a longer archive should set the retention variable *before* updating.
 
 ### Crashes and hangs in the hook path
 
@@ -51,9 +59,20 @@ A sweep now runs at MCP startup, throttled to once per 6 hours across all peers 
 - **Symlink refresh had a TOCTOU window.** `setup-check` did unlink-then-symlink, leaving an interval where the link did not exist. 23 MCP servers run this at startup, so the windows overlap, and anything CC renders inside one fails for no diagnosable reason. Now symlink-to-staging then `rename`, which replaces atomically.
 - Dropped a redundant `mkdir` per statusLine render — `atomicWrite` already creates the parent.
 
+### The daemon no longer runs from the git working tree
+
+`install --systemd` rendered `ExecStart` with whatever path the installer was invoked from. On this machine that was `/opt/claude-bridge/servers/claude-bridge-daemon/dist/daemon.cjs` — inside the repo. **A `git checkout` was therefore a silent deploy**: change branch, restart the service, and the daemon runs whatever the tree now holds, with nothing announcing it and `control_status` reporting a version that no longer describes the running code.
+
+Install now copies the bundle (and the unit template) to `~/.claude-bridge/bin/`, writes `bin/deployed-from.json` recording source, version and timestamp, and points the unit there. `uninstall --systemd` removes the copy so a later `systemctl --user start` cannot resurrect it.
+
+Two defects surfaced while building this, both caught before the change shipped:
+
+- **The installer never actually restarted anything.** It ran `systemctl start`, which is a no-op on an active unit — so every install over a running daemon rewrote the unit file and left the **old process** alive. Observed directly: `MainPID` unchanged after an install, still executing the previous `ExecStart`. This one predates today; the deployed-binary change only made it visible. Now `restart`, which also starts an inactive unit.
+- Running `install --systemd` from the *deployed* copy could not find the unit template — lookup is anchored at `argv[1]` and nothing was deployed beside the binary. The template now travels with it. The same path would also have had `copyFile` write a file onto itself, truncating the binary being executed; guarded.
+
 ### Tests
 
-+18 (400 total: 330 MCP, 63 daemon, 7 shared). Two were checked by breaking the fix and confirming they fail: removing the `pending/` guard fails the invariant test, and removing the EPIPE listener fails 2 of 3 passthrough tests.
++27 against the pre-v0.10.2 baseline of 382 — **409 total: 333 MCP, 69 daemon, 7 shared**. Three were checked by breaking the fix and confirming failure: removing the `pending/` guard fails the invariant test, removing the EPIPE listener fails 2 of 3 passthrough tests, and the `restart`-vs-`start` assertion fails against the old verb.
 
 ## [0.10.1-rc.2] — 2026-08-03 (pre-release, development channel)
 

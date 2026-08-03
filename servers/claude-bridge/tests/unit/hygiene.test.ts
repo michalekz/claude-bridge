@@ -200,6 +200,39 @@ describe("runHygieneSweep", () => {
     await rm(outside, { recursive: true, force: true });
   });
 
+  it("expires spent daemon RPC traffic but never the live protocol files", async () => {
+    // The archives.
+    await put("control/requests/done/old-req.json", 30 * DAY);
+    await put("control/results/old-result.json", 30 * DAY);
+    await put("control/compact-ack/done/old-ack.json", 30 * DAY);
+    await put("control/stop-ack/done/old-ack.json", 30 * DAY);
+    // The live protocol, one level up. A request waiting to be dispatched and
+    // an ack the daemon is polling for — deleting either mid-flight would
+    // strand a caller forever. Aged absurdly to prove it is the PATH that
+    // protects them, not their freshness.
+    await put("control/requests/in-flight.json", 30 * DAY);
+    await put("control/compact-ack/awaited.json", 30 * DAY);
+    await put("control/state.json", 30 * DAY);
+    await put("control/daemon.lock", 30 * DAY);
+
+    const r = await sweep();
+
+    expect(r.controlRemoved).toBe(4);
+    expect(await exists("control/requests/in-flight.json")).toBe(true);
+    expect(await exists("control/compact-ack/awaited.json")).toBe(true);
+    expect(await exists("control/state.json")).toBe(true);
+    expect(await exists("control/daemon.lock")).toBe(true);
+  });
+
+  it("keeps recent RPC archives — 7 days, not 'whatever is there'", async () => {
+    await put("control/requests/done/recent.json", 3 * DAY);
+    await put("control/results/recent.json", 6 * DAY);
+
+    const r = await sweep();
+
+    expect(r.controlRemoved).toBe(0);
+  });
+
   it("dryRun counts everything and deletes nothing, marker included", async () => {
     await put("inbox/peer-a/done/old.json", 500 * DAY, "x".repeat(1000));
     await put("live/.orphan.tmp", 5 * DAY);

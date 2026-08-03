@@ -33,9 +33,29 @@ node "$DAEMON_BIN" install --systemd
 ```
 
 The install command:
-1. Renders `~/.config/systemd/user/claude-bridge-daemon.service` from a bundled template — `ExecStart` points at the Node interpreter that ran the install command, plus the absolute daemon bundle path.
-2. Runs `systemctl --user daemon-reload && enable && start`.
-3. Verifies the service is up by tailing the acquire-lock event to journal.
+1. **Copies the daemon bundle to `~/.claude-bridge/bin/claude-bridge-daemon.cjs`** (v0.10.2+), along with the unit template, and writes `bin/deployed-from.json` recording the source path, version and timestamp.
+2. Renders `~/.config/systemd/user/claude-bridge-daemon.service` from the template — `ExecStart` points at the Node interpreter that ran the install command, plus **the deployed copy**.
+3. Runs `systemctl --user daemon-reload && enable && start`.
+4. Verifies the service is up by tailing the acquire-lock event to journal.
+
+### Why the binary is copied (v0.10.2)
+
+Before v0.10.2, `ExecStart` pointed at whatever path the installer was invoked
+from. If that was a git working tree — which is how the platform machine ran
+it — then **`git checkout` became a silent deploy**: switch branch, restart the
+service, and the daemon runs whatever the tree now contains, with nothing
+announcing the change and `control_status` reporting a version that no longer
+matches the code.
+
+Running from a copy the daemon owns means editing the tree has no effect until
+someone deliberately re-installs. To see what is actually running:
+
+```bash
+cat ~/.claude-bridge/bin/deployed-from.json
+```
+
+`uninstall --systemd` removes the copy as well, so a later
+`systemctl --user start` cannot resurrect it.
 
 Check status:
 
@@ -172,11 +192,20 @@ Canonical events:
 node "$DAEMON_BIN" uninstall --systemd
 ```
 
-Stops the service, disables it, removes the unit file, `daemon-reload`s systemd. The runtime data under `~/.claude-bridge/control/` is **preserved** — audit trail is forever; you must delete it explicitly if you truly want it gone.
+Stops the service, disables it, removes the unit file and the deployed binary
+under `~/.claude-bridge/bin/`, then `daemon-reload`s systemd. The runtime data
+under `~/.claude-bridge/control/` is **preserved** — audit trail is forever;
+you must delete it explicitly if you truly want it gone.
 
 ## Rolling forward across plugin updates
 
-`install --systemd` embeds the daemon's absolute cache path in the systemd unit. Plugin upgrades change that path. Re-run `install --systemd` after every plugin update — it overwrites the unit and restarts the service. A future setup-check hook (v0.10.0 F2) will do this automatically.
+Re-run `install --systemd` after every plugin update. Since v0.10.2 the unit no
+longer points into the plugin cache, so an upgrade does not break `ExecStart` —
+but the deployed copy still holds the **old build** until you re-install. Until
+then `control_status` truthfully reports the old version, which is the point:
+the running daemon and the reported version cannot drift apart.
+
+A future setup-check hook (v0.10.0 F2) will do this automatically.
 
 ## Troubleshooting
 

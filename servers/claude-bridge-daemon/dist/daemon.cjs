@@ -6784,19 +6784,60 @@ async function readTemplate() {
 function findNodeBin() {
   return process.execPath;
 }
+function deployedDaemonPath() {
+  return (0, import_node_path12.join)((0, import_node_os3.homedir)(), ".claude-bridge", "bin", "claude-bridge-daemon.cjs");
+}
+function deployMetaPath() {
+  return (0, import_node_path12.join)((0, import_node_path12.dirname)(deployedDaemonPath()), "deployed-from.json");
+}
+async function deployDaemonBinary(sourceBin) {
+  const target = deployedDaemonPath();
+  if ((0, import_node_path12.resolve)(sourceBin) === (0, import_node_path12.resolve)(target)) {
+    log10.info("deploy_skipped_same_path", { path: target });
+    return target;
+  }
+  await (0, import_promises13.mkdir)((0, import_node_path12.dirname)(target), { recursive: true });
+  await (0, import_promises13.copyFile)(sourceBin, target);
+  await (0, import_promises13.chmod)(target, 493);
+  try {
+    const templateSource = await readTemplate();
+    const templateTarget = (0, import_node_path12.join)((0, import_node_path12.dirname)(target), "templates", UNIT_NAME);
+    await (0, import_promises13.mkdir)((0, import_node_path12.dirname)(templateTarget), { recursive: true });
+    await (0, import_promises13.writeFile)(templateTarget, templateSource, "utf-8");
+  } catch (e) {
+    log10.warn("template_deploy_failed", { err: String(e) });
+  }
+  let version = "unknown";
+  try {
+    const pkg = JSON.parse(
+      await (0, import_promises13.readFile)((0, import_node_path12.resolve)((0, import_node_path12.dirname)(sourceBin), "..", "package.json"), "utf-8")
+    );
+    version = pkg.version ?? "unknown";
+  } catch {
+  }
+  await (0, import_promises13.writeFile)(
+    deployMetaPath(),
+    `${JSON.stringify({ source: (0, import_node_path12.resolve)(sourceBin), version, deployedAt: (/* @__PURE__ */ new Date()).toISOString() }, null, 2)}
+`,
+    "utf-8"
+  );
+  log10.info("daemon_binary_deployed", { source: sourceBin, target, version });
+  return target;
+}
 async function installSystemd() {
   assertLinux();
-  const daemonBin = resolveDaemonBin();
+  const sourceBin = resolveDaemonBin();
   const nodeBin = findNodeBin();
-  await ensureBinariesExist(daemonBin, nodeBin);
+  await ensureBinariesExist(sourceBin, nodeBin);
+  const daemonBin = await deployDaemonBinary(sourceBin);
   const template = await readTemplate();
   const rendered = template.replace(/__NODE_BIN__/g, nodeBin).replace(/__DAEMON_BIN__/g, daemonBin);
   await (0, import_promises13.mkdir)(systemdUserDir(), { recursive: true });
   await (0, import_promises13.writeFile)(unitPath(), rendered, "utf-8");
-  log10.info("unit_written", { path: unitPath() });
+  log10.info("unit_written", { path: unitPath(), execStart: daemonBin });
   runSystemctl("daemon-reload");
   runSystemctl("enable", UNIT_NAME);
-  runSystemctl("start", UNIT_NAME);
+  runSystemctl("restart", UNIT_NAME);
   log10.info("daemon_started_via_systemd");
 }
 async function uninstallSystemd() {
@@ -6816,6 +6857,14 @@ async function uninstallSystemd() {
   } catch (e) {
     const code = e.code;
     if (code !== "ENOENT") log10.warn("unit_unlink_failed", { err: String(e) });
+  }
+  for (const path of [deployedDaemonPath(), deployMetaPath()]) {
+    try {
+      await (0, import_promises13.unlink)(path);
+    } catch (e) {
+      const code = e.code;
+      if (code !== "ENOENT") log10.warn("deployed_binary_unlink_failed", { path, err: String(e) });
+    }
   }
   runSystemctl("daemon-reload");
   log10.info("uninstalled");

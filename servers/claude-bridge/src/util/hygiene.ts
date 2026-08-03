@@ -7,20 +7,29 @@ import { bridgeRoot } from "./paths.ts";
 /**
  * Workspace hygiene sweep (v0.10.2).
  *
- * `~/.claude-bridge/` had no expiry on anything. Measured on the platform
- * machine 2026-08-03, after ~10 weeks of use:
+ * `~/.claude-bridge/` had no expiry on anything. Full inventory of the
+ * platform machine on 2026-08-03, after ~10 weeks of use — every directory,
+ * so a rule that reports "nothing to do" can be told apart from a rule that
+ * does not cover the directory at all:
  *
- *   inbox/<peer>/done/   12 649 files / 57 MB, oldest 2026-05-25
- *   live/statusline/     49 files, one per session id that ever rendered
- *   *.tmp orphans        79 files, oldest 2026-07-07
+ *   inbox/<peer>/done/        12 662 files, 20 MB of content (57 MB on disk
+ *                             at 4 KB blocks), oldest 2026-05-25
+ *   inbox/<peer>/pending/     31 files — never swept, see below
+ *   live/statusline/          51 files, one per session id that ever rendered
+ *   control/requests/done/    34 files, oldest 2026-07-23
+ *   control/results/          34 files, oldest 2026-07-23
+ *   control/compact-ack/done/ 1 file
+ *   status/                   99 files — owned by registry/peers.ts sweepStale
+ *   *.tmp orphans             79 files, oldest 2026-07-07
+ *   guard/ notify/ live/*.json  live state, no expiry by design
  *
- * None of it is reachable by any code path once it ages out, and the
- * directories only ever grow. The `.tmp` files are the visible symptom of a
- * real hazard: `atomicWrite` writes a temp file and renames it, so a process
+ * None of the swept files is reachable by any code path once it ages out, and
+ * the directories only ever grow. The `.tmp` files are the visible symptom of
+ * a real hazard: `atomicWrite` writes a temp file and renames it, so a process
  * killed between the two steps leaves the temp behind forever. `sweepStale`
  * in registry/peers.ts filters on `.json`, so it walks straight past them.
  *
- * Three rules, and nothing else is ever touched:
+ * Four rules, and nothing else is ever touched:
  *
  *   1. `.<hex>.tmp`  — orphaned atomic-write temps, older than one hour.
  *      A live temp exists for milliseconds; an hour is not a judgement call.
@@ -28,6 +37,11 @@ import { bridgeRoot } from "./paths.ts";
  *      session; a session that hasn't rendered in two weeks is over.
  *   3. `inbox/<peer>/done/*.json` — older than 30 days. ARCHIVED messages
  *      only. `pending/` is never swept at any age.
+ *   4. Spent daemon RPC traffic older than 7 days: `control/requests/done/`,
+ *      `control/results/`, `control/<name>-ack/done/`. Only 69 files today,
+ *      but unbounded — the re-entrancy bug fixed in v0.10.1 would have put
+ *      ~12 000 there from a single `team_stop`. The LIVE protocol files sit
+ *      one level above these paths and are never matched.
  *
  * `pending/` exclusion is not a default, it is an invariant — an unread
  * message must never expire, however old. The tests assert it directly.
@@ -54,6 +68,7 @@ const DAY_MS = 24 * HOUR_MS;
 export const DEFAULT_TMP_MAX_AGE_MS = HOUR_MS;
 export const DEFAULT_STATUSLINE_MAX_AGE_MS = 14 * DAY_MS;
 export const DEFAULT_DONE_MAX_AGE_MS = 30 * DAY_MS;
+export const DEFAULT_CONTROL_MAX_AGE_MS = 7 * DAY_MS;
 export const DEFAULT_THROTTLE_MS = 6 * HOUR_MS;
 
 /** Depth cap so a symlink loop or a surprise nested tree can't spin forever. */
@@ -69,6 +84,7 @@ export interface HygieneOptions {
   tmpMaxAgeMs?: number;
   statusLineMaxAgeMs?: number;
   doneMaxAgeMs?: number;
+  controlMaxAgeMs?: number;
   throttleMs?: number;
   /** Ignore the throttle marker — for tests and explicit manual runs. */
   force?: boolean;
@@ -87,6 +103,7 @@ export interface HygieneReport {
   tmpRemoved: number;
   statusLineRemoved: number;
   doneRemoved: number;
+  controlRemoved: number;
   bytesFreed: number;
   errors: number;
   durationMs: number;
@@ -135,7 +152,9 @@ async function claim(baseDir: string, now: number, throttleMs: number): Promise<
 }
 
 /** What rule, if any, applies to this file. `null` means: leave it alone. */
-function classify(relativeParts: string[], name: string): "tmp" | "statusline" | "done" | null {
+type Rule = "tmp" | "statusline" | "done" | "control";
+
+function classify(relativeParts: string[], name: string): Rule | null {
   if (TMP_PATTERN.test(name)) return "tmp";
   if (!name.endsWith(".json")) return null;
 
@@ -150,6 +169,18 @@ function classify(relativeParts: string[], name: string): "tmp" | "statusline" |
   // inbox/<peerId>/done/<msgId>.json — and ONLY done/. Never pending/.
   if (relativeParts.length === 3 && relativeParts[0] === "inbox" && relativeParts[2] === "done") {
     return "done";
+  }
+
+  // Spent daemon RPC traffic. Only the archives, never the live protocol
+  // files: `control/requests/<id>.json` is a request waiting to be picked up,
+  // `control/<x>-ack/<id>.json` is an ack the daemon is polling for. Both sit
+  // one level ABOVE what is matched here.
+  if (relativeParts[0] === "control") {
+    //   control/requests/done/<id>.json
+    //   control/<name>-ack/done/<id>.json
+    if (relativeParts.length === 3 && relativeParts[2] === "done") return "control";
+    //   control/results/<id>.json   (flat — the caller reads it within seconds)
+    if (relativeParts.length === 2 && relativeParts[1] === "results") return "control";
   }
   return null;
 }
@@ -169,6 +200,7 @@ export async function runHygieneSweep(opts: HygieneOptions = {}): Promise<Hygien
     tmpRemoved: 0,
     statusLineRemoved: 0,
     doneRemoved: 0,
+    controlRemoved: 0,
     bytesFreed: 0,
     errors: 0,
     durationMs: 0,
@@ -195,6 +227,7 @@ export async function runHygieneSweep(opts: HygieneOptions = {}): Promise<Hygien
       opts.statusLineMaxAgeMs ??
       envDays("CLAUDE_BRIDGE_RETAIN_STATUSLINE_DAYS", DEFAULT_STATUSLINE_MAX_AGE_MS),
     done: opts.doneMaxAgeMs ?? envDays("CLAUDE_BRIDGE_RETAIN_DONE_DAYS", DEFAULT_DONE_MAX_AGE_MS),
+    control: opts.controlMaxAgeMs ?? DEFAULT_CONTROL_MAX_AGE_MS,
   } as const;
 
   async function walk(dir: string, parts: string[]): Promise<void> {
@@ -226,6 +259,7 @@ export async function runHygieneSweep(opts: HygieneOptions = {}): Promise<Hygien
         report.bytesFreed += s.size;
         if (rule === "tmp") report.tmpRemoved++;
         else if (rule === "statusline") report.statusLineRemoved++;
+        else if (rule === "control") report.controlRemoved++;
         else report.doneRemoved++;
       } catch {
         report.errors++;
@@ -238,12 +272,14 @@ export async function runHygieneSweep(opts: HygieneOptions = {}): Promise<Hygien
   report.ran = true;
   report.durationMs = Date.now() - started;
 
-  const removed = report.tmpRemoved + report.statusLineRemoved + report.doneRemoved;
+  const removed =
+    report.tmpRemoved + report.statusLineRemoved + report.doneRemoved + report.controlRemoved;
   if (removed > 0 || report.errors > 0) {
     log.info("hygiene_sweep", {
       tmpRemoved: report.tmpRemoved,
       statusLineRemoved: report.statusLineRemoved,
       doneRemoved: report.doneRemoved,
+      controlRemoved: report.controlRemoved,
       mbFreed: Math.round((report.bytesFreed / 1024 / 1024) * 10) / 10,
       errors: report.errors,
       durationMs: report.durationMs,

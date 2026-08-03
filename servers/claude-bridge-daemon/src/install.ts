@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { mkdir, readFile, stat, unlink, writeFile } from "node:fs/promises";
+import { chmod, copyFile, mkdir, readFile, stat, unlink, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { makeLogger } from "@claude-bridge/shared";
@@ -68,19 +68,92 @@ function findNodeBin(): string {
   return process.execPath;
 }
 
+/**
+ * Where the running daemon binary lives (v0.10.2+).
+ *
+ * Until now the unit's ExecStart pointed at whatever path the installer was
+ * invoked from — in practice the git working tree, `/opt/claude-bridge/...`.
+ * That makes a `git checkout` a silent deploy: switch branch or reset, and
+ * the next daemon restart runs whatever the tree happens to contain. Nothing
+ * announces it, and `control_status` reports a version that no longer matches
+ * the code on disk.
+ *
+ * Install now copies the bundle to a location the daemon owns, and the unit
+ * points there. Editing the tree stops affecting the running service until
+ * someone deliberately re-installs.
+ */
+export function deployedDaemonPath(): string {
+  return join(homedir(), ".claude-bridge", "bin", "claude-bridge-daemon.cjs");
+}
+
+/** Provenance sidecar — answers "which build is actually running?". */
+function deployMetaPath(): string {
+  return join(dirname(deployedDaemonPath()), "deployed-from.json");
+}
+
+async function deployDaemonBinary(sourceBin: string): Promise<string> {
+  const target = deployedDaemonPath();
+  if (resolve(sourceBin) === resolve(target)) {
+    // Re-running the already-deployed copy. Copying it onto itself would
+    // truncate the file we are executing from.
+    log.info("deploy_skipped_same_path", { path: target });
+    return target;
+  }
+  await mkdir(dirname(target), { recursive: true });
+  await copyFile(sourceBin, target);
+  await chmod(target, 0o755);
+
+  // Ship the unit template alongside the binary. Without this, running
+  // `install --systemd` from the DEPLOYED copy fails: template lookup is
+  // anchored at argv[1], and there is no templates/ dir next to it. Caught
+  // by the re-install test, which would otherwise have passed for the wrong
+  // reason. `readTemplate` already probes `<anchorDir>/templates/`.
+  try {
+    const templateSource = await readTemplate();
+    const templateTarget = join(dirname(target), "templates", UNIT_NAME);
+    await mkdir(dirname(templateTarget), { recursive: true });
+    await writeFile(templateTarget, templateSource, "utf-8");
+  } catch (e) {
+    log.warn("template_deploy_failed", { err: String(e) });
+  }
+
+  let version = "unknown";
+  try {
+    const pkg = JSON.parse(
+      await readFile(resolve(dirname(sourceBin), "..", "package.json"), "utf-8"),
+    ) as { version?: string };
+    version = pkg.version ?? "unknown";
+  } catch {
+    // provenance is best-effort; a missing package.json must not block install
+  }
+  await writeFile(
+    deployMetaPath(),
+    `${JSON.stringify({ source: resolve(sourceBin), version, deployedAt: new Date().toISOString() }, null, 2)}\n`,
+    "utf-8",
+  );
+  log.info("daemon_binary_deployed", { source: sourceBin, target, version });
+  return target;
+}
+
 export async function installSystemd(): Promise<void> {
   assertLinux();
-  const daemonBin = resolveDaemonBin();
+  const sourceBin = resolveDaemonBin();
   const nodeBin = findNodeBin();
-  await ensureBinariesExist(daemonBin, nodeBin);
+  await ensureBinariesExist(sourceBin, nodeBin);
+  const daemonBin = await deployDaemonBinary(sourceBin);
   const template = await readTemplate();
   const rendered = template.replace(/__NODE_BIN__/g, nodeBin).replace(/__DAEMON_BIN__/g, daemonBin);
   await mkdir(systemdUserDir(), { recursive: true });
   await writeFile(unitPath(), rendered, "utf-8");
-  log.info("unit_written", { path: unitPath() });
+  log.info("unit_written", { path: unitPath(), execStart: daemonBin });
   runSystemctl("daemon-reload");
   runSystemctl("enable", UNIT_NAME);
-  runSystemctl("start", UNIT_NAME);
+  // `restart`, not `start` (v0.10.2). `start` on an already-active service is
+  // a no-op, so every install over a running daemon left the OLD process
+  // alive while the unit file described the new one. Found by checking
+  // MainPID after an install: unchanged, still executing the previous path.
+  // `restart` starts an inactive service too, so it is correct in both cases.
+  runSystemctl("restart", UNIT_NAME);
   log.info("daemon_started_via_systemd");
 }
 
@@ -101,6 +174,17 @@ export async function uninstallSystemd(): Promise<void> {
   } catch (e) {
     const code = (e as NodeJS.ErrnoException).code;
     if (code !== "ENOENT") log.warn("unit_unlink_failed", { err: String(e) });
+  }
+  // Remove the deployed copy too — leaving it behind would let a later
+  // `systemctl --user start` resurrect a daemon this uninstall was meant to
+  // remove. Order matters: the service is already stopped above.
+  for (const path of [deployedDaemonPath(), deployMetaPath()]) {
+    try {
+      await unlink(path);
+    } catch (e) {
+      const code = (e as NodeJS.ErrnoException).code;
+      if (code !== "ENOENT") log.warn("deployed_binary_unlink_failed", { path, err: String(e) });
+    }
   }
   runSystemctl("daemon-reload");
   log.info("uninstalled");
