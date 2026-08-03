@@ -23,6 +23,25 @@ In Claude Code:
 
 The first command registers the marketplace (once per machine), the second installs the plugin. The build runs automatically.
 
+### Two release channels
+
+The marketplace offers the plugin twice. Both entries show up when you browse it, so the choice is yours:
+
+| | install as | what it is |
+|---|---|---|
+| **Stable** | `claude-bridge` | Recommended. Verified in operation. This is what you get from the command above. |
+| **Development** | `claude-bridge-dev` | Pre-release. Carries what is being prepared for the next version. Fine if you want changes early and can tolerate breakage. |
+
+```
+/plugin install claude-bridge-dev@claude-bridge
+```
+
+**Install one, not both.** Each entry registers its own MCP server, so having both enabled means two servers running side by side against the same `~/.claude-bridge/` directory. If you want to switch channels, uninstall the other one first.
+
+The development channel is a different plugin identity, so its tool and skill prefixes differ (`claude-bridge-dev:…` instead of `claude-bridge:…`). You never type those yourself — but if you pin the plugin in a settings allowlist or pass `--channels`, use the matching name.
+
+Both channels are pinned to a tag and a commit, so an install is reproducible and a moved tag cannot change what you already have.
+
 After installation, restart the Claude Code process:
 
 - **CLI:** exit (Ctrl+D) and start `claude` again.

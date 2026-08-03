@@ -10,6 +10,7 @@ Formát: **Context / Decision / Consequences / Alternatives considered / Status*
 |---|---|---|
 | [ADR-007](#adr-007--agent-teams-pivot-placeholder) | Agent Teams pivot | Placeholder — draft až po experimentu |
 | [ADR-008](#adr-008--control-plane-daemon-vedle-file-based-filozofie) | Control-plane daemon vedle file-based filozofie | Accepted (2026-07-23) |
+| [ADR-009](#adr-009--dva-vydávací-kanály-a-jeden-zdroj-pravdy-pro-verzi) | Dva vydávací kanály a jeden zdroj pravdy pro verzi | Accepted (2026-08-03) |
 
 Vazba na ostatní dokumenty:
 - [`HOOKS-STATUSLINE-ARCHITECTURE.md`](HOOKS-STATUSLINE-ARCHITECTURE.md) — technický popis v0.9.0+ live-data pipeline; upraven v ADR-008.
@@ -101,3 +102,64 @@ Krátký odkaz z pasáže na tento dokument je součástí v0.10.0-alpha commitu
 - Implementace daemonu: `servers/claude-bridge-daemon/`
 - Shared knihovna: `packages/shared/` (paths, atomic-write, structured logger, control-paths helpery)
 - CHANGELOG: `CHANGELOG.md` sekce v0.10.0-alpha
+
+---
+
+## ADR-009 — Dva vydávací kanály a jeden zdroj pravdy pro verzi
+
+**Status:** Accepted (2026-08-03), na pokyn ownera.
+
+### Context
+
+Repozitář používá víc lidí. Dosud existoval jediný kanál, takže předběžná vydání šla stejnou cestou jako ostrá — `v0.10.0-rc.1` i `rc.2` dostali všichni uživatelé tržiště. Zároveň `main` sloužil jako integrační i vydávací větev, takže na něm ležela nevydaná práce.
+
+Verze žila na **šesti ručně editovaných místech** a už se rozešla třemi směry:
+
+| místo | hodnota před opravou |
+|---|---|
+| `plugin.json`, `marketplace.json`, daemon | 0.10.0-rc.2 |
+| `servers/claude-bridge/package.json` | 0.9.4 |
+| `packages/shared/package.json` | 0.10.0-alpha.0 |
+| `src/mcp/server.ts` — literál `SERVER_VERSION` | **0.9.4** |
+
+Ten poslední byl vidět uživatelům: každý peer hlásil v `peer_list` verzi 0.9.4 a MCP server se tak představoval Claude Code — pět vydání po sobě.
+
+### Decision
+
+**1. Dva kanály, oba viditelně nabídnuté.** `marketplace.json` na `main` obsahuje dva záznamy nad týmž repozitářem:
+
+| záznam | jméno | ukazuje na |
+|---|---|---|
+| stabilní (výchozí) | `claude-bridge` | poslední ostrou značku |
+| vývojový | `claude-bridge-dev` | poslední předběžnou značku |
+
+Volba je nabídnutá každému, kdo si tržiště otevře, ne skrytá za znalostí syntaxe.
+
+**2. Větve.** `main` nese jen vydané. `develop` je integrace. Pracovní větve se slévají do `develop`.
+
+**3. Připínání na `ref` **i** `sha`.** Značka se dá přepsat, commit ne. Odpovídá praxi Anthropicova katalogu (223 z 276 pluginů).
+
+**4. Jméno pluginu se musí shodovat s `plugin.json`.** Ověřeno na 39 z 39 lokálních záznamů Anthropicova katalogu, bez výjimky. Proto `plugin.json` na `develop` nese `claude-bridge-dev` — jediná trvalá odchylka mezi větvemi, kterou vlastní vydávací skript.
+
+**5. Jeden zdroj pravdy pro verzi.** `plugin.json` `version` je zdroj; `scripts/release.mjs` z něj zapisuje tři `package.json`; `src/mcp/server.ts` čte svůj `package.json` při sestavení (esbuild ho vloží dovnitř). Kód se tedy rozejít nemůže. `.githooks/pre-push` shodu ověřuje.
+
+### Consequences
+
+- Vývojový kanál je **jiná identita pluginu** → jiné předpony nástrojů a skillů, jiný identifikátor v allowlistech a v příznaku `--channels`. Pro člověka neviditelné, protože nástroje volá model.
+- **Nesmí se instalovat oba naráz** — běžely by dva MCP servery nad týmž `~/.claude-bridge/`. Uvedeno v popisu obou záznamů i v `INSTALL.md`.
+- Naše vlastní rodina peerů drží **jednu verzi napříč všemi** (rozhodnutí ownera 2026-08-03). Míchání kanálů uvnitř fleetu se zamítlo jako zbytečně složité.
+- Vydání teď má rituál: `release.mjs set` na větvi → značka → `release.mjs catalog` na `main`. Ruční editace manifestů končí.
+- Uživatel si verzi vybrat nemůže a aktualizaci odmítnout taky ne — kanál je jediná páka, kterou má.
+
+### Alternatives considered
+
+- **Dvě tržiště z jednoho repa** (`marketplace add owner/repo@develop`). Funguje a nechalo by `plugin.json` na obou větvích identický. Zamítnuto: vývojový kanál by viděl jen ten, kdo zná syntaxi — owner výslovně chtěl volbu nabídnutou všem.
+- **Oddělený repozitář pro vydání.** Příliš těžké na jeden plugin, rozdělilo by hlášení chyb a hvězdy.
+- **`strict: false` u vývojového záznamu**, aby `plugin.json` nemusel měnit jméno. Katalog by pak musel nést celou definici včetně `mcpServers` a rozcházel by se s kódem. Ponecháno jako záložní cesta.
+- **Míchání kanálů po peerech** přes `claude --settings`. Ověřeno jako funkční (granularita až na jednotlivého peera), owner ale rozsah stáhl zpět.
+
+### Odkazy
+
+- `scripts/release.mjs` — nástroj na manifesty
+- `docs/INSTALL.md` — sekce „Two release channels"
+- `.githooks/pre-push` — kontrola shody verzí

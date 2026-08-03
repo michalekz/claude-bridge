@@ -1,6 +1,7 @@
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
+import pkg from "../../package.json";
 import { IdentityError } from "../identity.ts";
 import { makeLogger } from "../util/logger.ts";
 import {
@@ -15,7 +16,16 @@ import { TOOLS, type ToolResult, piggybackInbox } from "./tools.ts";
 const log = makeLogger("mcp-server");
 
 const SERVER_NAME = "claude-bridge";
-const SERVER_VERSION = "0.9.4";
+/**
+ * Read from package.json rather than hardcoded (fix, 2026-08-03).
+ *
+ * This was a string literal that nobody remembered to bump: it still said
+ * "0.9.4" through v0.10.0-alpha/beta/rc/rc.1/rc.2, so every peer misreported
+ * its version in `peer_list` and the MCP server announced the wrong version to
+ * Claude Code for five releases. Bundled by esbuild, so there is no runtime
+ * file read and no path to get wrong.
+ */
+const SERVER_VERSION: string = pkg.version;
 
 const INSTRUCTIONS = `
 claude-bridge — MCP server for orchestration across Claude Code chats.
