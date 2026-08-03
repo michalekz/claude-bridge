@@ -1,4 +1,5 @@
 import type { SessionHostDriver } from "../hosts/index.ts";
+import type { ProcessInspector } from "../hosts/process-inspector.ts";
 import type { StateDoc } from "../state.ts";
 
 /**
@@ -12,4 +13,10 @@ export interface HandlerContext {
   state: StateDoc;
   hostDriver: SessionHostDriver;
   daemonVersion: string;
+  /**
+   * Reads the live process table for `team_adopt`. Optional: production omits
+   * it and the handler falls back to the `/proc` implementation, while tests
+   * inject a fake table instead of needing real tmux and real peers.
+   */
+  processInspector?: ProcessInspector;
 }

@@ -36,6 +36,12 @@ export interface PeerRecord {
   stoppedCleanly?: boolean | null;
   /** Team identifier from team_layout apply or team_adopt; undefined for ad-hoc peer_spawn. */
   team?: string;
+  /**
+   * True when the daemon took over a process it did not start (team_adopt).
+   * Matters because `startedAt` is then the adoption time, not the boot time,
+   * and because provenance is worth keeping when diagnosing identity problems.
+   */
+  adopted?: boolean;
   model: string | null;
   accountProfile: string | null;
   startedAt: string;

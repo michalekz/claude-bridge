@@ -1,0 +1,171 @@
+import { readFile, readdir } from "node:fs/promises";
+import { homedir } from "node:os";
+import { basename, join } from "node:path";
+
+/**
+ * Reads the live process table to find Claude Code peers the daemon did not
+ * spawn (v0.10.1, for `team_adopt`).
+ *
+ * Motivating case: the HMH team is launched by `start_peer.sh` (tmux +
+ * `claude --resume`), so the daemon knows zero peers while the bridge registry
+ * sees eleven. Every lifecycle tool then fails with `peer_not_found`
+ * (velitel's report 2026-07-25 16:54). Adoption closes that gap.
+ *
+ * Behind an interface so tests can supply a fake table instead of needing a
+ * real tmux server and real Claude processes.
+ */
+
+export interface ProcessRecord {
+  pid: number;
+  ppid: number;
+  /** Claude Code session UUID, or null when it could not be determined. */
+  sessionId: string | null;
+  /** How `sessionId` was resolved — recorded in the adoption audit trail. */
+  sessionIdSource: "sessions-json" | "resume-arg" | "none";
+  /** Full command line, space-joined. Diagnostics only. */
+  cmdline: string;
+}
+
+export interface ProcessInspector {
+  /** Every live process that is a Claude Code peer (not an MCP child). */
+  listClaudePeers(): Promise<ProcessRecord[]>;
+  /**
+   * Ancestor pids of `pid`, nearest first, so a caller can decide which tmux
+   * pane owns a process. Stops at pid 1 or `maxDepth`.
+   */
+  ancestorsOf(pid: number, maxDepth?: number): Promise<number[]>;
+}
+
+const DEFAULT_MAX_DEPTH = 8;
+/** A bare UUID, or the basename of a `<uuid>.jsonl` transcript path. */
+const UUID_RE = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i;
+
+/**
+ * Parse `ppid` out of `/proc/<pid>/stat`.
+ *
+ * The `comm` field is parenthesised and may itself contain spaces and
+ * parentheses, so the only safe anchor is the LAST `)`. After it the fields
+ * are `state ppid …`.
+ */
+export function parsePpidFromStat(stat: string): number | null {
+  const close = stat.lastIndexOf(")");
+  if (close === -1) return null;
+  const fields = stat
+    .slice(close + 1)
+    .trim()
+    .split(/\s+/);
+  const ppid = Number.parseInt(fields[1] ?? "", 10);
+  return Number.isNaN(ppid) ? null : ppid;
+}
+
+/**
+ * Pull a session UUID out of a command line.
+ *
+ * `start_peer.sh` passes `--resume <path>/<uuid>.jsonl`, not a bare UUID —
+ * verified against the live fleet — so match the UUID anywhere in the token.
+ */
+export function sessionIdFromCmdline(cmdline: string): string | null {
+  const idx = cmdline.indexOf("--resume");
+  if (idx === -1) return null;
+  const rest = cmdline.slice(idx + "--resume".length).trim();
+  const token = rest.split(/\s+/)[0] ?? "";
+  const match = UUID_RE.exec(basename(token));
+  return match ? match[0] : null;
+}
+
+export interface LinuxProcessInspectorOptions {
+  /** Override for tests. Defaults to `/proc`. */
+  procRoot?: string;
+  /** Override for tests. Defaults to `~/.claude/sessions`. */
+  sessionsDir?: string;
+}
+
+/**
+ * `/proc`-backed inspector. Linux (and WSL2) only; elsewhere `listClaudePeers`
+ * simply finds nothing and `team_adopt` reports that auto-discovery is
+ * unavailable rather than pretending the fleet is empty.
+ */
+export class LinuxProcessInspector implements ProcessInspector {
+  private readonly procRoot: string;
+  private readonly sessionsDir: string;
+
+  constructor(opts: LinuxProcessInspectorOptions = {}) {
+    this.procRoot = opts.procRoot ?? "/proc";
+    this.sessionsDir = opts.sessionsDir ?? join(homedir(), ".claude", "sessions");
+  }
+
+  async listClaudePeers(): Promise<ProcessRecord[]> {
+    let entries: string[];
+    try {
+      entries = await readdir(this.procRoot);
+    } catch {
+      return [];
+    }
+    const out: ProcessRecord[] = [];
+    for (const entry of entries) {
+      const pid = Number.parseInt(entry, 10);
+      if (Number.isNaN(pid) || String(pid) !== entry) continue;
+      // `comm` is the cheapest discriminator: a peer's process is `claude`,
+      // while its bundled MCP server shows up as `node`.
+      const comm = await this.readProcFile(pid, "comm");
+      if (comm?.trim() !== "claude") continue;
+
+      const stat = await this.readProcFile(pid, "stat");
+      const ppid = stat ? parsePpidFromStat(stat) : null;
+      const raw = await this.readProcFile(pid, "cmdline");
+      const cmdline = (raw ?? "").replace(/\0/g, " ").trim();
+
+      const { sessionId, source } = await this.resolveSessionId(pid, cmdline);
+      out.push({ pid, ppid: ppid ?? 0, sessionId, sessionIdSource: source, cmdline });
+    }
+    return out;
+  }
+
+  async ancestorsOf(pid: number, maxDepth = DEFAULT_MAX_DEPTH): Promise<number[]> {
+    const chain: number[] = [];
+    let current = pid;
+    for (let i = 0; i < maxDepth; i++) {
+      const stat = await this.readProcFile(current, "stat");
+      if (!stat) break;
+      const ppid = parsePpidFromStat(stat);
+      if (ppid === null || ppid <= 1) break;
+      chain.push(ppid);
+      current = ppid;
+    }
+    return chain;
+  }
+
+  /**
+   * `~/.claude/sessions/<pid>.json` is authoritative — it is the same file the
+   * MCP server reads to learn its own identity, so it exists for every peer
+   * including ones started without `--resume`. The command line is only a
+   * fallback for the window where that file is missing.
+   */
+  private async resolveSessionId(
+    pid: number,
+    cmdline: string,
+  ): Promise<{ sessionId: string | null; source: ProcessRecord["sessionIdSource"] }> {
+    try {
+      const raw = await readFile(join(this.sessionsDir, `${pid}.json`), "utf-8");
+      const parsed = JSON.parse(raw) as { sessionId?: string };
+      if (parsed.sessionId) return { sessionId: parsed.sessionId, source: "sessions-json" };
+    } catch {
+      // fall through to the command line
+    }
+    const fromArgs = sessionIdFromCmdline(cmdline);
+    if (fromArgs) return { sessionId: fromArgs, source: "resume-arg" };
+    return { sessionId: null, source: "none" };
+  }
+
+  private async readProcFile(pid: number, name: string): Promise<string | null> {
+    try {
+      return await readFile(join(this.procRoot, String(pid), name), "utf-8");
+    } catch {
+      return null;
+    }
+  }
+}
+
+export function defaultProcessInspector(): ProcessInspector {
+  return new LinuxProcessInspector();
+}

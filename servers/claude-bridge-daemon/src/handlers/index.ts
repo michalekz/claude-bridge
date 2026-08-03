@@ -7,6 +7,7 @@ import { handlePeerCompact } from "./peer-compact.ts";
 import { handlePeerRestart } from "./peer-restart.ts";
 import { handlePeerSpawn } from "./peer-spawn.ts";
 import { handlePeerStop } from "./peer-stop.ts";
+import { handleTeamAdopt } from "./team-adopt.ts";
 import { handleTeamLayout } from "./team-layout.ts";
 import { handleTeamStatus } from "./team-status.ts";
 import { handleTeamStop } from "./team-stop.ts";
@@ -24,6 +25,7 @@ const HANDLERS: Record<string, Handler> = {
   team_status: handleTeamStatus,
   team_layout: handleTeamLayout,
   team_stop: handleTeamStop,
+  team_adopt: handleTeamAdopt,
   control_status: handleControlStatus,
 };
 
