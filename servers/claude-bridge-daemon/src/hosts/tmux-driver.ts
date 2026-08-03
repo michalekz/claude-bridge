@@ -1,6 +1,8 @@
 import { execFile } from "node:child_process";
+import { appendFile, mkdir } from "node:fs/promises";
+import { join } from "node:path";
 import { promisify } from "node:util";
-import { makeLogger } from "@claude-bridge/shared";
+import { controlDir, makeLogger } from "@claude-bridge/shared";
 import {
   type SessionHostDriver,
   type SessionHostRecord,
@@ -30,6 +32,26 @@ const QUERY_TIMEOUT_MS = 5_000;
 const MUTATE_TIMEOUT_MS = 10_000;
 /** Key injection — a pane that cannot accept keys in 5 s will not accept them. */
 const SEND_KEYS_TIMEOUT_MS = 5_000;
+/** Settle time between injecting text and reading the pane back. */
+const DEFAULT_SEND_VERIFY_DELAY_MS = 250;
+
+/**
+ * Is the injected text visible in the captured pane?
+ *
+ * Compared on a whitespace-normalised tail because a long prompt wraps across
+ * pane columns, so an exact substring match would fail on text that did in
+ * fact arrive. The tail is distinctive enough to tell "arrived" from "vanished"
+ * without being brittle about where tmux broke the line.
+ */
+export function paneContains(captured: string, keys: string): boolean {
+  const flat = (s: string) => s.replace(/\s+/g, " ").trim();
+  const needle = flat(keys);
+  if (needle.length === 0) return true;
+  const haystack = flat(captured);
+  // Match on the tail: the head of a long line may have scrolled off.
+  const probe = needle.length > 40 ? needle.slice(-40) : needle;
+  return haystack.includes(probe);
+}
 
 /**
  * tmux-backed host driver.
@@ -43,6 +65,13 @@ const SEND_KEYS_TIMEOUT_MS = 5_000;
  * — including bg-pty-host-like supervisors that may have attached — are
  * torn down with the session's process group. `verifyKilled()` polls
  * post-kill to catch the respawn class of failure (msg mrxe9t7d).
+ *
+ * **No linked-window guard, and that is deliberate.** The v0.10.1 plan called
+ * for checking `#{window_linked_sessions_list}` and unlinking instead of
+ * killing. Measured on tmux 3.x before implementing: link a window from
+ * session A into session B, then `kill-session -t A` — the window survives in
+ * B untouched. The hazard only exists for `kill-window`, which this driver
+ * never issues, so a guard here would be code defending against nothing.
  */
 
 export interface TmuxDriverOptions {
@@ -52,6 +81,8 @@ export interface TmuxDriverOptions {
   verifyTimeoutMs?: number;
   /** Post-kill verify poll interval in ms (default 200). */
   verifyIntervalMs?: number;
+  /** Settle time between injecting text and capturing the pane (default 250). */
+  sendVerifyDelayMs?: number;
 }
 
 export class TmuxDriver implements SessionHostDriver {
@@ -59,11 +90,13 @@ export class TmuxDriver implements SessionHostDriver {
   private readonly tmuxBin: string;
   private readonly verifyTimeoutMs: number;
   private readonly verifyIntervalMs: number;
+  private readonly sendVerifyDelayMs: number;
 
   constructor(opts: TmuxDriverOptions = {}) {
     this.tmuxBin = opts.tmuxBin ?? "tmux";
     this.verifyTimeoutMs = opts.verifyTimeoutMs ?? 2000;
     this.verifyIntervalMs = opts.verifyIntervalMs ?? 200;
+    this.sendVerifyDelayMs = opts.sendVerifyDelayMs ?? DEFAULT_SEND_VERIFY_DELAY_MS;
   }
 
   async hasSession(sessionKey: string): Promise<boolean> {
@@ -173,12 +206,119 @@ export class TmuxDriver implements SessionHostDriver {
     }
   }
 
+  /**
+   * Inject keys into a pane and PROVE they landed (v0.10.1).
+   *
+   * Evidence for why this is not optional: during the 2026-08-02 tmux
+   * consolidation a `/exit` was sent to a peer and simply never arrived — no
+   * trace in the transcript, the input box empty, the process untouched — and
+   * the script that sent it then hung for 13 minutes with no log line. Two
+   * lessons, both encoded here: a send without verification is undelivered
+   * mail, and a wait without a log is an undiagnosable incident.
+   *
+   * Sequence:
+   *   1. If the pane is in copy-mode it swallows input — cancel out of it first.
+   *   2. Send the TEXT alone and confirm it is visible in the pane. This is the
+   *      real check: it proves the keystrokes reached the application while the
+   *      line is still uncommitted, so a failure costs nothing.
+   *   3. Only then send Enter.
+   *
+   * Every attempt is appended to `control/logs/sendkeys-<sessionKey>.log`.
+   * Throws when the text cannot be confirmed, so callers surface a hard failure
+   * instead of assuming delivery.
+   */
   async sendKeys(sessionKey: string, keys: string): Promise<void> {
     const canonical = sanitizeSessionKey(sessionKey);
-    await execFileAsync(this.tmuxBin, ["send-keys", "-t", canonical, keys, "Enter"], {
-      ...EXEC_DEFAULTS,
-      timeout: SEND_KEYS_TIMEOUT_MS,
+    const inMode = await this.paneInMode(canonical);
+    if (inMode) {
+      // A pane left in copy-mode (someone scrolled back) discards send-keys.
+      await this.tmux(["send-keys", "-t", canonical, "-X", "cancel"], SEND_KEYS_TIMEOUT_MS).catch(
+        () => undefined,
+      );
+    }
+
+    let delivered = false;
+    let attempts = 0;
+    let capturedTail = "";
+    let lastError: string | null = null;
+    // One retry: the common failure is a pane that was still settling, and a
+    // second attempt costs a few hundred milliseconds.
+    for (attempts = 1; attempts <= 2 && !delivered; attempts++) {
+      try {
+        await this.tmux(["send-keys", "-t", canonical, keys], SEND_KEYS_TIMEOUT_MS);
+      } catch (e) {
+        // A vanished pane makes tmux itself fail. Record it and keep going to
+        // the logging path — an unlogged failure is the half of the
+        // 2026-08-02 incident that made it undiagnosable.
+        lastError = e instanceof Error ? e.message : String(e);
+        continue;
+      }
+      await new Promise((r) => setTimeout(r, this.sendVerifyDelayMs));
+      capturedTail = await this.capturePane(canonical);
+      delivered = paneContains(capturedTail, keys);
+    }
+
+    await this.logSendKeys(canonical, {
+      keys,
+      paneInMode: inMode,
+      attempts: attempts - 1,
+      verdict: delivered ? "delivered" : "not-visible",
+      ...(lastError ? { error: lastError } : {}),
+      capturedTail: capturedTail.slice(-240),
     });
+
+    if (!delivered) {
+      log.error("tmux_send_keys_unverified", {
+        sessionKey: canonical,
+        attempts: attempts - 1,
+        err: lastError,
+      });
+      throw new Error(
+        `send-keys to '${canonical}' could not be verified after ${attempts - 1} attempts — text never appeared in the pane` +
+          (lastError ? ` (tmux: ${lastError.split("\n")[0]})` : ""),
+      );
+    }
+    await this.tmux(["send-keys", "-t", canonical, "Enter"], SEND_KEYS_TIMEOUT_MS);
+  }
+
+  /** `#{pane_in_mode}` is "1" while the pane is in copy-mode / view-mode. */
+  private async paneInMode(sessionKey: string): Promise<boolean> {
+    try {
+      const { stdout } = await this.tmux(
+        ["display-message", "-p", "-t", sessionKey, "#{pane_in_mode}"],
+        QUERY_TIMEOUT_MS,
+      );
+      return stdout.trim() === "1";
+    } catch {
+      return false;
+    }
+  }
+
+  private async capturePane(sessionKey: string): Promise<string> {
+    try {
+      const { stdout } = await this.tmux(
+        ["capture-pane", "-p", "-t", sessionKey],
+        QUERY_TIMEOUT_MS,
+      );
+      return stdout;
+    } catch {
+      return "";
+    }
+  }
+
+  private async logSendKeys(sessionKey: string, entry: Record<string, unknown>): Promise<void> {
+    try {
+      const dir = join(controlDir(), "logs");
+      await mkdir(dir, { recursive: true });
+      const line = JSON.stringify({ ts: new Date().toISOString(), sessionKey, ...entry });
+      await appendFile(join(dir, `sendkeys-${sessionKey}.log`), `${line}\n`, "utf-8");
+    } catch {
+      // Never let the audit log break the operation it is auditing.
+    }
+  }
+
+  private tmux(args: string[], timeout: number) {
+    return execFileAsync(this.tmuxBin, args, { ...EXEC_DEFAULTS, timeout });
   }
 
   private async readSessionPid(sessionKey: string): Promise<number | null> {
