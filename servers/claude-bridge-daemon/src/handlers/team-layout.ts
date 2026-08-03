@@ -8,6 +8,8 @@ import { errResult, okResult } from "../rpc.ts";
 import type { HandlerContext } from "./context.ts";
 import { handlePeerSpawn } from "./peer-spawn.ts";
 import { handlePeerStop } from "./peer-stop.ts";
+import { applyStateChange } from "./state-writer.ts";
+import { type WakeOutcome, wakePeer } from "./wake.ts";
 
 /**
  * team_layout — declarative team spec reconciled against `state.peers`.
@@ -64,6 +66,16 @@ export const TeamLayoutArgsSchema = z
      * it to teams/.
      */
     inline: TeamFileSchema.optional(),
+    /**
+     * Wake peers that were resumed from `status:"stopped"` (v0.10.1).
+     *
+     * On by default: a resumed session is silent until something triggers a
+     * turn, so skipping the wake gives you a team that is running but deaf.
+     * Turn it off only when you intend to drive the peers by hand.
+     */
+    wake: z.boolean().default(true),
+    /** Override the post-spawn settle delay before key injection. */
+    wakeDelayMs: z.number().int().min(0).max(120_000).optional(),
   })
   .strict();
 
@@ -123,14 +135,37 @@ export async function handleTeamLayout(
 
   const specIds = new Set(spec.peers.map((p) => p.sessionId));
   const stateIds = new Set(Object.keys(ctx.state.peers));
+  /**
+   * Peers put to sleep by `team_stop` keep their record with
+   * `status:"stopped"` so the same sessionId can be resumed later. They are in
+   * `state.peers`, so the original `!stateIds.has(...)` filter treated them as
+   * already-running and silently refused to bring the team back — breaking the
+   * exact stop→start round trip the tombstone exists for (audit 2026-08-03).
+   */
+  const stoppedIds = new Set(
+    Object.entries(ctx.state.peers)
+      .filter(([, rec]) => rec.status === "stopped")
+      .map(([id]) => id),
+  );
+  const runningIds = new Set([...stateIds].filter((id) => !stoppedIds.has(id)));
+
   const toSpawn = spec.peers.filter((p) => !stateIds.has(p.sessionId));
-  const toStop = [...stateIds].filter((id) => !specIds.has(id));
+  const toResume = spec.peers.filter((p) => stoppedIds.has(p.sessionId));
+  // Only RUNNING extras are stop candidates — a tombstone has nothing to kill.
+  const runningExtras = [...runningIds].filter((id) => !specIds.has(id));
+  const toStop = args.prune ? runningExtras : [];
+  // Tombstones outside the spec are pure garbage: nothing to stop, nothing to
+  // resume. Without this they accumulate forever (~350 B each, re-serialized
+  // on every state write, and they survive daemon restarts).
+  const toForget = args.prune ? [...stoppedIds].filter((id) => !specIds.has(id)) : [];
 
   const diff = {
     team: spec.team,
     plannedSpawn: toSpawn.map((p) => p.sessionId),
-    plannedStop: args.prune ? toStop : [],
-    keptExtras: args.prune ? [] : toStop,
+    plannedResume: toResume.map((p) => p.sessionId),
+    plannedStop: toStop,
+    plannedForget: toForget,
+    keptExtras: args.prune ? [] : runningExtras,
   };
   await writeEvent({
     event: "team_layout_reconciling",
@@ -143,12 +178,12 @@ export async function handleTeamLayout(
     return okResult(req.id, req.tool, { mode: "plan", diff });
   }
 
-  const spawnedOk: string[] = [];
-  const spawnedFailed: Array<{ sessionId: string; err: string }> = [];
-  for (const p of toSpawn) {
+  /** Shared by the spawn and resume paths — same tool, different intent. */
+  const spawnOne = async (p: PeerSpec, forceResume: boolean, label: string) => {
+    const record = ctx.state.peers[p.sessionId];
     const spawnReq = {
       schemaVersion: req.schemaVersion,
-      id: `${req.id}:spawn:${p.sessionId}`,
+      id: `${req.id}:${label}:${p.sessionId}`,
       ts: req.ts,
       tool: "peer_spawn",
       args: {
@@ -157,27 +192,71 @@ export async function handleTeamLayout(
         cwd: p.cwd,
         command: p.command,
         args: p.args,
-        resume: p.resume,
-        model: p.model ?? null,
-        accountProfile: p.accountProfile ?? null,
+        // Resuming a tombstone MUST pass `--resume <sessionId>`, otherwise the
+        // peer comes back as a blank session and its transcript is orphaned.
+        resume: forceResume || p.resume,
+        // Fall back to what the peer was last running with, so a stop→start
+        // round trip does not silently downgrade the model.
+        model: p.model ?? record?.model ?? null,
+        accountProfile: p.accountProfile ?? record?.accountProfile ?? null,
         extraAllowEnv: p.extraAllowEnv,
         extraEnv: p.extraEnv,
       },
       requestedBy: req.requestedBy,
     };
-    const res = await handlePeerSpawn(spawnReq, ctx);
+    return handlePeerSpawn(spawnReq, ctx);
+  };
+
+  /** Stamp team ownership so `team_stop` can iterate a team from state alone. */
+  const stampTeam = async (sessionId: string) => {
+    await applyStateChange(ctx.state, (draft) => {
+      const rec = draft.peers[sessionId];
+      if (rec) rec.team = spec.team;
+    });
+  };
+
+  const spawnedOk: string[] = [];
+  const spawnedFailed: Array<{ sessionId: string; err: string }> = [];
+  for (const p of toSpawn) {
+    const res = await spawnOne(p, false, "spawn");
     if (res.outcome === "ok") {
+      await stampTeam(p.sessionId);
       spawnedOk.push(p.sessionId);
     } else {
-      spawnedFailed.push({
-        sessionId: p.sessionId,
-        err: res.error?.message ?? "unknown",
-      });
+      spawnedFailed.push({ sessionId: p.sessionId, err: res.error?.message ?? "unknown" });
     }
+  }
+
+  const resumedOk: string[] = [];
+  const resumedFailed: Array<{ sessionId: string; err: string }> = [];
+  const wakeOutcomes: WakeOutcome[] = [];
+  for (const p of toResume) {
+    // Capture the tombstone's stop quality BEFORE peer_spawn overwrites the
+    // record — a forced stop means the peer never flushed its anchor, and the
+    // wake message has to say so.
+    const stoppedCleanly = ctx.state.peers[p.sessionId]?.stoppedCleanly ?? null;
+    const res = await spawnOne(p, true, "resume");
+    if (res.outcome !== "ok") {
+      resumedFailed.push({ sessionId: p.sessionId, err: res.error?.message ?? "unknown" });
+      continue;
+    }
+    await stampTeam(p.sessionId);
+    resumedOk.push(p.sessionId);
+    if (!args.wake) continue;
+    const data = res.data as { sessionKey?: string } | undefined;
+    const outcome = await wakePeer(req, ctx, {
+      sessionId: p.sessionId,
+      sessionKey: data?.sessionKey ?? p.displayName,
+      reason: `team_layout_resume:${spec.team}`,
+      stoppedCleanly,
+      ...(args.wakeDelayMs !== undefined ? { wakeDelayMs: args.wakeDelayMs } : {}),
+    });
+    wakeOutcomes.push(outcome);
   }
 
   const stoppedOk: string[] = [];
   const stoppedFailed: Array<{ sessionId: string; err: string }> = [];
+  const forgotten: string[] = [];
   if (args.prune) {
     for (const id of toStop) {
       const stopReq = {
@@ -192,7 +271,28 @@ export async function handleTeamLayout(
       if (res.outcome === "ok") stoppedOk.push(id);
       else stoppedFailed.push({ sessionId: id, err: res.error?.message ?? "unknown" });
     }
+    // Tombstones outside the spec: drop the record outright. There is no host
+    // session to kill, so peer_stop would be the wrong instrument.
+    for (const id of toForget) {
+      await applyStateChange(ctx.state, (draft) => {
+        delete draft.peers[id];
+      });
+      forgotten.push(id);
+    }
+    if (forgotten.length > 0) {
+      await writeEvent({
+        event: "team_layout_tombstones_forgotten",
+        by: { sessionId: req.requestedBy.sessionId, name: req.requestedBy.name },
+        requestId: req.id,
+        details: { team: spec.team, forgotten },
+      });
+    }
   }
+
+  const wokenOk = wakeOutcomes.filter((w) => w.injected).map((w) => w.sessionId);
+  const wokenSilent = wakeOutcomes
+    .filter((w) => !w.injected)
+    .map((w) => ({ sessionId: w.sessionId, err: w.error ?? "not injected" }));
 
   await writeEvent({
     event: "team_layout_applied",
@@ -202,19 +302,29 @@ export async function handleTeamLayout(
       team: spec.team,
       spawnedOk,
       spawnedFailed,
+      resumedOk,
+      resumedFailed,
+      wokenOk,
+      wokenSilent,
       stoppedOk,
       stoppedFailed,
+      forgotten,
       keptExtras: diff.keptExtras,
     },
   });
 
-  const failed = spawnedFailed.length > 0 || stoppedFailed.length > 0;
+  const failed = spawnedFailed.length > 0 || resumedFailed.length > 0 || stoppedFailed.length > 0;
   const result = {
     team: spec.team,
     spawnedOk,
     spawnedFailed,
+    resumedOk,
+    resumedFailed,
+    wokenOk,
+    wokenSilent,
     stoppedOk,
     stoppedFailed,
+    forgotten,
     keptExtras: diff.keptExtras,
   };
   if (failed) {
