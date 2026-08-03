@@ -12,6 +12,26 @@ const execFileAsync = promisify(execFile);
 const log = makeLogger("daemon.host.tmux");
 
 /**
+ * Every tmux invocation is bounded (v0.10.1).
+ *
+ * Without a timeout a wedged tmux server — stuck socket, `$TMUX_TMPDIR` on a
+ * hung mount, a paused pane swallowing `send-keys` — leaves the promise
+ * pending forever, pinning the child, its three stdio pipes and the whole
+ * `await` chain up through the request handler. Combined with the poll loop
+ * that was the path to fd exhaustion in minutes.
+ *
+ * `killSignal: SIGKILL` because a tmux that is already wedged will not
+ * necessarily honour SIGTERM.
+ */
+const EXEC_DEFAULTS = { killSignal: "SIGKILL" } as const;
+/** Read-only queries — must answer immediately or not at all. */
+const QUERY_TIMEOUT_MS = 5_000;
+/** Session create/destroy — may legitimately take longer than a query. */
+const MUTATE_TIMEOUT_MS = 10_000;
+/** Key injection — a pane that cannot accept keys in 5 s will not accept them. */
+const SEND_KEYS_TIMEOUT_MS = 5_000;
+
+/**
  * tmux-backed host driver.
  *
  * Sessions are addressed **by name**, never by fd or pid — that's what
@@ -49,7 +69,10 @@ export class TmuxDriver implements SessionHostDriver {
   async hasSession(sessionKey: string): Promise<boolean> {
     const canonical = sanitizeSessionKey(sessionKey);
     try {
-      await execFileAsync(this.tmuxBin, ["has-session", "-t", canonical]);
+      await execFileAsync(this.tmuxBin, ["has-session", "-t", canonical], {
+        ...EXEC_DEFAULTS,
+        timeout: QUERY_TIMEOUT_MS,
+      });
       return true;
     } catch {
       return false;
@@ -72,7 +95,11 @@ export class TmuxDriver implements SessionHostDriver {
     ];
     const { env } = opts;
     try {
-      await execFileAsync(this.tmuxBin, args, { env });
+      await execFileAsync(this.tmuxBin, args, {
+        ...EXEC_DEFAULTS,
+        env,
+        timeout: MUTATE_TIMEOUT_MS,
+      });
     } catch (e) {
       log.error("tmux_spawn_failed", {
         sessionKey: opts.sessionKey,
@@ -97,7 +124,10 @@ export class TmuxDriver implements SessionHostDriver {
     // there (v0.10.0-rc.2 fix for T2 „stopping without host" reconcile).
     if (!(await this.hasSession(canonical))) return;
     try {
-      await execFileAsync(this.tmuxBin, ["kill-session", "-t", canonical]);
+      await execFileAsync(this.tmuxBin, ["kill-session", "-t", canonical], {
+        ...EXEC_DEFAULTS,
+        timeout: MUTATE_TIMEOUT_MS,
+      });
     } catch (e) {
       if (!(await this.hasSession(canonical))) return;
       const msg = e instanceof Error ? e.message : String(e);
@@ -116,11 +146,11 @@ export class TmuxDriver implements SessionHostDriver {
 
   async listSessions(): Promise<SessionHostRecord[]> {
     try {
-      const { stdout } = await execFileAsync(this.tmuxBin, [
-        "list-sessions",
-        "-F",
-        "#{session_name}\t#{pane_pid}",
-      ]);
+      const { stdout } = await execFileAsync(
+        this.tmuxBin,
+        ["list-sessions", "-F", "#{session_name}\t#{pane_pid}"],
+        { ...EXEC_DEFAULTS, timeout: QUERY_TIMEOUT_MS },
+      );
       const records: SessionHostRecord[] = [];
       for (const line of stdout.split("\n")) {
         const trimmed = line.trim();
@@ -145,18 +175,19 @@ export class TmuxDriver implements SessionHostDriver {
 
   async sendKeys(sessionKey: string, keys: string): Promise<void> {
     const canonical = sanitizeSessionKey(sessionKey);
-    await execFileAsync(this.tmuxBin, ["send-keys", "-t", canonical, keys, "Enter"]);
+    await execFileAsync(this.tmuxBin, ["send-keys", "-t", canonical, keys, "Enter"], {
+      ...EXEC_DEFAULTS,
+      timeout: SEND_KEYS_TIMEOUT_MS,
+    });
   }
 
   private async readSessionPid(sessionKey: string): Promise<number | null> {
     try {
-      const { stdout } = await execFileAsync(this.tmuxBin, [
-        "display-message",
-        "-p",
-        "-t",
-        sessionKey,
-        "#{pane_pid}",
-      ]);
+      const { stdout } = await execFileAsync(
+        this.tmuxBin,
+        ["display-message", "-p", "-t", sessionKey, "#{pane_pid}"],
+        { ...EXEC_DEFAULTS, timeout: QUERY_TIMEOUT_MS },
+      );
       const parsed = Number.parseInt(stdout.trim(), 10);
       return Number.isNaN(parsed) ? null : parsed;
     } catch {

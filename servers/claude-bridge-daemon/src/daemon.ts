@@ -1,4 +1,4 @@
-import { makeLogger } from "@claude-bridge/shared";
+import { guardReentrancy, isPowerOfTwo, makeLogger } from "@claude-bridge/shared";
 import { writeDaemonEvent, writeEvent } from "./events.ts";
 import { dispatch } from "./handlers/index.ts";
 import { startHeartbeat, stopHeartbeat } from "./heartbeat.ts";
@@ -71,20 +71,43 @@ export async function runDaemon(opts: RunOptions): Promise<void> {
   // Never crash on a broken downstream pipe (v0.9.3 lesson).
   process.on("SIGPIPE", () => undefined);
 
-  const processQueue = async (): Promise<void> => {
+  const drainQueue = async (): Promise<void> => {
     if (stopping) return;
     const pending = await listPendingRequests();
     for (const fileName of pending) {
       if (stopping) return;
+      // The claim must use the id derived from the FILENAME, not `req.id` —
+      // they are normally identical, but a mismatch would make the rename miss
+      // and leave the request pending forever, re-dispatched on every tick.
+      const fileId = fileName.replace(/\.json$/, "");
       const req = await readRequest(fileName);
       if (!req) {
         // Move malformed request out of the inbox so we do not re-attempt.
-        const badId = fileName.replace(/\.json$/, "");
-        await markRequestDone(badId);
+        await markRequestDone(fileId);
         await writeEvent({
           event: "request_malformed",
           level: "warn",
-          requestId: badId,
+          requestId: fileId,
+        });
+        continue;
+      }
+      if (req.id !== fileId) {
+        log.warn("request_id_filename_mismatch", { fileId, envelopeId: req.id });
+      }
+      // CLAIM BEFORE DISPATCH (v0.10.1). The request leaves `requests/` before
+      // the handler runs, so it can never be picked up a second time — not by
+      // a later tick, and not by a fresh daemon after a crash. At-most-once is
+      // the correct semantics here because handlers are NOT idempotent:
+      // re-running `peer_compact` injects `/compact` again, re-running
+      // `team_stop` writes another round of stop-request inbox messages.
+      // A crash mid-dispatch surfaces as the caller timing out on its result
+      // poll — visible — instead of silent duplicate side effects.
+      if (!(await markRequestDone(fileId))) {
+        await writeEvent({
+          event: "request_claim_failed",
+          level: "error",
+          requestId: fileId,
+          details: { tool: req.tool, note: "not dispatched — would re-run on next tick" },
         });
         continue;
       }
@@ -94,21 +117,50 @@ export async function runDaemon(opts: RunOptions): Promise<void> {
         requestId: req.id,
         details: { tool: req.tool },
       });
+      const startedAt = Date.now();
       const result = await dispatch(req, {
         state,
         hostDriver,
         daemonVersion: opts.daemonVersion,
       });
       await writeResult(result);
-      await markRequestDone(req.id);
       await writeEvent({
         event: "request_completed",
         by: { sessionId: req.requestedBy.sessionId, name: req.requestedBy.name },
         requestId: req.id,
-        details: { tool: req.tool, outcome: result.outcome },
+        details: { tool: req.tool, outcome: result.outcome, durationMs: Date.now() - startedAt },
       });
     }
   };
+
+  /**
+   * Re-entrancy guard (v0.10.1).
+   *
+   * `drainQueue` is fired from a 250 ms interval, but handlers can run for
+   * minutes — `peer_compact` waits up to 30 s for an anchor ack and
+   * `team_stop` waits up to 120 s PER PEER. Without this guard every tick
+   * started another full drain: a 5-peer `team_stop` that nobody acks would
+   * have spawned ~2400 overlapping handlers, each writing its own round of
+   * inbox messages and firing its own tmux children.
+   *
+   * Serializing is also the correct design, not just a safety net: the daemon
+   * is the single writer of `state`, so concurrent handlers would race on
+   * `state.peers` anyway.
+   */
+  const processQueue = guardReentrancy(
+    async () => {
+      if (stopping) return;
+      await drainQueue();
+    },
+    {
+      // Log on a doubling curve — a 120 s handler drops ~480 ticks and the
+      // journal must show the stall without 4 lines per second.
+      onSkip: (skipped) => {
+        if (isPowerOfTwo(skipped)) log.debug("queue_tick_skipped_busy", { skipped });
+      },
+      onError: (e) => log.error("queue_error", { err: String(e) }),
+    },
+  );
 
   if (opts.once) {
     await processQueue();
@@ -117,7 +169,8 @@ export async function runDaemon(opts: RunOptions): Promise<void> {
   }
 
   pollTimer = setInterval(() => {
-    void processQueue().catch((e) => log.error("queue_error", { err: String(e) }));
+    // `processQueue` is guarded and never rejects — no trailing .catch needed.
+    void processQueue();
   }, POLL_INTERVAL_MS);
   // Poll timer IS the daemon keep-alive — do NOT unref (v0.9.3 lesson: an
   // event loop that would otherwise drain must have an explicit anchor).

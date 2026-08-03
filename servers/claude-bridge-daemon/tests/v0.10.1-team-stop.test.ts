@@ -50,11 +50,7 @@ describe("v0.10.1 team_stop", () => {
     };
 
     const res = await handlers.dispatch(
-      makeRequest(
-        "team_stop",
-        { team: "dryrun-team", dryRun: true, inline },
-        "req-dryrun",
-      ),
+      makeRequest("team_stop", { team: "dryrun-team", dryRun: true, inline }, "req-dryrun"),
       { state: doc, hostDriver: driver, daemonVersion: "0.10.1-rc.0" },
     );
     expect(res.outcome).toBe("ok");

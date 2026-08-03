@@ -91,11 +91,25 @@ export async function readRequest(fileName: string): Promise<RequestEnvelope | n
   }
 }
 
-export async function markRequestDone(requestId: string): Promise<void> {
+/**
+ * Move a request out of `requests/` into `requests/done/`.
+ *
+ * Returns `true` when the request is provably no longer in the pending set.
+ * Callers use this as a CLAIM before dispatching (v0.10.1): a request that
+ * could not be claimed must NOT be handled, otherwise the next poll tick
+ * picks it up again and the handler runs twice.
+ */
+export async function markRequestDone(requestId: string): Promise<boolean> {
   try {
     await rename(requestPath(requestId), requestDonePath(requestId));
+    return true;
   } catch (e) {
+    const code = (e as NodeJS.ErrnoException).code;
+    // Already gone (someone else claimed it, or a retry of our own rename) —
+    // the post-condition "no longer pending" holds either way.
+    if (code === "ENOENT") return true;
     log.warn("request_mark_done_failed", { requestId, err: String(e) });
+    return false;
   }
 }
 
