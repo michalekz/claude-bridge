@@ -81,7 +81,21 @@ export interface BuildContextOptions {
   emitTerminalTitle?: boolean;
 }
 
-export const DEFAULT_NAME_REFRESH_MS = 5_000;
+/**
+ * How often to re-resolve the peer's display name.
+ *
+ * Was 5 s. That polled for something that changes at most a couple of times in
+ * a session — Claude Code writes `ai-title` once after the first user message,
+ * and `custom-title` only on an explicit `/rename` — at 17 280 scans a day per
+ * peer. Even with the incremental scan making each tick nearly free, the
+ * cadence had no justification.
+ *
+ * Cost of the change: after a `/rename` the new name shows up in `peer_list`
+ * within a minute instead of five seconds. Agreed as acceptable — the
+ * compensation is procedural (poll after spawn, do not treat the first read as
+ * the verdict) rather than technical.
+ */
+export const DEFAULT_NAME_REFRESH_MS = 60_000;
 
 export async function buildContext(opts: BuildContextOptions = {}): Promise<ServerContext> {
   const self = opts.identity ?? (await resolvePeerIdentityWithRetry(opts.identityOptions ?? {}));
@@ -134,11 +148,40 @@ export async function buildContext(opts: BuildContextOptions = {}): Promise<Serv
   // populates the ai-title event in JSONL after the first user message.
   const refreshMs = opts.nameRefreshIntervalMs ?? DEFAULT_NAME_REFRESH_MS;
   if (refreshMs > 0 && heartbeat && !opts.identity) {
-    const timer = setInterval(() => {
-      void refreshDisplayName(context, opts.identityOptions ?? {}).catch((e) => {
+    // Guarded against overlap. The refresh used to be fired unconditionally,
+    // and before the incremental scan landed a single tick took 2755 ms on a
+    // 229 MB transcript — 55 % of the old 5 s interval before any disk
+    // contention, so ticks could stack and each one pinned its own copy of the
+    // file. The scan is nearly free now, but the guard stays: an interval that
+    // can outrun itself is a pile-up waiting for a slow disk.
+    //
+    // Inlined rather than imported from @claude-bridge/shared (where the same
+    // guard lives, with tests) because this package deliberately has no
+    // dependency on it. `util/paths.ts` and `util/logger.ts` are already
+    // duplicated the same way; consolidating all three is worth doing on
+    // purpose, not as a side effect of a memory fix.
+    let refreshInFlight = false;
+    let refreshSkipped = 0;
+    const guarded = async (): Promise<void> => {
+      if (refreshInFlight) {
+        refreshSkipped++;
+        // Log on a doubling curve so a stall is visible without flooding.
+        if ((refreshSkipped & (refreshSkipped - 1)) === 0) {
+          log.warn("name_refresh_skipped_busy", { skipped: refreshSkipped });
+        }
+        return;
+      }
+      refreshInFlight = true;
+      try {
+        await refreshDisplayName(context, opts.identityOptions ?? {});
+      } catch (e) {
         log.warn("name_refresh_failed", { err: e instanceof Error ? e.message : String(e) });
-      });
-    }, refreshMs);
+      } finally {
+        refreshInFlight = false;
+        refreshSkipped = 0;
+      }
+    };
+    const timer = setInterval(() => void guarded(), refreshMs);
     timer.unref?.();
     context.nameRefreshTimer = timer;
   }

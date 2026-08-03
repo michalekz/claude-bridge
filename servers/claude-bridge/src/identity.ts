@@ -1,6 +1,8 @@
-import { readFile, stat } from "node:fs/promises";
+import type { Stats } from "node:fs";
+import { open, readFile, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, join } from "node:path";
+import { StringDecoder } from "node:string_decoder";
 import { encodeProjectDir } from "./util/paths.ts";
 
 /**
@@ -73,17 +75,62 @@ export async function readSessionJsonAt(path: string): Promise<SessionJson | nul
   }
 }
 
-export async function readLatestTitleFromJsonl(jsonlPath: string): Promise<string | null> {
-  let raw: string;
-  try {
-    raw = await readFile(jsonlPath, "utf-8");
-  } catch {
-    return null;
-  }
-  let latestCustom: string | null = null;
-  let latestAi: string | null = null;
-  for (const line of raw.split("\n")) {
-    if (!line) continue;
+/**
+ * Incremental title scan (fix, 2026-08-03).
+ *
+ * This function used to be `readFile` + `split("\n")` + `JSON.parse` per line
+ * over the peer's ENTIRE transcript, called every 5 seconds by the identity
+ * refresh timer. Transcripts reach hundreds of megabytes, so each tick
+ * allocated several times the file size; across the fleet that was measured at
+ * `RSS ≈ 60 MB + 4.7 × JSONL_MB` and accounted for roughly 5.5 GB of the 7 GB
+ * the MCP servers were holding. It is not a retention leak — the heap comes
+ * back — but V8 never returns the high-water mark to the OS, so RSS ratchets up
+ * and stays.
+ *
+ * Two rejected alternatives, both measured before landing this one:
+ *   - naive `readline` over the whole file: only 3.7× better and NOT faster,
+ *     because it still builds a string per line for the entire transcript;
+ *   - streaming with an early `break` once the title is found: leaks. An
+ *     abandoned `for await` over a `readline.Interface` does not close the
+ *     underlying stream — 5 abandonments measured at +150 MB RSS, 5 fds and 5
+ *     permanently pending libuv handles, surviving GC.
+ *
+ * So: one full pass at first sight, then read only the bytes appended since.
+ * A transcript is append-only, so the incremental path is correct as well as
+ * cheap, and it stays correct for `custom-title` (written on `/rename`, and
+ * therefore arriving at the END of the file long after the initial scan).
+ *
+ * Measured on a 44 MB transcript, 20 ticks: peak 894 MB → 216 MB, 8218 ms → 4 ms.
+ */
+
+interface TitleScanState {
+  size: number;
+  mtimeMs: number;
+  /** Bytes already scanned. */
+  offset: number;
+  custom: string | null;
+  ai: string | null;
+}
+
+/**
+ * Keyed by path, one entry per peer transcript this process looks at — in
+ * practice one, since a peer only ever reads its own. Bounded by the number of
+ * distinct transcripts, not by time or by file size.
+ */
+const titleScanCache = new Map<string, TitleScanState>();
+
+/** Exported for tests — a fresh process starts with an empty cache anyway. */
+export function resetTitleScanCache(): void {
+  titleScanCache.clear();
+}
+
+const SCAN_CHUNK_BYTES = 256 * 1024;
+
+function scanTitlesInto(text: string, acc: { custom: string | null; ai: string | null }): void {
+  for (const line of text.split("\n")) {
+    // Cheap reject before JSON.parse: only title events carry "-title", and
+    // they are a handful of lines in a transcript of hundreds of thousands.
+    if (!line || line.indexOf("-title") === -1) continue;
     let event: { type?: string; customTitle?: string; aiTitle?: string };
     try {
       event = JSON.parse(line);
@@ -91,12 +138,97 @@ export async function readLatestTitleFromJsonl(jsonlPath: string): Promise<strin
       continue;
     }
     if (event.type === "custom-title" && typeof event.customTitle === "string") {
-      latestCustom = event.customTitle;
+      acc.custom = event.customTitle;
     } else if (event.type === "ai-title" && typeof event.aiTitle === "string") {
-      latestAi = event.aiTitle;
+      acc.ai = event.aiTitle;
     }
   }
-  return latestCustom ?? latestAi;
+}
+
+/**
+ * Read `[from, to)` and fold any title events into `acc`.
+ *
+ * Uses an explicit fd with `finally { close }` rather than `readline`: the
+ * chunk loop keeps memory constant regardless of file size, and there is no
+ * iterator that could be abandoned and strand a handle. `StringDecoder` carries
+ * partial multi-byte characters across chunk boundaries, and `carry` does the
+ * same for partial lines.
+ */
+async function scanRange(
+  jsonlPath: string,
+  from: number,
+  to: number,
+  acc: { custom: string | null; ai: string | null },
+): Promise<void> {
+  if (to <= from) return;
+  const fh = await open(jsonlPath, "r");
+  const decoder = new StringDecoder("utf8");
+  try {
+    const buf = Buffer.allocUnsafe(Math.min(SCAN_CHUNK_BYTES, to - from));
+    let pos = from;
+    let carry = "";
+    while (pos < to) {
+      const want = Math.min(buf.length, to - pos);
+      const { bytesRead } = await fh.read(buf, 0, want, pos);
+      if (bytesRead <= 0) break;
+      pos += bytesRead;
+      const text = carry + decoder.write(buf.subarray(0, bytesRead));
+      const lastNewline = text.lastIndexOf("\n");
+      if (lastNewline === -1) {
+        carry = text;
+        continue;
+      }
+      scanTitlesInto(text.slice(0, lastNewline), acc);
+      carry = text.slice(lastNewline + 1);
+    }
+    const tail = carry + decoder.end();
+    if (tail) scanTitlesInto(tail, acc);
+  } finally {
+    await fh.close();
+  }
+}
+
+export async function readLatestTitleFromJsonl(jsonlPath: string): Promise<string | null> {
+  let s: Stats;
+  try {
+    s = await stat(jsonlPath);
+  } catch {
+    return null;
+  }
+
+  const cached = titleScanCache.get(jsonlPath);
+  if (cached) {
+    // Unchanged — answer from cache. This is the common case for an idle peer
+    // and costs one stat().
+    if (s.size === cached.size && s.mtimeMs === cached.mtimeMs) {
+      return cached.custom ?? cached.ai;
+    }
+    // A transcript only ever grows. Shrinking, or an mtime that moved
+    // BACKWARDS, means it is not the file we were tracking — rotated, replaced,
+    // restored from a backup. "Should not happen" is not an invariant, so throw
+    // the cache away and rescan rather than reading garbage at a stale offset.
+    if (s.size < cached.offset || s.mtimeMs < cached.mtimeMs) {
+      titleScanCache.delete(jsonlPath);
+      return readLatestTitleFromJsonl(jsonlPath);
+    }
+  }
+
+  const acc = { custom: cached?.custom ?? null, ai: cached?.ai ?? null };
+  const from = cached?.offset ?? 0;
+  try {
+    await scanRange(jsonlPath, from, s.size, acc);
+  } catch {
+    return acc.custom ?? acc.ai;
+  }
+
+  titleScanCache.set(jsonlPath, {
+    size: s.size,
+    mtimeMs: s.mtimeMs,
+    offset: s.size,
+    custom: acc.custom,
+    ai: acc.ai,
+  });
+  return acc.custom ?? acc.ai;
 }
 
 // ============================================================================
