@@ -1032,15 +1032,61 @@ async function resolveSearchSessions(scope: "project" | "all-projects"): Promise
   return sessions.filter((s) => s.modifiedAt.getTime() >= cutoffMs);
 }
 
+const PREFILTER_CHUNK_BYTES = 256 * 1024;
 /**
- * Read whole file as a single string for raw substring/regex pre-filter.
- * Returns null on read error (file deleted mid-scan, permission denied, etc.).
+ * Characters carried between chunks so a match straddling the seam is still
+ * found. Any query shorter than this behaves exactly as it did when the whole
+ * file was one string — which is every realistic query; the substring matcher
+ * is capped well below it by the tool's own arg schema.
  */
-async function readFileForPrefilter(filePath: string): Promise<string | null> {
+const PREFILTER_OVERLAP_CHARS = 1024;
+
+/**
+ * Stage-1 reject filter, streamed (fix, 2026-08-03).
+ *
+ * This used to read the entire transcript into one string and then call
+ * `toLowerCase()` on it, which V8 cannot do in place — so a 200 MB session cost
+ * two full copies. Measured on the real corpus: 454 MB after the read, 1317 MB
+ * peak after the lowercase, for a single `peer_chat_search` call. The string
+ * was also still reachable while stage 2 streamed the same file again, so both
+ * representations were live at once. Nothing bounded concurrent calls, either.
+ *
+ * Now: fixed-size chunks, an overlap so seam matches survive, and an early
+ * return the moment the matcher hits — a match in the first megabyte no longer
+ * pays for the remaining 199. Memory is constant regardless of file size.
+ *
+ * Returns null on read error (file deleted mid-scan, permission denied), which
+ * the caller treats as "skip this session" exactly as before.
+ */
+async function fileMatchesPrefilter(
+  filePath: string,
+  matcher: (text: string) => boolean,
+): Promise<boolean | null> {
+  const { open } = await import("node:fs/promises");
+  const { StringDecoder } = await import("node:string_decoder");
+  let fh: Awaited<ReturnType<typeof open>>;
   try {
-    return await (await import("node:fs/promises")).readFile(filePath, "utf-8");
+    fh = await open(filePath, "r");
   } catch {
     return null;
+  }
+  const decoder = new StringDecoder("utf8");
+  try {
+    const buf = Buffer.allocUnsafe(PREFILTER_CHUNK_BYTES);
+    let carry = "";
+    for (;;) {
+      const { bytesRead } = await fh.read(buf, 0, buf.length, null);
+      if (bytesRead <= 0) break;
+      const text = carry + decoder.write(buf.subarray(0, bytesRead));
+      if (matcher(text)) return true;
+      carry = text.length > PREFILTER_OVERLAP_CHARS ? text.slice(-PREFILTER_OVERLAP_CHARS) : text;
+    }
+    const tail = carry + decoder.end();
+    return tail.length > 0 ? matcher(tail) : false;
+  } catch {
+    return null;
+  } finally {
+    await fh.close();
   }
 }
 
@@ -1098,10 +1144,10 @@ export async function peerChatSearchTool(
     sessionsScanned++;
     bytesScanned += session.sizeBytes;
 
-    // Stage 1: raw buffer pre-filter — fast reject without JSON parsing
-    const raw = await readFileForPrefilter(session.filePath);
-    if (raw === null) continue;
-    if (!prefilter(raw)) continue;
+    // Stage 1: streamed pre-filter — fast reject without JSON parsing, and
+    // without ever holding the transcript in memory.
+    const hit = await fileMatchesPrefilter(session.filePath, prefilter);
+    if (hit === null || !hit) continue;
     sessionsHit++;
 
     // Stage 2: stream parse, collect text events + meta

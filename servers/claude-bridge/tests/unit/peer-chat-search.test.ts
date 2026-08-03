@@ -354,4 +354,48 @@ describe("peer_chat_search", () => {
     expect(text).toContain("AGENT TEAMS in caps");
     expect(text).toContain("agent teams lowercase");
   });
+  /**
+   * Stage 1 became a streamed chunk scan (fix, 2026-08-03) — it used to read
+   * the whole transcript into one string and `toLowerCase()` it, which cost two
+   * full copies of the file (measured 1317 MB peak on the real corpus). Chunking
+   * introduces a seam, so the query must still be found when it straddles one.
+   */
+  test("finds a match that straddles the 256 KB prefilter chunk boundary", async () => {
+    const ctx = await makeContext("seam-search");
+    const sessionId = uuid();
+    const NEEDLE = "needle-straddling-the-seam";
+
+    // Pad past 256 KB so the interesting line lands after the first chunk, and
+    // place the needle so its characters fall on both sides of the edge.
+    const events: JsonlEvent[] = [];
+    let bytes = 0;
+    let i = 0;
+    while (bytes < 256 * 1024 + 4096) {
+      const e = userEvent(
+        sessionId,
+        `2026-08-01T00:00:${String(i % 60).padStart(2, "0")}.000Z`,
+        `filler line ${i} ${"x".repeat(200)}`,
+      );
+      events.push(e);
+      bytes += JSON.stringify(e).length + 1;
+      i++;
+    }
+    events.push(userEvent(sessionId, "2026-08-01T01:00:00.000Z", `here it is: ${NEEDLE} end`));
+    await writeSession(projectADir, sessionId, events);
+
+    const result = await callSearch(ctx, { query: NEEDLE });
+    const text = result.content[0]?.text ?? "";
+    expect(text).toContain(NEEDLE);
+  });
+
+  test("rejects a session whose text never matches, without a false positive", async () => {
+    const ctx = await makeContext("no-match-search");
+    const sessionId = uuid();
+    await writeSession(projectADir, sessionId, [
+      userEvent(sessionId, "2026-08-01T00:00:00.000Z", "completely unrelated content"),
+    ]);
+    const result = await callSearch(ctx, { query: "zzz-absent-token-qqq" });
+    const text = result.content[0]?.text ?? "";
+    expect(text).not.toContain('zzz-absent-token-qqq"');
+  });
 });
