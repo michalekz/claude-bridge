@@ -152,6 +152,18 @@ async function fetchUsageViaCurl(token: string): Promise<unknown | null> {
       }
     });
 
+    // v0.10.2: EPIPE guard. If curl dies before reading its --config (missing
+    // binary, instant failure), `write()` emits 'error' on the stream instead
+    // of throwing. Unhandled, that is a process-level crash — inside a
+    // PostToolUse hook, meaning a failed tool call for the user. The try/catch
+    // below cannot catch it; only a listener can. Never log the body here: it
+    // holds the OAuth bearer token.
+    child.stdin?.on("error", (e: NodeJS.ErrnoException) => {
+      if (e.code !== "EPIPE") {
+        log.warn("refresh_limits_stdin_error", { code: e.code });
+      }
+    });
+
     // Write curl --config file to stdin, containing only the Authorization
     // header. This keeps the token out of the command line (visible to `ps`)
     // and out of environment variables (visible via /proc/<pid>/environ).

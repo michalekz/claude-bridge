@@ -2,6 +2,59 @@
 
 All notable changes to this project are documented here. Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [Unreleased] — v0.10.2 (development channel)
+
+### Memory — the leak a user reported, and what measurement said about it
+
+A user reported that the MCP server's memory grows the longer a peer runs, and proposed moving shared resources into the daemon to avoid paying for a Node runtime 23 times over. Both halves were measured before either was acted on.
+
+**Measured:** 24 MCP processes held **6 798 MB PSS**, and `PSS ≈ RSS` (within 5 %) — so it was private heap, not shared pages. Regression across the fleet: `RSS ≈ 60 MB + 4.7 × JSONL_MB`. The control sample settled it: the **daemon, after 256 hours, held 3 MB**. Same Node, same machine — so neither the runtime nor shared code was the cause.
+
+**Cause:** a 5-second timer in `mcp/context.ts` called `readLatestTitleFromJsonl`, which did `readFile(whole file)` + `split` + `JSON.parse` per line. On a 229 MB transcript one pass took **2 755 ms against a 5 000 ms interval**, so passes stacked, each holding ~1 GB, with no in-flight guard.
+
+**Fix:** one streamed pass on first read, then a `{mtimeMs, size, offset}` cache and only the bytes appended since. Invalidated when the file shrinks below the offset or its mtime moves backwards. Interval relaxed 5 s → 60 s with an in-flight guard.
+
+```
+identity scan, 44 MB transcript, 20 ticks
+  peak RSS      894 MB → 96 MB     (delta 847 → 20 MB, 42×)
+  steady tick   411 ms → 0.05 ms
+  CPU per peer  8.2 %  → 0.0001 %
+```
+
+Two candidate fixes were **rejected on measurement**, one of them mine: naive `readline` streaming used 3.4× the memory for zero speedup, and stream-with-`break` leaked outright — an abandoned `for await` over a `readline.Interface` never closes the stream, costing +150 MB RSS, 5 file descriptors and 5 libuv handles per 5 abandonments, surviving GC.
+
+`peer_chat_search`'s prefilter was also reading whole files to lowercase them (two full copies, since V8 cannot lowercase in place). Now chunked with a 1 KB overlap and an early return. Honest numbers: an early match goes `+265 MB / 472 ms → +1 MB / 3 ms`, but the **no-match worst case is only 2× better and the same speed** (`+177 MB / 525 ms → +89 MB / 512 ms`). The real win is that peak stopped tracking file size at all — a 219 MB file now costs +46 MB.
+
+On the user's second proposal: after this fix a shared runtime would reclaim roughly **0.9 GB of the original 7 GB (13 %)**, so it is worth re-measuring on clean numbers rather than building now.
+
+### Hygiene — nothing in the workspace had an expiry
+
+Measured on the platform machine after ~10 weeks: `inbox/<peer>/done/` held **12 686 files / 57 MB** (oldest 2026-05-25), `live/statusline/` 49 files, and there were **79 orphaned `.tmp` files**, oldest 2026-07-07. The temps are the visible symptom of a real hazard: `atomicWrite` writes then renames, so a process killed between the two leaves the temp forever — and `sweepStale` filters on `.json`, walking straight past them.
+
+A sweep now runs at MCP startup, throttled to once per 6 hours across all peers on the machine, applying three rules and touching nothing else:
+
+| rule | retention | override |
+|---|---|---|
+| `.<hex>.tmp` orphans | 1 hour | — |
+| `live/statusline/<sessionId>.json` | 14 days | `CLAUDE_BRIDGE_RETAIN_STATUSLINE_DAYS` |
+| `inbox/<peer>/done/*.json` | 30 days | `CLAUDE_BRIDGE_RETAIN_DONE_DAYS` |
+
+`CLAUDE_BRIDGE_HYGIENE=off` disables it entirely. **`pending/` is never swept at any age** — that is an invariant, not a default, and the test asserts it directly.
+
+**What the first sweep will remove on the platform machine** (measured via `dryRun`, nothing deleted): 79 temps, 0 statusline captures, **2 197 of 12 686 archived messages, 3.97 MB**. Anyone who wants a longer archive should set the retention variable before updating.
+
+### Crashes and hangs in the hook path
+
+- **EPIPE killed the statusLine wrapper.** `child.stdin.write()` does not throw when the child has already exited — it emits `error` on the stream, and unhandled that is a hard process crash which the surrounding `try/catch` never sees. Any underlying statusLine command that ignores stdin (`echo` suffices) killed the wrapper on *every render*, and the crash landed before the live-data capture was written, so telemetry was silently lost too. Same defect in the `refresh-limits` PostToolUse hook, where it meant a failed tool call for the user. Both now have `error` listeners; the curl one never logs the body, which holds the bearer token.
+- **The passthrough had no timeout.** A blocking statusLine command hung the wrapper, and CC's status bar with it. Bounded at 10 s, then `SIGKILL`.
+- **`events.jsonl` never rotated.** The alpha comment said rotation "lives in F2"; F2 never came. It looked harmless at 33 KB after 256 idle hours — but the re-entrancy bug above would have written ~12 000 entries from a single `team_stop`. Now rotates at 16 MB (`CLAUDE_BRIDGE_EVENTS_MAX_BYTES`), keeping 3 generations, by rename only so no written entry is ever truncated away. Concurrent writers are serialised.
+- **Symlink refresh had a TOCTOU window.** `setup-check` did unlink-then-symlink, leaving an interval where the link did not exist. 23 MCP servers run this at startup, so the windows overlap, and anything CC renders inside one fails for no diagnosable reason. Now symlink-to-staging then `rename`, which replaces atomically.
+- Dropped a redundant `mkdir` per statusLine render — `atomicWrite` already creates the parent.
+
+### Tests
+
++18 (400 total: 330 MCP, 63 daemon, 7 shared). Two were checked by breaking the fix and confirming they fail: removing the `pending/` guard fails the invariant test, and removing the EPIPE listener fails 2 of 3 passthrough tests.
+
 ## [0.10.1-rc.2] — 2026-08-03 (pre-release, development channel)
 
 Team lifecycle completed, plus three latent daemon defects found by a memory audit the same day. Everything below is on the `claude-bridge-dev` marketplace channel; the stable channel is untouched.

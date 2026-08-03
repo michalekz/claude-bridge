@@ -1,5 +1,5 @@
-import { mkdir, readFile, readdir, stat } from "node:fs/promises";
-import { dirname, join } from "node:path";
+import { readFile, readdir, stat } from "node:fs/promises";
+import { join } from "node:path";
 import { atomicWriteJson } from "../util/atomic-write.ts";
 import { bridgeRoot } from "../util/paths.ts";
 
@@ -236,16 +236,17 @@ export async function readOAuthApiLive(): Promise<OAuthApiLiveEnvelope | null> {
  * by the `claude-bridge-statusline` wrapper on every CC render.
  */
 export async function writeStatusLineLive(envelope: StatusLineLiveEnvelope): Promise<void> {
-  const path = statusLineSessionPath(envelope.sessionId);
-  await mkdir(dirname(path), { recursive: true });
-  await atomicWriteJson(path, envelope);
+  // No mkdir here — atomicWriteJson creates the parent itself (ensureDir
+  // defaults to true). The explicit call was a second syscall on the hot
+  // statusLine path, once per render, for nothing.
+  await atomicWriteJson(statusLineSessionPath(envelope.sessionId), envelope);
 }
 
 /**
  * Atomically write an OAuth API capture. Called by the PostToolUse hook.
  */
 export async function writeOAuthApiLive(envelope: OAuthApiLiveEnvelope): Promise<void> {
-  await mkdir(dirname(oauthLivePath()), { recursive: true });
+  // Parent dir handled by atomicWriteJson — see writeStatusLineLive.
   await atomicWriteJson(oauthLivePath(), envelope);
 }
 
@@ -261,6 +262,3 @@ export function envelopeAgeSeconds(
   if (Number.isNaN(captured)) return Number.POSITIVE_INFINITY;
   return Math.max(0, Math.floor((now.getTime() - captured) / 1000));
 }
-
-// Static ref so tree-shaking preserves stat import (used by tests for mtime).
-void stat;

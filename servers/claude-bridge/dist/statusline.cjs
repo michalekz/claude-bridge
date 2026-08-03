@@ -20,6 +20,7 @@ var __toCommonJS = (mod) => __copyProps(__defProp({}, "__esModule", { value: tru
 // src/statusline/main.ts
 var main_exports = {};
 __export(main_exports, {
+  PASSTHROUGH_TIMEOUT_MS: () => PASSTHROUGH_TIMEOUT_MS,
   main: () => main
 });
 module.exports = __toCommonJS(main_exports);
@@ -27,7 +28,6 @@ var import_node_child_process = require("node:child_process");
 var import_node_os2 = require("node:os");
 
 // src/parser/live-data.ts
-var import_promises2 = require("node:fs/promises");
 var import_node_path3 = require("node:path");
 
 // src/util/atomic-write.ts
@@ -108,9 +108,7 @@ function statusLineSessionPath(sessionId) {
   return (0, import_node_path3.join)(statusLineDir(), `${sessionId}.json`);
 }
 async function writeStatusLineLive(envelope) {
-  const path = statusLineSessionPath(envelope.sessionId);
-  await (0, import_promises2.mkdir)((0, import_node_path3.dirname)(path), { recursive: true });
-  await atomicWriteJson(path, envelope);
+  await atomicWriteJson(statusLineSessionPath(envelope.sessionId), envelope);
 }
 
 // src/util/logger.ts
@@ -177,12 +175,21 @@ async function captureLive(parsed) {
     });
   }
 }
+var PASSTHROUGH_TIMEOUT_MS = 1e4;
 async function passthrough(underlying, stdinRaw) {
   return new Promise((resolve2) => {
+    let child = null;
+    let settled = false;
+    let timer = null;
+    const finish = (code) => {
+      if (settled) return;
+      settled = true;
+      if (timer) clearTimeout(timer);
+      resolve2(code);
+    };
     const isWin = (0, import_node_os2.platform)() === "win32";
     const shell = isWin ? "cmd.exe" : "/bin/sh";
     const args = isWin ? ["/d", "/s", "/c", underlying] : ["-c", underlying];
-    let child;
     try {
       child = (0, import_node_child_process.spawn)(shell, args, {
         stdio: ["pipe", "pipe", "inherit"]
@@ -192,9 +199,21 @@ async function passthrough(underlying, stdinRaw) {
         underlying,
         err: e instanceof Error ? e.message : String(e)
       });
-      resolve2(0);
+      finish(0);
       return;
     }
+    timer = setTimeout(() => {
+      log.warn("statusline_passthrough_timeout", {
+        underlying,
+        timeoutMs: PASSTHROUGH_TIMEOUT_MS
+      });
+      try {
+        child?.kill("SIGKILL");
+      } catch {
+      }
+      finish(0);
+    }, PASSTHROUGH_TIMEOUT_MS);
+    timer.unref?.();
     child.stdout?.on("data", (chunk) => {
       process.stdout.write(chunk);
     });
@@ -203,10 +222,18 @@ async function passthrough(underlying, stdinRaw) {
         underlying,
         err: e instanceof Error ? e.message : String(e)
       });
-      resolve2(0);
+      finish(0);
     });
     child.on("exit", (code) => {
-      resolve2(code ?? 0);
+      finish(code ?? 0);
+    });
+    child.stdin?.on("error", (e) => {
+      if (e.code !== "EPIPE") {
+        log.warn("statusline_passthrough_stdin_error", {
+          code: e.code,
+          err: e.message
+        });
+      }
     });
     try {
       child.stdin?.write(stdinRaw);
@@ -261,5 +288,6 @@ if (require.main === module) {
 }
 // Annotate the CommonJS export names for ESM import in node:
 0 && (module.exports = {
+  PASSTHROUGH_TIMEOUT_MS,
   main
 });

@@ -1,5 +1,5 @@
 import { existsSync } from "node:fs";
-import { chmod, mkdir, readFile, stat, symlink, unlink, writeFile } from "node:fs/promises";
+import { chmod, mkdir, readFile, rename, stat, symlink, unlink, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { makeLogger } from "../util/logger.ts";
@@ -166,13 +166,25 @@ async function refreshSymlinks(cacheVersion: string): Promise<void> {
       continue;
     }
     try {
-      // Best-effort remove existing link/file. Fails silently if absent.
+      // v0.10.2: create-then-rename instead of unlink-then-symlink.
+      //
+      // The old order left a window in which the symlink did not exist at
+      // all. This machine starts 23 MCP servers, each of which runs
+      // setup-check, so the windows overlap — and anything CC renders in
+      // one (a statusLine tick reaching a path that is briefly missing)
+      // fails for no reason the user could ever diagnose. rename(2) over an
+      // existing symlink replaces it atomically: readers see the old link or
+      // the new one, never nothing. The temp name is pid-unique so two
+      // concurrent sweeps cannot fight over the same staging path.
+      const staging = `${linkPath}.${process.pid}.tmp`;
+      await unlink(staging).catch(() => undefined);
+      await symlink(target, staging);
       try {
-        await unlink(linkPath);
-      } catch {
-        // ignore
+        await rename(staging, linkPath);
+      } catch (renameErr) {
+        await unlink(staging).catch(() => undefined);
+        throw renameErr;
       }
-      await symlink(target, linkPath);
     } catch (e) {
       log.warn("setup_check_symlink_failed", {
         linkPath,

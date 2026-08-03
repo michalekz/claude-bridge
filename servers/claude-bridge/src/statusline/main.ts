@@ -122,8 +122,21 @@ async function captureLive(parsed: StdinWithSession): Promise<void> {
  * invoked directly. Return the subprocess exit code (0 on any error path
  * so we don't accidentally break CC's rendering).
  */
+export const PASSTHROUGH_TIMEOUT_MS = 10_000;
+
 async function passthrough(underlying: string, stdinRaw: string): Promise<number> {
   return new Promise((resolve) => {
+    let child: ReturnType<typeof spawn> | null = null;
+    let settled = false;
+    let timer: NodeJS.Timeout | null = null;
+
+    const finish = (code: number): void => {
+      if (settled) return;
+      settled = true;
+      if (timer) clearTimeout(timer);
+      resolve(code);
+    };
+
     const isWin = platform() === "win32";
     // Cross-platform command handling — on Windows we go through cmd.exe to
     // support shell-like paths and env expansion; on POSIX we use /bin/sh -c
@@ -131,7 +144,6 @@ async function passthrough(underlying: string, stdinRaw: string): Promise<number
     const shell = isWin ? "cmd.exe" : "/bin/sh";
     const args = isWin ? ["/d", "/s", "/c", underlying] : ["-c", underlying];
 
-    let child: ReturnType<typeof spawn>;
     try {
       child = spawn(shell, args, {
         stdio: ["pipe", "pipe", "inherit"],
@@ -141,9 +153,27 @@ async function passthrough(underlying: string, stdinRaw: string): Promise<number
         underlying,
         err: e instanceof Error ? e.message : String(e),
       });
-      resolve(0);
+      finish(0);
       return;
     }
+
+    // v0.10.2: bound the child. A statusLine command that blocks — a network
+    // call, a lock, a prompt nobody will answer — used to hang this wrapper
+    // forever, and CC's status bar hangs with it. SIGKILL rather than SIGTERM:
+    // the process already ignored its chance to be well-behaved.
+    timer = setTimeout(() => {
+      log.warn("statusline_passthrough_timeout", {
+        underlying,
+        timeoutMs: PASSTHROUGH_TIMEOUT_MS,
+      });
+      try {
+        child?.kill("SIGKILL");
+      } catch {
+        // already gone
+      }
+      finish(0);
+    }, PASSTHROUGH_TIMEOUT_MS);
+    timer.unref?.();
 
     child.stdout?.on("data", (chunk) => {
       process.stdout.write(chunk);
@@ -153,10 +183,26 @@ async function passthrough(underlying: string, stdinRaw: string): Promise<number
         underlying,
         err: e instanceof Error ? e.message : String(e),
       });
-      resolve(0);
+      finish(0);
     });
     child.on("exit", (code) => {
-      resolve(code ?? 0);
+      finish(code ?? 0);
+    });
+
+    // v0.10.2: EPIPE guard. `child.stdin.write()` does NOT throw when the
+    // child has already exited — it emits 'error' on the stream asynchronously.
+    // With no 'error' listener that becomes an unhandled stream error, which
+    // in Node is a hard process crash, and the try/catch below never sees it.
+    // A statusLine command that reads no stdin (`echo hi` is enough) was
+    // therefore able to kill the wrapper on every single render.
+    child.stdin?.on("error", (e: NodeJS.ErrnoException) => {
+      // EPIPE is the ordinary case and not worth a line in the log every turn.
+      if (e.code !== "EPIPE") {
+        log.warn("statusline_passthrough_stdin_error", {
+          code: e.code,
+          err: e.message,
+        });
+      }
     });
 
     try {

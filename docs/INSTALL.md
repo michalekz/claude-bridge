@@ -297,6 +297,31 @@ All optional. Set them in the shell before launching Claude Code (or in your she
 | `CLAUDE_BRIDGE_PEER_NAME` | ai-title from the session | Override this chat's display name in `peer_list`. Useful before Claude Code has generated an ai-title. |
 | `CLAUDE_BRIDGE_ALLOW_ALL_PROJECTS` | unset | Set to `1` to allow `peer_chat_search { scope: 'all-projects' }`. Without it, search stays scoped to the current project. |
 | `CLAUDE_BRIDGE_EMIT_TERMINAL_TITLE` | enabled | Set to `0` (or `false`) to opt out of the dynamic terminal tab title (OSC 2) added in v0.6.0. Linux/macOS only; on Windows it is a no-op. |
+| `CLAUDE_BRIDGE_HYGIENE` | enabled | Set to `off` to disable the workspace sweep entirely (see below). |
+| `CLAUDE_BRIDGE_RETAIN_DONE_DAYS` | `30` | How long archived inbox messages are kept. |
+| `CLAUDE_BRIDGE_RETAIN_STATUSLINE_DAYS` | `14` | How long per-session statusLine captures are kept. |
+| `CLAUDE_BRIDGE_EVENTS_MAX_BYTES` | `16777216` | Size at which the daemon rotates `control/events.jsonl`. |
+
+## Workspace housekeeping (v0.10.2+)
+
+Nothing under `~/.claude-bridge/` used to expire. After ~10 weeks on a 23-peer
+machine that meant 12 686 archived messages (57 MB) and 79 orphaned `.tmp`
+files, the oldest six weeks old.
+
+A sweep now runs when an MCP server starts, throttled to **once every 6 hours**
+across all peers on the machine. It applies exactly three rules:
+
+| What | Kept for | Why it is safe to remove |
+|---|---|---|
+| `.<hex>.tmp` | 1 hour | Leftovers from an atomic write killed between write and rename. A live one exists for milliseconds. |
+| `live/statusline/<sessionId>.json` | 14 days | One file per session that ever rendered. A session idle for two weeks is over. |
+| `inbox/<peer>/done/*.json` | 30 days | Already-read messages. |
+
+**`inbox/<peer>/pending/` is never swept, at any age.** An unread message has no
+expiry.
+
+If you want a longer archive, set `CLAUDE_BRIDGE_RETAIN_DONE_DAYS` **before**
+updating — the first sweep runs on the next MCP start.
 
 ## Common problems and fixes
 

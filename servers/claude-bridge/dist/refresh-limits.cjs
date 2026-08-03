@@ -34,11 +34,10 @@ __export(main_exports, {
 });
 module.exports = __toCommonJS(main_exports);
 var import_node_child_process2 = require("node:child_process");
-var import_promises4 = require("node:fs/promises");
+var import_promises3 = require("node:fs/promises");
 var import_node_path5 = require("node:path");
 
 // src/parser/live-data.ts
-var import_promises2 = require("node:fs/promises");
 var import_node_path3 = require("node:path");
 
 // src/util/atomic-write.ts
@@ -119,13 +118,12 @@ function oauthLivePath() {
   return (0, import_node_path3.join)(liveDir(), "oauth-api.json");
 }
 async function writeOAuthApiLive(envelope) {
-  await (0, import_promises2.mkdir)((0, import_node_path3.dirname)(oauthLivePath()), { recursive: true });
   await atomicWriteJson(oauthLivePath(), envelope);
 }
 
 // src/parser/oauth-token.ts
 var import_node_child_process = require("node:child_process");
-var import_promises3 = require("node:fs/promises");
+var import_promises2 = require("node:fs/promises");
 var import_node_os2 = require("node:os");
 var import_node_path4 = require("node:path");
 var import_node_util = require("node:util");
@@ -134,7 +132,7 @@ function credentialsPath() {
 }
 async function readTokenFromFile() {
   try {
-    const raw = await (0, import_promises3.readFile)(credentialsPath(), "utf-8");
+    const raw = await (0, import_promises2.readFile)(credentialsPath(), "utf-8");
     const parsed = JSON.parse(raw);
     const token = parsed.claudeAiOauth?.accessToken;
     if (typeof token !== "string" || token.length === 0) return null;
@@ -212,8 +210,8 @@ function throttleMarkerPath() {
 }
 async function shouldThrottle(now = /* @__PURE__ */ new Date()) {
   try {
-    const { stat: stat2 } = await import("node:fs/promises");
-    const s = await stat2(throttleMarkerPath());
+    const { stat } = await import("node:fs/promises");
+    const s = await stat(throttleMarkerPath());
     const ageSeconds = (now.getTime() - s.mtimeMs) / 1e3;
     return ageSeconds < THROTTLE_SECONDS;
   } catch {
@@ -222,8 +220,8 @@ async function shouldThrottle(now = /* @__PURE__ */ new Date()) {
 }
 async function touchThrottleMarker() {
   const path = throttleMarkerPath();
-  await (0, import_promises4.mkdir)((0, import_node_path5.dirname)(path), { recursive: true });
-  await (0, import_promises4.writeFile)(path, `${(/* @__PURE__ */ new Date()).toISOString()}
+  await (0, import_promises3.mkdir)((0, import_node_path5.dirname)(path), { recursive: true });
+  await (0, import_promises3.writeFile)(path, `${(/* @__PURE__ */ new Date()).toISOString()}
 `);
 }
 async function fetchUsageViaCurl(token) {
@@ -284,6 +282,11 @@ async function fetchUsageViaCurl(token) {
           err: e instanceof Error ? e.message : String(e)
         });
         resolve2(null);
+      }
+    });
+    child.stdin?.on("error", (e) => {
+      if (e.code !== "EPIPE") {
+        log.warn("refresh_limits_stdin_error", { code: e.code });
       }
     });
     try {

@@ -221,7 +221,48 @@ async function ensureDir() {
   await (0, import_promises2.mkdir)((0, import_node_path4.dirname)(eventsFilePath()), { recursive: true });
   ensured = true;
 }
+var EVENTS_MAX_BYTES_DEFAULT = 16 * 1024 * 1024;
+var EVENTS_KEEP_ROTATIONS = 3;
+function eventsMaxBytes() {
+  const raw = process.env["CLAUDE_BRIDGE_EVENTS_MAX_BYTES"];
+  if (!raw) return EVENTS_MAX_BYTES_DEFAULT;
+  const n = Number(raw);
+  return Number.isFinite(n) && n > 0 ? n : EVENTS_MAX_BYTES_DEFAULT;
+}
+var liveBytes = -1;
+async function rotateIfNeeded(pendingBytes) {
+  const path = eventsFilePath();
+  const maxBytes = eventsMaxBytes();
+  if (liveBytes < 0) {
+    try {
+      liveBytes = (await (0, import_promises2.stat)(path)).size;
+    } catch {
+      liveBytes = 0;
+    }
+  }
+  if (liveBytes + pendingBytes <= maxBytes) {
+    liveBytes += pendingBytes;
+    return;
+  }
+  for (let i = EVENTS_KEEP_ROTATIONS - 1; i >= 1; i--) {
+    await (0, import_promises2.rename)(`${path}.${i}`, `${path}.${i + 1}`).catch(() => void 0);
+  }
+  try {
+    await (0, import_promises2.rename)(path, `${path}.1`);
+    liveBytes = pendingBytes;
+    log.info("events_rotated", { keep: EVENTS_KEEP_ROTATIONS, maxBytes });
+  } catch (e) {
+    liveBytes = 0;
+    log.warn("events_rotate_failed", { err: String(e) });
+  }
+}
+var writeChain = Promise.resolve();
 async function writeEvent(evt) {
+  const run = writeChain.then(() => writeEventInner(evt));
+  writeChain = run.catch(() => void 0);
+  return run;
+}
+async function writeEventInner(evt) {
   try {
     await ensureDir();
     const wire = {
@@ -234,8 +275,10 @@ async function writeEvent(evt) {
       requestId: evt.requestId ?? null,
       details: evt.details ?? {}
     };
-    await (0, import_promises2.appendFile)(eventsFilePath(), `${JSON.stringify(wire)}
-`, "utf-8");
+    const line = `${JSON.stringify(wire)}
+`;
+    await rotateIfNeeded(Buffer.byteLength(line, "utf-8"));
+    await (0, import_promises2.appendFile)(eventsFilePath(), line, "utf-8");
   } catch (e) {
     log.error("event_write_failed", { event: evt.event, err: String(e) });
   }
@@ -5146,10 +5189,10 @@ var import_node_os2 = require("node:os");
 var import_node_path7 = require("node:path");
 var DEFAULT_MAX_DEPTH = 8;
 var UUID_RE = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i;
-function parsePpidFromStat(stat3) {
-  const close = stat3.lastIndexOf(")");
+function parsePpidFromStat(stat4) {
+  const close = stat4.lastIndexOf(")");
   if (close === -1) return null;
-  const fields = stat3.slice(close + 1).trim().split(/\s+/);
+  const fields = stat4.slice(close + 1).trim().split(/\s+/);
   const ppid = Number.parseInt(fields[1] ?? "", 10);
   return Number.isNaN(ppid) ? null : ppid;
 }
@@ -5181,8 +5224,8 @@ var LinuxProcessInspector = class {
       if (Number.isNaN(pid) || String(pid) !== entry) continue;
       const comm = await this.readProcFile(pid, "comm");
       if (comm?.trim() !== "claude") continue;
-      const stat3 = await this.readProcFile(pid, "stat");
-      const ppid = stat3 ? parsePpidFromStat(stat3) : null;
+      const stat4 = await this.readProcFile(pid, "stat");
+      const ppid = stat4 ? parsePpidFromStat(stat4) : null;
       const raw = await this.readProcFile(pid, "cmdline");
       const cmdline = (raw ?? "").replace(/\0/g, " ").trim();
       const { sessionId, source } = await this.resolveSessionId(pid, cmdline);
@@ -5194,9 +5237,9 @@ var LinuxProcessInspector = class {
     const chain = [];
     let current = pid;
     for (let i = 0; i < maxDepth; i++) {
-      const stat3 = await this.readProcFile(current, "stat");
-      if (!stat3) break;
-      const ppid = parsePpidFromStat(stat3);
+      const stat4 = await this.readProcFile(current, "stat");
+      if (!stat4) break;
+      const ppid = parsePpidFromStat(stat4);
       if (ppid === null || ppid <= 1) break;
       chain.push(ppid);
       current = ppid;
@@ -6508,8 +6551,8 @@ var LockAcquireError = class extends Error {
 function readProcStart(pid) {
   if (process.platform !== "linux") return null;
   try {
-    const stat3 = (0, import_node_fs.readFileSync)(`/proc/${pid}/stat`, "utf-8");
-    const afterComm = stat3.slice(stat3.lastIndexOf(")") + 1).trim();
+    const stat4 = (0, import_node_fs.readFileSync)(`/proc/${pid}/stat`, "utf-8");
+    const afterComm = stat4.slice(stat4.lastIndexOf(")") + 1).trim();
     const fields = afterComm.split(/\s+/);
     const starttime = fields[19];
     return starttime ?? null;

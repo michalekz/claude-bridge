@@ -156,11 +156,15 @@ async function refreshSymlinks(cacheVersion) {
       continue;
     }
     try {
+      const staging = `${linkPath}.${process.pid}.tmp`;
+      await (0, import_promises.unlink)(staging).catch(() => void 0);
+      await (0, import_promises.symlink)(target, staging);
       try {
-        await (0, import_promises.unlink)(linkPath);
-      } catch {
+        await (0, import_promises.rename)(staging, linkPath);
+      } catch (renameErr) {
+        await (0, import_promises.unlink)(staging).catch(() => void 0);
+        throw renameErr;
       }
-      await (0, import_promises.symlink)(target, linkPath);
     } catch (e) {
       log.warn("setup_check_symlink_failed", {
         linkPath,

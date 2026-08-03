@@ -105,7 +105,11 @@ export function wireTools(server: Server, ctx: ServerContext): void {
         content: [
           {
             type: "text",
-            text: JSON.stringify({ ok: false, code: "unknown_tool", tool: toolName }),
+            text: JSON.stringify({
+              ok: false,
+              code: "unknown_tool",
+              tool: toolName,
+            }),
           },
         ],
       };
@@ -157,7 +161,9 @@ export async function startStdioServer(): Promise<void> {
       log.error("identity_unresolvable", { message: e.message, hint: e.hint });
       process.stderr.write(`\nclaude-bridge fatal: ${e.message}\nHint: ${e.hint}\n\n`);
     } else {
-      log.error("boot_failed", { err: e instanceof Error ? e.message : String(e) });
+      log.error("boot_failed", {
+        err: e instanceof Error ? e.message : String(e),
+      });
     }
     process.exit(1);
   }
@@ -246,6 +252,19 @@ export async function startStdioServer(): Promise<void> {
       err: e instanceof Error ? e.message : String(e),
     });
   }
+
+  // v0.10.2: expire what the workspace never expired — orphaned atomic-write
+  // temps, dead per-session statusline captures, archived inbox messages past
+  // their retention. Fire-and-forget: it is throttled to once every 6 hours
+  // across all peers on the machine (see util/hygiene.ts), and startup must
+  // not wait on a directory walk.
+  void import("../util/hygiene.ts")
+    .then(({ runHygieneSweep }) => runHygieneSweep())
+    .catch((e: unknown) => {
+      log.warn("hygiene_sweep_failed", {
+        err: e instanceof Error ? e.message : String(e),
+      });
+    });
 
   const shutdown = async (signal: string) => {
     log.info("shutdown", { signal });

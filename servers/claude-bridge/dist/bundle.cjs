@@ -6,6 +6,9 @@ var __getOwnPropDesc = Object.getOwnPropertyDescriptor;
 var __getOwnPropNames = Object.getOwnPropertyNames;
 var __getProtoOf = Object.getPrototypeOf;
 var __hasOwnProp = Object.prototype.hasOwnProperty;
+var __esm = (fn, res) => function __init() {
+  return fn && (res = (0, fn[__getOwnPropNames(fn)[0]])(fn = 0)), res;
+};
 var __commonJS = (cb, mod) => function __require() {
   return mod || (0, cb[__getOwnPropNames(cb)[0]])((mod = { exports: {} }).exports, mod), mod.exports;
 };
@@ -4401,11 +4404,11 @@ var require_core = __commonJS({
     Ajv2.ValidationError = validation_error_1.default;
     Ajv2.MissingRefError = ref_error_1.default;
     exports2.default = Ajv2;
-    function checkOptions(checkOpts, options, msg, log9 = "error") {
+    function checkOptions(checkOpts, options, msg, log10 = "error") {
       for (const key in checkOpts) {
         const opt = key;
         if (opt in options)
-          this.logger[log9](`${msg}: option ${key}. ${checkOpts[opt]}`);
+          this.logger[log10](`${msg}: option ${key}. ${checkOpts[opt]}`);
       }
     }
     function getSchEnv(keyRef) {
@@ -6883,6 +6886,218 @@ var require_dist = __commonJS({
     module2.exports = exports2 = formatsPlugin;
     Object.defineProperty(exports2, "__esModule", { value: true });
     exports2.default = formatsPlugin;
+  }
+});
+
+// src/util/paths.ts
+function currentPlatform() {
+  const p = (0, import_node_os.platform)();
+  if (p === "linux" || p === "darwin" || p === "win32") return p;
+  throw new Error(`Unsupported platform: ${p}`);
+}
+function claudeHome() {
+  return (0, import_node_path.join)((0, import_node_os.homedir)(), ".claude");
+}
+function projectsRoot() {
+  return (0, import_node_path.join)(claudeHome(), "projects");
+}
+function encodeProjectDir(absoluteCwd, plat = currentPlatform()) {
+  const dropColon = plat === "win32" ? absoluteCwd.replace(/:/g, "-") : absoluteCwd;
+  const collapseSeparators = plat === "win32" ? dropColon.replace(/[\\/]+/g, "-") : dropColon.replace(/\/+/g, "-");
+  return collapseSeparators.replace(/[^a-zA-Z0-9-]/g, "-");
+}
+function bridgeRoot() {
+  return (0, import_node_path.join)((0, import_node_os.homedir)(), ".claude-bridge");
+}
+var import_node_os, import_node_path;
+var init_paths = __esm({
+  "src/util/paths.ts"() {
+    "use strict";
+    import_node_os = require("node:os");
+    import_node_path = require("node:path");
+  }
+});
+
+// src/util/logger.ts
+function emit(level, component, msg, fields) {
+  if (LEVELS[level] < minLevel) return;
+  const entry = {
+    ts: (/* @__PURE__ */ new Date()).toISOString(),
+    level,
+    component,
+    msg,
+    ...fields
+  };
+  const line = pretty ? `[${entry.ts}] ${level.toUpperCase()} (${component}) ${msg}${fields ? ` ${JSON.stringify(fields)}` : ""}` : JSON.stringify(entry);
+  process.stderr.write(`${line}
+`);
+}
+function makeLogger(component) {
+  return {
+    debug: (m, f) => emit("debug", component, m, f),
+    info: (m, f) => emit("info", component, m, f),
+    warn: (m, f) => emit("warn", component, m, f),
+    error: (m, f) => emit("error", component, m, f),
+    child: (c) => makeLogger(`${component}.${c}`)
+  };
+}
+var LEVELS, envLevel, minLevel, pretty;
+var init_logger = __esm({
+  "src/util/logger.ts"() {
+    "use strict";
+    LEVELS = { debug: 10, info: 20, warn: 30, error: 40 };
+    envLevel = process.env["LOG_LEVEL"] || "info";
+    minLevel = LEVELS[envLevel] ?? LEVELS.info;
+    pretty = process.env["LOG_FORMAT"] === "pretty";
+  }
+});
+
+// src/util/hygiene.ts
+var hygiene_exports = {};
+__export(hygiene_exports, {
+  DEFAULT_DONE_MAX_AGE_MS: () => DEFAULT_DONE_MAX_AGE_MS,
+  DEFAULT_STATUSLINE_MAX_AGE_MS: () => DEFAULT_STATUSLINE_MAX_AGE_MS,
+  DEFAULT_THROTTLE_MS: () => DEFAULT_THROTTLE_MS,
+  DEFAULT_TMP_MAX_AGE_MS: () => DEFAULT_TMP_MAX_AGE_MS,
+  runHygieneSweep: () => runHygieneSweep
+});
+function envDays(name, fallbackMs) {
+  const raw = process.env[name];
+  if (!raw) return fallbackMs;
+  const days = Number(raw);
+  if (!Number.isFinite(days) || days <= 0) {
+    log7.warn("hygiene_bad_retention_env", { name, raw });
+    return fallbackMs;
+  }
+  return days * DAY_MS;
+}
+function markerPath(baseDir) {
+  return (0, import_node_path13.join)(baseDir, ".hygiene-last");
+}
+async function claim(baseDir, now, throttleMs) {
+  const path = markerPath(baseDir);
+  try {
+    const s = await (0, import_promises17.stat)(path);
+    if (now - s.mtimeMs < throttleMs) return false;
+  } catch {
+  }
+  try {
+    await (0, import_promises17.writeFile)(path, `${new Date(now).toISOString()}
+`);
+    const asDate = new Date(now);
+    await (0, import_promises17.utimes)(path, asDate, asDate).catch(() => void 0);
+  } catch (e) {
+    log7.warn("hygiene_marker_write_failed", {
+      err: e instanceof Error ? e.message : String(e)
+    });
+    return false;
+  }
+  return true;
+}
+function classify(relativeParts, name) {
+  if (TMP_PATTERN.test(name)) return "tmp";
+  if (!name.endsWith(".json")) return null;
+  if (relativeParts.length === 2 && relativeParts[0] === "live" && relativeParts[1] === "statusline") {
+    return "statusline";
+  }
+  if (relativeParts.length === 3 && relativeParts[0] === "inbox" && relativeParts[2] === "done") {
+    return "done";
+  }
+  return null;
+}
+async function runHygieneSweep(opts = {}) {
+  const started = Date.now();
+  const baseDir = opts.baseDir ?? bridgeRoot();
+  const now = opts.now ?? Date.now();
+  const report = {
+    ran: false,
+    tmpRemoved: 0,
+    statusLineRemoved: 0,
+    doneRemoved: 0,
+    bytesFreed: 0,
+    errors: 0,
+    durationMs: 0
+  };
+  if (process.env["CLAUDE_BRIDGE_HYGIENE"] === "off") {
+    report.skipped = "disabled";
+    report.durationMs = Date.now() - started;
+    return report;
+  }
+  const throttleMs = opts.throttleMs ?? DEFAULT_THROTTLE_MS;
+  if (!opts.dryRun && !opts.force && !await claim(baseDir, now, throttleMs)) {
+    report.skipped = "throttled";
+    report.durationMs = Date.now() - started;
+    return report;
+  }
+  const maxAge = {
+    tmp: opts.tmpMaxAgeMs ?? DEFAULT_TMP_MAX_AGE_MS,
+    statusline: opts.statusLineMaxAgeMs ?? envDays("CLAUDE_BRIDGE_RETAIN_STATUSLINE_DAYS", DEFAULT_STATUSLINE_MAX_AGE_MS),
+    done: opts.doneMaxAgeMs ?? envDays("CLAUDE_BRIDGE_RETAIN_DONE_DAYS", DEFAULT_DONE_MAX_AGE_MS)
+  };
+  async function walk(dir, parts) {
+    if (parts.length > MAX_DEPTH) return;
+    let entries;
+    try {
+      entries = await (0, import_promises17.readdir)(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const entry of entries) {
+      const full = (0, import_node_path13.join)(dir, entry.name);
+      if (entry.isSymbolicLink()) continue;
+      if (entry.isDirectory()) {
+        await walk(full, [...parts, entry.name]);
+        continue;
+      }
+      if (!entry.isFile()) continue;
+      const rule = classify(parts, entry.name);
+      if (!rule) continue;
+      try {
+        const s = await (0, import_promises17.stat)(full);
+        if (now - s.mtimeMs <= maxAge[rule]) continue;
+        if (!opts.dryRun) await (0, import_promises17.unlink)(full);
+        report.bytesFreed += s.size;
+        if (rule === "tmp") report.tmpRemoved++;
+        else if (rule === "statusline") report.statusLineRemoved++;
+        else report.doneRemoved++;
+      } catch {
+        report.errors++;
+      }
+    }
+  }
+  await walk(baseDir, []);
+  report.ran = true;
+  report.durationMs = Date.now() - started;
+  const removed = report.tmpRemoved + report.statusLineRemoved + report.doneRemoved;
+  if (removed > 0 || report.errors > 0) {
+    log7.info("hygiene_sweep", {
+      tmpRemoved: report.tmpRemoved,
+      statusLineRemoved: report.statusLineRemoved,
+      doneRemoved: report.doneRemoved,
+      mbFreed: Math.round(report.bytesFreed / 1024 / 1024 * 10) / 10,
+      errors: report.errors,
+      durationMs: report.durationMs
+    });
+  }
+  return report;
+}
+var import_promises17, import_node_path13, log7, HOUR_MS, DAY_MS, DEFAULT_TMP_MAX_AGE_MS, DEFAULT_STATUSLINE_MAX_AGE_MS, DEFAULT_DONE_MAX_AGE_MS, DEFAULT_THROTTLE_MS, MAX_DEPTH, TMP_PATTERN;
+var init_hygiene = __esm({
+  "src/util/hygiene.ts"() {
+    "use strict";
+    import_promises17 = require("node:fs/promises");
+    import_node_path13 = require("node:path");
+    init_logger();
+    init_paths();
+    log7 = makeLogger("hygiene");
+    HOUR_MS = 60 * 60 * 1e3;
+    DAY_MS = 24 * HOUR_MS;
+    DEFAULT_TMP_MAX_AGE_MS = HOUR_MS;
+    DEFAULT_STATUSLINE_MAX_AGE_MS = 14 * DAY_MS;
+    DEFAULT_DONE_MAX_AGE_MS = 30 * DAY_MS;
+    DEFAULT_THROTTLE_MS = 6 * HOUR_MS;
+    MAX_DEPTH = 6;
+    TMP_PATTERN = /^\..+\.tmp$/;
   }
 });
 
@@ -18061,31 +18276,8 @@ var package_default = {
 var import_promises = require("node:fs/promises");
 var import_node_os2 = require("node:os");
 var import_node_path2 = require("node:path");
-
-// src/util/paths.ts
-var import_node_os = require("node:os");
-var import_node_path = require("node:path");
-function currentPlatform() {
-  const p = (0, import_node_os.platform)();
-  if (p === "linux" || p === "darwin" || p === "win32") return p;
-  throw new Error(`Unsupported platform: ${p}`);
-}
-function claudeHome() {
-  return (0, import_node_path.join)((0, import_node_os.homedir)(), ".claude");
-}
-function projectsRoot() {
-  return (0, import_node_path.join)(claudeHome(), "projects");
-}
-function encodeProjectDir(absoluteCwd, plat = currentPlatform()) {
-  const dropColon = plat === "win32" ? absoluteCwd.replace(/:/g, "-") : absoluteCwd;
-  const collapseSeparators = plat === "win32" ? dropColon.replace(/[\\/]+/g, "-") : dropColon.replace(/\/+/g, "-");
-  return collapseSeparators.replace(/[^a-zA-Z0-9-]/g, "-");
-}
-function bridgeRoot() {
-  return (0, import_node_path.join)((0, import_node_os.homedir)(), ".claude-bridge");
-}
-
-// src/identity.ts
+var import_node_string_decoder = require("node:string_decoder");
+init_paths();
 var NAME_MAX_LEN = 64;
 var NAME_VALID = /^[a-z0-9][a-z0-9._-]{0,63}$/;
 function sanitizePeerName(raw) {
@@ -18113,17 +18305,11 @@ async function readSessionJsonAt(path) {
     return null;
   }
 }
-async function readLatestTitleFromJsonl(jsonlPath) {
-  let raw;
-  try {
-    raw = await (0, import_promises.readFile)(jsonlPath, "utf-8");
-  } catch {
-    return null;
-  }
-  let latestCustom = null;
-  let latestAi = null;
-  for (const line of raw.split("\n")) {
-    if (!line) continue;
+var titleScanCache = /* @__PURE__ */ new Map();
+var SCAN_CHUNK_BYTES = 256 * 1024;
+function scanTitlesInto(text, acc) {
+  for (const line of text.split("\n")) {
+    if (!line || line.indexOf("-title") === -1) continue;
     let event;
     try {
       event = JSON.parse(line);
@@ -18131,12 +18317,72 @@ async function readLatestTitleFromJsonl(jsonlPath) {
       continue;
     }
     if (event.type === "custom-title" && typeof event.customTitle === "string") {
-      latestCustom = event.customTitle;
+      acc.custom = event.customTitle;
     } else if (event.type === "ai-title" && typeof event.aiTitle === "string") {
-      latestAi = event.aiTitle;
+      acc.ai = event.aiTitle;
     }
   }
-  return latestCustom ?? latestAi;
+}
+async function scanRange(jsonlPath, from, to, acc) {
+  if (to <= from) return;
+  const fh = await (0, import_promises.open)(jsonlPath, "r");
+  const decoder = new import_node_string_decoder.StringDecoder("utf8");
+  try {
+    const buf = Buffer.allocUnsafe(Math.min(SCAN_CHUNK_BYTES, to - from));
+    let pos = from;
+    let carry = "";
+    while (pos < to) {
+      const want = Math.min(buf.length, to - pos);
+      const { bytesRead } = await fh.read(buf, 0, want, pos);
+      if (bytesRead <= 0) break;
+      pos += bytesRead;
+      const text = carry + decoder.write(buf.subarray(0, bytesRead));
+      const lastNewline = text.lastIndexOf("\n");
+      if (lastNewline === -1) {
+        carry = text;
+        continue;
+      }
+      scanTitlesInto(text.slice(0, lastNewline), acc);
+      carry = text.slice(lastNewline + 1);
+    }
+    const tail = carry + decoder.end();
+    if (tail) scanTitlesInto(tail, acc);
+  } finally {
+    await fh.close();
+  }
+}
+async function readLatestTitleFromJsonl(jsonlPath) {
+  let s;
+  try {
+    s = await (0, import_promises.stat)(jsonlPath);
+  } catch {
+    return null;
+  }
+  const cached2 = titleScanCache.get(jsonlPath);
+  if (cached2) {
+    if (s.size === cached2.size && s.mtimeMs === cached2.mtimeMs) {
+      return cached2.custom ?? cached2.ai;
+    }
+    if (s.size < cached2.offset || s.mtimeMs < cached2.mtimeMs) {
+      titleScanCache.delete(jsonlPath);
+      return readLatestTitleFromJsonl(jsonlPath);
+    }
+  }
+  const acc = { custom: cached2?.custom ?? null, ai: cached2?.ai ?? null };
+  const from = cached2?.offset ?? 0;
+  try {
+    await scanRange(jsonlPath, from, s.size, acc);
+  } catch {
+    return acc.custom ?? acc.ai;
+  }
+  titleScanCache.set(jsonlPath, {
+    size: s.size,
+    mtimeMs: s.mtimeMs,
+    offset: s.size,
+    custom: acc.custom,
+    ai: acc.ai
+  });
+  return acc.custom ?? acc.ai;
 }
 var ENV_PEER_NAME = "CLAUDE_BRIDGE_PEER_NAME";
 var IdentityError = class extends Error {
@@ -18204,33 +18450,8 @@ async function resolvePeerIdentityWithRetry(opts = {}) {
   throw lastError;
 }
 
-// src/util/logger.ts
-var LEVELS = { debug: 10, info: 20, warn: 30, error: 40 };
-var envLevel = process.env["LOG_LEVEL"] || "info";
-var minLevel = LEVELS[envLevel] ?? LEVELS.info;
-var pretty = process.env["LOG_FORMAT"] === "pretty";
-function emit(level, component, msg, fields) {
-  if (LEVELS[level] < minLevel) return;
-  const entry = {
-    ts: (/* @__PURE__ */ new Date()).toISOString(),
-    level,
-    component,
-    msg,
-    ...fields
-  };
-  const line = pretty ? `[${entry.ts}] ${level.toUpperCase()} (${component}) ${msg}${fields ? ` ${JSON.stringify(fields)}` : ""}` : JSON.stringify(entry);
-  process.stderr.write(`${line}
-`);
-}
-function makeLogger(component) {
-  return {
-    debug: (m, f) => emit("debug", component, m, f),
-    info: (m, f) => emit("info", component, m, f),
-    warn: (m, f) => emit("warn", component, m, f),
-    error: (m, f) => emit("error", component, m, f),
-    child: (c) => makeLogger(`${component}.${c}`)
-  };
-}
+// src/mcp/server.ts
+init_logger();
 
 // src/mcp/context.ts
 var import_promises9 = require("node:fs/promises");
@@ -19147,9 +19368,9 @@ var NodeFsHandler = class {
     if (this.fsw.closed) {
       return;
     }
-    const dirname7 = sysPath.dirname(file);
+    const dirname6 = sysPath.dirname(file);
     const basename5 = sysPath.basename(file);
-    const parent = this.fsw._getWatchedDir(dirname7);
+    const parent = this.fsw._getWatchedDir(dirname6);
     let prevStats = stats;
     if (parent.has(basename5))
       return;
@@ -19176,7 +19397,7 @@ var NodeFsHandler = class {
             prevStats = newStats2;
           }
         } catch (error2) {
-          this.fsw._remove(dirname7, basename5);
+          this.fsw._remove(dirname6, basename5);
         }
       } else if (parent.has(basename5)) {
         const at = newStats.atimeMs;
@@ -19984,8 +20205,8 @@ var FSWatcher = class extends import_events.EventEmitter {
     }
     return this._userIgnored(path, stats);
   }
-  _isntIgnored(path, stat11) {
-    return !this._isIgnored(path, stat11);
+  _isntIgnored(path, stat12) {
+    return !this._isIgnored(path, stat12);
   }
   /**
    * Provides a set of common helpers and properties relating to symlink handling.
@@ -20110,6 +20331,7 @@ function watch(paths, options = {}) {
 var esm_default = { watch, FSWatcher };
 
 // src/inbox/watcher.ts
+init_logger();
 var log = makeLogger("inbox-watcher");
 function startInboxWatcher(peerId, onArrived, opts = {}) {
   const dir = (0, import_node_path6.join)(opts.baseDir ?? defaultBridgeRoot(), "inbox", peerId, "pending");
@@ -20167,6 +20389,7 @@ function startInboxWatcher(peerId, onArrived, opts = {}) {
 // src/registry/peers.ts
 var import_promises8 = require("node:fs/promises");
 var import_node_path7 = require("node:path");
+init_paths();
 var HEARTBEAT_INTERVAL_MS = 5e3;
 var ONLINE_THRESHOLD_MS = 3e4;
 var STALE_THRESHOLD_MS = 60 * 60 * 1e3;
@@ -20279,14 +20502,18 @@ function createPeerRegistry(opts = {}) {
   };
 }
 
+// src/mcp/context.ts
+init_logger();
+
 // src/util/terminal-title.ts
 var import_node_child_process = require("node:child_process");
 var import_node_fs = require("node:fs");
+init_logger();
 var log2 = makeLogger("terminal-title");
-function parseTtyNrFromProcStat(stat11) {
-  const lastParen = stat11.lastIndexOf(")");
+function parseTtyNrFromProcStat(stat12) {
+  const lastParen = stat12.lastIndexOf(")");
   if (lastParen === -1) return null;
-  const after = stat11.slice(lastParen + 2);
+  const after = stat12.slice(lastParen + 2);
   const fields = after.split(" ");
   const ttyNrStr = fields[4];
   if (!ttyNrStr) return null;
@@ -20300,8 +20527,8 @@ function parseTtyNrFromProcStat(stat11) {
 }
 function findLinuxParentTty(ppid) {
   try {
-    const stat11 = (0, import_node_fs.readFileSync)(`/proc/${ppid}/stat`, "utf-8");
-    const parsed = parseTtyNrFromProcStat(stat11);
+    const stat12 = (0, import_node_fs.readFileSync)(`/proc/${ppid}/stat`, "utf-8");
+    const parsed = parseTtyNrFromProcStat(stat12);
     if (!parsed) return null;
     if (parsed.major === 136) {
       return `/dev/pts/${parsed.minor}`;
@@ -20352,6 +20579,7 @@ function isTerminalTitleEnabled(env = process.env) {
 }
 
 // src/mcp/channel.ts
+init_logger();
 var log3 = makeLogger("channel");
 var CHANNEL_METHOD = "notifications/claude/channel";
 function buildChannelNotification(envelope) {
@@ -20393,7 +20621,7 @@ function createChannelSender(server) {
 
 // src/mcp/context.ts
 var log4 = makeLogger("context");
-var DEFAULT_NAME_REFRESH_MS = 5e3;
+var DEFAULT_NAME_REFRESH_MS = 6e4;
 async function buildContext(opts = {}) {
   const self = opts.identity ?? await resolvePeerIdentityWithRetry(opts.identityOptions ?? {});
   log4.info("identity_resolved", { id: self.id, name: self.name, source: self.source });
@@ -20433,11 +20661,27 @@ async function buildContext(opts = {}) {
   if (opts.baseDir) context.baseDir = opts.baseDir;
   const refreshMs = opts.nameRefreshIntervalMs ?? DEFAULT_NAME_REFRESH_MS;
   if (refreshMs > 0 && heartbeat && !opts.identity) {
-    const timer = setInterval(() => {
-      void refreshDisplayName(context, opts.identityOptions ?? {}).catch((e) => {
+    let refreshInFlight = false;
+    let refreshSkipped = 0;
+    const guarded = async () => {
+      if (refreshInFlight) {
+        refreshSkipped++;
+        if ((refreshSkipped & refreshSkipped - 1) === 0) {
+          log4.warn("name_refresh_skipped_busy", { skipped: refreshSkipped });
+        }
+        return;
+      }
+      refreshInFlight = true;
+      try {
+        await refreshDisplayName(context, opts.identityOptions ?? {});
+      } catch (e) {
         log4.warn("name_refresh_failed", { err: e instanceof Error ? e.message : String(e) });
-      });
-    }, refreshMs);
+      } finally {
+        refreshInFlight = false;
+        refreshSkipped = 0;
+      }
+    };
+    const timer = setInterval(() => void guarded(), refreshMs);
     timer.unref?.();
     context.nameRefreshTimer = timer;
   }
@@ -20738,12 +20982,12 @@ async function* parseSessionFile(filePath, options = {}) {
     yield result.data;
   }
 }
-async function readSessionFile(filePath, options = {}) {
-  const events = [];
-  for await (const event of parseSessionFile(filePath, options)) {
-    events.push(event);
+async function countEventsByType(filePath) {
+  const counts = {};
+  for await (const event of parseSessionFile(filePath)) {
+    counts[event.type] = (counts[event.type] ?? 0) + 1;
   }
-  return events;
+  return counts;
 }
 async function* parseSessionFileRaw(filePath, options = {}) {
   const stream = (0, import_node_fs2.createReadStream)(filePath, { encoding: "utf-8" });
@@ -20980,6 +21224,7 @@ function canonicalContextLimit(model, tokensUsed) {
 // src/parser/live-data.ts
 var import_promises11 = require("node:fs/promises");
 var import_node_path9 = require("node:path");
+init_paths();
 function liveDir() {
   return (0, import_node_path9.join)(bridgeRoot(), "live");
 }
@@ -21017,19 +21262,24 @@ async function readStatusLineLive(sessionId) {
 }
 async function findNewestStatusLine() {
   let newest = null;
-  let newestMs = 0;
   try {
-    const entries = await (0, import_promises11.readdir)(statusLineDir());
+    const dir = statusLineDir();
+    const entries = (await (0, import_promises11.readdir)(dir)).filter((e) => e.endsWith(".json"));
+    const stats = [];
     for (const entry of entries) {
-      if (!entry.endsWith(".json")) continue;
-      const envelope = await readEnvelope2((0, import_node_path9.join)(statusLineDir(), entry));
-      if (!envelope) continue;
-      const capturedMs = Date.parse(envelope.capturedAt);
-      if (Number.isNaN(capturedMs)) continue;
-      if (capturedMs > newestMs) {
-        newestMs = capturedMs;
-        newest = envelope;
+      const path = (0, import_node_path9.join)(dir, entry);
+      try {
+        stats.push({ path, mtimeMs: (await (0, import_promises11.stat)(path)).mtimeMs });
+      } catch {
       }
+    }
+    stats.sort((a, b) => b.mtimeMs - a.mtimeMs);
+    for (const { path } of stats) {
+      const envelope = await readEnvelope2(path);
+      if (!envelope) continue;
+      if (Number.isNaN(Date.parse(envelope.capturedAt))) continue;
+      newest = envelope;
+      break;
     }
   } catch {
   }
@@ -21331,6 +21581,7 @@ async function readLiveRateLimits(now = /* @__PURE__ */ new Date()) {
 var import_promises12 = require("node:fs/promises");
 var import_promises13 = require("node:fs/promises");
 var import_node_path10 = require("node:path");
+init_paths();
 var JSONL_PATTERN = /^([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.jsonl$/;
 async function listProjects() {
   const root = projectsRoot();
@@ -21395,11 +21646,16 @@ function serializeSessionRef(s) {
   };
 }
 
+// src/mcp/tools.ts
+init_logger();
+init_paths();
+
 // src/mcp/control-plane.ts
 var import_node_crypto3 = require("node:crypto");
 var import_promises14 = require("node:fs/promises");
 var import_node_os4 = require("node:os");
 var import_node_path11 = require("node:path");
+init_logger();
 var log5 = makeLogger("control-plane");
 function controlDir() {
   return (0, import_node_path11.join)((0, import_node_os4.homedir)(), ".claude-bridge", "control");
@@ -21779,12 +22035,12 @@ var ListSessionsArgs = external_exports.object({
 }).strict();
 var HEARTBEAT_ACTIVE_THRESHOLD_MS = 3e4;
 async function isSessionActive(sessionId) {
-  const { stat: stat11 } = await import("node:fs/promises");
+  const { stat: stat12 } = await import("node:fs/promises");
   const { homedir: homedir5 } = await import("node:os");
-  const { join: join14 } = await import("node:path");
-  const hbPath = join14(homedir5(), ".claude-bridge", "status", `${sessionId}.json`);
+  const { join: join15 } = await import("node:path");
+  const hbPath = join15(homedir5(), ".claude-bridge", "status", `${sessionId}.json`);
   try {
-    const s = await stat11(hbPath);
+    const s = await stat12(hbPath);
     return Date.now() - s.mtimeMs <= HEARTBEAT_ACTIVE_THRESHOLD_MS;
   } catch {
     return false;
@@ -21859,18 +22115,16 @@ async function sessionStatsTool(args) {
     if (filtered.length === 0) {
       return err2("session_not_found", `No session ${args.sessionId} found`);
     }
-    const results = await Promise.all(
-      filtered.map(async (s) => {
-        const events = await readSessionFile(s.filePath);
-        const byType = {};
-        for (const e of events) byType[e.type] = (byType[e.type] ?? 0) + 1;
-        return {
-          ...serializeSessionRef(s),
-          totalEvents: events.length,
-          eventsByType: byType
-        };
-      })
-    );
+    const results = [];
+    for (const s of filtered) {
+      const byType = await countEventsByType(s.filePath);
+      const totalEvents = Object.values(byType).reduce((a, b) => a + b, 0);
+      results.push({
+        ...serializeSessionRef(s),
+        totalEvents,
+        eventsByType: byType
+      });
+    }
     return ok2({ sessionId: args.sessionId, instances: results });
   } catch (e) {
     log6.error("session_stats_failed", { err: e instanceof Error ? e.message : String(e) });
@@ -22440,11 +22694,34 @@ async function resolveSearchSessions(scope) {
   }
   return sessions.filter((s) => s.modifiedAt.getTime() >= cutoffMs);
 }
-async function readFileForPrefilter(filePath) {
+var PREFILTER_CHUNK_BYTES = 256 * 1024;
+var PREFILTER_OVERLAP_CHARS = 1024;
+async function fileMatchesPrefilter(filePath, matcher) {
+  const { open: open3 } = await import("node:fs/promises");
+  const { StringDecoder: StringDecoder2 } = await import("node:string_decoder");
+  let fh;
   try {
-    return await (await import("node:fs/promises")).readFile(filePath, "utf-8");
+    fh = await open3(filePath, "r");
   } catch {
     return null;
+  }
+  const decoder = new StringDecoder2("utf8");
+  try {
+    const buf = Buffer.allocUnsafe(PREFILTER_CHUNK_BYTES);
+    let carry = "";
+    for (; ; ) {
+      const { bytesRead } = await fh.read(buf, 0, buf.length, null);
+      if (bytesRead <= 0) break;
+      const text = carry + decoder.write(buf.subarray(0, bytesRead));
+      if (matcher(text)) return true;
+      carry = text.length > PREFILTER_OVERLAP_CHARS ? text.slice(-PREFILTER_OVERLAP_CHARS) : text;
+    }
+    const tail = carry + decoder.end();
+    return tail.length > 0 ? matcher(tail) : false;
+  } catch {
+    return null;
+  } finally {
+    await fh.close();
   }
 }
 function buildPrefilter(query, regex) {
@@ -22493,9 +22770,8 @@ async function peerChatSearchTool(ctx, args) {
     if (matches.length >= args.maxMatches) break;
     sessionsScanned++;
     bytesScanned += session.sizeBytes;
-    const raw = await readFileForPrefilter(session.filePath);
-    if (raw === null) continue;
-    if (!prefilter(raw)) continue;
+    const hit = await fileMatchesPrefilter(session.filePath, prefilter);
+    if (hit === null || !hit) continue;
     sessionsHit++;
     const sessionMessages = [];
     let aiTitle;
@@ -23719,7 +23995,7 @@ var TOOLS = [
 ];
 
 // src/mcp/server.ts
-var log7 = makeLogger("mcp-server");
+var log8 = makeLogger("mcp-server");
 var SERVER_NAME = "claude-bridge";
 var SERVER_VERSION = package_default.version;
 var INSTRUCTIONS = `
@@ -23784,16 +24060,20 @@ function wireTools(server, ctx) {
     const toolName = request.params.name;
     const args = request.params.arguments ?? {};
     const started = Date.now();
-    log7.debug("tool_call", { tool: toolName });
+    log8.debug("tool_call", { tool: toolName });
     const spec = TOOLS.find((t) => t.name === toolName);
     if (!spec) {
-      log7.warn("tool_not_found", { tool: toolName });
+      log8.warn("tool_not_found", { tool: toolName });
       const result = {
         isError: true,
         content: [
           {
             type: "text",
-            text: JSON.stringify({ ok: false, code: "unknown_tool", tool: toolName })
+            text: JSON.stringify({
+              ok: false,
+              code: "unknown_tool",
+              tool: toolName
+            })
           }
         ]
       };
@@ -23802,14 +24082,14 @@ function wireTools(server, ctx) {
     try {
       let result = await spec.handler(args, ctx);
       result = await piggybackInbox(ctx, toolName, result);
-      log7.debug("tool_result", {
+      log8.debug("tool_result", {
         tool: toolName,
         ok: !result.isError,
         duration_ms: Date.now() - started
       });
       return result;
     } catch (e) {
-      log7.error("tool_call_err", {
+      log8.error("tool_call_err", {
         tool: toolName,
         err: e instanceof Error ? e.message : String(e),
         duration_ms: Date.now() - started
@@ -23837,14 +24117,16 @@ async function startStdioServer() {
     ctx = await buildContext({ version: SERVER_VERSION });
   } catch (e) {
     if (e instanceof IdentityError) {
-      log7.error("identity_unresolvable", { message: e.message, hint: e.hint });
+      log8.error("identity_unresolvable", { message: e.message, hint: e.hint });
       process.stderr.write(`
 claude-bridge fatal: ${e.message}
 Hint: ${e.hint}
 
 `);
     } else {
-      log7.error("boot_failed", { err: e instanceof Error ? e.message : String(e) });
+      log8.error("boot_failed", {
+        err: e instanceof Error ? e.message : String(e)
+      });
     }
     process.exit(1);
   }
@@ -23856,16 +24138,16 @@ Hint: ${e.hint}
   const keepAlive = setInterval(() => void 0, 6e4);
   process.on("beforeExit", () => clearInterval(keepAlive));
   process.stdin.on("end", () => {
-    log7.warn("stdin_eof_ignored", {
+    log8.warn("stdin_eof_ignored", {
       reason: "windows-stdio-probe-close-survival"
     });
   });
   process.stdin.on("close", () => {
-    log7.warn("stdin_close_ignored", {
+    log8.warn("stdin_close_ignored", {
       reason: "windows-stdio-probe-close-survival"
     });
   });
-  log7.info("started", {
+  log8.info("started", {
     name: SERVER_NAME,
     version: SERVER_VERSION,
     tools: TOOLS.length,
@@ -23873,13 +24155,13 @@ Hint: ${e.hint}
     selfName: ctx.self.name
   });
   const { pushed } = await pumpInboxToChannel(ctx);
-  if (pushed > 0) log7.info("backlog_drained", { pushed });
+  if (pushed > 0) log8.info("backlog_drained", { pushed });
   try {
     const { spawn } = await import("node:child_process");
-    const { join: join14, dirname: dirname7 } = await import("node:path");
+    const { join: join15, dirname: dirname6 } = await import("node:path");
     const bundlePath = process.argv[1] ?? "";
     if (bundlePath) {
-      const setupCheckPath = join14(dirname7(bundlePath), "setup-check.cjs");
+      const setupCheckPath = join15(dirname6(bundlePath), "setup-check.cjs");
       const child = spawn(process.execPath, [setupCheckPath], {
         stdio: "ignore",
         detached: true
@@ -23888,12 +24170,17 @@ Hint: ${e.hint}
       child.on("error", () => void 0);
     }
   } catch (e) {
-    log7.warn("setup_check_spawn_failed", {
+    log8.warn("setup_check_spawn_failed", {
       err: e instanceof Error ? e.message : String(e)
     });
   }
+  void Promise.resolve().then(() => (init_hygiene(), hygiene_exports)).then(({ runHygieneSweep: runHygieneSweep2 }) => runHygieneSweep2()).catch((e) => {
+    log8.warn("hygiene_sweep_failed", {
+      err: e instanceof Error ? e.message : String(e)
+    });
+  });
   const shutdown = async (signal) => {
-    log7.info("shutdown", { signal });
+    log8.info("shutdown", { signal });
     await shutdownContext(ctx).catch(() => void 0);
     await server.close().catch(() => void 0);
     process.exit(0);
@@ -23903,13 +24190,14 @@ Hint: ${e.hint}
 }
 
 // src/index.ts
-var log8 = makeLogger("entry");
+init_logger();
+var log9 = makeLogger("entry");
 async function main() {
-  log8.info("boot");
+  log9.info("boot");
   try {
     await startStdioServer();
   } catch (e) {
-    log8.error("fatal", { err: e instanceof Error ? e.message : String(e) });
+    log9.error("fatal", { err: e instanceof Error ? e.message : String(e) });
     process.exit(1);
   }
 }
