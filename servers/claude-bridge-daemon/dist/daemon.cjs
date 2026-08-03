@@ -7,7 +7,7 @@ var __export = (target, all) => {
 };
 
 // src/index.ts
-var import_promises11 = require("node:fs/promises");
+var import_promises14 = require("node:fs/promises");
 
 // ../../packages/shared/src/atomic-write.ts
 var import_node_crypto = require("node:crypto");
@@ -144,10 +144,39 @@ function heartbeatPath() {
   return (0, import_node_path3.join)(controlDir(), "heartbeat");
 }
 
+// ../../packages/shared/src/reentrancy-guard.ts
+function guardReentrancy(fn, options = {}) {
+  let inFlight = false;
+  let skipped = 0;
+  const run = async () => {
+    if (inFlight) {
+      skipped++;
+      options.onSkip?.(skipped);
+      return;
+    }
+    inFlight = true;
+    try {
+      await fn();
+    } catch (e) {
+      options.onError?.(e);
+    } finally {
+      inFlight = false;
+      skipped = 0;
+    }
+  };
+  return Object.assign(run, {
+    busy: () => inFlight,
+    skipped: () => skipped
+  });
+}
+function isPowerOfTwo(n) {
+  return n > 0 && (n & n - 1) === 0;
+}
+
 // package.json
 var package_default = {
   name: "claude-bridge-daemon",
-  version: "0.10.0-rc.2",
+  version: "0.10.1-rc.2",
   private: true,
   description: "Control-plane daemon for the claude-bridge plugin: peer lifecycle, telemetry, audit. Distributed as opt-in artefact \u2014 see ADR-008.",
   type: "module",
@@ -258,8 +287,12 @@ async function readRequest(fileName) {
 async function markRequestDone(requestId) {
   try {
     await (0, import_promises3.rename)(requestPath(requestId), requestDonePath(requestId));
+    return true;
   } catch (e) {
+    const code = e.code;
+    if (code === "ENOENT") return true;
     log2.warn("request_mark_done_failed", { requestId, err: String(e) });
+    return false;
   }
 }
 async function writeResult(res) {
@@ -4880,7 +4913,20 @@ async function handlePeerSpawn(req, ctx) {
 var PeerStopArgsSchema = external_exports.object({
   peer: external_exports.string().min(1),
   reason: external_exports.string().optional(),
-  force: external_exports.boolean().default(false)
+  force: external_exports.boolean().default(false),
+  /**
+   * v0.10.1: keep the peer in state.peers with status:"stopped" instead
+   * of deleting it. Used by team_stop so that team_layout apply can
+   * resume the same sessionId later. Default false = original delete
+   * semantics (backward-compatible with v0.10.0-rc.2 callers).
+   */
+  keepInState: external_exports.boolean().default(false),
+  /**
+   * Only meaningful when keepInState:true — sets the resulting
+   * PeerRecord.stoppedCleanly. Callers that don't know (plain peer_stop)
+   * pass null; team_stop passes true/false based on ack outcome.
+   */
+  stoppedCleanly: external_exports.boolean().nullable().optional()
 }).strict();
 function findPeer2(state, key) {
   if (state.peers[key]) return { sessionId: key };
@@ -4951,8 +4997,20 @@ async function handlePeerStop(req, ctx) {
     });
     return errResult(req.id, req.tool, "host_kill_failed", msg, { sessionId, sessionKey });
   }
+  const keepInState = args.keepInState;
+  const stoppedCleanly = keepInState ? args.stoppedCleanly ?? null : void 0;
   await applyStateChange(ctx.state, (draft) => {
-    delete draft.peers[sessionId];
+    if (keepInState) {
+      const rec = draft.peers[sessionId];
+      if (rec) {
+        rec.status = "stopped";
+        rec.stoppedCleanly = stoppedCleanly ?? null;
+        rec.pid = null;
+        rec.lastUpdatedAt = (/* @__PURE__ */ new Date()).toISOString();
+      }
+    } else {
+      delete draft.peers[sessionId];
+    }
   });
   await writeEvent({
     event: "peer_stopped",
@@ -4962,16 +5020,24 @@ async function handlePeerStop(req, ctx) {
       sessionId,
       sessionKey,
       reason: args.reason ?? null,
-      force: forceFlag
+      force: forceFlag,
+      keepInState,
+      stoppedCleanly
     }
   });
   await publishLifecycleEvent({
     event: "peer_stopped",
     sessionId,
     sessionKey,
-    details: { reason: args.reason ?? null, force: forceFlag }
+    details: { reason: args.reason ?? null, force: forceFlag, keepInState, stoppedCleanly }
   });
-  return okResult(req.id, req.tool, { sessionId, sessionKey, force: forceFlag });
+  return okResult(req.id, req.tool, {
+    sessionId,
+    sessionKey,
+    force: forceFlag,
+    keepInState,
+    stoppedCleanly
+  });
 }
 
 // src/handlers/peer-restart.ts
@@ -5064,9 +5130,416 @@ async function handlePeerRestart(req, ctx) {
   });
 }
 
-// src/handlers/team-layout.ts
+// src/hosts/driver.ts
+var UNSAFE_TARGET_CHARS = /[^A-Za-z0-9_-]/g;
+function sanitizeSessionKey(rawName) {
+  const sanitized = rawName.replace(UNSAFE_TARGET_CHARS, "_");
+  if (sanitized.length === 0) {
+    throw new Error(`Cannot derive a tmux target from '${rawName}' \u2014 nothing safe remained`);
+  }
+  return sanitized;
+}
+
+// src/hosts/process-inspector.ts
 var import_promises7 = require("node:fs/promises");
+var import_node_os2 = require("node:os");
 var import_node_path7 = require("node:path");
+var DEFAULT_MAX_DEPTH = 8;
+var UUID_RE = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i;
+function parsePpidFromStat(stat3) {
+  const close = stat3.lastIndexOf(")");
+  if (close === -1) return null;
+  const fields = stat3.slice(close + 1).trim().split(/\s+/);
+  const ppid = Number.parseInt(fields[1] ?? "", 10);
+  return Number.isNaN(ppid) ? null : ppid;
+}
+function sessionIdFromCmdline(cmdline) {
+  const idx = cmdline.indexOf("--resume");
+  if (idx === -1) return null;
+  const rest = cmdline.slice(idx + "--resume".length).trim();
+  const token = rest.split(/\s+/)[0] ?? "";
+  const match = UUID_RE.exec((0, import_node_path7.basename)(token));
+  return match ? match[0] : null;
+}
+var LinuxProcessInspector = class {
+  procRoot;
+  sessionsDir;
+  constructor(opts = {}) {
+    this.procRoot = opts.procRoot ?? "/proc";
+    this.sessionsDir = opts.sessionsDir ?? (0, import_node_path7.join)((0, import_node_os2.homedir)(), ".claude", "sessions");
+  }
+  async listClaudePeers() {
+    let entries;
+    try {
+      entries = await (0, import_promises7.readdir)(this.procRoot);
+    } catch {
+      return [];
+    }
+    const out = [];
+    for (const entry of entries) {
+      const pid = Number.parseInt(entry, 10);
+      if (Number.isNaN(pid) || String(pid) !== entry) continue;
+      const comm = await this.readProcFile(pid, "comm");
+      if (comm?.trim() !== "claude") continue;
+      const stat3 = await this.readProcFile(pid, "stat");
+      const ppid = stat3 ? parsePpidFromStat(stat3) : null;
+      const raw = await this.readProcFile(pid, "cmdline");
+      const cmdline = (raw ?? "").replace(/\0/g, " ").trim();
+      const { sessionId, source } = await this.resolveSessionId(pid, cmdline);
+      out.push({ pid, ppid: ppid ?? 0, sessionId, sessionIdSource: source, cmdline });
+    }
+    return out;
+  }
+  async ancestorsOf(pid, maxDepth = DEFAULT_MAX_DEPTH) {
+    const chain = [];
+    let current = pid;
+    for (let i = 0; i < maxDepth; i++) {
+      const stat3 = await this.readProcFile(current, "stat");
+      if (!stat3) break;
+      const ppid = parsePpidFromStat(stat3);
+      if (ppid === null || ppid <= 1) break;
+      chain.push(ppid);
+      current = ppid;
+    }
+    return chain;
+  }
+  /**
+   * `~/.claude/sessions/<pid>.json` is authoritative — it is the same file the
+   * MCP server reads to learn its own identity, so it exists for every peer
+   * including ones started without `--resume`. The command line is only a
+   * fallback for the window where that file is missing.
+   */
+  async resolveSessionId(pid, cmdline) {
+    try {
+      const raw = await (0, import_promises7.readFile)((0, import_node_path7.join)(this.sessionsDir, `${pid}.json`), "utf-8");
+      const parsed = JSON.parse(raw);
+      if (parsed.sessionId) return { sessionId: parsed.sessionId, source: "sessions-json" };
+    } catch {
+    }
+    const fromArgs = sessionIdFromCmdline(cmdline);
+    if (fromArgs) return { sessionId: fromArgs, source: "resume-arg" };
+    return { sessionId: null, source: "none" };
+  }
+  async readProcFile(pid, name) {
+    try {
+      return await (0, import_promises7.readFile)((0, import_node_path7.join)(this.procRoot, String(pid), name), "utf-8");
+    } catch {
+      return null;
+    }
+  }
+};
+function defaultProcessInspector() {
+  return new LinuxProcessInspector();
+}
+
+// src/handlers/team-adopt.ts
+var TeamAdoptArgsSchema = external_exports.object({
+  team: external_exports.string().min(1),
+  mode: external_exports.enum(["auto", "manual"]).default("auto"),
+  /** manual mode: host session key -> Claude session id. */
+  mapping: external_exports.record(external_exports.string().min(1)).optional(),
+  /** Safe by default — see the note above. */
+  dryRun: external_exports.boolean().default(true)
+}).strict();
+async function discoverCandidates(ctx, hostSessions) {
+  const inspector = ctx.processInspector ?? defaultProcessInspector();
+  const peers = await inspector.listClaudePeers();
+  const ownerBySessionKey = /* @__PURE__ */ new Map();
+  for (const proc of peers) {
+    const chain = [proc.pid, proc.ppid, ...await inspector.ancestorsOf(proc.pid)];
+    const owner = hostSessions.find((s) => s.pid !== null && chain.includes(s.pid));
+    if (!owner) continue;
+    const list = ownerBySessionKey.get(owner.sessionKey) ?? [];
+    list.push(proc);
+    ownerBySessionKey.set(owner.sessionKey, list);
+  }
+  const candidates = [];
+  const ambiguous = [];
+  const skips = [];
+  for (const session of hostSessions) {
+    const procs = ownerBySessionKey.get(session.sessionKey) ?? [];
+    if (procs.length === 0) {
+      skips.push({ sessionKey: session.sessionKey, reason: "no_claude_process" });
+      continue;
+    }
+    if (procs.length > 1) {
+      ambiguous.push({
+        sessionKey: session.sessionKey,
+        candidates: procs.map((p) => ({ pid: p.pid, sessionId: p.sessionId }))
+      });
+      continue;
+    }
+    const proc = procs[0];
+    if (!proc.sessionId) {
+      skips.push({
+        sessionKey: session.sessionKey,
+        reason: "no_session_id",
+        details: `pid ${proc.pid} \u2014 neither ~/.claude/sessions/<pid>.json nor --resume yielded a UUID`
+      });
+      continue;
+    }
+    candidates.push({
+      sessionKey: session.sessionKey,
+      sessionId: proc.sessionId,
+      pid: proc.pid,
+      sessionIdSource: proc.sessionIdSource
+    });
+  }
+  return { candidates, ambiguous, skips };
+}
+async function handleTeamAdopt(req, ctx) {
+  const parsed = TeamAdoptArgsSchema.safeParse(req.args);
+  if (!parsed.success) {
+    return errResult(req.id, req.tool, "invalid_args", "Schema validation failed", {
+      issues: parsed.error.issues
+    });
+  }
+  const args = parsed.data;
+  if (args.mode === "manual" && !args.mapping) {
+    return errResult(req.id, req.tool, "mapping_required", "mode:'manual' requires `mapping`", {
+      team: args.team
+    });
+  }
+  const hostSessions = await ctx.hostDriver.listSessions();
+  let candidates = [];
+  let ambiguous = [];
+  let skips = [];
+  if (args.mode === "manual") {
+    for (const [rawKey, sessionId] of Object.entries(args.mapping ?? {})) {
+      const sessionKey = sanitizeSessionKey(rawKey);
+      const host = hostSessions.find((s) => s.sessionKey === sessionKey);
+      if (!host) {
+        skips.push({ sessionKey, reason: "not_on_host" });
+        continue;
+      }
+      candidates.push({ sessionKey, sessionId, pid: host.pid, sessionIdSource: "manual" });
+    }
+  } else {
+    const found = await discoverCandidates(ctx, hostSessions);
+    candidates = found.candidates;
+    ambiguous = found.ambiguous;
+    skips = found.skips;
+  }
+  const fresh = [];
+  for (const c of candidates) {
+    const existing = ctx.state.peers[c.sessionId];
+    if (existing && existing.status !== "stopped") {
+      skips.push({
+        sessionKey: c.sessionKey,
+        reason: "already_adopted",
+        details: `sessionId ${c.sessionId} already in state as '${existing.status}'`
+      });
+      continue;
+    }
+    fresh.push(c);
+  }
+  for (const a of ambiguous) {
+    await writeEvent({
+      event: "adoption_ambiguous",
+      level: "warn",
+      by: { sessionId: req.requestedBy.sessionId, name: req.requestedBy.name },
+      requestId: req.id,
+      details: { team: args.team, sessionKey: a.sessionKey, candidates: a.candidates }
+    });
+  }
+  const plan = {
+    team: args.team,
+    mode: args.mode,
+    planned: fresh.map((c) => ({
+      sessionKey: c.sessionKey,
+      sessionId: c.sessionId,
+      pid: c.pid,
+      sessionIdSource: c.sessionIdSource
+    })),
+    ambiguous,
+    skipped: skips
+  };
+  if (args.dryRun) {
+    await writeEvent({
+      event: "team_adopt_preview",
+      by: { sessionId: req.requestedBy.sessionId, name: req.requestedBy.name },
+      requestId: req.id,
+      details: plan
+    });
+    return okResult(req.id, req.tool, { dryRun: true, ...plan });
+  }
+  const hostDriverName = ctx.hostDriver.name;
+  const adopted = [];
+  for (const c of fresh) {
+    const now = (/* @__PURE__ */ new Date()).toISOString();
+    await applyStateChange(ctx.state, (draft) => {
+      draft.peers[c.sessionId] = {
+        sessionId: c.sessionId,
+        name: c.sessionKey,
+        hostDriver: hostDriverName,
+        tmuxTarget: c.sessionKey,
+        pid: c.pid,
+        status: "live",
+        team: args.team,
+        // Flags that the daemon did not start this process: `startedAt` is
+        // when we adopted it, not when it actually booted.
+        adopted: true,
+        model: null,
+        accountProfile: null,
+        startedAt: now,
+        lastUpdatedAt: now
+      };
+    });
+    await writeEvent({
+      event: "peer_adopted",
+      by: { sessionId: req.requestedBy.sessionId, name: req.requestedBy.name },
+      requestId: req.id,
+      details: {
+        team: args.team,
+        sessionId: c.sessionId,
+        sessionKey: c.sessionKey,
+        pid: c.pid,
+        sessionIdSource: c.sessionIdSource,
+        hostDriver: hostDriverName
+      }
+    });
+    adopted.push(c.sessionId);
+  }
+  const summary = {
+    dryRun: false,
+    team: args.team,
+    mode: args.mode,
+    adopted,
+    ambiguous,
+    skipped: skips
+  };
+  await writeEvent({
+    event: "team_adopt_completed",
+    by: { sessionId: req.requestedBy.sessionId, name: req.requestedBy.name },
+    requestId: req.id,
+    details: summary
+  });
+  return okResult(req.id, req.tool, summary);
+}
+
+// src/handlers/team-layout.ts
+var import_promises8 = require("node:fs/promises");
+var import_node_path9 = require("node:path");
+
+// src/handlers/wake.ts
+var import_node_crypto4 = require("node:crypto");
+var import_node_path8 = require("node:path");
+var DEFAULT_WAKE_DELAY_MS = 8e3;
+var DEFAULT_WAKE_PROMPT = "[daemon] Wake \u2014 you were resumed from a stopped state. Re-onboard from your anchor, read your inbox (peer_inbox_read) and report to whoever woke you.";
+function inboxPendingDir3(peerId) {
+  return (0, import_node_path8.join)(bridgeRoot(), "inbox", peerId, "pending");
+}
+function generateMsgId3() {
+  const ms = Date.now().toString(36);
+  const rand = (0, import_node_crypto4.randomBytes)(4).toString("hex");
+  return `${ms}-${rand}`;
+}
+async function writeWakeMsg(opts, threadId) {
+  const msgId = generateMsgId3();
+  const dirty = opts.stoppedCleanly === false;
+  const envelope = {
+    id: msgId,
+    ts: (/* @__PURE__ */ new Date()).toISOString(),
+    from: { sessionId: "control-plane-daemon", name: "control-plane-daemon" },
+    to: { sessionId: opts.sessionId, name: opts.sessionId },
+    kind: "peer-wake",
+    threadId,
+    content: {
+      instruction: "You were resumed from a stopped state. Re-onboard from your anchor before doing anything else, then report to whoever woke you.",
+      reason: opts.reason,
+      stoppedCleanly: opts.stoppedCleanly ?? null,
+      ...dirty ? {
+        warning: "Your previous stop was FORCED \u2014 you did not complete the stop-ack cycle, so your anchor and memory may be incomplete or mid-write. Verify them before trusting them."
+      } : {}
+    }
+  };
+  await atomicWriteJson((0, import_node_path8.join)(inboxPendingDir3(opts.sessionId), `${msgId}.json`), envelope);
+  return msgId;
+}
+async function wakePeer(req, ctx, opts) {
+  const threadId = `wake:${opts.sessionId}:${Date.now().toString(36)}`;
+  let wakeMsgId = null;
+  try {
+    wakeMsgId = await writeWakeMsg(opts, threadId);
+  } catch (e) {
+    const err = e instanceof Error ? e.message : String(e);
+    await writeEvent({
+      event: "peer_wake_failed",
+      level: "warn",
+      by: { sessionId: req.requestedBy.sessionId, name: req.requestedBy.name },
+      requestId: req.id,
+      details: { sessionId: opts.sessionId, stage: "inbox_write", err }
+    });
+    return { sessionId: opts.sessionId, wakeMsgId: null, injected: false, error: err };
+  }
+  const sendKeys = ctx.hostDriver.sendKeys?.bind(ctx.hostDriver);
+  if (!sendKeys) {
+    await writeEvent({
+      event: "peer_wake_not_injected",
+      level: "warn",
+      by: { sessionId: req.requestedBy.sessionId, name: req.requestedBy.name },
+      requestId: req.id,
+      details: {
+        sessionId: opts.sessionId,
+        wakeMsgId,
+        hostDriver: ctx.hostDriver.name,
+        note: "driver has no send-keys \u2014 peer stays silent until a turn is triggered by hand"
+      }
+    });
+    return { sessionId: opts.sessionId, wakeMsgId, injected: false };
+  }
+  const delay = opts.wakeDelayMs ?? DEFAULT_WAKE_DELAY_MS;
+  if (delay > 0) await new Promise((r) => setTimeout(r, delay));
+  const prompt = opts.wakePrompt ?? DEFAULT_WAKE_PROMPT;
+  await writeEvent({
+    event: "peer_wake_inject",
+    by: { sessionId: req.requestedBy.sessionId, name: req.requestedBy.name },
+    requestId: req.id,
+    details: {
+      sessionId: opts.sessionId,
+      sessionKey: opts.sessionKey,
+      threadId,
+      wakeMsgId,
+      injectedKeys: prompt,
+      delayMs: delay
+    }
+  });
+  try {
+    await sendKeys(opts.sessionKey, prompt);
+  } catch (e) {
+    const err = e instanceof Error ? e.message : String(e);
+    await writeEvent({
+      event: "peer_wake_failed",
+      level: "warn",
+      by: { sessionId: req.requestedBy.sessionId, name: req.requestedBy.name },
+      requestId: req.id,
+      details: { sessionId: opts.sessionId, sessionKey: opts.sessionKey, stage: "send_keys", err }
+    });
+    return { sessionId: opts.sessionId, wakeMsgId, injected: false, error: err };
+  }
+  await writeEvent({
+    event: "peer_woken",
+    by: { sessionId: req.requestedBy.sessionId, name: req.requestedBy.name },
+    requestId: req.id,
+    details: {
+      sessionId: opts.sessionId,
+      sessionKey: opts.sessionKey,
+      threadId,
+      wakeMsgId,
+      reason: opts.reason,
+      stoppedCleanly: opts.stoppedCleanly ?? null
+    }
+  });
+  await publishLifecycleEvent({
+    event: "peer_woken",
+    sessionId: opts.sessionId,
+    sessionKey: opts.sessionKey,
+    details: { reason: opts.reason, stoppedCleanly: opts.stoppedCleanly ?? null }
+  });
+  return { sessionId: opts.sessionId, wakeMsgId, injected: true };
+}
+
+// src/handlers/team-layout.ts
 var PeerSpecSchema = external_exports.object({
   sessionId: external_exports.string().min(1),
   displayName: external_exports.string().min(1),
@@ -5092,14 +5565,24 @@ var TeamLayoutArgsSchema = external_exports.object({
    * and by future callers who want to preview a spec before writing
    * it to teams/.
    */
-  inline: TeamFileSchema.optional()
+  inline: TeamFileSchema.optional(),
+  /**
+   * Wake peers that were resumed from `status:"stopped"` (v0.10.1).
+   *
+   * On by default: a resumed session is silent until something triggers a
+   * turn, so skipping the wake gives you a team that is running but deaf.
+   * Turn it off only when you intend to drive the peers by hand.
+   */
+  wake: external_exports.boolean().default(true),
+  /** Override the post-spawn settle delay before key injection. */
+  wakeDelayMs: external_exports.number().int().min(0).max(12e4).optional()
 }).strict();
 function teamFilePath(team) {
-  return (0, import_node_path7.join)(teamsDir(), `${team}.json`);
+  return (0, import_node_path9.join)(teamsDir(), `${team}.json`);
 }
 async function loadTeamSpec(team) {
   try {
-    const raw = await (0, import_promises7.readFile)(teamFilePath(team), "utf-8");
+    const raw = await (0, import_promises8.readFile)(teamFilePath(team), "utf-8");
     const parsed = TeamFileSchema.safeParse(JSON.parse(raw));
     if (!parsed.success) throw new Error(`Team spec parse failed: ${parsed.error.message}`);
     return parsed.data;
@@ -5142,13 +5625,22 @@ async function handleTeamLayout(req, ctx) {
   }
   const specIds = new Set(spec.peers.map((p) => p.sessionId));
   const stateIds = new Set(Object.keys(ctx.state.peers));
+  const stoppedIds = new Set(
+    Object.entries(ctx.state.peers).filter(([, rec]) => rec.status === "stopped").map(([id]) => id)
+  );
+  const runningIds = new Set([...stateIds].filter((id) => !stoppedIds.has(id)));
   const toSpawn = spec.peers.filter((p) => !stateIds.has(p.sessionId));
-  const toStop = [...stateIds].filter((id) => !specIds.has(id));
+  const toResume = spec.peers.filter((p) => stoppedIds.has(p.sessionId));
+  const runningExtras = [...runningIds].filter((id) => !specIds.has(id));
+  const toStop = args.prune ? runningExtras : [];
+  const toForget = args.prune ? [...stoppedIds].filter((id) => !specIds.has(id)) : [];
   const diff = {
     team: spec.team,
     plannedSpawn: toSpawn.map((p) => p.sessionId),
-    plannedStop: args.prune ? toStop : [],
-    keptExtras: args.prune ? [] : toStop
+    plannedResume: toResume.map((p) => p.sessionId),
+    plannedStop: toStop,
+    plannedForget: toForget,
+    keptExtras: args.prune ? [] : runningExtras
   };
   await writeEvent({
     event: "team_layout_reconciling",
@@ -5159,12 +5651,11 @@ async function handleTeamLayout(req, ctx) {
   if (!args.apply) {
     return okResult(req.id, req.tool, { mode: "plan", diff });
   }
-  const spawnedOk = [];
-  const spawnedFailed = [];
-  for (const p of toSpawn) {
+  const spawnOne = async (p, forceResume, label) => {
+    const record = ctx.state.peers[p.sessionId];
     const spawnReq = {
       schemaVersion: req.schemaVersion,
-      id: `${req.id}:spawn:${p.sessionId}`,
+      id: `${req.id}:${label}:${p.sessionId}`,
       ts: req.ts,
       tool: "peer_spawn",
       args: {
@@ -5173,26 +5664,63 @@ async function handleTeamLayout(req, ctx) {
         cwd: p.cwd,
         command: p.command,
         args: p.args,
-        resume: p.resume,
-        model: p.model ?? null,
-        accountProfile: p.accountProfile ?? null,
+        // Resuming a tombstone MUST pass `--resume <sessionId>`, otherwise the
+        // peer comes back as a blank session and its transcript is orphaned.
+        resume: forceResume || p.resume,
+        // Fall back to what the peer was last running with, so a stop→start
+        // round trip does not silently downgrade the model.
+        model: p.model ?? record?.model ?? null,
+        accountProfile: p.accountProfile ?? record?.accountProfile ?? null,
         extraAllowEnv: p.extraAllowEnv,
         extraEnv: p.extraEnv
       },
       requestedBy: req.requestedBy
     };
-    const res = await handlePeerSpawn(spawnReq, ctx);
+    return handlePeerSpawn(spawnReq, ctx);
+  };
+  const stampTeam = async (sessionId) => {
+    await applyStateChange(ctx.state, (draft) => {
+      const rec = draft.peers[sessionId];
+      if (rec) rec.team = spec.team;
+    });
+  };
+  const spawnedOk = [];
+  const spawnedFailed = [];
+  for (const p of toSpawn) {
+    const res = await spawnOne(p, false, "spawn");
     if (res.outcome === "ok") {
+      await stampTeam(p.sessionId);
       spawnedOk.push(p.sessionId);
     } else {
-      spawnedFailed.push({
-        sessionId: p.sessionId,
-        err: res.error?.message ?? "unknown"
-      });
+      spawnedFailed.push({ sessionId: p.sessionId, err: res.error?.message ?? "unknown" });
     }
+  }
+  const resumedOk = [];
+  const resumedFailed = [];
+  const wakeOutcomes = [];
+  for (const p of toResume) {
+    const stoppedCleanly = ctx.state.peers[p.sessionId]?.stoppedCleanly ?? null;
+    const res = await spawnOne(p, true, "resume");
+    if (res.outcome !== "ok") {
+      resumedFailed.push({ sessionId: p.sessionId, err: res.error?.message ?? "unknown" });
+      continue;
+    }
+    await stampTeam(p.sessionId);
+    resumedOk.push(p.sessionId);
+    if (!args.wake) continue;
+    const data = res.data;
+    const outcome = await wakePeer(req, ctx, {
+      sessionId: p.sessionId,
+      sessionKey: data?.sessionKey ?? p.displayName,
+      reason: `team_layout_resume:${spec.team}`,
+      stoppedCleanly,
+      ...args.wakeDelayMs !== void 0 ? { wakeDelayMs: args.wakeDelayMs } : {}
+    });
+    wakeOutcomes.push(outcome);
   }
   const stoppedOk = [];
   const stoppedFailed = [];
+  const forgotten = [];
   if (args.prune) {
     for (const id of toStop) {
       const stopReq = {
@@ -5207,7 +5735,23 @@ async function handleTeamLayout(req, ctx) {
       if (res.outcome === "ok") stoppedOk.push(id);
       else stoppedFailed.push({ sessionId: id, err: res.error?.message ?? "unknown" });
     }
+    for (const id of toForget) {
+      await applyStateChange(ctx.state, (draft) => {
+        delete draft.peers[id];
+      });
+      forgotten.push(id);
+    }
+    if (forgotten.length > 0) {
+      await writeEvent({
+        event: "team_layout_tombstones_forgotten",
+        by: { sessionId: req.requestedBy.sessionId, name: req.requestedBy.name },
+        requestId: req.id,
+        details: { team: spec.team, forgotten }
+      });
+    }
   }
+  const wokenOk = wakeOutcomes.filter((w) => w.injected).map((w) => w.sessionId);
+  const wokenSilent = wakeOutcomes.filter((w) => !w.injected).map((w) => ({ sessionId: w.sessionId, err: w.error ?? "not injected" }));
   await writeEvent({
     event: "team_layout_applied",
     by: { sessionId: req.requestedBy.sessionId, name: req.requestedBy.name },
@@ -5216,18 +5760,28 @@ async function handleTeamLayout(req, ctx) {
       team: spec.team,
       spawnedOk,
       spawnedFailed,
+      resumedOk,
+      resumedFailed,
+      wokenOk,
+      wokenSilent,
       stoppedOk,
       stoppedFailed,
+      forgotten,
       keptExtras: diff.keptExtras
     }
   });
-  const failed = spawnedFailed.length > 0 || stoppedFailed.length > 0;
+  const failed = spawnedFailed.length > 0 || resumedFailed.length > 0 || stoppedFailed.length > 0;
   const result = {
     team: spec.team,
     spawnedOk,
     spawnedFailed,
+    resumedOk,
+    resumedFailed,
+    wokenOk,
+    wokenSilent,
     stoppedOk,
     stoppedFailed,
+    forgotten,
     keptExtras: diff.keptExtras
   };
   if (failed) {
@@ -5294,6 +5848,328 @@ async function handleTeamStatus(req, ctx) {
   });
 }
 
+// src/handlers/team-stop.ts
+var import_node_crypto5 = require("node:crypto");
+var import_promises9 = require("node:fs/promises");
+var import_node_path10 = require("node:path");
+var DEFAULT_ANCHOR_TIMEOUT_MS2 = 12e4;
+var DEFAULT_ACK_POLL_MS2 = 500;
+var STOP_ACK_FILENAME_EXTENSION = ".json";
+var PeerOrderableSchema = external_exports.object({
+  sessionId: external_exports.string().min(1),
+  displayName: external_exports.string().min(1),
+  role: external_exports.string().optional()
+});
+var TeamStopFileSchema = external_exports.object({
+  team: external_exports.string().min(1),
+  peers: external_exports.array(PeerOrderableSchema).min(1)
+});
+var TeamStopArgsSchema = external_exports.object({
+  team: external_exports.string().min(1),
+  force: external_exports.boolean().default(false),
+  anchorTimeoutMs: external_exports.number().int().positive().max(6e5).optional(),
+  ackPollMs: external_exports.number().int().positive().max(1e4).optional(),
+  dryRun: external_exports.boolean().default(false),
+  inline: TeamStopFileSchema.optional()
+}).strict();
+function teamFilePath2(team) {
+  return (0, import_node_path10.join)(teamsDir(), `${team}.json`);
+}
+async function loadTeamOrder(team) {
+  try {
+    const raw = await (0, import_promises9.readFile)(teamFilePath2(team), "utf-8");
+    const json = JSON.parse(raw);
+    const parsed = TeamStopFileSchema.safeParse(json);
+    if (!parsed.success) throw new Error(`Team spec parse failed: ${parsed.error.message}`);
+    return parsed.data;
+  } catch (e) {
+    const code = e.code;
+    if (code === "ENOENT") return null;
+    throw e;
+  }
+}
+function stopAckDir() {
+  return (0, import_node_path10.join)(controlDir(), "stop-ack");
+}
+function stopAckPath(sessionId) {
+  return (0, import_node_path10.join)(stopAckDir(), `${sessionId}${STOP_ACK_FILENAME_EXTENSION}`);
+}
+function inboxPendingDir4(peerId) {
+  return (0, import_node_path10.join)(bridgeRoot(), "inbox", peerId, "pending");
+}
+function generateMsgId4() {
+  const ms = Date.now().toString(36);
+  const rand = (0, import_node_crypto5.randomBytes)(4).toString("hex");
+  return `${ms}-${rand}`;
+}
+async function fileExists2(path) {
+  try {
+    await (0, import_promises9.access)(path);
+    return true;
+  } catch {
+    return false;
+  }
+}
+async function pollForAck2(sessionId, deadline, pollMs) {
+  const path = stopAckPath(sessionId);
+  while (Date.now() < deadline) {
+    if (await fileExists2(path)) return true;
+    await new Promise((r) => setTimeout(r, pollMs));
+  }
+  return fileExists2(path);
+}
+async function consumeAckFile2(sessionId) {
+  const src = stopAckPath(sessionId);
+  const done = (0, import_node_path10.join)(stopAckDir(), "done");
+  try {
+    await (0, import_promises9.mkdir)(done, { recursive: true });
+    await (0, import_promises9.rename)(src, (0, import_node_path10.join)(done, `${sessionId}-${Date.now()}.json`));
+  } catch {
+    await (0, import_promises9.unlink)(src).catch(() => void 0);
+  }
+}
+async function writeStopRequestMsg(peerId, threadId, reason) {
+  const msgId = generateMsgId4();
+  const envelope = {
+    id: msgId,
+    ts: (/* @__PURE__ */ new Date()).toISOString(),
+    from: { sessionId: "control-plane-daemon", name: "control-plane-daemon" },
+    to: { sessionId: peerId, name: peerId },
+    kind: "stop-request",
+    threadId,
+    content: {
+      instruction: "Finish or park current work, flush anchor + memory, then touch ~/.claude-bridge/control/stop-ack/<sessionId>.json \u2014 the daemon will kill your session once the ack file is present.",
+      reason
+    }
+  };
+  const path = (0, import_node_path10.join)(inboxPendingDir4(peerId), `${msgId}.json`);
+  await atomicWriteJson(path, envelope);
+  return msgId;
+}
+async function stopSinglePeer(req, ctx, peer, args, threadId, anchorTimeoutMs, ackPollMs) {
+  const record = ctx.state.peers[peer.sessionId];
+  if (!record) {
+    return { sessionId: peer.sessionId, displayName: peer.displayName, outcome: "dead" };
+  }
+  const sessionKey = record.tmuxTarget ?? record.name;
+  const alive = record.tmuxTarget ? await ctx.hostDriver.hasSession(sessionKey) : false;
+  if (!alive) {
+    const stopReq2 = {
+      schemaVersion: req.schemaVersion,
+      id: `${req.id}:stop:${peer.sessionId}`,
+      ts: req.ts,
+      tool: "peer_stop",
+      args: {
+        peer: peer.sessionId,
+        reason: `team_stop:${args.team}:dead`,
+        force: false,
+        keepInState: true,
+        stoppedCleanly: null
+      },
+      requestedBy: req.requestedBy
+    };
+    const res2 = await handlePeerStop(stopReq2, ctx);
+    if (res2.outcome === "error") {
+      return {
+        sessionId: peer.sessionId,
+        displayName: peer.displayName,
+        outcome: "failed",
+        err: res2.error?.message
+      };
+    }
+    await writeEvent({
+      event: "peer_stopped_dead",
+      by: { sessionId: req.requestedBy.sessionId, name: req.requestedBy.name },
+      requestId: req.id,
+      details: { sessionId: peer.sessionId, sessionKey, team: args.team, threadId }
+    });
+    return { sessionId: peer.sessionId, displayName: peer.displayName, outcome: "dead" };
+  }
+  await (0, import_promises9.mkdir)(stopAckDir(), { recursive: true });
+  let stopReqMsgId;
+  try {
+    stopReqMsgId = await writeStopRequestMsg(
+      peer.sessionId,
+      threadId,
+      args.force ? "force:true" : null
+    );
+  } catch (e) {
+    return {
+      sessionId: peer.sessionId,
+      displayName: peer.displayName,
+      outcome: "failed",
+      err: e instanceof Error ? e.message : String(e)
+    };
+  }
+  await writeEvent({
+    event: "peer_stop_requested",
+    by: { sessionId: req.requestedBy.sessionId, name: req.requestedBy.name },
+    requestId: req.id,
+    details: {
+      sessionId: peer.sessionId,
+      sessionKey,
+      team: args.team,
+      threadId,
+      stopReqMsgId,
+      timeoutMs: anchorTimeoutMs
+    }
+  });
+  const deadline = Date.now() + anchorTimeoutMs;
+  const acked = await pollForAck2(peer.sessionId, deadline, ackPollMs);
+  if (!acked && !args.force) {
+    await writeEvent({
+      event: "stop_ack_timeout",
+      level: "warn",
+      by: { sessionId: req.requestedBy.sessionId, name: req.requestedBy.name },
+      requestId: req.id,
+      details: {
+        sessionId: peer.sessionId,
+        sessionKey,
+        team: args.team,
+        threadId,
+        timeoutMs: anchorTimeoutMs
+      }
+    });
+    return { sessionId: peer.sessionId, displayName: peer.displayName, outcome: "skipped" };
+  }
+  if (acked) {
+    await consumeAckFile2(peer.sessionId);
+  }
+  const stopReq = {
+    schemaVersion: req.schemaVersion,
+    id: `${req.id}:stop:${peer.sessionId}`,
+    ts: req.ts,
+    tool: "peer_stop",
+    args: {
+      peer: peer.sessionId,
+      reason: `team_stop:${args.team}:${acked ? "cleanly" : "forced"}`,
+      force: !acked,
+      keepInState: true,
+      stoppedCleanly: acked
+    },
+    requestedBy: req.requestedBy
+  };
+  const res = await handlePeerStop(stopReq, ctx);
+  if (res.outcome === "error") {
+    return {
+      sessionId: peer.sessionId,
+      displayName: peer.displayName,
+      outcome: "failed",
+      err: res.error?.message
+    };
+  }
+  await writeEvent({
+    event: acked ? "peer_stopped_cleanly" : "peer_stopped_forced",
+    by: { sessionId: req.requestedBy.sessionId, name: req.requestedBy.name },
+    requestId: req.id,
+    details: { sessionId: peer.sessionId, sessionKey, team: args.team, threadId }
+  });
+  await publishLifecycleEvent({
+    event: acked ? "peer_stopped_cleanly" : "peer_stopped_forced",
+    sessionId: peer.sessionId,
+    sessionKey,
+    details: { team: args.team, threadId }
+  });
+  return {
+    sessionId: peer.sessionId,
+    displayName: peer.displayName,
+    outcome: acked ? "cleanly" : "forced"
+  };
+}
+function orderPeersForStop(peers) {
+  const veliteli = peers.filter((p) => p.role === "velitel");
+  const rest = peers.filter((p) => p.role !== "velitel");
+  return veliteli.length > 0 ? [...rest, ...veliteli] : peers.slice();
+}
+async function handleTeamStop(req, ctx) {
+  const parsed = TeamStopArgsSchema.safeParse(req.args);
+  if (!parsed.success) {
+    return errResult(req.id, req.tool, "invalid_args", "Schema validation failed", {
+      issues: parsed.error.issues
+    });
+  }
+  const args = parsed.data;
+  let spec;
+  try {
+    spec = args.inline ?? await loadTeamOrder(args.team);
+  } catch (e) {
+    return errResult(
+      req.id,
+      req.tool,
+      "team_spec_read_failed",
+      e instanceof Error ? e.message : String(e),
+      { team: args.team }
+    );
+  }
+  if (!spec) {
+    return errResult(
+      req.id,
+      req.tool,
+      "team_spec_missing",
+      `No team file at ${teamFilePath2(args.team)}`,
+      { team: args.team }
+    );
+  }
+  const ordered = orderPeersForStop(spec.peers);
+  const anchorTimeoutMs = args.anchorTimeoutMs ?? DEFAULT_ANCHOR_TIMEOUT_MS2;
+  const ackPollMs = args.ackPollMs ?? DEFAULT_ACK_POLL_MS2;
+  const threadId = `team-stop:${spec.team}:${Date.now().toString(36)}`;
+  if (args.dryRun) {
+    return okResult(req.id, req.tool, {
+      mode: "dryRun",
+      team: spec.team,
+      order: ordered.map((p) => ({
+        sessionId: p.sessionId,
+        displayName: p.displayName,
+        role: p.role ?? null
+      })),
+      anchorTimeoutMs,
+      force: args.force
+    });
+  }
+  await writeEvent({
+    event: "team_stop_started",
+    by: { sessionId: req.requestedBy.sessionId, name: req.requestedBy.name },
+    requestId: req.id,
+    details: {
+      team: spec.team,
+      threadId,
+      order: ordered.map((p) => p.sessionId),
+      anchorTimeoutMs,
+      force: args.force
+    }
+  });
+  const outcomes = [];
+  for (const peer of ordered) {
+    const outcome = await stopSinglePeer(
+      req,
+      ctx,
+      peer,
+      args,
+      threadId,
+      anchorTimeoutMs,
+      ackPollMs
+    );
+    outcomes.push(outcome);
+  }
+  const summary = {
+    team: spec.team,
+    threadId,
+    stoppedCleanly: outcomes.filter((o) => o.outcome === "cleanly").map((o) => o.sessionId),
+    stoppedForced: outcomes.filter((o) => o.outcome === "forced").map((o) => o.sessionId),
+    stoppedDead: outcomes.filter((o) => o.outcome === "dead").map((o) => o.sessionId),
+    skipped: outcomes.filter((o) => o.outcome === "skipped").map((o) => o.sessionId),
+    failedKill: outcomes.filter((o) => o.outcome === "failed").map((o) => ({ sessionId: o.sessionId, err: o.err ?? "unknown" }))
+  };
+  await writeEvent({
+    event: "team_stop_completed",
+    by: { sessionId: req.requestedBy.sessionId, name: req.requestedBy.name },
+    requestId: req.id,
+    details: summary
+  });
+  return okResult(req.id, req.tool, summary);
+}
+
 // src/handlers/index.ts
 var HANDLERS = {
   peer_spawn: handlePeerSpawn,
@@ -5302,6 +6178,8 @@ var HANDLERS = {
   peer_compact: handlePeerCompact,
   team_status: handleTeamStatus,
   team_layout: handleTeamLayout,
+  team_stop: handleTeamStop,
+  team_adopt: handleTeamAdopt,
   control_status: handleControlStatus
 };
 async function dispatch(req, ctx) {
@@ -5322,17 +6200,17 @@ async function dispatch(req, ctx) {
 }
 
 // src/heartbeat.ts
-var import_promises8 = require("node:fs/promises");
+var import_promises10 = require("node:fs/promises");
 var log5 = makeLogger("daemon.heartbeat");
 var timer = null;
 async function touch() {
   const now = /* @__PURE__ */ new Date();
   try {
-    await (0, import_promises8.utimes)(heartbeatPath(), now, now);
+    await (0, import_promises10.utimes)(heartbeatPath(), now, now);
   } catch (e) {
     const code = e.code;
     if (code === "ENOENT") {
-      await (0, import_promises8.writeFile)(heartbeatPath(), "");
+      await (0, import_promises10.writeFile)(heartbeatPath(), "");
     } else {
       log5.warn("heartbeat_touch_failed", { err: String(e) });
     }
@@ -5352,35 +6230,45 @@ function stopHeartbeat() {
   }
 }
 
-// src/hosts/driver.ts
-var UNSAFE_TARGET_CHARS = /[^A-Za-z0-9_-]/g;
-function sanitizeSessionKey(rawName) {
-  const sanitized = rawName.replace(UNSAFE_TARGET_CHARS, "_");
-  if (sanitized.length === 0) {
-    throw new Error(`Cannot derive a tmux target from '${rawName}' \u2014 nothing safe remained`);
-  }
-  return sanitized;
-}
-
 // src/hosts/tmux-driver.ts
 var import_node_child_process = require("node:child_process");
+var import_promises11 = require("node:fs/promises");
+var import_node_path11 = require("node:path");
 var import_node_util = require("node:util");
 var execFileAsync = (0, import_node_util.promisify)(import_node_child_process.execFile);
 var log6 = makeLogger("daemon.host.tmux");
+var EXEC_DEFAULTS = { killSignal: "SIGKILL" };
+var QUERY_TIMEOUT_MS = 5e3;
+var MUTATE_TIMEOUT_MS = 1e4;
+var SEND_KEYS_TIMEOUT_MS = 5e3;
+var DEFAULT_SEND_VERIFY_DELAY_MS = 250;
+function paneContains(captured, keys) {
+  const flat = (s) => s.replace(/\s+/g, " ").trim();
+  const needle = flat(keys);
+  if (needle.length === 0) return true;
+  const haystack = flat(captured);
+  const probe = needle.length > 40 ? needle.slice(-40) : needle;
+  return haystack.includes(probe);
+}
 var TmuxDriver = class {
   name = "tmux";
   tmuxBin;
   verifyTimeoutMs;
   verifyIntervalMs;
+  sendVerifyDelayMs;
   constructor(opts = {}) {
     this.tmuxBin = opts.tmuxBin ?? "tmux";
     this.verifyTimeoutMs = opts.verifyTimeoutMs ?? 2e3;
     this.verifyIntervalMs = opts.verifyIntervalMs ?? 200;
+    this.sendVerifyDelayMs = opts.sendVerifyDelayMs ?? DEFAULT_SEND_VERIFY_DELAY_MS;
   }
   async hasSession(sessionKey) {
     const canonical = sanitizeSessionKey(sessionKey);
     try {
-      await execFileAsync(this.tmuxBin, ["has-session", "-t", canonical]);
+      await execFileAsync(this.tmuxBin, ["has-session", "-t", canonical], {
+        ...EXEC_DEFAULTS,
+        timeout: QUERY_TIMEOUT_MS
+      });
       return true;
     } catch {
       return false;
@@ -5400,7 +6288,11 @@ var TmuxDriver = class {
     ];
     const { env } = opts;
     try {
-      await execFileAsync(this.tmuxBin, args, { env });
+      await execFileAsync(this.tmuxBin, args, {
+        ...EXEC_DEFAULTS,
+        env,
+        timeout: MUTATE_TIMEOUT_MS
+      });
     } catch (e) {
       log6.error("tmux_spawn_failed", {
         sessionKey: opts.sessionKey,
@@ -5422,7 +6314,10 @@ var TmuxDriver = class {
     const canonical = sanitizeSessionKey(sessionKey);
     if (!await this.hasSession(canonical)) return;
     try {
-      await execFileAsync(this.tmuxBin, ["kill-session", "-t", canonical]);
+      await execFileAsync(this.tmuxBin, ["kill-session", "-t", canonical], {
+        ...EXEC_DEFAULTS,
+        timeout: MUTATE_TIMEOUT_MS
+      });
     } catch (e) {
       if (!await this.hasSession(canonical)) return;
       const msg = e instanceof Error ? e.message : String(e);
@@ -5440,11 +6335,11 @@ var TmuxDriver = class {
   }
   async listSessions() {
     try {
-      const { stdout } = await execFileAsync(this.tmuxBin, [
-        "list-sessions",
-        "-F",
-        "#{session_name}	#{pane_pid}"
-      ]);
+      const { stdout } = await execFileAsync(
+        this.tmuxBin,
+        ["list-sessions", "-F", "#{session_name}	#{pane_pid}"],
+        { ...EXEC_DEFAULTS, timeout: QUERY_TIMEOUT_MS }
+      );
       const records = [];
       for (const line of stdout.split("\n")) {
         const trimmed = line.trim();
@@ -5465,19 +6360,113 @@ var TmuxDriver = class {
       throw e;
     }
   }
+  /**
+   * Inject keys into a pane and PROVE they landed (v0.10.1).
+   *
+   * Evidence for why this is not optional: during the 2026-08-02 tmux
+   * consolidation a `/exit` was sent to a peer and simply never arrived — no
+   * trace in the transcript, the input box empty, the process untouched — and
+   * the script that sent it then hung for 13 minutes with no log line. Two
+   * lessons, both encoded here: a send without verification is undelivered
+   * mail, and a wait without a log is an undiagnosable incident.
+   *
+   * Sequence:
+   *   1. If the pane is in copy-mode it swallows input — cancel out of it first.
+   *   2. Send the TEXT alone and confirm it is visible in the pane. This is the
+   *      real check: it proves the keystrokes reached the application while the
+   *      line is still uncommitted, so a failure costs nothing.
+   *   3. Only then send Enter.
+   *
+   * Every attempt is appended to `control/logs/sendkeys-<sessionKey>.log`.
+   * Throws when the text cannot be confirmed, so callers surface a hard failure
+   * instead of assuming delivery.
+   */
   async sendKeys(sessionKey, keys) {
     const canonical = sanitizeSessionKey(sessionKey);
-    await execFileAsync(this.tmuxBin, ["send-keys", "-t", canonical, keys, "Enter"]);
+    const inMode = await this.paneInMode(canonical);
+    if (inMode) {
+      await this.tmux(["send-keys", "-t", canonical, "-X", "cancel"], SEND_KEYS_TIMEOUT_MS).catch(
+        () => void 0
+      );
+    }
+    let delivered = false;
+    let attempts = 0;
+    let capturedTail = "";
+    let lastError = null;
+    for (attempts = 1; attempts <= 2 && !delivered; attempts++) {
+      try {
+        await this.tmux(["send-keys", "-t", canonical, keys], SEND_KEYS_TIMEOUT_MS);
+      } catch (e) {
+        lastError = e instanceof Error ? e.message : String(e);
+        continue;
+      }
+      await new Promise((r) => setTimeout(r, this.sendVerifyDelayMs));
+      capturedTail = await this.capturePane(canonical);
+      delivered = paneContains(capturedTail, keys);
+    }
+    await this.logSendKeys(canonical, {
+      keys,
+      paneInMode: inMode,
+      attempts: attempts - 1,
+      verdict: delivered ? "delivered" : "not-visible",
+      ...lastError ? { error: lastError } : {},
+      capturedTail: capturedTail.slice(-240)
+    });
+    if (!delivered) {
+      log6.error("tmux_send_keys_unverified", {
+        sessionKey: canonical,
+        attempts: attempts - 1,
+        err: lastError
+      });
+      throw new Error(
+        `send-keys to '${canonical}' could not be verified after ${attempts - 1} attempts \u2014 text never appeared in the pane${lastError ? ` (tmux: ${lastError.split("\n")[0]})` : ""}`
+      );
+    }
+    await this.tmux(["send-keys", "-t", canonical, "Enter"], SEND_KEYS_TIMEOUT_MS);
+  }
+  /** `#{pane_in_mode}` is "1" while the pane is in copy-mode / view-mode. */
+  async paneInMode(sessionKey) {
+    try {
+      const { stdout } = await this.tmux(
+        ["display-message", "-p", "-t", sessionKey, "#{pane_in_mode}"],
+        QUERY_TIMEOUT_MS
+      );
+      return stdout.trim() === "1";
+    } catch {
+      return false;
+    }
+  }
+  async capturePane(sessionKey) {
+    try {
+      const { stdout } = await this.tmux(
+        ["capture-pane", "-p", "-t", sessionKey],
+        QUERY_TIMEOUT_MS
+      );
+      return stdout;
+    } catch {
+      return "";
+    }
+  }
+  async logSendKeys(sessionKey, entry) {
+    try {
+      const dir = (0, import_node_path11.join)(controlDir(), "logs");
+      await (0, import_promises11.mkdir)(dir, { recursive: true });
+      const line = JSON.stringify({ ts: (/* @__PURE__ */ new Date()).toISOString(), sessionKey, ...entry });
+      await (0, import_promises11.appendFile)((0, import_node_path11.join)(dir, `sendkeys-${sessionKey}.log`), `${line}
+`, "utf-8");
+    } catch {
+    }
+  }
+  tmux(args, timeout) {
+    return execFileAsync(this.tmuxBin, args, { ...EXEC_DEFAULTS, timeout });
   }
   async readSessionPid(sessionKey) {
     try {
-      const { stdout } = await execFileAsync(this.tmuxBin, [
-        "display-message",
-        "-p",
-        "-t",
-        sessionKey,
-        "#{pane_pid}"
-      ]);
+      const { stdout } = await execFileAsync(
+        this.tmuxBin,
+        ["display-message", "-p", "-t", sessionKey, "#{pane_pid}"],
+        { ...EXEC_DEFAULTS, timeout: QUERY_TIMEOUT_MS }
+      );
       const parsed = Number.parseInt(stdout.trim(), 10);
       return Number.isNaN(parsed) ? null : parsed;
     } catch {
@@ -5507,7 +6496,7 @@ function defaultHostDriver() {
 
 // src/lock.ts
 var import_node_fs = require("node:fs");
-var import_promises9 = require("node:fs/promises");
+var import_promises12 = require("node:fs/promises");
 var log8 = makeLogger("daemon.lock");
 var LockAcquireError = class extends Error {
   constructor(message, heldBy) {
@@ -5548,7 +6537,7 @@ function isStale(payload) {
 }
 async function readLock() {
   try {
-    const raw = await (0, import_promises9.readFile)(daemonLockPath(), "utf-8");
+    const raw = await (0, import_promises12.readFile)(daemonLockPath(), "utf-8");
     const parsed = JSON.parse(raw);
     if (typeof parsed.pid !== "number") return null;
     return parsed;
@@ -5582,7 +6571,7 @@ async function acquireLock() {
 }
 async function releaseLock() {
   try {
-    await (0, import_promises9.unlink)(daemonLockPath());
+    await (0, import_promises12.unlink)(daemonLockPath());
     log8.info("lock_released");
   } catch (e) {
     const code = e.code;
@@ -5635,19 +6624,31 @@ async function runDaemon(opts) {
     log9.info("sighup_reload_stub", { note: "config reload lands in v0.10.0-beta" });
   });
   process.on("SIGPIPE", () => void 0);
-  const processQueue = async () => {
+  const drainQueue = async () => {
     if (stopping) return;
     const pending = await listPendingRequests();
     for (const fileName of pending) {
       if (stopping) return;
+      const fileId = fileName.replace(/\.json$/, "");
       const req = await readRequest(fileName);
       if (!req) {
-        const badId = fileName.replace(/\.json$/, "");
-        await markRequestDone(badId);
+        await markRequestDone(fileId);
         await writeEvent({
           event: "request_malformed",
           level: "warn",
-          requestId: badId
+          requestId: fileId
+        });
+        continue;
+      }
+      if (req.id !== fileId) {
+        log9.warn("request_id_filename_mismatch", { fileId, envelopeId: req.id });
+      }
+      if (!await markRequestDone(fileId)) {
+        await writeEvent({
+          event: "request_claim_failed",
+          level: "error",
+          requestId: fileId,
+          details: { tool: req.tool, note: "not dispatched \u2014 would re-run on next tick" }
         });
         continue;
       }
@@ -5657,43 +6658,57 @@ async function runDaemon(opts) {
         requestId: req.id,
         details: { tool: req.tool }
       });
+      const startedAt = Date.now();
       const result = await dispatch(req, {
         state,
         hostDriver,
         daemonVersion: opts.daemonVersion
       });
       await writeResult(result);
-      await markRequestDone(req.id);
       await writeEvent({
         event: "request_completed",
         by: { sessionId: req.requestedBy.sessionId, name: req.requestedBy.name },
         requestId: req.id,
-        details: { tool: req.tool, outcome: result.outcome }
+        details: { tool: req.tool, outcome: result.outcome, durationMs: Date.now() - startedAt }
       });
     }
   };
+  const processQueue = guardReentrancy(
+    async () => {
+      if (stopping) return;
+      await drainQueue();
+    },
+    {
+      // Log on a doubling curve — a 120 s handler drops ~480 ticks and the
+      // journal must show the stall without 4 lines per second.
+      onSkip: (skipped) => {
+        if (isPowerOfTwo(skipped)) log9.debug("queue_tick_skipped_busy", { skipped });
+      },
+      onError: (e) => log9.error("queue_error", { err: String(e) })
+    }
+  );
   if (opts.once) {
     await processQueue();
     await shutdown("once");
     return;
   }
   pollTimer = setInterval(() => {
-    void processQueue().catch((e) => log9.error("queue_error", { err: String(e) }));
+    void processQueue();
   }, POLL_INTERVAL_MS);
 }
 
 // src/install.ts
 var import_node_child_process2 = require("node:child_process");
-var import_promises10 = require("node:fs/promises");
-var import_node_os2 = require("node:os");
-var import_node_path8 = require("node:path");
+var import_promises13 = require("node:fs/promises");
+var import_node_os3 = require("node:os");
+var import_node_path12 = require("node:path");
 var log10 = makeLogger("daemon.install");
 var UNIT_NAME = "claude-bridge-daemon.service";
 function systemdUserDir() {
-  return (0, import_node_path8.join)((0, import_node_os2.homedir)(), ".config", "systemd", "user");
+  return (0, import_node_path12.join)((0, import_node_os3.homedir)(), ".config", "systemd", "user");
 }
 function unitPath() {
-  return (0, import_node_path8.join)(systemdUserDir(), UNIT_NAME);
+  return (0, import_node_path12.join)(systemdUserDir(), UNIT_NAME);
 }
 function assertLinux() {
   if (process.platform !== "linux") {
@@ -5705,19 +6720,19 @@ function assertLinux() {
 function resolveDaemonBin() {
   const argv1 = process.argv[1];
   if (!argv1) throw new Error("process.argv[1] missing \u2014 cannot determine daemon binary path");
-  if (!argv1.startsWith("/")) return (0, import_node_path8.resolve)(process.cwd(), argv1);
+  if (!argv1.startsWith("/")) return (0, import_node_path12.resolve)(process.cwd(), argv1);
   return argv1;
 }
 async function readTemplate() {
   const anchor = resolveDaemonBin();
-  const anchorDir = (0, import_node_path8.dirname)(anchor);
+  const anchorDir = (0, import_node_path12.dirname)(anchor);
   const candidates = [
-    (0, import_node_path8.resolve)(anchorDir, "..", "templates", UNIT_NAME),
-    (0, import_node_path8.resolve)(anchorDir, "templates", UNIT_NAME)
+    (0, import_node_path12.resolve)(anchorDir, "..", "templates", UNIT_NAME),
+    (0, import_node_path12.resolve)(anchorDir, "templates", UNIT_NAME)
   ];
   for (const candidate of candidates) {
     try {
-      return await (0, import_promises10.readFile)(candidate, "utf-8");
+      return await (0, import_promises13.readFile)(candidate, "utf-8");
     } catch {
     }
   }
@@ -5733,8 +6748,8 @@ async function installSystemd() {
   await ensureBinariesExist(daemonBin, nodeBin);
   const template = await readTemplate();
   const rendered = template.replace(/__NODE_BIN__/g, nodeBin).replace(/__DAEMON_BIN__/g, daemonBin);
-  await (0, import_promises10.mkdir)(systemdUserDir(), { recursive: true });
-  await (0, import_promises10.writeFile)(unitPath(), rendered, "utf-8");
+  await (0, import_promises13.mkdir)(systemdUserDir(), { recursive: true });
+  await (0, import_promises13.writeFile)(unitPath(), rendered, "utf-8");
   log10.info("unit_written", { path: unitPath() });
   runSystemctl("daemon-reload");
   runSystemctl("enable", UNIT_NAME);
@@ -5754,7 +6769,7 @@ async function uninstallSystemd() {
     log10.warn("systemd_disable_failed", { err: String(e) });
   }
   try {
-    await (0, import_promises10.unlink)(unitPath());
+    await (0, import_promises13.unlink)(unitPath());
   } catch (e) {
     const code = e.code;
     if (code !== "ENOENT") log10.warn("unit_unlink_failed", { err: String(e) });
@@ -5771,7 +6786,7 @@ async function ensureBinariesExist(daemonBin, nodeBin) {
     ["node", nodeBin]
   ]) {
     try {
-      await (0, import_promises10.stat)(path);
+      await (0, import_promises13.stat)(path);
     } catch {
       throw new Error(`${label} binary not found at ${path} \u2014 build daemon first (npm run build)`);
     }
@@ -5796,7 +6811,7 @@ async function statusCommand() {
   const lock = await readLock();
   let heartbeatAgeMs = null;
   try {
-    const s = await (0, import_promises11.stat)(heartbeatPath());
+    const s = await (0, import_promises14.stat)(heartbeatPath());
     heartbeatAgeMs = Date.now() - s.mtimeMs;
   } catch {
     heartbeatAgeMs = null;

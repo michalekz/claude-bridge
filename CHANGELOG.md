@@ -2,6 +2,48 @@
 
 All notable changes to this project are documented here. Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.10.1-rc.2] — 2026-08-03 (pre-release, development channel)
+
+Team lifecycle completed, plus three latent daemon defects found by a memory audit the same day. Everything below is on the `claude-bridge-dev` marketplace channel; the stable channel is untouched.
+
+### Blocker fixes — found by audit, proven by measurement
+
+**Re-entrant request dispatch.** `processQueue` was fired from a 250 ms `setInterval` with no in-flight guard, and `markRequestDone` ran *after* `dispatch` — so a request stayed in `requests/` for as long as its handler worked, and every tick picked it up again. Never fired in production only because all 33 requests to date completed in under 15 ms. `team_stop` would have changed that: it waits up to 120 s **per peer**, so a five-peer team nobody acks is ~2400 overlapping handlers, each writing its own inbox messages and firing its own tmux children.
+
+Fixed two ways: a re-entrancy guard (`packages/shared/src/reentrancy-guard.ts`, shared because the MCP server's identity timer needs the same thing) and claim-before-dispatch. The claim uses the id derived from the *filename*, not the envelope — a mismatch would make the rename miss and re-dispatch forever. Semantics are now at-most-once, which is correct here because the handlers are not idempotent: a crash mid-dispatch surfaces as a caller timeout rather than a silent repeat.
+
+Measured against the live loop with the real handler: **1 stop-request message with the fix, 7 without** (one per tick).
+
+**Unbounded tmux calls.** All six `execFile` invocations lacked a timeout, so a wedged tmux left the promise pending forever — child, pipes and the whole await chain pinned. Combined with the poll loop that was fd exhaustion in minutes. Now 5 s for queries, 10 s for create/destroy, `SIGKILL`.
+
+**Tombstones blocked team resume.** `team_layout apply` filtered on `!stateIds.has(sessionId)`, and a stopped peer keeps its record — so every tombstone read as "already running" and a slept team could never be brought back. That is the exact round trip the tombstone exists for.
+
+### Team lifecycle
+
+- **`team_stop`** — controlled sleep, not a mass kill. Each peer gets a `stop-request` in its inbox, parks its work and acks via `control/stop-ack/<sessionId>.json`; only then is it killed. No ack within `anchorTimeoutMs` (default 120 s) and the peer **keeps running**, reported as `skipped`, unless `force:true`. Members first, `role:"velitel"` last.
+- **`team_layout` resume + wake** — a resumed session is silent: `--resume` restores the process but nothing runs until a turn is triggered, so an inbox message alone is never read. Observed live on 2026-08-02, when every peer came back and sat at the prompt. Waking is therefore both a durable `peer-wake` inbox message and a key injection. A forced previous stop carries an explicit warning that the anchor may be mid-write.
+- **`team_adopt`** — takes over peers the daemon did not spawn, the case where an external launcher left `state.peers` empty while eleven peers were live and every lifecycle tool answered `peer_not_found`. Identity comes from `~/.claude/sessions/<pid>.json`. **`dryRun` defaults to true.** Two Claude processes under one pane are reported `ambiguous`, never guessed.
+
+### Verified send-keys
+
+On 2026-08-02 a `/exit` was sent to a peer, tmux reported success, and the keystrokes never arrived — no transcript trace, empty input box — after which the script hung 13 minutes with no log line. `sendKeys` now cancels copy-mode, sends the text alone and **confirms it is visible in the pane before pressing Enter**, retries once, then throws. Every attempt, including ones where tmux itself failed, is appended to `control/logs/sendkeys-<sessionKey>.log`. `peer_compact` and the wake path inherit this unchanged.
+
+### Version drift — a user-visible bug
+
+The version lived in six hand-edited places and had split three ways. Worst: `src/mcp/server.ts` carried `const SERVER_VERSION = "0.9.4"` as a literal, unbumped since v0.9.4, so **every peer misreported its version in `peer_list`** and the MCP server announced 0.9.4 to Claude Code across five releases. `plugin.json` is now the single source, `scripts/release.mjs` writes the rest, and the server reads its `package.json` at build time. `.githooks/pre-push` enforces it.
+
+### Deliberately NOT done
+
+The planned linked-window guard. Measured first: link a window from session A into B, then `kill-session A` — the window survives in B untouched. The hazard is specific to `kill-window`, which this driver never issues. Reasoning is recorded at the class doc comment so it does not get re-added.
+
+### Tests
+
+**371 pass** (59 daemon + 305 MCP + 7 shared). New coverage worth naming:
+
+- Acceptance against the **real** `runDaemon` and its live 250 ms interval, observable = stop-request messages actually written to disk. Verified to fail (7 vs 1) when the fixes are reverted.
+- Smoke over the **real tmux server**: spawn → stop with ack → resume with wake → adopt, each step judged by tmux rather than by our own bookkeeping. Display name deliberately contains a colon, the character that broke rc.1.
+- Three verified-send tests against a real pane, including copy-mode recovery and a killed pane, which must throw rather than return void. That last one exposed a real gap on first run — the tmux error escaped before the audit line was written, so a dead-pane send left no trace at all.
+
 ## [0.10.0-rc.2] — 2026-07-23 (pre-release, hotfix rc.1 test findings)
 
 Two bugs found during the small-team live test of v0.10.0-rc.1 (designer msg `mrxk13qd`, 7/10 passed). Both stem from the same class of problem — the daemon and the host driver disagreed on what a session name looks like — but they surfaced independently.
