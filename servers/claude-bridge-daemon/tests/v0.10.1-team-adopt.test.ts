@@ -68,6 +68,7 @@ function peer(
     cmdline: argv.join(" "),
     argv,
     cwd: "/opt/project",
+    resolvedCommand: argv[0] ?? null,
     ...over,
   };
 }

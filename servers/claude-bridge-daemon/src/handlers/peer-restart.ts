@@ -301,6 +301,36 @@ export async function handlePeerRestart(
   };
   const spawnResult = await handlePeerSpawn(spawnArgs, ctx);
   if (spawnResult.outcome === "error") {
+    // Put the record back.
+    //
+    // `peer_spawn` deletes it when the spawn produces nothing, which is right
+    // for a spawn — there was never a peer. For a RESTART there was, and
+    // dropping it leaves an operator with nothing to retry: `team_release`
+    // answered `team_not_found, knownTeams: []` after a failed restart, and
+    // the peer had vanished from the control plane entirely
+    // (plt-designer, pre-rollout probe, 2026-08-04).
+    //
+    // It comes back as `unknown`, not `live`: nothing is running, and this
+    // release is about not saying otherwise.
+    await applyStateChange(ctx.state, (draft) => {
+      draft.peers[record.sessionId] = {
+        ...record,
+        status: "unknown",
+        pid: null,
+        lastUpdatedAt: new Date().toISOString(),
+      };
+    });
+    await writeEvent({
+      event: "peer_restart_record_retained",
+      level: "warn",
+      by: { sessionId: req.requestedBy.sessionId, name: req.requestedBy.name },
+      requestId: req.id,
+      details: {
+        sessionId: record.sessionId,
+        status: "unknown",
+        hint: "The relaunch failed. The record is kept so the peer can be retried or released; nothing is running behind it.",
+      },
+    });
     return errResult(
       req.id,
       req.tool,

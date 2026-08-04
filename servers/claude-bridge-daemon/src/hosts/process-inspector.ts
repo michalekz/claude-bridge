@@ -1,4 +1,5 @@
-import { readFile, readdir, readlink } from "node:fs/promises";
+import { constants as fsConstants } from "node:fs";
+import { access, readFile, readdir, readlink } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, join } from "node:path";
 
@@ -38,6 +39,21 @@ export interface ProcessRecord {
   argv: string[];
   /** Resolved `/proc/<pid>/cwd`. Null when the link cannot be read. */
   cwd: string | null;
+  /**
+   * `argv[0]` resolved to an absolute path using the PEER's own `PATH`.
+   *
+   * The fleet runs `claude` as a bare name. A relaunch composes its
+   * environment from the whitelist, whose `PATH` comes from the daemon — and
+   * the daemon runs under systemd with a stock `PATH` that has no nvm. So a
+   * bare name that works for the peer does not resolve for the relaunch, and
+   * the first peer of every group would have died on a fleet roll
+   * (plt-designer, pre-rollout probe, 2026-08-04).
+   *
+   * The peer's own `PATH` is in `/proc/<pid>/environ` and by definition knows
+   * where its own binary lives. Null when it cannot be resolved — the caller
+   * then keeps argv[0] as given rather than inventing a path.
+   */
+  resolvedCommand: string | null;
 }
 
 export interface ProcessInspector {
@@ -130,11 +146,52 @@ export class LinuxProcessInspector implements ProcessInspector {
       const argv = (raw ?? "").split("\0").filter((a) => a.length > 0);
       const cmdline = argv.join(" ").trim();
       const cwd = await this.readProcCwd(pid);
+      const resolvedCommand = await this.resolveViaProcessPath(pid, argv[0] ?? "");
 
       const { sessionId, source } = await this.resolveSessionId(pid, cmdline);
-      out.push({ pid, ppid: ppid ?? 0, sessionId, sessionIdSource: source, cmdline, argv, cwd });
+      out.push({
+        pid,
+        ppid: ppid ?? 0,
+        sessionId,
+        sessionIdSource: source,
+        cmdline,
+        argv,
+        cwd,
+        resolvedCommand,
+      });
     }
     return out;
+  }
+
+  /**
+   * Turn a bare command into an absolute path, using the process's own `PATH`.
+   *
+   * Only the owning process knows where its binary came from — under nvm the
+   * directory is not on any system path. An already-absolute command is
+   * returned unchanged; anything unresolvable returns null so the caller keeps
+   * what it was given instead of guessing.
+   */
+  async resolveViaProcessPath(pid: number, command: string): Promise<string | null> {
+    if (command.length === 0) return null;
+    if (command.startsWith("/")) return command;
+    const environ = await this.readProcFile(pid, "environ");
+    if (!environ) return null;
+    const pathVar = environ
+      .split("\0")
+      .find((e) => e.startsWith("PATH="))
+      ?.slice("PATH=".length);
+    if (!pathVar) return null;
+    for (const dir of pathVar.split(":")) {
+      if (dir.length === 0) continue;
+      const candidate = join(dir, command);
+      try {
+        await access(candidate, fsConstants.X_OK);
+        return candidate;
+      } catch {
+        // not here
+      }
+    }
+    return null;
   }
 
   private async readProcCwd(pid: number): Promise<string | null> {

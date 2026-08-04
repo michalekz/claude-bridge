@@ -222,6 +222,11 @@ async function discoverCandidates(
     // the control layer was unusable at the exact moment it was first needed
     // (raised by plt-designer, 2026-08-04).
     const launch = extractLaunchParams(proc.argv);
+    // Prefer the absolute path resolved through the peer's own PATH. A bare
+    // `claude` — which is how this whole fleet runs — does not resolve inside
+    // the relaunch's composed environment, so recording it would kill the
+    // first peer of every group on a roll.
+    if (proc.resolvedCommand) launch.command = proc.resolvedCommand;
     candidates.push({
       sessionKey: session.sessionKey,
       label: session.label,
@@ -351,6 +356,7 @@ export async function handleTeamAdopt(
       // the ancestry; manual has to do the same (plt-designer, v0.10.6 pilot).
       const owning = host.pid === null ? undefined : await claudeInside(ctx, host.pid);
       const launch = extractLaunchParams(owning?.argv ?? []);
+      if (owning?.resolvedCommand) launch.command = owning.resolvedCommand;
       candidates.push({
         sessionKey: host.sessionKey,
         label: host.label,

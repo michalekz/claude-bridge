@@ -157,6 +157,19 @@ export class TmuxDriver implements SessionHostDriver {
     }
   }
 
+  /** Session-only probe. `hasSession` resolves window ids; this asks about a session. */
+  private async rawHasSession(session: string): Promise<boolean> {
+    try {
+      await execFileAsync(this.tmuxBin, ["has-session", "-t", `${session}:`], {
+        ...EXEC_DEFAULTS,
+        timeout: QUERY_TIMEOUT_MS,
+      });
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
   async listWindows(): Promise<HostWindowRecord[]> {
     try {
       const { stdout } = await execFileAsync(
@@ -271,10 +284,46 @@ export class TmuxDriver implements SessionHostDriver {
           opts.command,
           ...opts.args,
         ];
+    // The home session may be gone.
+    //
+    // A peer that was the ONLY window of its session takes the session with it
+    // when it stops — so by relaunch time `new-window -t <session>:` fails with
+    // "can't find session" and the peer is simply dead, with nothing to
+    // recover from. Every peer created by `peer_spawn` is a single-window
+    // session, so this is the common case, not the exotic one
+    // (plt-designer, pre-rollout probe, 2026-08-04).
+    //
+    // Recreating the session under the same name puts the peer back where it
+    // belongs. Falling back to a session named after the PEER would be the
+    // escape this release already fixed twice.
+    let effectiveArgs = args;
+    let recreatedHome = false;
+    if (asWindow && parentSession !== null && !(await this.rawHasSession(parentSession))) {
+      log.info("tmux_home_session_recreated", { session: parentSession });
+      effectiveArgs = [
+        "new-session",
+        "-d",
+        // Print the window id here too: the record's address must stay a window
+        // id whether the session was already there or had to be remade.
+        "-P",
+        "-F",
+        "#{window_id}",
+        "-s",
+        parentSession,
+        "-c",
+        opts.cwd,
+        "--",
+        ...envPrefix(opts.env),
+        opts.command,
+        ...opts.args,
+      ];
+      recreatedHome = true;
+    }
+
     const { env } = opts;
     let createdWindowId: string | null = null;
     try {
-      const { stdout } = await execFileAsync(this.tmuxBin, args, {
+      const { stdout } = await execFileAsync(this.tmuxBin, effectiveArgs, {
         ...EXEC_DEFAULTS,
         // Kept for the tmux CLIENT process itself. It does NOT reach the pane —
         // see envPrefix() for why the pane's environment is built on the
@@ -282,7 +331,9 @@ export class TmuxDriver implements SessionHostDriver {
         env,
         timeout: MUTATE_TIMEOUT_MS,
       });
+      // Both paths print the new window's id now.
       if (asWindow) createdWindowId = stdout.trim() || null;
+      void recreatedHome;
     } catch (e) {
       log.error("tmux_spawn_failed", {
         sessionKey: opts.sessionKey,

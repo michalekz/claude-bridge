@@ -179,6 +179,7 @@ describe("E — adoption can be scoped to one host session", () => {
           cmdline: "",
           argv: [CLAUDE],
           cwd: "/x",
+          resolvedCommand: CLAUDE,
         },
         {
           pid: 102,
@@ -188,6 +189,7 @@ describe("E — adoption can be scoped to one host session", () => {
           cmdline: "",
           argv: [CLAUDE],
           cwd: "/x",
+          resolvedCommand: CLAUDE,
         },
         {
           pid: 103,
@@ -197,6 +199,7 @@ describe("E — adoption can be scoped to one host session", () => {
           cmdline: "",
           argv: [CLAUDE],
           cwd: "/x",
+          resolvedCommand: CLAUDE,
         },
       ],
       ancestorsOf: async () => [],

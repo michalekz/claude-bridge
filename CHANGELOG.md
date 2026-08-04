@@ -6,6 +6,55 @@ All notable changes to this project are documented here. Format follows [Keep a 
 
 _Nothing yet._
 
+## [0.10.11] — 2026-08-04
+
+Three findings from plt-designer's pre-rollout probe. All nine earlier findings
+verified fixed in the same round; these came from asking a question none of the
+pilots had asked.
+
+Every sacrificial fixture so far used an **absolute** command. The whole fleet
+runs a bare `claude`. That path had therefore never been exercised once, and it
+is the one every peer takes.
+
+### A bare `claude` does not resolve in the relaunch environment
+
+Since v0.10.5 a peer's environment is built from nothing with `env -i`, using
+the whitelist — whose `PATH` comes from the daemon. The daemon runs under
+systemd with a stock `PATH` and no nvm:
+
+```
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:…
+$ env -i PATH=… which claude   →  nothing
+```
+
+The fleet records `command: "claude"` for all twenty-three peers, so **the
+first peer of every group would have died and the roll would have stopped**.
+
+Adoption now resolves `argv[0]` through the **peer's own** `PATH`, read from
+`/proc/<pid>/environ` — by definition it knows where its own binary lives — and
+records the absolute path. Unresolvable stays unresolved rather than guessed.
+
+### A peer that was the only window of its session could not come back
+
+Stopping the last window takes the session with it, so by relaunch time
+`new-window -t <session>:` failed with "can't find session" and the peer was
+simply dead with nothing to recover from. Every peer created by `peer_spawn` is
+a single-window session, so this is the ordinary case rather than the exotic
+one. A vanished home session is now recreated under the same name — not under
+the peer's, which is the escape this release has already fixed twice.
+
+### A failed restart lost the peer entirely
+
+`peer_spawn` deletes the record when a spawn produces nothing, which is right
+for a spawn: there was never a peer. For a restart there was, and dropping it
+left an operator with nothing to retry — `team_release --team obetni2` answered
+`team_not_found, knownTeams: []` and the peer had gone from the control plane
+altogether. The record is now restored on failure as `status: "unknown"` with
+no pid: kept, but not pretending.
+
+Tests 544 (+5), each verified by restoring the old behaviour.
+
+
 ## [0.10.10] — 2026-08-04
 
 ### A peer whose window had already died still escaped its session

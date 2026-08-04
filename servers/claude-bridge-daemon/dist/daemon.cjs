@@ -4287,7 +4287,7 @@ async function resolvePeer(idOrName, root = bridgeRoot(), now = Date.now()) {
 // package.json
 var package_default = {
   name: "claude-bridge-daemon",
-  version: "0.10.10",
+  version: "0.10.11",
   private: true,
   description: "Control-plane daemon for the claude-bridge plugin: peer lifecycle, telemetry, audit. Distributed as opt-in artefact \u2014 see ADR-008.",
   type: "module",
@@ -5389,6 +5389,25 @@ async function handlePeerRestart(req, ctx) {
   };
   const spawnResult = await handlePeerSpawn(spawnArgs, ctx);
   if (spawnResult.outcome === "error") {
+    await applyStateChange(ctx.state, (draft) => {
+      draft.peers[record.sessionId] = {
+        ...record,
+        status: "unknown",
+        pid: null,
+        lastUpdatedAt: (/* @__PURE__ */ new Date()).toISOString()
+      };
+    });
+    await writeEvent({
+      event: "peer_restart_record_retained",
+      level: "warn",
+      by: { sessionId: req.requestedBy.sessionId, name: req.requestedBy.name },
+      requestId: req.id,
+      details: {
+        sessionId: record.sessionId,
+        status: "unknown",
+        hint: "The relaunch failed. The record is kept so the peer can be retried or released; nothing is running behind it."
+      }
+    });
     return errResult(
       req.id,
       req.tool,
@@ -5461,6 +5480,7 @@ async function handlePeerRestart(req, ctx) {
 }
 
 // src/hosts/process-inspector.ts
+var import_node_fs2 = require("node:fs");
 var import_promises9 = require("node:fs/promises");
 var import_node_os3 = require("node:os");
 var import_node_path9 = require("node:path");
@@ -5507,10 +5527,46 @@ var LinuxProcessInspector = class {
       const argv = (raw ?? "").split("\0").filter((a) => a.length > 0);
       const cmdline = argv.join(" ").trim();
       const cwd = await this.readProcCwd(pid);
+      const resolvedCommand = await this.resolveViaProcessPath(pid, argv[0] ?? "");
       const { sessionId, source } = await this.resolveSessionId(pid, cmdline);
-      out.push({ pid, ppid: ppid ?? 0, sessionId, sessionIdSource: source, cmdline, argv, cwd });
+      out.push({
+        pid,
+        ppid: ppid ?? 0,
+        sessionId,
+        sessionIdSource: source,
+        cmdline,
+        argv,
+        cwd,
+        resolvedCommand
+      });
     }
     return out;
+  }
+  /**
+   * Turn a bare command into an absolute path, using the process's own `PATH`.
+   *
+   * Only the owning process knows where its binary came from — under nvm the
+   * directory is not on any system path. An already-absolute command is
+   * returned unchanged; anything unresolvable returns null so the caller keeps
+   * what it was given instead of guessing.
+   */
+  async resolveViaProcessPath(pid, command) {
+    if (command.length === 0) return null;
+    if (command.startsWith("/")) return command;
+    const environ = await this.readProcFile(pid, "environ");
+    if (!environ) return null;
+    const pathVar = environ.split("\0").find((e) => e.startsWith("PATH="))?.slice("PATH=".length);
+    if (!pathVar) return null;
+    for (const dir of pathVar.split(":")) {
+      if (dir.length === 0) continue;
+      const candidate = (0, import_node_path9.join)(dir, command);
+      try {
+        await (0, import_promises9.access)(candidate, import_node_fs2.constants.X_OK);
+        return candidate;
+      } catch {
+      }
+    }
+    return null;
   }
   async readProcCwd(pid) {
     try {
@@ -5644,6 +5700,7 @@ async function discoverCandidates(ctx, hostSessions) {
       continue;
     }
     const launch = extractLaunchParams(proc.argv);
+    if (proc.resolvedCommand) launch.command = proc.resolvedCommand;
     candidates.push({
       sessionKey: session.sessionKey,
       label: session.label,
@@ -5719,6 +5776,7 @@ async function handleTeamAdopt(req, ctx) {
       }
       const owning = host.pid === null ? void 0 : await claudeInside(ctx, host.pid);
       const launch = extractLaunchParams(owning?.argv ?? []);
+      if (owning?.resolvedCommand) launch.command = owning.resolvedCommand;
       candidates.push({
         sessionKey: host.sessionKey,
         label: host.label,
@@ -6229,7 +6287,7 @@ async function handleTeamLayout(req, ctx) {
 }
 
 // src/handlers/team-reconcile.ts
-var import_node_fs2 = require("node:fs");
+var import_node_fs3 = require("node:fs");
 var import_node_path12 = require("node:path");
 var TeamReconcileArgsSchema = external_exports.object({
   /** Restrict the report to one team. Unmanaged processes are still listed. */
@@ -6241,7 +6299,7 @@ var TeamReconcileArgsSchema = external_exports.object({
   markDead: external_exports.boolean().default(false)
 }).strict();
 function pidAlive(pid, procRoot) {
-  return (0, import_node_fs2.existsSync)((0, import_node_path12.join)(procRoot, String(pid)));
+  return (0, import_node_fs3.existsSync)((0, import_node_path12.join)(procRoot, String(pid)));
 }
 async function handleTeamReconcile(req, ctx) {
   const parsed = TeamReconcileArgsSchema.safeParse(req.args);
@@ -7125,7 +7183,7 @@ function stopHeartbeat() {
 
 // src/hosts/tmux-driver.ts
 var import_node_child_process = require("node:child_process");
-var import_node_fs3 = require("node:fs");
+var import_node_fs4 = require("node:fs");
 var import_promises13 = require("node:fs/promises");
 var import_node_path14 = require("node:path");
 var import_node_util = require("node:util");
@@ -7133,7 +7191,7 @@ var execFileAsync = (0, import_node_util.promisify)(import_node_child_process.ex
 var log6 = makeLogger("daemon.host.tmux");
 var EXEC_DEFAULTS = { killSignal: "SIGKILL" };
 function envPrefix(env) {
-  const envBin = (0, import_node_fs3.existsSync)("/usr/bin/env") ? "/usr/bin/env" : "env";
+  const envBin = (0, import_node_fs4.existsSync)("/usr/bin/env") ? "/usr/bin/env" : "env";
   return [envBin, "-i", ...Object.entries(env).map(([k, v]) => `${k}=${v}`)];
 }
 var QUERY_TIMEOUT_MS = 5e3;
@@ -7168,6 +7226,18 @@ var TmuxDriver = class {
     }
     try {
       await execFileAsync(this.tmuxBin, ["has-session", "-t", t.session], {
+        ...EXEC_DEFAULTS,
+        timeout: QUERY_TIMEOUT_MS
+      });
+      return true;
+    } catch {
+      return false;
+    }
+  }
+  /** Session-only probe. `hasSession` resolves window ids; this asks about a session. */
+  async rawHasSession(session) {
+    try {
+      await execFileAsync(this.tmuxBin, ["has-session", "-t", `${session}:`], {
         ...EXEC_DEFAULTS,
         timeout: QUERY_TIMEOUT_MS
       });
@@ -7276,10 +7346,33 @@ var TmuxDriver = class {
       opts.command,
       ...opts.args
     ];
+    let effectiveArgs = args;
+    let recreatedHome = false;
+    if (asWindow && parentSession !== null && !await this.rawHasSession(parentSession)) {
+      log6.info("tmux_home_session_recreated", { session: parentSession });
+      effectiveArgs = [
+        "new-session",
+        "-d",
+        // Print the window id here too: the record's address must stay a window
+        // id whether the session was already there or had to be remade.
+        "-P",
+        "-F",
+        "#{window_id}",
+        "-s",
+        parentSession,
+        "-c",
+        opts.cwd,
+        "--",
+        ...envPrefix(opts.env),
+        opts.command,
+        ...opts.args
+      ];
+      recreatedHome = true;
+    }
     const { env } = opts;
     let createdWindowId = null;
     try {
-      const { stdout } = await execFileAsync(this.tmuxBin, args, {
+      const { stdout } = await execFileAsync(this.tmuxBin, effectiveArgs, {
         ...EXEC_DEFAULTS,
         // Kept for the tmux CLIENT process itself. It does NOT reach the pane —
         // see envPrefix() for why the pane's environment is built on the
@@ -7511,7 +7604,7 @@ function defaultHostDriver() {
 }
 
 // src/lock.ts
-var import_node_fs4 = require("node:fs");
+var import_node_fs5 = require("node:fs");
 var import_promises14 = require("node:fs/promises");
 var log8 = makeLogger("daemon.lock");
 var LockAcquireError = class extends Error {
@@ -7524,7 +7617,7 @@ var LockAcquireError = class extends Error {
 function readProcStart(pid) {
   if (process.platform !== "linux") return null;
   try {
-    const stat4 = (0, import_node_fs4.readFileSync)(`/proc/${pid}/stat`, "utf-8");
+    const stat4 = (0, import_node_fs5.readFileSync)(`/proc/${pid}/stat`, "utf-8");
     const afterComm = stat4.slice(stat4.lastIndexOf(")") + 1).trim();
     const fields = afterComm.split(/\s+/);
     const starttime = fields[19];
