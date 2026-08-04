@@ -39,11 +39,11 @@
       "source": {
         "source": "github",
         "repo": "michalekz/claude-bridge",
-        "ref": "v0.10.6-rc.1",
-        "sha": "b8dd166cfa215e2ee1f2bdd7da68ba9c48208ce5"
+        "ref": "v0.10.6",
+        "sha": "7510046d4c713464e7e47d2a60add3909cbe27ac"
       },
-      "version": "0.10.6-rc.1",
-      "description": "DEVELOPMENT CHANNEL — ahead of stable, not yet promoted. Everything the stable channel has plus what is being prepared for the next release. Do NOT install alongside `claude-bridge`: both register an MCP server. v0.10.6-rc.1 closes the eight-tool quality gate — peer_chat_search and peer_chat_read now describe what they actually do and report honest counts, rate_limit_status composes its two live sources instead of discarding the richer one, and team_adopt sees every tmux window rather than one per session, addressing each by its stable window id because window indexes are renumbered on kill. Verified on a clean install: the plugin loads and serves its tools.",
+      "version": "0.10.6",
+      "description": "DEVELOPMENT CHANNEL — ahead of stable, not yet promoted. Everything the stable channel has plus what is being prepared for the next release. Do NOT install alongside `claude-bridge`: both register an MCP server. v0.10.6 closes an eight-tool quality gate — peer_restart no longer reports starts it did not perform, peer_spawn's environment whitelist now actually reaches the spawned process, model_info matches what Anthropic publishes, session_stats and peer_chat_read count every line rather than only the ones their schema models, peer_chat_search says what it really searched, rate_limit_status composes its two live sources instead of discarding the richer one, and team_adopt sees every tmux window rather than one per session. Adds three lifecycle tools: team_release (drop a peer from daemon state without touching its process), team_reconcile (report where daemon state and reality disagree — read-only), and team_restart (rolling restart that refuses unrestartable peers up front and stops at the first failure). 501 tests.",
       "author": {
         "name": "Zed Michalek",
         "url": "https://github.com/michalekz"
