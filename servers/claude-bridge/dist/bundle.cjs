@@ -18243,7 +18243,7 @@ var StdioServerTransport = class {
 // package.json
 var package_default = {
   name: "claude-bridge",
-  version: "0.10.6",
+  version: "0.10.7",
   private: true,
   description: "MCP server for cross-Claude-Code-chat orchestration over local session JSONL files",
   type: "module",
@@ -24285,6 +24285,10 @@ var TOOLS = [
           type: "string",
           enum: ["auto", "manual"],
           description: "auto (default) = discover from the process table. manual = use `mapping` (needed on hosts where /proc is unavailable)."
+        },
+        hostSession: {
+          type: "string",
+          description: "Adopt only peers whose tmux session matches \u2014 a plain name ('hmh') or a /regex/. Without it, auto mode sweeps every window on the host into one team, which makes adopting several families under separate team names impossible."
         },
         mapping: {
           type: "object",

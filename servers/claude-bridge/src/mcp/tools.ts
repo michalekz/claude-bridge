@@ -2794,6 +2794,11 @@ export const TOOLS: ToolSpec[] = [
           description:
             "auto (default) = discover from the process table. manual = use `mapping` (needed on hosts where /proc is unavailable).",
         },
+        hostSession: {
+          type: "string",
+          description:
+            "Adopt only peers whose tmux session matches — a plain name ('hmh') or a /regex/. Without it, auto mode sweeps every window on the host into one team, which makes adopting several families under separate team names impossible.",
+        },
         mapping: {
           type: "object",
           description: 'manual mode only: { "<hostSessionKey>": "<sessionId>" }.',

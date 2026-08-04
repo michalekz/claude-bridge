@@ -236,22 +236,45 @@ export class TmuxDriver implements SessionHostDriver {
   async spawn(opts: SessionHostSpawnOptions): Promise<SessionHostRecord> {
     // Canonicalize the session key so tmux never sees `:` / `.` / spaces —
     // v0.10.0-rc.2 fix for the silent-rewrite bug caught by the test scenario.
-    const canonicalKey = sanitizeSessionKey(opts.sessionKey);
-    const args = [
-      "new-session",
-      "-d",
-      "-s",
-      canonicalKey,
-      "-c",
-      opts.cwd,
-      "--",
-      ...envPrefix(opts.env),
-      opts.command,
-      ...opts.args,
-    ];
+    // A peer that belongs inside an existing session is created as a WINDOW
+    // there, not as a session of its own (fix, 2026-08-04 pilot).
+    const asWindow = opts.inSession !== undefined;
+    const parentSession = opts.inSession ? sanitizeSessionKey(opts.inSession) : null;
+    const canonicalKey = asWindow ? opts.sessionKey : sanitizeSessionKey(opts.sessionKey);
+    const args = asWindow
+      ? [
+          "new-window",
+          "-d",
+          "-P",
+          // Print the new window's id so the caller can address it. A window
+          // index would be wrong: `renumber-windows` shifts those on every kill.
+          "-F",
+          "#{window_id}",
+          "-t",
+          `${parentSession}:`,
+          "-c",
+          opts.cwd,
+          "--",
+          ...envPrefix(opts.env),
+          opts.command,
+          ...opts.args,
+        ]
+      : [
+          "new-session",
+          "-d",
+          "-s",
+          canonicalKey,
+          "-c",
+          opts.cwd,
+          "--",
+          ...envPrefix(opts.env),
+          opts.command,
+          ...opts.args,
+        ];
     const { env } = opts;
+    let createdWindowId: string | null = null;
     try {
-      await execFileAsync(this.tmuxBin, args, {
+      const { stdout } = await execFileAsync(this.tmuxBin, args, {
         ...EXEC_DEFAULTS,
         // Kept for the tmux CLIENT process itself. It does NOT reach the pane —
         // see envPrefix() for why the pane's environment is built on the
@@ -259,6 +282,7 @@ export class TmuxDriver implements SessionHostDriver {
         env,
         timeout: MUTATE_TIMEOUT_MS,
       });
+      if (asWindow) createdWindowId = stdout.trim() || null;
     } catch (e) {
       log.error("tmux_spawn_failed", {
         sessionKey: opts.sessionKey,
@@ -291,15 +315,18 @@ export class TmuxDriver implements SessionHostDriver {
     //
     // A pane pid is the cheapest honest evidence that something is actually
     // running in there.
-    const pid = await this.readSessionPid(canonicalKey);
+    // The new window's id IS its address, so the record must carry that rather
+    // than the key the caller asked for.
+    const effectiveKey = createdWindowId ?? canonicalKey;
+    const pid = await this.readSessionPid(effectiveKey);
     if (pid === null) {
       log.error("tmux_spawn_no_pane_pid", {
         sessionKey: opts.sessionKey,
-        canonicalKey,
+        canonicalKey: effectiveKey,
         hint: "new-session returned 0 but no pane pid — the command most likely exited immediately",
       });
     }
-    return { sessionKey: canonicalKey, alive: pid !== null, pid };
+    return { sessionKey: effectiveKey, alive: pid !== null, pid };
   }
 
   async kill(sessionKey: string, opts: { force?: boolean } = {}): Promise<void> {

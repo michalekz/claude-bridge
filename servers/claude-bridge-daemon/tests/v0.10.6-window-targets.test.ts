@@ -160,3 +160,45 @@ describe.skipIf(!haveTmux)("adoption sees every window and records how to relaun
     expect(pids).toContain(sessions[0]?.pid ?? -1);
   });
 });
+
+/**
+ * B and D from the pilot: an adopted peer lives in a WINDOW of a shared
+ * session, and both adoption and restart have to respect that.
+ */
+describe.skipIf(!haveTmux)("an adopted peer stays in its session across a restart", () => {
+  const HOME_SESSION = "cb-window-home-test";
+
+  afterAll(async () => {
+    await execFileAsync("tmux", ["kill-session", "-t", HOME_SESSION]).catch(() => undefined);
+  });
+
+  it("THE REGRESSION: spawning into an existing session makes a window, not a session", async () => {
+    await tmux(["new-session", "-d", "-s", HOME_SESSION, "-c", "/tmp", "sleep 120"]);
+    const driver = new TmuxDriver({});
+    const before = (await driver.listWindows()).filter((w) => w.session === HOME_SESSION);
+    const sessionsBefore = (await driver.listSessions()).length;
+
+    const rec = await driver.spawn({
+      sessionKey: "would-have-been-a-session",
+      inSession: HOME_SESSION,
+      cwd: "/tmp",
+      command: "/bin/sh",
+      args: ["-c", "sleep 60"],
+      env: { PATH: process.env["PATH"] ?? "", HOME: process.env["HOME"] ?? "" },
+    });
+
+    // Before the fix this created a NEW session named after the peer, quietly
+    // moving it out of its team on the first restart.
+    expect((await driver.listSessions()).length).toBe(sessionsBefore);
+    const after = (await driver.listWindows()).filter((w) => w.session === HOME_SESSION);
+    expect(after.length).toBe(before.length + 1);
+
+    // And the record's key is the NEW window's id, not the requested name —
+    // addressing it by anything else would point at nothing.
+    expect(rec.sessionKey).toMatch(/^@\d+$/);
+    expect(rec.alive).toBe(true);
+    expect(after.map((w) => w.target)).toContain(rec.sessionKey);
+
+    await driver.kill(rec.sessionKey);
+  });
+});

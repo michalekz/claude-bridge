@@ -6,6 +6,73 @@ All notable changes to this project are documented here. Format follows [Keep a 
 
 _Nothing yet._
 
+## [0.10.7] — 2026-08-04
+
+Five findings from plt-designer's v0.10.6 pilot. Everything else the pilot
+exercised passed and is unchanged — these are the parts that did not.
+
+### An adopted peer lost its model
+
+Real fleet argv: `kb-ops --model claude-opus-5`, `mic-velitel --model
+claude-fable-5`. Adoption stripped `--model` from `spawnArgs` because
+`peer_spawn` re-appends it — and then recorded `model: null`, so there was
+nothing to re-append. Every adopted peer would have come back on the default
+model.
+
+Stripping is right; discarding is not. `--model` is now lifted out of argv into
+`PeerRecord.model`, where `peer_spawn` finds it. `--resume` really is discarded:
+the id it carries is the peer's own session, which the record already holds.
+
+### Manual adoption produced records that could not be restarted
+
+`mode: "manual"` matched the Claude process by `pid === panePid`. A pane's pid
+is the **shell**; Claude is its child. Nothing matched, so every manually
+adopted record had `command: null`, `spawnArgs: []`, `cwd: null` — adopted, and
+unrestartable. Auto mode already walked the ancestry; manual now uses the same
+walk.
+
+### A restart could wedge a peer at an interactive prompt
+
+`peer_restart` composed `--resume <record.sessionId>` unconditionally. For a
+peer spawned under a stable name rather than a UUID — `obetni-w3` — that names
+no transcript, so Claude Code opens its **Resume picker** and the peer sits
+there waiting for a keypress. It then gets a fresh session id, and because the
+pid still matches the record, everything downstream keeps reporting `live`
+about an identity that has moved.
+
+Two fixes, because either alone leaves half the problem:
+
+- `--resume` is passed only for an id that names a transcript (a UUID).
+- **The restart now verifies the peer came back as itself.** `~/.claude/sessions/<pid>.json`
+  is read after boot and compared with the expected id; a mismatch returns
+  `restart_identity_mismatch` and writes an error event, instead of `ok`. An
+  unreadable file is not a mismatch — silence is not evidence.
+
+The tool reported `restarted: ok` over the wedged peer. That is this release's
+own defect wearing a new hat, and it is why the check exists.
+
+### A restarted adopted peer moved out of its team's session
+
+Adopted peers live in a window of a shared session. `peer_restart` relaunched
+through `new-session`, so the peer came back as a session of its own —
+`@548` became `@549` somewhere else entirely. The driver now takes an
+`inSession` option and issues `new-window -P -F '#{window_id}'` when set,
+returning the new window's id as the record's target. `peer_restart` supplies
+the old window's parent session; if the window is gone it says so
+(`peer_restart_window_home_unknown`) and falls back rather than guessing.
+
+### Adoption could not be scoped
+
+`mode: "auto"` swept every window on the host into a single team, so adopting
+four families under four team names was impossible while manual adoption was
+unusable. `team_adopt` now takes `hostSession` — a plain session name or a
+`/regex/` — and the plan reports which filter was applied.
+
+Tests 132 daemon (+13). The `--resume` case in the v0.10.2 suite asserted the
+wedging behaviour as correct; it has been rewritten with an explanation rather
+than deleted, and the non-resumable case added beside it.
+
+
 ## [0.10.6] — 2026-08-04
 
 The eight-tool quality gate (see 0.10.6-rc.1 below) plus three lifecycle tools.

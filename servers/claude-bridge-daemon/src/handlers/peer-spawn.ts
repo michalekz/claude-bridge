@@ -44,6 +44,12 @@ export const PeerSpawnArgsSchema = z
       .describe("Absolute path to `claude` (or another executable for tests)"),
     args: z.array(z.string()).default([]),
     resume: z.boolean().default(false),
+    /**
+     * Create the peer as a window inside this existing tmux session rather than
+     * as a session of its own. `peer_restart` sets it for adopted peers, whose
+     * home is a window of a shared session.
+     */
+    inSession: z.string().min(1).optional(),
     model: z.string().nullable().optional(),
     accountProfile: z
       .string()
@@ -146,6 +152,7 @@ export async function handlePeerSpawn(
   try {
     const record = await ctx.hostDriver.spawn({
       sessionKey,
+      ...(args.inSession ? { inSession: args.inSession } : {}),
       cwd: args.cwd,
       command: args.command,
       args: spawnArgs,

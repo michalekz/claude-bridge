@@ -15,6 +15,17 @@
 export interface SessionHostSpawnOptions {
   /** Human-facing key (e.g. `"hmh:alice"`) — driver uses it for lookup. */
   sessionKey: string;
+  /**
+   * Create the peer as a WINDOW inside this existing session instead of as a
+   * session of its own.
+   *
+   * Adopted peers live in a window of a shared session — `hmh` holds seven.
+   * Restarting one used to spawn a brand-new session named after the window,
+   * so a peer quietly moved out of the team's session on its first restart
+   * (plt-designer, v0.10.6 pilot). When set, the driver issues `new-window`
+   * and returns the new window's id as the record's target.
+   */
+  inSession?: string;
   cwd: string;
   command: string;
   args: string[];

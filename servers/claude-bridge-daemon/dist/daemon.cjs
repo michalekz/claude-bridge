@@ -7,7 +7,7 @@ var __export = (target, all) => {
 };
 
 // src/index.ts
-var import_promises16 = require("node:fs/promises");
+var import_promises17 = require("node:fs/promises");
 
 // ../../packages/shared/src/atomic-write.ts
 var import_node_crypto = require("node:crypto");
@@ -4287,7 +4287,7 @@ async function resolvePeer(idOrName, root = bridgeRoot(), now = Date.now()) {
 // package.json
 var package_default = {
   name: "claude-bridge-daemon",
-  version: "0.10.6",
+  version: "0.10.7",
   private: true,
   description: "Control-plane daemon for the claude-bridge plugin: peer lifecycle, telemetry, audit. Distributed as opt-in artefact \u2014 see ADR-008.",
   type: "module",
@@ -4740,6 +4740,29 @@ async function handlePeerCompact(req, ctx) {
   return okResult(req.id, req.tool, { sessionId, sessionKey, threadId, anchorMsgId });
 }
 
+// src/handlers/peer-restart.ts
+var import_promises8 = require("node:fs/promises");
+var import_node_os2 = require("node:os");
+var import_node_path8 = require("node:path");
+
+// src/hosts/driver.ts
+var WINDOW_ID = /^@\d+$/;
+function parseHostTarget(key) {
+  if (WINDOW_ID.test(key)) return { kind: "window", windowId: key };
+  return { kind: "session", session: sanitizeSessionKey(key) };
+}
+function formatHostTarget(t) {
+  return t.kind === "window" ? t.windowId : t.session;
+}
+var UNSAFE_TARGET_CHARS = /[^A-Za-z0-9_-]/g;
+function sanitizeSessionKey(rawName) {
+  const sanitized = rawName.replace(UNSAFE_TARGET_CHARS, "_");
+  if (sanitized.length === 0) {
+    throw new Error(`Cannot derive a tmux target from '${rawName}' \u2014 nothing safe remained`);
+  }
+  return sanitized;
+}
+
 // src/env-whitelist.ts
 var BASE_ALLOWLIST = Object.freeze([
   "PATH",
@@ -4890,6 +4913,12 @@ var PeerSpawnArgsSchema = external_exports.object({
   command: external_exports.string().min(1).describe("Absolute path to `claude` (or another executable for tests)"),
   args: external_exports.array(external_exports.string()).default([]),
   resume: external_exports.boolean().default(false),
+  /**
+   * Create the peer as a window inside this existing tmux session rather than
+   * as a session of its own. `peer_restart` sets it for adopted peers, whose
+   * home is a window of a shared session.
+   */
+  inSession: external_exports.string().min(1).optional(),
   model: external_exports.string().nullable().optional(),
   accountProfile: external_exports.string().nullable().optional().describe("Name of the account profile under ~/.claude-bridge/control/accounts/"),
   extraAllowEnv: external_exports.array(external_exports.string()).default([]).describe("Additional env var names to pass through beyond the base whitelist"),
@@ -4964,6 +4993,7 @@ async function handlePeerSpawn(req, ctx) {
   try {
     const record = await ctx.hostDriver.spawn({
       sessionKey,
+      ...args.inSession ? { inSession: args.inSession } : {},
       cwd: args.cwd,
       command: args.command,
       args: spawnArgs,
@@ -5199,6 +5229,27 @@ var PeerRestartArgsSchema = external_exports.object({
   model: external_exports.string().optional(),
   accountProfile: external_exports.string().optional()
 }).strict();
+var UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+function isResumableSessionId(sessionId) {
+  return UUID_RE.test(sessionId);
+}
+async function verifyRestartedIdentity(expected, pid, opts = {}) {
+  if (pid === null || !isResumableSessionId(expected)) return { mismatch: false, actual: null };
+  const attempts = opts.attempts ?? 8;
+  const delayMs = opts.delayMs ?? 500;
+  const home = opts.homeDir ?? (0, import_node_os2.homedir)();
+  const path = (0, import_node_path8.join)(home, ".claude", "sessions", `${pid}.json`);
+  for (let i = 0; i < attempts; i++) {
+    try {
+      const raw = JSON.parse(await (0, import_promises8.readFile)(path, "utf-8"));
+      const actual = typeof raw.sessionId === "string" ? raw.sessionId : null;
+      if (actual) return { mismatch: actual !== expected, actual };
+    } catch {
+    }
+    await new Promise((r) => setTimeout(r, delayMs));
+  }
+  return { mismatch: false, actual: null };
+}
 async function handlePeerRestart(req, ctx) {
   const parsed = PeerRestartArgsSchema.safeParse(req.args);
   if (!parsed.success) {
@@ -5260,6 +5311,24 @@ async function handlePeerRestart(req, ctx) {
       }
     });
   }
+  let inSession = null;
+  if (record.tmuxTarget && parseHostTarget(record.tmuxTarget).kind === "window") {
+    const windows = ctx.hostDriver.listWindows ? await ctx.hostDriver.listWindows() : [];
+    inSession = windows.find((w) => w.target === record.tmuxTarget)?.session ?? null;
+    if (inSession === null) {
+      await writeEvent({
+        event: "peer_restart_window_home_unknown",
+        level: "warn",
+        by: { sessionId: req.requestedBy.sessionId, name: req.requestedBy.name },
+        requestId: req.id,
+        details: {
+          sessionId: record.sessionId,
+          tmuxTarget: record.tmuxTarget,
+          hint: "The window is gone, so its parent session cannot be read. The peer will be relaunched as a session of its own."
+        }
+      });
+    }
+  }
   const spawnArgs = {
     schemaVersion: req.schemaVersion,
     id: `${req.id}:spawn`,
@@ -5273,7 +5342,18 @@ async function handlePeerRestart(req, ctx) {
       // relaunch something cheaper than a real Claude Code.
       command: process.env["CLAUDE_BRIDGE_TEST_COMMAND"] ?? command,
       args: commandArgs,
-      resume: true,
+      ...inSession ? { inSession } : {},
+      // Only resume something that CAN be resumed.
+      //
+      // This was an unconditional `true`. For a peer spawned under a stable
+      // name rather than a UUID — `obetni-w3` — that composes
+      // `claude --resume obetni-w3`, which matches no transcript, so Claude
+      // Code drops into its interactive Resume picker and sits there. The peer
+      // is then wedged at a prompt, gets a brand-new session id, and the record
+      // is orphaned: the pid matches, so `team_status` still reads "live".
+      // Found by plt-designer in the v0.10.6 pilot; the restart reported `ok`
+      // over it, which is this release's own defect wearing a new hat.
+      resume: isResumableSessionId(record.sessionId),
       model: args.model ?? record.model ?? null,
       accountProfile: args.accountProfile ?? record.accountProfile ?? null,
       extraAllowEnv: [],
@@ -5291,6 +5371,29 @@ async function handlePeerRestart(req, ctx) {
       { spawnResult }
     );
   }
+  const newPid = spawnResult.data?.pid ?? null;
+  const identity = await verifyRestartedIdentity(record.sessionId, newPid);
+  if (identity.mismatch) {
+    await writeEvent({
+      event: "peer_restart_identity_mismatch",
+      level: "error",
+      by: { sessionId: req.requestedBy.sessionId, name: req.requestedBy.name },
+      requestId: req.id,
+      details: {
+        expected: record.sessionId,
+        actual: identity.actual,
+        pid: newPid,
+        hint: "The peer is running but under a different session id \u2014 the record now points at an identity that no longer exists. Adopt the new id or stop the peer; do not trust lifecycle calls on this record."
+      }
+    });
+    return errResult(
+      req.id,
+      req.tool,
+      "restart_identity_mismatch",
+      `Peer restarted as '${identity.actual ?? "unknown"}', not '${record.sessionId}' \u2014 the record is now orphaned.`,
+      { expected: record.sessionId, actual: identity.actual, pid: newPid }
+    );
+  }
   await writeEvent({
     event: "peer_restarted",
     by: { sessionId: req.requestedBy.sessionId, name: req.requestedBy.name },
@@ -5304,30 +5407,12 @@ async function handlePeerRestart(req, ctx) {
   });
 }
 
-// src/hosts/driver.ts
-var WINDOW_ID = /^@\d+$/;
-function parseHostTarget(key) {
-  if (WINDOW_ID.test(key)) return { kind: "window", windowId: key };
-  return { kind: "session", session: sanitizeSessionKey(key) };
-}
-function formatHostTarget(t) {
-  return t.kind === "window" ? t.windowId : t.session;
-}
-var UNSAFE_TARGET_CHARS = /[^A-Za-z0-9_-]/g;
-function sanitizeSessionKey(rawName) {
-  const sanitized = rawName.replace(UNSAFE_TARGET_CHARS, "_");
-  if (sanitized.length === 0) {
-    throw new Error(`Cannot derive a tmux target from '${rawName}' \u2014 nothing safe remained`);
-  }
-  return sanitized;
-}
-
 // src/hosts/process-inspector.ts
-var import_promises8 = require("node:fs/promises");
-var import_node_os2 = require("node:os");
-var import_node_path8 = require("node:path");
+var import_promises9 = require("node:fs/promises");
+var import_node_os3 = require("node:os");
+var import_node_path9 = require("node:path");
 var DEFAULT_MAX_DEPTH = 8;
-var UUID_RE = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i;
+var UUID_RE2 = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i;
 function parsePpidFromStat(stat4) {
   const close = stat4.lastIndexOf(")");
   if (close === -1) return null;
@@ -5340,7 +5425,7 @@ function sessionIdFromCmdline(cmdline) {
   if (idx === -1) return null;
   const rest = cmdline.slice(idx + "--resume".length).trim();
   const token = rest.split(/\s+/)[0] ?? "";
-  const match = UUID_RE.exec((0, import_node_path8.basename)(token));
+  const match = UUID_RE2.exec((0, import_node_path9.basename)(token));
   return match ? match[0] : null;
 }
 var LinuxProcessInspector = class {
@@ -5348,12 +5433,12 @@ var LinuxProcessInspector = class {
   sessionsDir;
   constructor(opts = {}) {
     this.procRoot = opts.procRoot ?? "/proc";
-    this.sessionsDir = opts.sessionsDir ?? (0, import_node_path8.join)((0, import_node_os2.homedir)(), ".claude", "sessions");
+    this.sessionsDir = opts.sessionsDir ?? (0, import_node_path9.join)((0, import_node_os3.homedir)(), ".claude", "sessions");
   }
   async listClaudePeers() {
     let entries;
     try {
-      entries = await (0, import_promises8.readdir)(this.procRoot);
+      entries = await (0, import_promises9.readdir)(this.procRoot);
     } catch {
       return [];
     }
@@ -5376,7 +5461,7 @@ var LinuxProcessInspector = class {
   }
   async readProcCwd(pid) {
     try {
-      return await (0, import_promises8.readlink)((0, import_node_path8.join)(this.procRoot, String(pid), "cwd"));
+      return await (0, import_promises9.readlink)((0, import_node_path9.join)(this.procRoot, String(pid), "cwd"));
     } catch {
       return null;
     }
@@ -5402,7 +5487,7 @@ var LinuxProcessInspector = class {
    */
   async resolveSessionId(pid, cmdline) {
     try {
-      const raw = await (0, import_promises8.readFile)((0, import_node_path8.join)(this.sessionsDir, `${pid}.json`), "utf-8");
+      const raw = await (0, import_promises9.readFile)((0, import_node_path9.join)(this.sessionsDir, `${pid}.json`), "utf-8");
       const parsed = JSON.parse(raw);
       if (parsed.sessionId) return { sessionId: parsed.sessionId, source: "sessions-json" };
     } catch {
@@ -5413,7 +5498,7 @@ var LinuxProcessInspector = class {
   }
   async readProcFile(pid, name) {
     try {
-      return await (0, import_promises8.readFile)((0, import_node_path8.join)(this.procRoot, String(pid), name), "utf-8");
+      return await (0, import_promises9.readFile)((0, import_node_path9.join)(this.procRoot, String(pid), name), "utf-8");
     } catch {
       return null;
     }
@@ -5430,19 +5515,43 @@ var TeamAdoptArgsSchema = external_exports.object({
   /** manual mode: host session key -> Claude session id. */
   mapping: external_exports.record(external_exports.string().min(1)).optional(),
   /** Safe by default — see the note above. */
+  /**
+   * Adopt only peers whose host session matches. Without it, `auto` sweeps
+   * every window on the host into one team — so adopting four families under
+   * four team stamps was impossible (plt-designer, v0.10.6 pilot).
+   * Accepts a plain session name (`hmh`) or a `/regex/`.
+   */
+  hostSession: external_exports.string().min(1).optional(),
   dryRun: external_exports.boolean().default(true)
 }).strict();
-function stripReappendedArgs(argv) {
-  const out = [];
-  for (let i = 0; i < argv.length; i++) {
-    const a = argv[i];
-    if (a === "--resume" || a === "--model") {
+async function claudeInside(ctx, panePid) {
+  const inspector = ctx.processInspector ?? defaultProcessInspector();
+  const peers = await inspector.listClaudePeers();
+  for (const proc of peers) {
+    if (proc.pid === panePid) return proc;
+    const chain = [proc.ppid, ...await inspector.ancestorsOf(proc.pid)];
+    if (chain.includes(panePid)) return proc;
+  }
+  return void 0;
+}
+function extractLaunchParams(argv) {
+  const [command, ...rest] = argv;
+  const spawnArgs = [];
+  let model = null;
+  for (let i = 0; i < rest.length; i++) {
+    const a = rest[i];
+    if (a === "--resume") {
       i++;
       continue;
     }
-    if (a !== void 0) out.push(a);
+    if (a === "--model") {
+      model = rest[i + 1] ?? null;
+      i++;
+      continue;
+    }
+    if (a !== void 0) spawnArgs.push(a);
   }
-  return out;
+  return { ...command ? { command } : {}, spawnArgs, model };
 }
 async function discoverCandidates(ctx, hostSessions) {
   const inspector = ctx.processInspector ?? defaultProcessInspector();
@@ -5481,17 +5590,16 @@ async function discoverCandidates(ctx, hostSessions) {
       });
       continue;
     }
-    const [command, ...rest] = proc.argv;
+    const launch = extractLaunchParams(proc.argv);
     candidates.push({
       sessionKey: session.sessionKey,
       label: session.label,
       sessionId: proc.sessionId,
       pid: proc.pid,
       sessionIdSource: proc.sessionIdSource,
-      ...command ? { command } : {},
-      // `--resume <id>` and `--model <m>` are re-appended by peer_spawn, so
-      // strip them here or the next restart would carry them twice.
-      spawnArgs: stripReappendedArgs(rest),
+      ...launch.command ? { command: launch.command } : {},
+      spawnArgs: launch.spawnArgs,
+      model: launch.model,
       ...proc.cwd ? { cwd: proc.cwd } : {}
     });
   }
@@ -5510,12 +5618,17 @@ async function handleTeamAdopt(req, ctx) {
       team: args.team
     });
   }
-  const windows = ctx.hostDriver.listWindows ? await ctx.hostDriver.listWindows() : [];
+  let windows = ctx.hostDriver.listWindows ? await ctx.hostDriver.listWindows() : [];
+  const sessionFilter = args.hostSession;
+  if (sessionFilter !== void 0) {
+    const rx = sessionFilter.startsWith("/") && sessionFilter.lastIndexOf("/") > 0 ? new RegExp(sessionFilter.slice(1, sessionFilter.lastIndexOf("/"))) : null;
+    windows = windows.filter((w) => rx ? rx.test(w.session) : w.session === sessionFilter);
+  }
   const hostSessions = windows.length > 0 ? windows.map((w) => ({
     sessionKey: w.target,
     label: w.windowName || w.label,
     pid: w.pid
-  })) : (await ctx.hostDriver.listSessions()).map((s) => ({
+  })) : (await ctx.hostDriver.listSessions()).filter((s) => sessionFilter === void 0 || s.sessionKey === sessionFilter).map((s) => ({
     sessionKey: s.sessionKey,
     label: s.sessionKey,
     pid: s.pid
@@ -5549,17 +5662,17 @@ async function handleTeamAdopt(req, ctx) {
         skips.push({ sessionKey, reason: "not_on_host" });
         continue;
       }
-      const procs = await ctx.processInspector?.listClaudePeers();
-      const owning = procs?.find((pr) => pr.pid === host.pid);
-      const [manualCommand, ...manualRest] = owning?.argv ?? [];
+      const owning = host.pid === null ? void 0 : await claudeInside(ctx, host.pid);
+      const launch = extractLaunchParams(owning?.argv ?? []);
       candidates.push({
         sessionKey: host.sessionKey,
         label: host.label,
         sessionId,
-        pid: host.pid,
+        pid: owning?.pid ?? host.pid,
         sessionIdSource: "manual",
-        ...manualCommand ? { command: manualCommand } : {},
-        spawnArgs: stripReappendedArgs(manualRest),
+        ...launch.command ? { command: launch.command } : {},
+        spawnArgs: launch.spawnArgs,
+        model: launch.model,
         ...owning?.cwd ? { cwd: owning.cwd } : {}
       });
     }
@@ -5594,6 +5707,7 @@ async function handleTeamAdopt(req, ctx) {
   const plan = {
     team: args.team,
     mode: args.mode,
+    hostSession: args.hostSession ?? null,
     hostWindowsSeen: hostSessions.length,
     planned: fresh.map((c) => ({
       sessionKey: c.sessionKey,
@@ -5605,7 +5719,8 @@ async function handleTeamAdopt(req, ctx) {
       // restartable BEFORE anything is written.
       command: c.command ?? null,
       spawnArgs: c.spawnArgs ?? [],
-      cwd: c.cwd ?? null
+      cwd: c.cwd ?? null,
+      model: c.model ?? null
     })),
     ambiguous,
     skipped: skips
@@ -5640,7 +5755,7 @@ async function handleTeamAdopt(req, ctx) {
         ...c.command ? { command: c.command } : {},
         ...c.spawnArgs ? { spawnArgs: c.spawnArgs } : {},
         ...c.cwd ? { cwd: c.cwd } : {},
-        model: null,
+        model: c.model ?? null,
         accountProfile: null,
         startedAt: now,
         lastUpdatedAt: now
@@ -5679,16 +5794,16 @@ async function handleTeamAdopt(req, ctx) {
 }
 
 // src/handlers/team-layout.ts
-var import_promises9 = require("node:fs/promises");
-var import_node_path10 = require("node:path");
+var import_promises10 = require("node:fs/promises");
+var import_node_path11 = require("node:path");
 
 // src/handlers/wake.ts
 var import_node_crypto5 = require("node:crypto");
-var import_node_path9 = require("node:path");
+var import_node_path10 = require("node:path");
 var DEFAULT_WAKE_DELAY_MS = 8e3;
 var DEFAULT_WAKE_PROMPT = "[daemon] Wake \u2014 you were resumed from a stopped state. Re-onboard from your anchor, read your inbox (peer_inbox_read) and report to whoever woke you.";
 function inboxPendingDir4(peerId) {
-  return (0, import_node_path9.join)(bridgeRoot(), "inbox", peerId, "pending");
+  return (0, import_node_path10.join)(bridgeRoot(), "inbox", peerId, "pending");
 }
 function generateMsgId3() {
   const ms = Date.now().toString(36);
@@ -5714,7 +5829,7 @@ async function writeWakeMsg(opts, threadId) {
       } : {}
     }
   };
-  await atomicWriteJson((0, import_node_path9.join)(inboxPendingDir4(opts.sessionId), `${msgId}.json`), envelope);
+  await atomicWriteJson((0, import_node_path10.join)(inboxPendingDir4(opts.sessionId), `${msgId}.json`), envelope);
   return msgId;
 }
 async function wakePeer(req, ctx, opts) {
@@ -5839,11 +5954,11 @@ var TeamLayoutArgsSchema = external_exports.object({
   wakeDelayMs: external_exports.number().int().min(0).max(12e4).optional()
 }).strict();
 function teamFilePath(team) {
-  return (0, import_node_path10.join)(teamsDir(), `${team}.json`);
+  return (0, import_node_path11.join)(teamsDir(), `${team}.json`);
 }
 async function loadTeamSpec(team) {
   try {
-    const raw = await (0, import_promises9.readFile)(teamFilePath(team), "utf-8");
+    const raw = await (0, import_promises10.readFile)(teamFilePath(team), "utf-8");
     const parsed = TeamFileSchema.safeParse(JSON.parse(raw));
     if (!parsed.success) throw new Error(`Team spec parse failed: ${parsed.error.message}`);
     return parsed.data;
@@ -6059,7 +6174,7 @@ async function handleTeamLayout(req, ctx) {
 
 // src/handlers/team-reconcile.ts
 var import_node_fs = require("node:fs");
-var import_node_path11 = require("node:path");
+var import_node_path12 = require("node:path");
 var TeamReconcileArgsSchema = external_exports.object({
   /** Restrict the report to one team. Unmanaged processes are still listed. */
   team: external_exports.string().min(1).optional(),
@@ -6070,7 +6185,7 @@ var TeamReconcileArgsSchema = external_exports.object({
   markDead: external_exports.boolean().default(false)
 }).strict();
 function pidAlive(pid, procRoot) {
-  return (0, import_node_fs.existsSync)((0, import_node_path11.join)(procRoot, String(pid)));
+  return (0, import_node_fs.existsSync)((0, import_node_path12.join)(procRoot, String(pid)));
 }
 async function handleTeamReconcile(req, ctx) {
   const parsed = TeamReconcileArgsSchema.safeParse(req.args);
@@ -6558,8 +6673,8 @@ async function handleTeamStatus(req, ctx) {
 
 // src/handlers/team-stop.ts
 var import_node_crypto6 = require("node:crypto");
-var import_promises10 = require("node:fs/promises");
-var import_node_path12 = require("node:path");
+var import_promises11 = require("node:fs/promises");
+var import_node_path13 = require("node:path");
 var DEFAULT_ANCHOR_TIMEOUT_MS2 = 12e4;
 var DEFAULT_ACK_POLL_MS2 = 500;
 var STOP_ACK_FILENAME_EXTENSION = ".json";
@@ -6581,11 +6696,11 @@ var TeamStopArgsSchema = external_exports.object({
   inline: TeamStopFileSchema.optional()
 }).strict();
 function teamFilePath2(team) {
-  return (0, import_node_path12.join)(teamsDir(), `${team}.json`);
+  return (0, import_node_path13.join)(teamsDir(), `${team}.json`);
 }
 async function loadTeamOrder(team) {
   try {
-    const raw = await (0, import_promises10.readFile)(teamFilePath2(team), "utf-8");
+    const raw = await (0, import_promises11.readFile)(teamFilePath2(team), "utf-8");
     const json = JSON.parse(raw);
     const parsed = TeamStopFileSchema.safeParse(json);
     if (!parsed.success) throw new Error(`Team spec parse failed: ${parsed.error.message}`);
@@ -6597,13 +6712,13 @@ async function loadTeamOrder(team) {
   }
 }
 function stopAckDir() {
-  return (0, import_node_path12.join)(controlDir(), "stop-ack");
+  return (0, import_node_path13.join)(controlDir(), "stop-ack");
 }
 function stopAckPath(sessionId) {
-  return (0, import_node_path12.join)(stopAckDir(), `${sessionId}${STOP_ACK_FILENAME_EXTENSION}`);
+  return (0, import_node_path13.join)(stopAckDir(), `${sessionId}${STOP_ACK_FILENAME_EXTENSION}`);
 }
 function inboxPendingDir5(peerId) {
-  return (0, import_node_path12.join)(bridgeRoot(), "inbox", peerId, "pending");
+  return (0, import_node_path13.join)(bridgeRoot(), "inbox", peerId, "pending");
 }
 function generateMsgId4() {
   const ms = Date.now().toString(36);
@@ -6612,7 +6727,7 @@ function generateMsgId4() {
 }
 async function fileExists2(path) {
   try {
-    await (0, import_promises10.access)(path);
+    await (0, import_promises11.access)(path);
     return true;
   } catch {
     return false;
@@ -6628,12 +6743,12 @@ async function pollForAck2(sessionId, deadline, pollMs) {
 }
 async function consumeAckFile2(sessionId) {
   const src = stopAckPath(sessionId);
-  const done = (0, import_node_path12.join)(stopAckDir(), "done");
+  const done = (0, import_node_path13.join)(stopAckDir(), "done");
   try {
-    await (0, import_promises10.mkdir)(done, { recursive: true });
-    await (0, import_promises10.rename)(src, (0, import_node_path12.join)(done, `${sessionId}-${Date.now()}.json`));
+    await (0, import_promises11.mkdir)(done, { recursive: true });
+    await (0, import_promises11.rename)(src, (0, import_node_path13.join)(done, `${sessionId}-${Date.now()}.json`));
   } catch {
-    await (0, import_promises10.unlink)(src).catch(() => void 0);
+    await (0, import_promises11.unlink)(src).catch(() => void 0);
   }
 }
 async function writeStopRequestMsg(peerId, threadId, reason) {
@@ -6650,7 +6765,7 @@ async function writeStopRequestMsg(peerId, threadId, reason) {
       reason
     }
   };
-  const path = (0, import_node_path12.join)(inboxPendingDir5(peerId), `${msgId}.json`);
+  const path = (0, import_node_path13.join)(inboxPendingDir5(peerId), `${msgId}.json`);
   await atomicWriteJson(path, envelope);
   return msgId;
 }
@@ -6693,7 +6808,7 @@ async function stopSinglePeer(req, ctx, peer, args, threadId, anchorTimeoutMs, a
     });
     return { sessionId: peer.sessionId, displayName: peer.displayName, outcome: "dead" };
   }
-  await (0, import_promises10.mkdir)(stopAckDir(), { recursive: true });
+  await (0, import_promises11.mkdir)(stopAckDir(), { recursive: true });
   let stopReqMsgId;
   try {
     stopReqMsgId = await writeStopRequestMsg(
@@ -6911,17 +7026,17 @@ async function dispatch(req, ctx) {
 }
 
 // src/heartbeat.ts
-var import_promises11 = require("node:fs/promises");
+var import_promises12 = require("node:fs/promises");
 var log5 = makeLogger("daemon.heartbeat");
 var timer = null;
 async function touch() {
   const now = /* @__PURE__ */ new Date();
   try {
-    await (0, import_promises11.utimes)(heartbeatPath(), now, now);
+    await (0, import_promises12.utimes)(heartbeatPath(), now, now);
   } catch (e) {
     const code = e.code;
     if (code === "ENOENT") {
-      await (0, import_promises11.writeFile)(heartbeatPath(), "");
+      await (0, import_promises12.writeFile)(heartbeatPath(), "");
     } else {
       log5.warn("heartbeat_touch_failed", { err: String(e) });
     }
@@ -6944,8 +7059,8 @@ function stopHeartbeat() {
 // src/hosts/tmux-driver.ts
 var import_node_child_process = require("node:child_process");
 var import_node_fs2 = require("node:fs");
-var import_promises12 = require("node:fs/promises");
-var import_node_path13 = require("node:path");
+var import_promises13 = require("node:fs/promises");
+var import_node_path14 = require("node:path");
 var import_node_util = require("node:util");
 var execFileAsync = (0, import_node_util.promisify)(import_node_child_process.execFile);
 var log6 = makeLogger("daemon.host.tmux");
@@ -7063,8 +7178,26 @@ var TmuxDriver = class {
     }
   }
   async spawn(opts) {
-    const canonicalKey = sanitizeSessionKey(opts.sessionKey);
-    const args = [
+    const asWindow = opts.inSession !== void 0;
+    const parentSession = opts.inSession ? sanitizeSessionKey(opts.inSession) : null;
+    const canonicalKey = asWindow ? opts.sessionKey : sanitizeSessionKey(opts.sessionKey);
+    const args = asWindow ? [
+      "new-window",
+      "-d",
+      "-P",
+      // Print the new window's id so the caller can address it. A window
+      // index would be wrong: `renumber-windows` shifts those on every kill.
+      "-F",
+      "#{window_id}",
+      "-t",
+      `${parentSession}:`,
+      "-c",
+      opts.cwd,
+      "--",
+      ...envPrefix(opts.env),
+      opts.command,
+      ...opts.args
+    ] : [
       "new-session",
       "-d",
       "-s",
@@ -7077,8 +7210,9 @@ var TmuxDriver = class {
       ...opts.args
     ];
     const { env } = opts;
+    let createdWindowId = null;
     try {
-      await execFileAsync(this.tmuxBin, args, {
+      const { stdout } = await execFileAsync(this.tmuxBin, args, {
         ...EXEC_DEFAULTS,
         // Kept for the tmux CLIENT process itself. It does NOT reach the pane —
         // see envPrefix() for why the pane's environment is built on the
@@ -7086,6 +7220,7 @@ var TmuxDriver = class {
         env,
         timeout: MUTATE_TIMEOUT_MS
       });
+      if (asWindow) createdWindowId = stdout.trim() || null;
     } catch (e) {
       log6.error("tmux_spawn_failed", {
         sessionKey: opts.sessionKey,
@@ -7100,15 +7235,16 @@ var TmuxDriver = class {
         canonical: canonicalKey
       });
     }
-    const pid = await this.readSessionPid(canonicalKey);
+    const effectiveKey = createdWindowId ?? canonicalKey;
+    const pid = await this.readSessionPid(effectiveKey);
     if (pid === null) {
       log6.error("tmux_spawn_no_pane_pid", {
         sessionKey: opts.sessionKey,
-        canonicalKey,
+        canonicalKey: effectiveKey,
         hint: "new-session returned 0 but no pane pid \u2014 the command most likely exited immediately"
       });
     }
-    return { sessionKey: canonicalKey, alive: pid !== null, pid };
+    return { sessionKey: effectiveKey, alive: pid !== null, pid };
   }
   async kill(sessionKey, opts = {}) {
     const t = parseHostTarget(sessionKey);
@@ -7262,10 +7398,10 @@ var TmuxDriver = class {
   }
   async logSendKeys(sessionKey, entry) {
     try {
-      const dir = (0, import_node_path13.join)(controlDir(), "logs");
-      await (0, import_promises12.mkdir)(dir, { recursive: true });
+      const dir = (0, import_node_path14.join)(controlDir(), "logs");
+      await (0, import_promises13.mkdir)(dir, { recursive: true });
       const line = JSON.stringify({ ts: (/* @__PURE__ */ new Date()).toISOString(), sessionKey, ...entry });
-      await (0, import_promises12.appendFile)((0, import_node_path13.join)(dir, `sendkeys-${sessionKey}.log`), `${line}
+      await (0, import_promises13.appendFile)((0, import_node_path14.join)(dir, `sendkeys-${sessionKey}.log`), `${line}
 `, "utf-8");
     } catch {
     }
@@ -7309,7 +7445,7 @@ function defaultHostDriver() {
 
 // src/lock.ts
 var import_node_fs3 = require("node:fs");
-var import_promises13 = require("node:fs/promises");
+var import_promises14 = require("node:fs/promises");
 var log8 = makeLogger("daemon.lock");
 var LockAcquireError = class extends Error {
   constructor(message, heldBy) {
@@ -7350,7 +7486,7 @@ function isStale(payload) {
 }
 async function readLock() {
   try {
-    const raw = await (0, import_promises13.readFile)(daemonLockPath(), "utf-8");
+    const raw = await (0, import_promises14.readFile)(daemonLockPath(), "utf-8");
     const parsed = JSON.parse(raw);
     if (typeof parsed.pid !== "number") return null;
     return parsed;
@@ -7384,7 +7520,7 @@ async function acquireLock() {
 }
 async function releaseLock() {
   try {
-    await (0, import_promises13.unlink)(daemonLockPath());
+    await (0, import_promises14.unlink)(daemonLockPath());
     log8.info("lock_released");
   } catch (e) {
     const code = e.code;
@@ -7512,16 +7648,16 @@ async function runDaemon(opts) {
 
 // src/install.ts
 var import_node_child_process2 = require("node:child_process");
-var import_promises14 = require("node:fs/promises");
-var import_node_os3 = require("node:os");
-var import_node_path14 = require("node:path");
+var import_promises15 = require("node:fs/promises");
+var import_node_os4 = require("node:os");
+var import_node_path15 = require("node:path");
 var log10 = makeLogger("daemon.install");
 var UNIT_NAME = "claude-bridge-daemon.service";
 function systemdUserDir() {
-  return (0, import_node_path14.join)((0, import_node_os3.homedir)(), ".config", "systemd", "user");
+  return (0, import_node_path15.join)((0, import_node_os4.homedir)(), ".config", "systemd", "user");
 }
 function unitPath() {
-  return (0, import_node_path14.join)(systemdUserDir(), UNIT_NAME);
+  return (0, import_node_path15.join)(systemdUserDir(), UNIT_NAME);
 }
 function assertLinux() {
   if (process.platform !== "linux") {
@@ -7533,19 +7669,19 @@ function assertLinux() {
 function resolveDaemonBin() {
   const argv1 = process.argv[1];
   if (!argv1) throw new Error("process.argv[1] missing \u2014 cannot determine daemon binary path");
-  if (!argv1.startsWith("/")) return (0, import_node_path14.resolve)(process.cwd(), argv1);
+  if (!argv1.startsWith("/")) return (0, import_node_path15.resolve)(process.cwd(), argv1);
   return argv1;
 }
 async function readTemplate() {
   const anchor = resolveDaemonBin();
-  const anchorDir = (0, import_node_path14.dirname)(anchor);
+  const anchorDir = (0, import_node_path15.dirname)(anchor);
   const candidates = [
-    (0, import_node_path14.resolve)(anchorDir, "..", "templates", UNIT_NAME),
-    (0, import_node_path14.resolve)(anchorDir, "templates", UNIT_NAME)
+    (0, import_node_path15.resolve)(anchorDir, "..", "templates", UNIT_NAME),
+    (0, import_node_path15.resolve)(anchorDir, "templates", UNIT_NAME)
   ];
   for (const candidate of candidates) {
     try {
-      return await (0, import_promises14.readFile)(candidate, "utf-8");
+      return await (0, import_promises15.readFile)(candidate, "utf-8");
     } catch {
     }
   }
@@ -7555,39 +7691,39 @@ function findNodeBin() {
   return process.execPath;
 }
 function deployedDaemonPath() {
-  return (0, import_node_path14.join)((0, import_node_os3.homedir)(), ".claude-bridge", "bin", "claude-bridge-daemon.cjs");
+  return (0, import_node_path15.join)((0, import_node_os4.homedir)(), ".claude-bridge", "bin", "claude-bridge-daemon.cjs");
 }
 function deployMetaPath() {
-  return (0, import_node_path14.join)((0, import_node_path14.dirname)(deployedDaemonPath()), "deployed-from.json");
+  return (0, import_node_path15.join)((0, import_node_path15.dirname)(deployedDaemonPath()), "deployed-from.json");
 }
 async function deployDaemonBinary(sourceBin) {
   const target = deployedDaemonPath();
-  if ((0, import_node_path14.resolve)(sourceBin) === (0, import_node_path14.resolve)(target)) {
+  if ((0, import_node_path15.resolve)(sourceBin) === (0, import_node_path15.resolve)(target)) {
     log10.info("deploy_skipped_same_path", { path: target });
     return target;
   }
-  await (0, import_promises14.mkdir)((0, import_node_path14.dirname)(target), { recursive: true });
-  await (0, import_promises14.copyFile)(sourceBin, target);
-  await (0, import_promises14.chmod)(target, 493);
+  await (0, import_promises15.mkdir)((0, import_node_path15.dirname)(target), { recursive: true });
+  await (0, import_promises15.copyFile)(sourceBin, target);
+  await (0, import_promises15.chmod)(target, 493);
   try {
     const templateSource = await readTemplate();
-    const templateTarget = (0, import_node_path14.join)((0, import_node_path14.dirname)(target), "templates", UNIT_NAME);
-    await (0, import_promises14.mkdir)((0, import_node_path14.dirname)(templateTarget), { recursive: true });
-    await (0, import_promises14.writeFile)(templateTarget, templateSource, "utf-8");
+    const templateTarget = (0, import_node_path15.join)((0, import_node_path15.dirname)(target), "templates", UNIT_NAME);
+    await (0, import_promises15.mkdir)((0, import_node_path15.dirname)(templateTarget), { recursive: true });
+    await (0, import_promises15.writeFile)(templateTarget, templateSource, "utf-8");
   } catch (e) {
     log10.warn("template_deploy_failed", { err: String(e) });
   }
   let version = "unknown";
   try {
     const pkg = JSON.parse(
-      await (0, import_promises14.readFile)((0, import_node_path14.resolve)((0, import_node_path14.dirname)(sourceBin), "..", "package.json"), "utf-8")
+      await (0, import_promises15.readFile)((0, import_node_path15.resolve)((0, import_node_path15.dirname)(sourceBin), "..", "package.json"), "utf-8")
     );
     version = pkg.version ?? "unknown";
   } catch {
   }
-  await (0, import_promises14.writeFile)(
+  await (0, import_promises15.writeFile)(
     deployMetaPath(),
-    `${JSON.stringify({ source: (0, import_node_path14.resolve)(sourceBin), version, deployedAt: (/* @__PURE__ */ new Date()).toISOString() }, null, 2)}
+    `${JSON.stringify({ source: (0, import_node_path15.resolve)(sourceBin), version, deployedAt: (/* @__PURE__ */ new Date()).toISOString() }, null, 2)}
 `,
     "utf-8"
   );
@@ -7602,8 +7738,8 @@ async function installSystemd() {
   const daemonBin = await deployDaemonBinary(sourceBin);
   const template = await readTemplate();
   const rendered = template.replace(/__NODE_BIN__/g, nodeBin).replace(/__DAEMON_BIN__/g, daemonBin);
-  await (0, import_promises14.mkdir)(systemdUserDir(), { recursive: true });
-  await (0, import_promises14.writeFile)(unitPath(), rendered, "utf-8");
+  await (0, import_promises15.mkdir)(systemdUserDir(), { recursive: true });
+  await (0, import_promises15.writeFile)(unitPath(), rendered, "utf-8");
   log10.info("unit_written", { path: unitPath(), execStart: daemonBin });
   runSystemctl("daemon-reload");
   runSystemctl("enable", UNIT_NAME);
@@ -7623,14 +7759,14 @@ async function uninstallSystemd() {
     log10.warn("systemd_disable_failed", { err: String(e) });
   }
   try {
-    await (0, import_promises14.unlink)(unitPath());
+    await (0, import_promises15.unlink)(unitPath());
   } catch (e) {
     const code = e.code;
     if (code !== "ENOENT") log10.warn("unit_unlink_failed", { err: String(e) });
   }
   for (const path of [deployedDaemonPath(), deployMetaPath()]) {
     try {
-      await (0, import_promises14.unlink)(path);
+      await (0, import_promises15.unlink)(path);
     } catch (e) {
       const code = e.code;
       if (code !== "ENOENT") log10.warn("deployed_binary_unlink_failed", { path, err: String(e) });
@@ -7648,7 +7784,7 @@ async function ensureBinariesExist(daemonBin, nodeBin) {
     ["node", nodeBin]
   ]) {
     try {
-      await (0, import_promises14.stat)(path);
+      await (0, import_promises15.stat)(path);
     } catch {
       throw new Error(`${label} binary not found at ${path} \u2014 build daemon first (npm run build)`);
     }
@@ -7656,7 +7792,7 @@ async function ensureBinariesExist(daemonBin, nodeBin) {
 }
 
 // src/send.ts
-var import_promises15 = require("node:fs/promises");
+var import_promises16 = require("node:fs/promises");
 var EXIT_OK = 0;
 var EXIT_PEER = 2;
 var EXIT_USAGE = 3;
@@ -7732,7 +7868,7 @@ ${SEND_HELP}` };
   let content;
   if (parsed.textFile !== void 0) {
     try {
-      content = parsed.textFile === "-" ? await readStdin() : await (0, import_promises15.readFile)(parsed.textFile, "utf-8");
+      content = parsed.textFile === "-" ? await readStdin() : await (0, import_promises16.readFile)(parsed.textFile, "utf-8");
     } catch (e) {
       return { code: EXIT_USAGE, stderr: `send: cannot read --text-file: ${String(e)}
 ` };
@@ -7827,7 +7963,7 @@ async function statusCommand() {
   const lock = await readLock();
   let heartbeatAgeMs = null;
   try {
-    const s = await (0, import_promises16.stat)(heartbeatPath());
+    const s = await (0, import_promises17.stat)(heartbeatPath());
     heartbeatAgeMs = Date.now() - s.mtimeMs;
   } catch {
     heartbeatAgeMs = null;

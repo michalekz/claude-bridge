@@ -39,6 +39,13 @@ export const TeamAdoptArgsSchema = z
     /** manual mode: host session key -> Claude session id. */
     mapping: z.record(z.string().min(1)).optional(),
     /** Safe by default — see the note above. */
+    /**
+     * Adopt only peers whose host session matches. Without it, `auto` sweeps
+     * every window on the host into one team — so adopting four families under
+     * four team stamps was impossible (plt-designer, v0.10.6 pilot).
+     * Accepts a plain session name (`hmh`) or a `/regex/`.
+     */
+    hostSession: z.string().min(1).optional(),
     dryRun: z.boolean().default(true),
   })
   .strict();
@@ -56,6 +63,8 @@ interface AdoptionCandidate {
   command?: string;
   spawnArgs?: string[];
   cwd?: string;
+  /** From `--model` in the running argv. Restored as PeerRecord.model. */
+  model?: string | null;
 }
 
 interface AdoptionSkip {
@@ -71,17 +80,69 @@ interface AdoptionSkip {
  * `--model <m>`, because that is how it was started. Storing them and then
  * letting peer_spawn append its own would hand tmux two of each.
  */
-export function stripReappendedArgs(argv: string[]): string[] {
-  const out: string[] = [];
-  for (let i = 0; i < argv.length; i++) {
-    const a = argv[i];
-    if (a === "--resume" || a === "--model") {
-      i++; // skip its value too
+/**
+ * The Claude process running inside a host target, found by walking each
+ * peer's ancestry until it reaches the pane pid — one hop in practice, but
+ * wrappers (direnv, a launcher script) are cheap to tolerate.
+ */
+async function claudeInside(
+  ctx: HandlerContext,
+  panePid: number,
+): Promise<ProcessRecord | undefined> {
+  const inspector = ctx.processInspector ?? defaultProcessInspector();
+  const peers = await inspector.listClaudePeers();
+  for (const proc of peers) {
+    if (proc.pid === panePid) return proc;
+    const chain = [proc.ppid, ...(await inspector.ancestorsOf(proc.pid))];
+    if (chain.includes(panePid)) return proc;
+  }
+  return undefined;
+}
+
+export interface LaunchParams {
+  command?: string;
+  spawnArgs: string[];
+  /** Pulled out of argv into its own field, because peer_spawn re-appends it. */
+  model: string | null;
+}
+
+/**
+ * Split a running peer's argv into the pieces a record needs.
+ *
+ * `--resume` and `--model` are removed from `spawnArgs` because `peer_spawn`
+ * appends both itself; leaving them would hand tmux two of each. But removing
+ * is not the same as discarding: **the model has to survive** as
+ * `PeerRecord.model`, or the peer comes back on the default model.
+ * plt-designer caught this in the v0.10.6 pilot — kb-ops runs
+ * `--model claude-opus-5` and mic-velitel `--model claude-fable-5`, and the
+ * adoption plan carried neither.
+ *
+ * `--resume` really is discarded: the id it carries is the peer's own session,
+ * which the record already holds, and `peer_restart` composes the flag afresh.
+ */
+export function extractLaunchParams(argv: string[]): LaunchParams {
+  const [command, ...rest] = argv;
+  const spawnArgs: string[] = [];
+  let model: string | null = null;
+  for (let i = 0; i < rest.length; i++) {
+    const a = rest[i];
+    if (a === "--resume") {
+      i++;
       continue;
     }
-    if (a !== undefined) out.push(a);
+    if (a === "--model") {
+      model = rest[i + 1] ?? null;
+      i++;
+      continue;
+    }
+    if (a !== undefined) spawnArgs.push(a);
   }
-  return out;
+  return { ...(command ? { command } : {}), spawnArgs, model };
+}
+
+/** Kept for callers that only want the argument list. */
+export function stripReappendedArgs(argv: string[]): string[] {
+  return extractLaunchParams(["_", ...argv]).spawnArgs;
 }
 
 interface AdoptionAmbiguity {
@@ -153,17 +214,16 @@ async function discoverCandidates(
     // which resolves to nothing under nvm. Adoption would look complete while
     // the control layer was unusable at the exact moment it was first needed
     // (raised by plt-designer, 2026-08-04).
-    const [command, ...rest] = proc.argv;
+    const launch = extractLaunchParams(proc.argv);
     candidates.push({
       sessionKey: session.sessionKey,
       label: session.label,
       sessionId: proc.sessionId,
       pid: proc.pid,
       sessionIdSource: proc.sessionIdSource,
-      ...(command ? { command } : {}),
-      // `--resume <id>` and `--model <m>` are re-appended by peer_spawn, so
-      // strip them here or the next restart would carry them twice.
-      spawnArgs: stripReappendedArgs(rest),
+      ...(launch.command ? { command: launch.command } : {}),
+      spawnArgs: launch.spawnArgs,
+      model: launch.model,
       ...(proc.cwd ? { cwd: proc.cwd } : {}),
     });
   }
@@ -197,7 +257,15 @@ export async function handleTeamAdopt(
   // had produced exactly one process, and never mentioned the nineteen windows
   // it had not looked at. The plan was not incomplete on purpose; it did not
   // know there was anything else to find.
-  const windows = ctx.hostDriver.listWindows ? await ctx.hostDriver.listWindows() : [];
+  let windows = ctx.hostDriver.listWindows ? await ctx.hostDriver.listWindows() : [];
+  const sessionFilter = args.hostSession;
+  if (sessionFilter !== undefined) {
+    const rx =
+      sessionFilter.startsWith("/") && sessionFilter.lastIndexOf("/") > 0
+        ? new RegExp(sessionFilter.slice(1, sessionFilter.lastIndexOf("/")))
+        : null;
+    windows = windows.filter((w) => (rx ? rx.test(w.session) : w.session === sessionFilter));
+  }
   // `sessionKey` is the ADDRESS (a `@id` for a window, a name for a session);
   // `label` is what a human reads in the plan and what the peer gets named.
   const hostSessions: Array<{ sessionKey: string; label: string; pid: number | null }> =
@@ -207,11 +275,13 @@ export async function handleTeamAdopt(
           label: w.windowName || w.label,
           pid: w.pid,
         }))
-      : (await ctx.hostDriver.listSessions()).map((s) => ({
-          sessionKey: s.sessionKey,
-          label: s.sessionKey,
-          pid: s.pid,
-        }));
+      : (await ctx.hostDriver.listSessions())
+          .filter((s) => sessionFilter === undefined || s.sessionKey === sessionFilter)
+          .map((s) => ({
+            sessionKey: s.sessionKey,
+            label: s.sessionKey,
+            pid: s.pid,
+          }));
 
   let candidates: AdoptionCandidate[] = [];
   let ambiguous: AdoptionAmbiguity[] = [];
@@ -260,17 +330,22 @@ export async function handleTeamAdopt(
         skips.push({ sessionKey, reason: "not_on_host" });
         continue;
       }
-      const procs = await ctx.processInspector?.listClaudePeers();
-      const owning = procs?.find((pr) => pr.pid === host.pid);
-      const [manualCommand, ...manualRest] = owning?.argv ?? [];
+      // The Claude process is a CHILD of the pane, not the pane itself — a
+      // pane pid is usually the shell. Matching `pr.pid === host.pid` therefore
+      // found nothing, and manual adoption produced records with no command, no
+      // args and no cwd: adopted, and unrestartable. Auto mode already walked
+      // the ancestry; manual has to do the same (plt-designer, v0.10.6 pilot).
+      const owning = host.pid === null ? undefined : await claudeInside(ctx, host.pid);
+      const launch = extractLaunchParams(owning?.argv ?? []);
       candidates.push({
         sessionKey: host.sessionKey,
         label: host.label,
         sessionId,
-        pid: host.pid,
+        pid: owning?.pid ?? host.pid,
         sessionIdSource: "manual",
-        ...(manualCommand ? { command: manualCommand } : {}),
-        spawnArgs: stripReappendedArgs(manualRest),
+        ...(launch.command ? { command: launch.command } : {}),
+        spawnArgs: launch.spawnArgs,
+        model: launch.model,
         ...(owning?.cwd ? { cwd: owning.cwd } : {}),
       });
     }
@@ -310,6 +385,7 @@ export async function handleTeamAdopt(
   const plan = {
     team: args.team,
     mode: args.mode,
+    hostSession: args.hostSession ?? null,
     hostWindowsSeen: hostSessions.length,
     planned: fresh.map((c) => ({
       sessionKey: c.sessionKey,
@@ -322,6 +398,7 @@ export async function handleTeamAdopt(
       command: c.command ?? null,
       spawnArgs: c.spawnArgs ?? [],
       cwd: c.cwd ?? null,
+      model: c.model ?? null,
     })),
     ambiguous,
     skipped: skips,
@@ -360,7 +437,7 @@ export async function handleTeamAdopt(
         ...(c.command ? { command: c.command } : {}),
         ...(c.spawnArgs ? { spawnArgs: c.spawnArgs } : {}),
         ...(c.cwd ? { cwd: c.cwd } : {}),
-        model: null,
+        model: c.model ?? null,
         accountProfile: null,
         startedAt: now,
         lastUpdatedAt: now,

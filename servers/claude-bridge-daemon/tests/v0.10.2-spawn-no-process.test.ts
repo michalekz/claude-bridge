@@ -241,7 +241,46 @@ describe("a restart relaunches the peer the way it was launched", () => {
     await driver.kill("nvm-shaped-0804").catch(() => undefined);
   });
 
+  /**
+   * This case used to spawn `carries-args-0804` with `resume: true` and assert
+   * that the restart carried exactly one `--resume`. That is the wedging bug
+   * plt-designer found in the v0.10.6 pilot: `claude --resume carries-args-0804`
+   * matches no transcript, so Claude Code opens its interactive Resume picker
+   * and the peer sits there. Only a UUID names something resumable, so the
+   * resumable case now uses one — and the other half is covered below.
+   */
   it("the caller's arguments come back, and --resume is not doubled", async () => {
+    const { dispatch, ctx, driver } = await harness();
+    const seen: string[][] = [];
+    const original = driver.spawn.bind(driver);
+    driver.spawn = async (opts) => {
+      seen.push([...opts.args]);
+      return original(opts);
+    };
+    const UUID = "c4111e5a-0000-4000-8000-000000000001";
+
+    await dispatch(
+      makeRequest("peer_spawn", {
+        sessionId: UUID,
+        displayName: "carries-args-0804",
+        cwd: "/tmp",
+        command: "/bin/sh",
+        args: ["-c", "sleep 30"],
+        resume: true,
+      }),
+      ctx,
+    );
+    await dispatch(makeRequest("peer_restart", { peer: UUID }, "req-args"), ctx);
+
+    // The record stores the CALLER's list; peer_spawn appends --resume itself.
+    // Storing the computed list instead would append it again on every restart.
+    const relaunch = seen[1] ?? [];
+    expect(relaunch.slice(0, 2)).toEqual(["-c", "sleep 30"]);
+    expect(relaunch.filter((a) => a === "--resume")).toHaveLength(1);
+    await driver.kill("carries-args-0804").catch(() => undefined);
+  });
+
+  it("THE WEDGE: a peer named by a stable string is relaunched WITHOUT --resume", async () => {
     const { dispatch, ctx, driver } = await harness();
     const seen: string[][] = [];
     const original = driver.spawn.bind(driver);
@@ -252,23 +291,22 @@ describe("a restart relaunches the peer the way it was launched", () => {
 
     await dispatch(
       makeRequest("peer_spawn", {
-        sessionId: "carries-args-0804",
-        displayName: "carries-args-0804",
+        sessionId: "obetni-w3",
+        displayName: "obetni-w3",
         cwd: "/tmp",
         command: "/bin/sh",
         args: ["-c", "sleep 30"],
-        resume: true,
+        resume: false,
       }),
       ctx,
     );
-    await dispatch(makeRequest("peer_restart", { peer: "carries-args-0804" }, "req-args"), ctx);
+    await dispatch(makeRequest("peer_restart", { peer: "obetni-w3" }, "req-wedge"), ctx);
 
-    // The record stores the CALLER's list; peer_spawn appends --resume itself.
-    // Storing the computed list instead would append it again on every restart.
-    const relaunch = seen[1] ?? [];
-    expect(relaunch.slice(0, 2)).toEqual(["-c", "sleep 30"]);
-    expect(relaunch.filter((a) => a === "--resume")).toHaveLength(1);
-    await driver.kill("carries-args-0804").catch(() => undefined);
+    // Passing it would hand Claude Code an id no transcript answers to, which
+    // opens the picker instead of failing — a wedged peer with a fresh session
+    // id and an orphaned record whose pid still matches.
+    expect(seen[1]).not.toContain("--resume");
+    await driver.kill("obetni-w3").catch(() => undefined);
   });
 
   it("a record from before this release falls back loudly, not silently", async () => {

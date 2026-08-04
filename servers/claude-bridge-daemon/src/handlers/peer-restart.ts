@@ -1,5 +1,9 @@
+import { readFile } from "node:fs/promises";
+import { homedir } from "node:os";
+import { join } from "node:path";
 import { z } from "zod";
 import { writeEvent } from "../events.ts";
+import { parseHostTarget } from "../hosts/driver.ts";
 import type { RequestEnvelope, ResultEnvelope } from "../rpc.ts";
 import { errResult, okResult } from "../rpc.ts";
 import type { HandlerContext } from "./context.ts";
@@ -30,6 +34,57 @@ export const PeerRestartArgsSchema = z
   .strict();
 
 export type PeerRestartArgs = z.infer<typeof PeerRestartArgsSchema>;
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/**
+ * Is this id something `claude --resume` can actually find?
+ *
+ * A transcript is named by a UUID. `peer_spawn` also accepts a stable name for
+ * a fresh peer, and that name is not a transcript — resuming it lands in the
+ * interactive picker instead of failing, which is worse than failing.
+ */
+export function isResumableSessionId(sessionId: string): boolean {
+  return UUID_RE.test(sessionId);
+}
+
+export interface IdentityCheck {
+  mismatch: boolean;
+  actual: string | null;
+}
+
+/**
+ * Read back the session id Claude Code registered for the relaunched pid.
+ *
+ * `~/.claude/sessions/<pid>.json` is written a moment after boot, so this
+ * polls briefly. A missing file is NOT treated as a mismatch: on a fresh spawn
+ * the id is chosen by Claude Code and there is nothing to compare against, and
+ * calling "I could not check" a failure would break restarts that worked.
+ */
+export async function verifyRestartedIdentity(
+  expected: string,
+  pid: number | null,
+  opts: { attempts?: number; delayMs?: number; homeDir?: string } = {},
+): Promise<IdentityCheck> {
+  if (pid === null || !isResumableSessionId(expected)) return { mismatch: false, actual: null };
+  const attempts = opts.attempts ?? 8;
+  const delayMs = opts.delayMs ?? 500;
+  const home = opts.homeDir ?? homedir();
+  const path = join(home, ".claude", "sessions", `${pid}.json`);
+
+  for (let i = 0; i < attempts; i++) {
+    try {
+      const raw = JSON.parse(await readFile(path, "utf-8")) as { sessionId?: unknown };
+      const actual = typeof raw.sessionId === "string" ? raw.sessionId : null;
+      if (actual) return { mismatch: actual !== expected, actual };
+    } catch {
+      // Not written yet, or not readable — keep waiting.
+    }
+    await new Promise((r) => setTimeout(r, delayMs));
+  }
+  // Could not read it at all. Silence is not evidence of a mismatch.
+  return { mismatch: false, actual: null };
+}
 
 export async function handlePeerRestart(
   req: RequestEnvelope,
@@ -124,6 +179,29 @@ export async function handlePeerRestart(
     });
   }
 
+  // An adopted peer's home is a WINDOW of a shared session. Relaunching it as a
+  // session of its own would quietly move it out of its team (plt-designer,
+  // v0.10.6 pilot: @548 became @549 in a new session). Find the session the old
+  // window belonged to and put the replacement back in it.
+  let inSession: string | null = null;
+  if (record.tmuxTarget && parseHostTarget(record.tmuxTarget).kind === "window") {
+    const windows = ctx.hostDriver.listWindows ? await ctx.hostDriver.listWindows() : [];
+    inSession = windows.find((w) => w.target === record.tmuxTarget)?.session ?? null;
+    if (inSession === null) {
+      await writeEvent({
+        event: "peer_restart_window_home_unknown",
+        level: "warn",
+        by: { sessionId: req.requestedBy.sessionId, name: req.requestedBy.name },
+        requestId: req.id,
+        details: {
+          sessionId: record.sessionId,
+          tmuxTarget: record.tmuxTarget,
+          hint: "The window is gone, so its parent session cannot be read. The peer will be relaunched as a session of its own.",
+        },
+      });
+    }
+  }
+
   const spawnArgs = {
     schemaVersion: req.schemaVersion,
     id: `${req.id}:spawn`,
@@ -137,7 +215,18 @@ export async function handlePeerRestart(
       // relaunch something cheaper than a real Claude Code.
       command: process.env["CLAUDE_BRIDGE_TEST_COMMAND"] ?? command,
       args: commandArgs,
-      resume: true,
+      ...(inSession ? { inSession } : {}),
+      // Only resume something that CAN be resumed.
+      //
+      // This was an unconditional `true`. For a peer spawned under a stable
+      // name rather than a UUID — `obetni-w3` — that composes
+      // `claude --resume obetni-w3`, which matches no transcript, so Claude
+      // Code drops into its interactive Resume picker and sits there. The peer
+      // is then wedged at a prompt, gets a brand-new session id, and the record
+      // is orphaned: the pid matches, so `team_status` still reads "live".
+      // Found by plt-designer in the v0.10.6 pilot; the restart reported `ok`
+      // over it, which is this release's own defect wearing a new hat.
+      resume: isResumableSessionId(record.sessionId),
       model: args.model ?? record.model ?? null,
       accountProfile: args.accountProfile ?? record.accountProfile ?? null,
       extraAllowEnv: [],
@@ -153,6 +242,38 @@ export async function handlePeerRestart(
       "restart_spawn_failed",
       spawnResult.error?.message ?? "peer_spawn failed",
       { spawnResult },
+    );
+  }
+
+  // Did the peer come back as ITSELF?
+  //
+  // A restart can succeed at the level of "a process is running" and still be
+  // wrong: if the resume did not take, Claude Code starts a fresh session with
+  // a new id, the pid matches the record, and every subsequent report says
+  // "live" about a peer whose identity has silently moved. plt-designer hit
+  // exactly that in the v0.10.6 pilot. `~/.claude/sessions/<pid>.json` is the
+  // cheap check, so there is no excuse for not making it.
+  const newPid = (spawnResult.data as { pid?: number | null } | undefined)?.pid ?? null;
+  const identity = await verifyRestartedIdentity(record.sessionId, newPid);
+  if (identity.mismatch) {
+    await writeEvent({
+      event: "peer_restart_identity_mismatch",
+      level: "error",
+      by: { sessionId: req.requestedBy.sessionId, name: req.requestedBy.name },
+      requestId: req.id,
+      details: {
+        expected: record.sessionId,
+        actual: identity.actual,
+        pid: newPid,
+        hint: "The peer is running but under a different session id — the record now points at an identity that no longer exists. Adopt the new id or stop the peer; do not trust lifecycle calls on this record.",
+      },
+    });
+    return errResult(
+      req.id,
+      req.tool,
+      "restart_identity_mismatch",
+      `Peer restarted as '${identity.actual ?? "unknown"}', not '${record.sessionId}' — the record is now orphaned.`,
+      { expected: record.sessionId, actual: identity.actual, pid: newPid },
     );
   }
 
