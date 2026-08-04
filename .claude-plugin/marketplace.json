@@ -39,11 +39,11 @@
       "source": {
         "source": "github",
         "repo": "michalekz/claude-bridge",
-        "ref": "v0.10.6",
-        "sha": "7510046d4c713464e7e47d2a60add3909cbe27ac"
+        "ref": "v0.10.7",
+        "sha": "22ad14da017f7a10b5df7e6e029a9775b6646f00"
       },
-      "version": "0.10.6",
-      "description": "DEVELOPMENT CHANNEL — ahead of stable, not yet promoted. Everything the stable channel has plus what is being prepared for the next release. Do NOT install alongside `claude-bridge`: both register an MCP server. v0.10.6 closes an eight-tool quality gate — peer_restart no longer reports starts it did not perform, peer_spawn's environment whitelist now actually reaches the spawned process, model_info matches what Anthropic publishes, session_stats and peer_chat_read count every line rather than only the ones their schema models, peer_chat_search says what it really searched, rate_limit_status composes its two live sources instead of discarding the richer one, and team_adopt sees every tmux window rather than one per session. Adds three lifecycle tools: team_release (drop a peer from daemon state without touching its process), team_reconcile (report where daemon state and reality disagree — read-only), and team_restart (rolling restart that refuses unrestartable peers up front and stops at the first failure). 501 tests.",
+      "version": "0.10.7",
+      "description": "DEVELOPMENT CHANNEL — ahead of stable, not yet promoted. Do NOT install alongside `claude-bridge`: both register an MCP server. v0.10.6 closed an eight-tool quality gate (peer_restart, peer_spawn's environment whitelist, model_info, session_stats, peer_chat_read, peer_chat_search, rate_limit_status, team_adopt) and added three lifecycle tools: team_release (drop a peer from daemon state without touching its process), team_reconcile (report where state and reality disagree — read-only), team_restart (rolling restart that refuses unrestartable peers up front and stops at the first failure). v0.10.7 fixes five findings from the pilot of that release: adoption no longer loses a peer's --model, manual adoption reads launch parameters from /proc like auto mode does, a restart no longer passes --resume for an id that names no transcript (which wedged the peer at an interactive picker) and now verifies the peer came back under the same session id, a restarted adopted peer stays in its team's tmux session instead of moving to one of its own, and adoption can be scoped to a single host session. 514 tests.",
       "author": {
         "name": "Zed Michalek",
         "url": "https://github.com/michalekz"
