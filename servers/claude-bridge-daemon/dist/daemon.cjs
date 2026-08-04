@@ -4878,6 +4878,9 @@ async function handlePeerSpawn(req, ctx) {
       tmuxTarget: sessionKey,
       pid: null,
       status: "starting",
+      // Recorded so peer_restart can put the peer back where it belongs
+      // instead of guessing (2026-08-04).
+      cwd: args.cwd,
       model: args.model ?? null,
       accountProfile: args.accountProfile ?? null,
       startedAt: (/* @__PURE__ */ new Date()).toISOString(),
@@ -4893,6 +4896,37 @@ async function handlePeerSpawn(req, ctx) {
       env
     });
     const canonicalKey = record.sessionKey;
+    if (!record.alive || record.pid === null) {
+      await applyStateChange(ctx.state, (draft) => {
+        delete draft.peers[args.sessionId];
+      });
+      await ctx.hostDriver.kill(canonicalKey).catch(() => void 0);
+      await writeEvent({
+        event: "peer_spawn_failed",
+        level: "error",
+        by: { sessionId: req.requestedBy.sessionId, name: req.requestedBy.name },
+        requestId: req.id,
+        details: {
+          sessionId: args.sessionId,
+          sessionKey: canonicalKey,
+          reason: "no_process_after_spawn",
+          cwd: args.cwd,
+          command: args.command
+        }
+      });
+      return errResult(
+        req.id,
+        req.tool,
+        "spawn_produced_no_process",
+        "Host reported the session was created but nothing is running in it \u2014 the command most likely exited immediately (wrong cwd, bad arguments, or missing binary).",
+        {
+          sessionId: args.sessionId,
+          sessionKey: canonicalKey,
+          cwd: args.cwd,
+          command: args.command
+        }
+      );
+    }
     await applyStateChange(ctx.state, (draft) => {
       const rec = draft.peers[args.sessionId];
       if (!rec) return;
@@ -5131,6 +5165,20 @@ async function handlePeerRestart(req, ctx) {
       { stopResult }
     );
   }
+  const cwd = record.cwd ?? process.cwd();
+  if (!record.cwd) {
+    await writeEvent({
+      event: "peer_restart_cwd_unknown",
+      level: "warn",
+      by: { sessionId: req.requestedBy.sessionId, name: req.requestedBy.name },
+      requestId: req.id,
+      details: {
+        sessionId: record.sessionId,
+        fallbackCwd: cwd,
+        hint: "Peer record predates cwd persistence (v0.10.2). Restart may land in the wrong directory; re-spawn the peer to record it."
+      }
+    });
+  }
   const spawnArgs = {
     schemaVersion: req.schemaVersion,
     id: `${req.id}:spawn`,
@@ -5139,7 +5187,7 @@ async function handlePeerRestart(req, ctx) {
     args: {
       sessionId: record.sessionId,
       displayName: record.name,
-      cwd: process.cwd(),
+      cwd,
       command: process.env["CLAUDE_BRIDGE_TEST_COMMAND"] ?? "claude",
       args: [],
       resume: true,
@@ -6351,7 +6399,14 @@ var TmuxDriver = class {
       });
     }
     const pid = await this.readSessionPid(canonicalKey);
-    return { sessionKey: canonicalKey, alive: true, pid };
+    if (pid === null) {
+      log6.error("tmux_spawn_no_pane_pid", {
+        sessionKey: opts.sessionKey,
+        canonicalKey,
+        hint: "new-session returned 0 but no pane pid \u2014 the command most likely exited immediately"
+      });
+    }
+    return { sessionKey: canonicalKey, alive: pid !== null, pid };
   }
   async kill(sessionKey, opts = {}) {
     const canonical = sanitizeSessionKey(sessionKey);

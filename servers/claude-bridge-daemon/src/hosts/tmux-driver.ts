@@ -147,8 +147,33 @@ export class TmuxDriver implements SessionHostDriver {
         canonical: canonicalKey,
       });
     }
+    // `alive` is MEASURED, not asserted (fix, 2026-08-04).
+    //
+    // This used to return `alive: true` as a literal, right after a `tmux
+    // new-session` that had not thrown. That is not the same thing. tmux
+    // exits 0 as soon as the session is created; if the command inside dies
+    // immediately — wrong cwd, bad arguments, missing binary — tmux tears
+    // the session straight back down and nobody hears about it.
+    //
+    // Downstream everything believed the literal: `peer_spawn` set
+    // `status: "live"`, wrote a `peer_started` audit event and answered
+    // `outcome: ok`, with `pid: null` as the only trace. `peer_restart`
+    // inherited all of it. Reported live on 2026-08-04: tool said started,
+    // tmux session did not exist, no process was running, and the daemon
+    // state carried a "live" peer with a null pid that `team_layout` would
+    // then refuse to resurrect.
+    //
+    // A pane pid is the cheapest honest evidence that something is actually
+    // running in there.
     const pid = await this.readSessionPid(canonicalKey);
-    return { sessionKey: canonicalKey, alive: true, pid };
+    if (pid === null) {
+      log.error("tmux_spawn_no_pane_pid", {
+        sessionKey: opts.sessionKey,
+        canonicalKey,
+        hint: "new-session returned 0 but no pane pid — the command most likely exited immediately",
+      });
+    }
+    return { sessionKey: canonicalKey, alive: pid !== null, pid };
   }
 
   async kill(sessionKey: string, opts: { force?: boolean } = {}): Promise<void> {

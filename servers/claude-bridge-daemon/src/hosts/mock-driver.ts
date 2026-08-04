@@ -68,13 +68,27 @@ export class MockDriver implements SessionHostDriver {
       });
       pid = proc.pid ?? null;
       proc.on("exit", () => this.sessions.delete(canonicalKey));
+      // ENOENT and friends arrive as an ASYNC 'error' event, not as a throw
+      // from spawn() — so the try/catch below never sees them, and without a
+      // listener Node turns the event into an uncaught exception that takes
+      // the process down. Same shape as the statusLine EPIPE crash fixed in
+      // v0.10.2-rc.2; found here because the new "spawn a missing binary"
+      // test made the suite emit it.
+      proc.on("error", (e) => {
+        log.warn("mock_spawn_child_error", { canonicalKey, err: String(e) });
+        this.sessions.delete(canonicalKey);
+      });
     } catch (e) {
       log.warn("mock_spawn_failed", { sessionKey: opts.sessionKey, canonicalKey, err: String(e) });
       // For tests we still register — some acceptance cases assert on
       // state independent of whether the binary actually runs.
     }
     this.sessions.set(canonicalKey, { proc, pid, respawnPending: false });
-    return { sessionKey: canonicalKey, alive: true, pid };
+    // Report `alive` honestly, the same way TmuxDriver does (fix,
+    // 2026-08-04). A mock that always claims success cannot fail the way
+    // production failed, so it would quietly certify the very bug the tests
+    // exist to catch.
+    return { sessionKey: canonicalKey, alive: pid !== null, pid };
   }
 
   async kill(sessionKey: string): Promise<void> {

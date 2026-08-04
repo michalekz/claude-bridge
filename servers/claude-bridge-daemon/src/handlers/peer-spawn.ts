@@ -129,6 +129,9 @@ export async function handlePeerSpawn(
       tmuxTarget: sessionKey,
       pid: null,
       status: "starting",
+      // Recorded so peer_restart can put the peer back where it belongs
+      // instead of guessing (2026-08-04).
+      cwd: args.cwd,
       model: args.model ?? null,
       accountProfile: args.accountProfile ?? null,
       startedAt: new Date().toISOString(),
@@ -148,6 +151,49 @@ export async function handlePeerSpawn(
     // persist that so every subsequent host op receives the exact same
     // target the driver already owns (T1 fix, v0.10.0-rc.2).
     const canonicalKey = record.sessionKey;
+
+    // A spawn that produced no running process is a FAILURE, however
+    // cleanly the host command exited (fix, 2026-08-04).
+    //
+    // Before this, the driver's `alive` was a literal `true` and this
+    // handler never looked at it: state went to `status: "live"`, a
+    // `peer_started` event went into the audit trail, and the caller got
+    // `outcome: ok` with `pid: null` as the sole hint. That is a phantom
+    // live peer — `team_layout` sees it as running and never resurrects it,
+    // and every operator report about it is a lie told with confidence.
+    if (!record.alive || record.pid === null) {
+      // Leave nothing half-registered, and take the empty tmux session with
+      // us if one somehow survived.
+      await applyStateChange(ctx.state, (draft) => {
+        delete draft.peers[args.sessionId];
+      });
+      await ctx.hostDriver.kill(canonicalKey).catch(() => undefined);
+      await writeEvent({
+        event: "peer_spawn_failed",
+        level: "error",
+        by: { sessionId: req.requestedBy.sessionId, name: req.requestedBy.name },
+        requestId: req.id,
+        details: {
+          sessionId: args.sessionId,
+          sessionKey: canonicalKey,
+          reason: "no_process_after_spawn",
+          cwd: args.cwd,
+          command: args.command,
+        },
+      });
+      return errResult(
+        req.id,
+        req.tool,
+        "spawn_produced_no_process",
+        "Host reported the session was created but nothing is running in it — the command most likely exited immediately (wrong cwd, bad arguments, or missing binary).",
+        {
+          sessionId: args.sessionId,
+          sessionKey: canonicalKey,
+          cwd: args.cwd,
+          command: args.command,
+        },
+      );
+    }
     await applyStateChange(ctx.state, (draft) => {
       const rec = draft.peers[args.sessionId];
       if (!rec) return;

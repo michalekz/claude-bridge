@@ -84,6 +84,31 @@ export async function handlePeerRestart(
   // NOTE: sanitized env pulled from process.env — daemon's own process.
   // Restart intentionally does NOT inherit the caller's env; we're just
   // relaunching the same peer, not adopting the caller's environment.
+
+  // Put the peer back in ITS directory, not the daemon's (fix, 2026-08-04).
+  //
+  // This passed `process.cwd()` because PeerRecord had no cwd to read. That
+  // is the daemon's working directory, so `claude --resume <uuid>` looked
+  // for a transcript belonging to a different project, found none, and
+  // exited on the spot — tmux then removed the session. The restart still
+  // reported success, because the driver asserted `alive` instead of
+  // measuring it. Both halves are fixed; this is the one that stops the
+  // process from dying in the first place.
+  const cwd = record.cwd ?? process.cwd();
+  if (!record.cwd) {
+    await writeEvent({
+      event: "peer_restart_cwd_unknown",
+      level: "warn",
+      by: { sessionId: req.requestedBy.sessionId, name: req.requestedBy.name },
+      requestId: req.id,
+      details: {
+        sessionId: record.sessionId,
+        fallbackCwd: cwd,
+        hint: "Peer record predates cwd persistence (v0.10.2). Restart may land in the wrong directory; re-spawn the peer to record it.",
+      },
+    });
+  }
+
   const spawnArgs = {
     schemaVersion: req.schemaVersion,
     id: `${req.id}:spawn`,
@@ -92,7 +117,7 @@ export async function handlePeerRestart(
     args: {
       sessionId: record.sessionId,
       displayName: record.name,
-      cwd: process.cwd(),
+      cwd,
       command: process.env["CLAUDE_BRIDGE_TEST_COMMAND"] ?? "claude",
       args: [],
       resume: true,

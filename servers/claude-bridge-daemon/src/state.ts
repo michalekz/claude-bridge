@@ -42,6 +42,20 @@ export interface PeerRecord {
    * and because provenance is worth keeping when diagnosing identity problems.
    */
   adopted?: boolean;
+  /**
+   * Working directory the peer was launched in.
+   *
+   * Added 2026-08-04 because `peer_restart` had nowhere to read it from and
+   * substituted `process.cwd()` — the DAEMON's directory. `claude --resume
+   * <uuid>` cannot find a transcript that belongs to another project, so the
+   * relaunched process exited immediately and tmux tore the session down.
+   * Combined with the unmeasured `alive` flag in the driver, the tool then
+   * reported a successful restart of a peer that was not running.
+   *
+   * Optional because records written before this release do not have it;
+   * `peer_restart` warns and falls back rather than refusing to run.
+   */
+  cwd?: string;
   model: string | null;
   accountProfile: string | null;
   startedAt: string;

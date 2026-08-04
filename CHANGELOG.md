@@ -2,6 +2,39 @@
 
 All notable changes to this project are documented here. Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [Unreleased] — development channel
+
+### `peer_restart` reported starting a peer it had not started
+
+Found in live tool testing (`report-mcp-test-2026-08-04`, finding #1), not by the suite:
+
+```
+call   : peer_restart mcp-test-obetni-0804
+answer : outcome ok | spawn{pid: null}
+audit  : peer_stopped → peer_started → peer_restarted
+reality: tmux session .......... does not exist
+         claude process ........ none
+         state.peers ........... status "live", pid null
+```
+
+A phantom live peer. `team_layout` treats it as running and will never resurrect it, and every report about it is a lie told with confidence.
+
+Two independent defects, stacked — **A kills the process, B conceals it.** Both are fixed, because either one alone still leaves the tool broken:
+
+**A — the peer was relaunched in the daemon's directory.** `peer_restart` passed `process.cwd()`, because `PeerRecord` had no `cwd` to read. `claude --resume <uuid>` cannot find a transcript belonging to another project, so the process exits immediately and tmux tears the session down behind it. `PeerRecord.cwd` is now persisted by `peer_spawn` and used by `peer_restart`.
+
+**B — `alive` was asserted, never measured.** `TmuxDriver.spawn` returned `alive: true` as a literal after a `tmux new-session` that had not thrown — but tmux exits 0 as soon as the session exists, so a command that dies on the spot looks identical to one that runs. `readSessionPid` swallows every error and answers `null`. And `peer_spawn` never read `alive` at all: it set `status: "live"`, wrote a `peer_started` audit event, and returned `ok`. Now the driver reports `alive: pid !== null`, and a spawn with no process is an error (`spawn_produced_no_process`) that cleans up the state record, kills any empty session, and writes `peer_spawn_failed`.
+
+The mock driver got the same treatment. A mock that always claims success cannot fail the way production failed, so it would quietly certify the very bug the tests exist to catch.
+
+Raising only the floor — "return an error when `pid` is null", the obvious minimal fix — would have turned a reliable false success into a reliable failure. Better, still broken.
+
+**Third instance of the same class in two days.** Writing the "spawn a missing binary" test made the suite emit an uncaught exception: `MockDriver` had no `error` listener on the child. `ENOENT` arrives as an **asynchronous event**, not as a throw from `spawn()`, so the surrounding `try/catch` never saw it and Node turned it into a process crash. Exactly the shape of the statusLine EPIPE fixed in rc.2, and of the push that reported `delivered` without delivering. The recurring sentence is: *an actor confirms success without checking the effect.*
+
+`peer_restart_cwd_unknown` warns for peer records written before this release. It has a finite life — `peer_spawn` now records `cwd`, so the next fleet cycle fills it in naturally.
+
+Tests 73 daemon (+4), verified by restoring the old logic — 2 of 4 fail against it.
+
 ## [0.10.2-rc.3] — 2026-08-04 (pre-release, development channel)
 
 ### The phantom peer id
