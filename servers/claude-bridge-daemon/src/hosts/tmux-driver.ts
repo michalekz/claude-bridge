@@ -1,4 +1,5 @@
 import { execFile } from "node:child_process";
+import { existsSync } from "node:fs";
 import { appendFile, mkdir } from "node:fs/promises";
 import { join } from "node:path";
 import { promisify } from "node:util";
@@ -26,6 +27,41 @@ const log = makeLogger("daemon.host.tmux");
  * necessarily honour SIGTERM.
  */
 const EXEC_DEFAULTS = { killSignal: "SIGKILL" } as const;
+
+/**
+ * Build the pane's environment on the command line, from nothing.
+ *
+ * The whitelist in `env-whitelist.ts` was composed and then handed to
+ * `execFile` as the environment of the **tmux client**. A new pane does not
+ * inherit that. tmux's server is a long-lived process, and a session it
+ * creates gets the SERVER's global environment plus the handful of variables
+ * named in `update-environment` (DISPLAY, SSH_*, XAUTHORITY by default).
+ * Nothing the client was given reaches the pane.
+ *
+ * So the whitelist filtered something tmux never consulted. Measured
+ * 2026-08-04 on tmux 3.4: a session created with `env -i` — an entirely empty
+ * client environment — produced a pane holding `ANTHROPIC_API_KEY` and eight
+ * `CLAUDE_*` variables, taken from the server. That is the 22 July billing
+ * incident as a permanent condition rather than an accident, and it is why
+ * five peers were found carrying the key.
+ *
+ * `env -i` makes the pane's environment explicit and independent of tmux's
+ * semantics: nothing is inherited, every variable is one we chose. Cleaning
+ * the server's global environment (`tmux set-environment -gu`) fixes today's
+ * server but not the next one started from a contaminated shell, so it is an
+ * operational step, never the mechanism.
+ *
+ * `execFile` runs without a shell, so values need no quoting.
+ */
+export function envPrefix(env: Record<string, string>): string[] {
+  // Absolute path, not a bare `env`. tmux resolves the command against the
+  // SERVER's PATH, and the PATH we chose is inside this command's arguments —
+  // too late to help resolve the binary that applies them. `/usr/bin/env` is
+  // the one location POSIX effectively guarantees (every shebang line in the
+  // world depends on it); fall back to a PATH lookup only if it is missing.
+  const envBin = existsSync("/usr/bin/env") ? "/usr/bin/env" : "env";
+  return [envBin, "-i", ...Object.entries(env).map(([k, v]) => `${k}=${v}`)];
+}
 /** Read-only queries — must answer immediately or not at all. */
 const QUERY_TIMEOUT_MS = 5_000;
 /** Session create/destroy — may legitimately take longer than a query. */
@@ -123,6 +159,8 @@ export class TmuxDriver implements SessionHostDriver {
       canonicalKey,
       "-c",
       opts.cwd,
+      "--",
+      ...envPrefix(opts.env),
       opts.command,
       ...opts.args,
     ];
@@ -130,6 +168,9 @@ export class TmuxDriver implements SessionHostDriver {
     try {
       await execFileAsync(this.tmuxBin, args, {
         ...EXEC_DEFAULTS,
+        // Kept for the tmux CLIENT process itself. It does NOT reach the pane —
+        // see envPrefix() for why the pane's environment is built on the
+        // command line instead.
         env,
         timeout: MUTATE_TIMEOUT_MS,
       });

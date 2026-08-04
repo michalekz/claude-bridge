@@ -4287,7 +4287,7 @@ async function resolvePeer(idOrName, root = bridgeRoot(), now = Date.now()) {
 // package.json
 var package_default = {
   name: "claude-bridge-daemon",
-  version: "0.10.4",
+  version: "0.10.5",
   private: true,
   description: "Control-plane daemon for the claude-bridge plugin: peer lifecycle, telemetry, audit. Distributed as opt-in artefact \u2014 see ADR-008.",
   type: "module",
@@ -6406,12 +6406,17 @@ function stopHeartbeat() {
 
 // src/hosts/tmux-driver.ts
 var import_node_child_process = require("node:child_process");
+var import_node_fs = require("node:fs");
 var import_promises12 = require("node:fs/promises");
 var import_node_path12 = require("node:path");
 var import_node_util = require("node:util");
 var execFileAsync = (0, import_node_util.promisify)(import_node_child_process.execFile);
 var log6 = makeLogger("daemon.host.tmux");
 var EXEC_DEFAULTS = { killSignal: "SIGKILL" };
+function envPrefix(env) {
+  const envBin = (0, import_node_fs.existsSync)("/usr/bin/env") ? "/usr/bin/env" : "env";
+  return [envBin, "-i", ...Object.entries(env).map(([k, v]) => `${k}=${v}`)];
+}
 var QUERY_TIMEOUT_MS = 5e3;
 var MUTATE_TIMEOUT_MS = 1e4;
 var SEND_KEYS_TIMEOUT_MS = 5e3;
@@ -6457,6 +6462,8 @@ var TmuxDriver = class {
       canonicalKey,
       "-c",
       opts.cwd,
+      "--",
+      ...envPrefix(opts.env),
       opts.command,
       ...opts.args
     ];
@@ -6464,6 +6471,9 @@ var TmuxDriver = class {
     try {
       await execFileAsync(this.tmuxBin, args, {
         ...EXEC_DEFAULTS,
+        // Kept for the tmux CLIENT process itself. It does NOT reach the pane —
+        // see envPrefix() for why the pane's environment is built on the
+        // command line instead.
         env,
         timeout: MUTATE_TIMEOUT_MS
       });
@@ -6676,7 +6686,7 @@ function defaultHostDriver() {
 }
 
 // src/lock.ts
-var import_node_fs = require("node:fs");
+var import_node_fs2 = require("node:fs");
 var import_promises13 = require("node:fs/promises");
 var log8 = makeLogger("daemon.lock");
 var LockAcquireError = class extends Error {
@@ -6689,7 +6699,7 @@ var LockAcquireError = class extends Error {
 function readProcStart(pid) {
   if (process.platform !== "linux") return null;
   try {
-    const stat4 = (0, import_node_fs.readFileSync)(`/proc/${pid}/stat`, "utf-8");
+    const stat4 = (0, import_node_fs2.readFileSync)(`/proc/${pid}/stat`, "utf-8");
     const afterComm = stat4.slice(stat4.lastIndexOf(")") + 1).trim();
     const fields = afterComm.split(/\s+/);
     const starttime = fields[19];

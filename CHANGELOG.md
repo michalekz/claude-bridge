@@ -6,6 +6,69 @@ All notable changes to this project are documented here. Format follows [Keep a 
 
 _Nothing yet._
 
+## [0.10.5] — 2026-08-04
+
+### The environment whitelist never reached the process it was protecting
+
+Finding #4 of the 2026-08-04 MCP test asked for proof that `peer_spawn`
+sanitizes the environment. There is none, because it did not.
+
+`sanitizeEnv` composes the allowed variables correctly — `env-whitelist.test.ts`
+has always passed and the function was never wrong. `TmuxDriver.spawn` then
+handed the result to `execFile` as the environment of the **tmux client**.
+A new pane does not inherit that. tmux's server is a long-lived process, and a
+session it creates gets the SERVER's global environment plus the handful named
+in `update-environment` (DISPLAY, SSH_\*, XAUTHORITY by default). Nothing given
+to the client reaches the pane.
+
+The whitelist was filtering something tmux never consulted.
+
+Measured on tmux 3.4, with a completely empty client environment:
+
+```
+$ tmux show-environment -g | grep -c ANTHROPIC_API_KEY
+1                                        ← a real key, in the server
+
+$ env -i PATH=… HOME=… tmux new-session -d -s t -c /tmp "sleep 60"
+              ↑ client environment entirely empty
+
+$ tr '\0' '\n' < /proc/<pane_pid>/environ | grep -c ANTHROPIC_API_KEY
+1                                        ← the pane has it anyway
+                                           (plus 8 CLAUDE_* variables)
+```
+
+This is the 22 July billing incident — a stray `ANTHROPIC_API_KEY` pushing
+usage onto API-key billing instead of the subscription — as a standing
+condition rather than an accident, and it is why five of twenty-three peers
+were found carrying the key. An earlier reading that blamed the restart method
+was wrong; the difference was only which panes were created after the variable
+entered the server.
+
+The pane's environment is now built on the command line, from nothing:
+
+```
+tmux new-session -d -s KEY -c CWD -- /usr/bin/env -i K1=V1 K2=V2 … command args
+```
+
+`env -i` starts from an empty environment, so tmux's semantics stop mattering:
+nothing is inherited and every variable present is one we chose. The path is
+absolute because tmux resolves the command against the server's PATH, and the
+PATH we chose is inside this command's own arguments — too late to help find
+the binary that applies them.
+
+Cleaning a running server (`tmux set-environment -gu`) fixes that server and
+not the next one started from a contaminated shell. It is worth doing, and it
+is not the mechanism.
+
+Tests 456 (+2, one skipped without tmux). They read `/proc/<pid>/environ` of a
+real child rather than the return value of `sanitizeEnv` — a test that asserts
+on the function cannot fail the way production failed. Verified by removing the
+`env -i` prefix: the regression case fails. Also confirmed end-to-end through
+the real `TmuxDriver` against a deliberately polluted server — child environment
+contained no `ANTHROPIC_*` and no `CLAUDE_*`, and exactly the ten whitelisted
+variables.
+
+
 ## [0.10.4] — 2026-08-04
 
 ### `claude-bridge-daemon send` — a supported way in from outside the fleet
