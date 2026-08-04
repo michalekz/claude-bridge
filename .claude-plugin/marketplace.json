@@ -39,11 +39,11 @@
       "source": {
         "source": "github",
         "repo": "michalekz/claude-bridge",
-        "ref": "v0.10.4",
-        "sha": "688ba9d2e481874903698b3dc16fb1f7bb04909c"
+        "ref": "v0.10.6-rc.1",
+        "sha": "b8dd166cfa215e2ee1f2bdd7da68ba9c48208ce5"
       },
-      "version": "0.10.4",
-      "description": "DIAGNOSTIC PIN — do not install. The dev channel is pinned to v0.10.4 while a plugin-load failure is bisected: peers restarted onto any of today's releases get no bridge MCP at all. The last version proven to load is v0.10.2-rc.3. This pin moves back as soon as the cause is found.",
+      "version": "0.10.6-rc.1",
+      "description": "DEVELOPMENT CHANNEL — ahead of stable, not yet promoted. Everything the stable channel has plus what is being prepared for the next release. Do NOT install alongside `claude-bridge`: both register an MCP server. v0.10.6-rc.1 closes the eight-tool quality gate — peer_chat_search and peer_chat_read now describe what they actually do and report honest counts, rate_limit_status composes its two live sources instead of discarding the richer one, and team_adopt sees every tmux window rather than one per session, addressing each by its stable window id because window indexes are renumbered on kill. Verified on a clean install: the plugin loads and serves its tools.",
       "author": {
         "name": "Zed Michalek",
         "url": "https://github.com/michalekz"
