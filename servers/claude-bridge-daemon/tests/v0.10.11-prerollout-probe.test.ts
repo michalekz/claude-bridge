@@ -341,3 +341,33 @@ describe("P — a relaunch uses the peer's own environment, not the daemon's", (
     driver.reset();
   });
 });
+
+describe("P — a poisoned PATH is repaired, not baked in", () => {
+  it("THE TRAP: re-adopting a broken peer does not capture the breakage", async () => {
+    const adopt = await import("../src/handlers/team-adopt.ts");
+    const NVMBIN = "/home/u/.nvm/versions/node/v24/bin";
+    // A peer already relaunched with the daemon's PATH — nvm is gone, and this
+    // is exactly the environment a re-adoption would harvest.
+    const poisoned = { PATH: "/usr/local/bin:/usr/bin:/bin", HOME: "/home/u" };
+
+    const fixed = adopt.ensureCommandDirOnPath(poisoned, `${NVMBIN}/claude`);
+
+    // `node` lives beside `claude` in nvm's bin, so the directory holding the
+    // command is precisely the one that has to be reachable.
+    expect(fixed["PATH"]?.startsWith(NVMBIN)).toBe(true);
+    expect(fixed["PATH"]).toContain("/usr/bin");
+  });
+
+  it("a healthy PATH is left exactly as it is", async () => {
+    const adopt = await import("../src/handlers/team-adopt.ts");
+    const NVMBIN = "/home/u/.nvm/versions/node/v24/bin";
+    const healthy = { PATH: `${NVMBIN}:/usr/bin`, HOME: "/home/u" };
+    expect(adopt.ensureCommandDirOnPath(healthy, `${NVMBIN}/claude`)["PATH"]).toBe(healthy["PATH"]);
+  });
+
+  it("a bare command tells us nothing, so nothing is invented", async () => {
+    const adopt = await import("../src/handlers/team-adopt.ts");
+    const env = { PATH: "/usr/bin" };
+    expect(adopt.ensureCommandDirOnPath(env, "claude")["PATH"]).toBe("/usr/bin");
+  });
+});

@@ -4287,7 +4287,7 @@ async function resolvePeer(idOrName, root = bridgeRoot(), now = Date.now()) {
 // package.json
 var package_default = {
   name: "claude-bridge-daemon",
-  version: "0.10.13",
+  version: "0.10.14",
   private: true,
   description: "Control-plane daemon for the claude-bridge plugin: peer lifecycle, telemetry, audit. Distributed as opt-in artefact \u2014 see ADR-008.",
   type: "module",
@@ -5682,6 +5682,14 @@ async function claudeInside(ctx, panePid) {
   }
   return void 0;
 }
+function ensureCommandDirOnPath(env, command) {
+  if (!command || !command.startsWith("/")) return env;
+  const dir = command.slice(0, command.lastIndexOf("/"));
+  if (dir.length === 0) return env;
+  const current = env["PATH"] ?? "";
+  if (current.split(":").includes(dir)) return env;
+  return { ...env, PATH: current.length > 0 ? `${dir}:${current}` : dir };
+}
 function extractLaunchParams(argv) {
   const [command, ...rest] = argv;
   const spawnArgs = [];
@@ -5752,7 +5760,7 @@ async function discoverCandidates(ctx, hostSessions) {
       model: launch.model,
       // The peer's own environment, filtered by the same whitelist. Its PATH is
       // the one that can actually find its `node` and its `claude`.
-      spawnEnv: sanitizeEnv(proc.environ),
+      spawnEnv: ensureCommandDirOnPath(sanitizeEnv(proc.environ), launch.command),
       ...proc.cwd ? { cwd: proc.cwd } : {}
     });
   }
@@ -5828,7 +5836,7 @@ async function handleTeamAdopt(req, ctx) {
         ...launch.command ? { command: launch.command } : {},
         spawnArgs: launch.spawnArgs,
         model: launch.model,
-        ...owning ? { spawnEnv: sanitizeEnv(owning.environ) } : {},
+        ...owning ? { spawnEnv: ensureCommandDirOnPath(sanitizeEnv(owning.environ), launch.command) } : {},
         ...owning?.cwd ? { cwd: owning.cwd } : {}
       });
     }

@@ -6,6 +6,29 @@ All notable changes to this project are documented here. Format follows [Keep a 
 
 _Nothing yet._
 
+## [0.10.14] — 2026-08-04
+
+### Re-adopting a peer broken by v0.10.5 would have baked the breakage in
+
+Found while preparing the recovery from the v0.10.13 outage, before running it.
+
+v0.10.13 has adoption harvest the peer's own environment. For a peer already
+relaunched with the daemon's `PATH`, that environment **is** the daemon's
+`PATH` — so re-adopting the twenty-one broken peers would have recorded the
+poison as if it were the cure, and the re-roll would have reproduced the
+outage. Measured on the live fleet: the restarted peers carried a stock `PATH`
+with no nvm while the two untouched ones still had the right one.
+
+The remedy is derivable rather than guessed. `claude` lives in nvm's `bin`
+directory and so does the `node` it needs, so the directory holding the
+resolved command is exactly the one that must be on `PATH`. Adoption now
+prepends it: no change for a healthy peer, repair for a poisoned one, and
+nothing invented when the command is a bare name that says nothing about where
+it lives.
+
+Tests 550 (+3), verified by removing the prepend.
+
+
 ## [0.10.13] — 2026-08-04
 
 ### The relaunch environment came from the daemon, and took the fleet down

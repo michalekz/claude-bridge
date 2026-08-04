@@ -104,6 +104,32 @@ async function claudeInside(
   return undefined;
 }
 
+/**
+ * Make sure the recorded PATH can find the recorded command's neighbours.
+ *
+ * A peer relaunched with the daemon's PATH keeps that PATH — so harvesting its
+ * environment captures the poison rather than the cure, and a re-adoption after
+ * an outage would bake the outage in. Measured 2026-08-04: of twenty-three
+ * peers, the already-restarted ones carried a stock `PATH` with no nvm.
+ *
+ * The remedy is derivable rather than guessed. `claude` lives in nvm's `bin`
+ * and so does the `node` it needs, so the directory holding the resolved
+ * command is exactly the directory that has to be on PATH. Prepending it is
+ * correct for a healthy peer (already there, no change) and repairs a poisoned
+ * one.
+ */
+export function ensureCommandDirOnPath(
+  env: Record<string, string>,
+  command: string | undefined,
+): Record<string, string> {
+  if (!command || !command.startsWith("/")) return env;
+  const dir = command.slice(0, command.lastIndexOf("/"));
+  if (dir.length === 0) return env;
+  const current = env["PATH"] ?? "";
+  if (current.split(":").includes(dir)) return env;
+  return { ...env, PATH: current.length > 0 ? `${dir}:${current}` : dir };
+}
+
 export interface LaunchParams {
   command?: string;
   spawnArgs: string[];
@@ -242,7 +268,7 @@ async function discoverCandidates(
       model: launch.model,
       // The peer's own environment, filtered by the same whitelist. Its PATH is
       // the one that can actually find its `node` and its `claude`.
-      spawnEnv: sanitizeEnv(proc.environ),
+      spawnEnv: ensureCommandDirOnPath(sanitizeEnv(proc.environ), launch.command),
       ...(proc.cwd ? { cwd: proc.cwd } : {}),
     });
   }
@@ -372,7 +398,9 @@ export async function handleTeamAdopt(
         ...(launch.command ? { command: launch.command } : {}),
         spawnArgs: launch.spawnArgs,
         model: launch.model,
-        ...(owning ? { spawnEnv: sanitizeEnv(owning.environ) } : {}),
+        ...(owning
+          ? { spawnEnv: ensureCommandDirOnPath(sanitizeEnv(owning.environ), launch.command) }
+          : {}),
         ...(owning?.cwd ? { cwd: owning.cwd } : {}),
       });
     }
