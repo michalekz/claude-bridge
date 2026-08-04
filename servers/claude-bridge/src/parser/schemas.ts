@@ -251,6 +251,21 @@ export type FileHistorySnapshotEvent = z.infer<typeof FileHistorySnapshotEventSc
 export type SessionEvent = z.infer<typeof SessionEventSchema>;
 
 /**
+ * The `type` discriminants this schema covers.
+ *
+ * Claude Code writes more event types than these — as of 2026-08-04 a live
+ * transcript also carries `pr-link`, `mode`, `permission-mode`,
+ * `file-history-delta` and `agent-name`, together 13% of its lines. Anything
+ * outside this set is dropped by `parseSessionFile`, which is correct for
+ * consumers that need typed events and wrong for consumers that count.
+ * Exported so counting can name what it is not modelling instead of silently
+ * subtracting it.
+ */
+export const KNOWN_EVENT_TYPES: ReadonlySet<string> = new Set(
+  SessionEventSchema.options.map((o) => o.shape.type.value),
+);
+
+/**
  * Type guard helpers — terser than z.discriminatedUnion narrowing in TS.
  */
 export const isMessageEvent = (

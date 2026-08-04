@@ -32,6 +32,23 @@ export interface ModelPricing {
   outputPerMTok: number;
 }
 
+/**
+ * A published price that stops applying on a known date.
+ *
+ * Anthropic ships introductory rates with an announced end date (Sonnet 5 is
+ * $2/$10 through 2026-08-31, $3/$15 after). A single pricing pair cannot say
+ * that, so before 2026-08-04 the table simply carried the post-introductory
+ * number and overstated the current price by 50%. Pinning it to the
+ * introductory pair instead would have been just as wrong from 2026-09-01 —
+ * a fix with an expiry date is not a fix.
+ */
+export interface DatedPricing extends ModelPricing {
+  /** ISO date of the last day these rates apply. */
+  until: string;
+  /** Rates in force from the day after `until`. */
+  after: ModelPricing;
+}
+
 export interface ModelMetadata {
   /** Canonical API id (e.g., "claude-opus-4-7"). */
   id: string;
@@ -45,8 +62,8 @@ export interface ModelMetadata {
   contextWindow: number;
   /** Maximum output tokens per response. */
   maxOutputTokens: number;
-  /** Pricing per million tokens. */
-  pricing: ModelPricing;
+  /** Pricing per million tokens. Carries `until`/`after` while a published rate change is pending. */
+  pricing: ModelPricing | DatedPricing;
   /** Capability flags. */
   capabilities: ModelCapabilities;
   /** Reliable knowledge cutoff ISO-date (YYYY-MM-DD if known else YYYY-MM). */
@@ -68,6 +85,19 @@ const ONE_M_LIMIT = 1_000_000;
  */
 export const MODELS: ModelMetadata[] = [
   // ---- Current generation ----
+  {
+    id: "claude-opus-5",
+    displayName: "Claude Opus 5",
+    family: "opus",
+    generation: "current",
+    contextWindow: ONE_M_LIMIT,
+    maxOutputTokens: 128_000,
+    pricing: { inputPerMTok: 5, outputPerMTok: 25 },
+    capabilities: { vision: true, extendedThinking: false, adaptiveThinking: true },
+    knowledgeCutoff: "2026-05",
+    trainingDataCutoff: "2026-05",
+    notes: "Missing from this table until 2026-08-04 — see CHANGELOG v0.10.2.",
+  },
   {
     id: "claude-fable-5",
     displayName: "Claude Fable 5",
@@ -114,12 +144,16 @@ export const MODELS: ModelMetadata[] = [
     generation: "current",
     contextWindow: ONE_M_LIMIT,
     maxOutputTokens: 128_000,
-    pricing: { inputPerMTok: 3, outputPerMTok: 15 },
+    pricing: {
+      inputPerMTok: 2,
+      outputPerMTok: 10,
+      until: "2026-08-31",
+      after: { inputPerMTok: 3, outputPerMTok: 15 },
+    },
     capabilities: { vision: true, extendedThinking: false, adaptiveThinking: true },
     knowledgeCutoff: "2026-01",
     trainingDataCutoff: "2026-01",
-    notes:
-      "Introductory pricing $2/$10 per MTok through 2026-08-31. Default effort=high on Claude API and Claude Code.",
+    notes: "Default effort=high on Claude API and Claude Code.",
   },
   {
     id: "claude-haiku-4-5",
@@ -179,7 +213,10 @@ export const MODELS: ModelMetadata[] = [
     displayName: "Claude Sonnet 4.5 (legacy)",
     family: "sonnet",
     generation: "legacy",
-    contextWindow: STANDARD_LIMIT,
+    // 1M, not the 200k this table claimed until 2026-08-04. peer_context_status
+    // divides by this number, so the old value put a peer at 100% of context
+    // while it was actually at 20% — an autocompact alarm four fifths early.
+    contextWindow: ONE_M_LIMIT,
     maxOutputTokens: 64_000,
     pricing: { inputPerMTok: 3, outputPerMTok: 15 },
     capabilities: { vision: true, extendedThinking: true, adaptiveThinking: false },
@@ -236,10 +273,41 @@ export function lookupModel(model: string | null | undefined): ModelMetadata | n
   return MODEL_BY_ID[baseId] ?? null;
 }
 
+function isDated(p: ModelPricing | DatedPricing): p is DatedPricing {
+  return "until" in p && "after" in p;
+}
+
+/**
+ * The rates in force on `now`, for models whose published price changes on a
+ * known date. Plain (undated) pricing is returned unchanged.
+ */
+export function effectivePricing(
+  model: ModelMetadata,
+  now: Date = new Date(),
+): ModelPricing & { pendingChange?: { on: string; to: ModelPricing } } {
+  const p = model.pricing;
+  if (!isDated(p)) return { inputPerMTok: p.inputPerMTok, outputPerMTok: p.outputPerMTok };
+  // `until` is the last day the introductory rate applies, so it expires at the
+  // end of that date, not at its midnight.
+  const expiresAt = new Date(`${p.until}T23:59:59.999Z`);
+  if (now > expiresAt) return { ...p.after };
+  return {
+    inputPerMTok: p.inputPerMTok,
+    outputPerMTok: p.outputPerMTok,
+    pendingChange: { on: p.until, to: p.after },
+  };
+}
+
 /**
  * Source attribution for the metadata (for transparency in tool output).
+ *
+ * Context window / max output / capabilities are verifiable against
+ * `GET /v1/models`; price and lifecycle are published only on the docs pages
+ * and are still hand-copied here. Sourcing them mechanically is v0.10.3.
  */
 export const MODEL_METADATA_SOURCE = {
   source: "https://platform.claude.com/docs/en/about-claude/models/overview",
-  verifiedAt: "2026-06-29",
+  pricingSource: "https://platform.claude.com/docs/en/about-claude/pricing",
+  verifiedAt: "2026-08-04",
+  verifiedAgainst: "GET /v1/models (11 models) + published pricing page",
 } as const;

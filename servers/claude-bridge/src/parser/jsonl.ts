@@ -1,6 +1,6 @@
 import { createReadStream } from "node:fs";
 import { createInterface } from "node:readline";
-import { type SessionEvent, SessionEventSchema } from "./schemas.ts";
+import { KNOWN_EVENT_TYPES, type SessionEvent, SessionEventSchema } from "./schemas.ts";
 
 /**
  * Streaming JSONL parser for Claude Code session files.
@@ -70,16 +70,65 @@ export async function readSessionFile(
   return events;
 }
 
+export interface EventTypeCounts {
+  /** Count per `type`, exactly as the field appears in the file. */
+  byType: Record<string, number>;
+  /** Sum of `byType` — every non-blank line that parsed as JSON. */
+  total: number;
+  /** Observed types that `SessionEventSchema` does not model, with counts. */
+  unmodelledTypes: Record<string, number>;
+  /** Lines that are not valid JSON at all. */
+  malformedLines: number;
+}
+
 /**
  * Counts events by type without loading content into memory.
- * Useful for quick session stats.
+ *
+ * Counting does NOT validate (fix, 2026-08-04). It used to stream through
+ * `parseSessionFile`, which drops every line `SessionEventSchema` rejects and,
+ * with no `onValidationError` callback, drops them without a trace. The schema
+ * is a nine-member discriminated union; a live transcript carries fourteen
+ * types. Measured on a 19 767-line session: 17 173 counted, 2 594 discarded —
+ * 13.1% of the file absent from a number labelled `totalEvents`.
+ *
+ * Two loss channels existed, and only the first is obvious:
+ *   - unknown discriminant — `pr-link`, `mode`, `permission-mode`,
+ *     `file-history-delta`, `agent-name` (2 591 lines)
+ *   - KNOWN discriminant, failing field validation — 3 `last-prompt` lines in
+ *     the same file
+ *
+ * Raw counts fix both. `unmodelledTypes` keeps the gap visible rather than
+ * letting it quietly reappear as a smaller total.
  */
-export async function countEventsByType(filePath: string): Promise<Record<string, number>> {
-  const counts: Record<string, number> = {};
-  for await (const event of parseSessionFile(filePath)) {
-    counts[event.type] = (counts[event.type] ?? 0) + 1;
+export async function countEventsByType(filePath: string): Promise<EventTypeCounts> {
+  const byType: Record<string, number> = {};
+  const unmodelledTypes: Record<string, number> = {};
+  let total = 0;
+  let malformedLines = 0;
+
+  const stream = createReadStream(filePath, { encoding: "utf-8" });
+  const lines = createInterface({ input: stream, crlfDelay: Number.POSITIVE_INFINITY });
+
+  for await (const line of lines) {
+    if (line.trim().length === 0) continue;
+    let raw: unknown;
+    try {
+      raw = JSON.parse(line);
+    } catch {
+      malformedLines++;
+      continue;
+    }
+    const type = (raw as { type?: unknown })?.type;
+    // A line with no `type` is still a line — name it rather than drop it.
+    const key = typeof type === "string" && type.length > 0 ? type : "(no type field)";
+    byType[key] = (byType[key] ?? 0) + 1;
+    total++;
+    if (!KNOWN_EVENT_TYPES.has(key)) {
+      unmodelledTypes[key] = (unmodelledTypes[key] ?? 0) + 1;
+    }
   }
-  return counts;
+
+  return { byType, total, unmodelledTypes, malformedLines };
 }
 
 /**

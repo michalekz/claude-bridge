@@ -4,6 +4,96 @@ All notable changes to this project are documented here. Format follows [Keep a 
 
 ## [Unreleased] — development channel
 
+_Nothing yet._
+
+## [0.10.2] — 2026-08-04
+
+Three findings from the live MCP tool test of 2026-08-04
+(`report-mcp-test-2026-08-04`), plus the rc series that preceded them.
+
+Every one is the same defect class the rc.2 and rc.3 notes describe: **something
+reports a result it never checked.** `peer_restart` reported a start it had not
+performed; `model_info` reported prices and context windows nobody had compared
+against the published ones; `session_stats` reported a total that was 13% short
+because the lines it could not parse were subtracted rather than counted.
+
+### `model_info` had drifted away from what Anthropic publishes
+
+Reported as "`model_info` does not know `claude-opus-5`" (finding #5). It was
+three errors, not one — the table had not been checked against a source since
+it was written, so nothing said how far it had moved:
+
+| | table said | actually |
+|---|---|---|
+| `claude-opus-5` | absent | 1M context, 128k output |
+| `claude-sonnet-4-5` | 200 000 context | **1 000 000** |
+| `claude-sonnet-5` | $3 / $15 per MTok | **$2 / $10 through 2026-08-31** |
+
+The Sonnet 4.5 entry is the one with teeth. `peer_context_status` divides by
+`contextWindow`, so a peer on Sonnet 4.5 was reported at full context while four
+fifths of the window was still free — an autocompact alarm at 20% usage.
+
+The Sonnet 5 price was documented and wrong at the same time: the `notes` field
+already said "introductory pricing $2/$10 per MTok through 2026-08-31" while the
+`pricing` field the tool actually reports said $3/$15.
+
+Pinning that field to $2/$10 would have been just as wrong from 2026-09-01, so
+pricing may now carry the date it lapses (`until` + `after`) and `model_info`
+returns an `effectivePricing` resolved against the current date. This is
+deliberately small: it stops a known number from rotting on a known day. Where
+the numbers come from is unchanged and still hand-copied — see below.
+
+Context window, max output and capabilities are verifiable against
+`GET /v1/models`, which answers for a Claude Code subscription token. A fixture
+of that response (11 models, captured 2026-08-04) is now in the suite, and the
+table is asserted against it. Price and lifecycle are **not** in the API — not
+in the collection, not in `GET /v1/models/{id}` — they are published only on the
+docs pages, so they stay hand-copied for now. Sourcing them mechanically is
+v0.10.3.
+
+Tests +9. The membership check prints the missing ids rather than asserting a
+boolean, which is how the absence of `claude-opus-5` survived the previous
+tests.
+
+### `session_stats` reported 13% fewer events than the file contains
+
+Reported as 1 859 events against an independent recount of 2 393 (finding #4).
+
+`countEventsByType` streamed through `parseSessionFile`, which drops every line
+`SessionEventSchema` rejects — and with no `onValidationError` callback passed,
+drops it without a trace. The schema is a nine-member discriminated union.
+A live transcript carries fourteen types:
+
+```
+19 767 lines      counted 17 173      discarded 2 594  (13.1%)
+
+pr-link              957 → 0     type not in the schema
+mode                 814 → 0        "
+permission-mode      713 → 0        "
+file-history-delta    91 → 0        "
+agent-name            51 → 0        "
+last-prompt         1185 → 1182   KNOWN type, 3 lines failed field validation
+```
+
+Two loss channels, and the second is the one a type-level fix would have
+missed. Counting no longer validates: `countEventsByType` counts the `type`
+field as written. Verified against a live 20 020-line session — `total` now
+equals `wc -l` exactly.
+
+The gap is reported instead of absorbed. `session_stats` gained
+`unmodelledTypes` (types Claude Code writes that the schema does not model, with
+counts) and `malformedLines`. An empty `unmodelledTypes` is the normal case; a
+non-empty one says the schema is behind, not that the count is short.
+
+`mode` at 814 occurrences answers a standing question about "unknown mode" —
+reading was never at fault, the type is simply absent from our schema.
+
+The existing fixture could not have caught any of this: every type in it is
+modelled. That is why it passed for eleven versions.
+
+Tests +5, verified by restoring validation to the counter — all 5 fail against
+it.
+
 ### `peer_restart` reported starting a peer it had not started
 
 Found in live tool testing (`report-mcp-test-2026-08-04`, finding #1), not by the suite:

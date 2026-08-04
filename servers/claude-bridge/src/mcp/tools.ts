@@ -11,7 +11,12 @@ import {
 } from "../parser/context-usage.ts";
 import type { ContextLimitCaveat } from "../parser/jsonl-context.ts";
 import { countEventsByType, parseSessionFile, parseSessionFileRaw } from "../parser/jsonl.ts";
-import { MODELS, MODEL_METADATA_SOURCE, lookupModel } from "../parser/model-metadata.ts";
+import {
+  MODELS,
+  MODEL_METADATA_SOURCE,
+  effectivePricing,
+  lookupModel,
+} from "../parser/model-metadata.ts";
 import { readLiveRateLimits } from "../parser/rate-limits.ts";
 import type { AssistantEvent, ContentBlock, SessionEvent, UserEvent } from "../parser/schemas.ts";
 import {
@@ -240,12 +245,16 @@ export async function sessionStatsTool(
     // streaming. Counting does not need the events kept.
     const results = [];
     for (const s of filtered) {
-      const byType = await countEventsByType(s.filePath);
-      const totalEvents = Object.values(byType).reduce((a, b) => a + b, 0);
+      const counts = await countEventsByType(s.filePath);
       results.push({
         ...serializeSessionRef(s),
-        totalEvents,
-        eventsByType: byType,
+        totalEvents: counts.total,
+        eventsByType: counts.byType,
+        // Types Claude Code writes that our schema does not model. Empty is the
+        // normal case; non-empty says the schema is behind, not that the count
+        // is short (fix, 2026-08-04 — the count used to silently omit these).
+        unmodelledTypes: counts.unmodelledTypes,
+        malformedLines: counts.malformedLines,
       });
     }
 
@@ -1882,6 +1891,8 @@ export async function modelInfoTool(args: z.infer<typeof ModelInfoArgs>): Promis
       }
       return ok({
         source: MODEL_METADATA_SOURCE,
+        // `pricing` may carry a published end date; this is what applies today.
+        effectivePricing: effectivePricing(found),
         model: found,
       });
     }
@@ -1894,7 +1905,7 @@ export async function modelInfoTool(args: z.infer<typeof ModelInfoArgs>): Promis
     return ok({
       source: MODEL_METADATA_SOURCE,
       modelsCount: list.length,
-      models: list,
+      models: list.map((m) => ({ ...m, effectivePricing: effectivePricing(m) })),
     });
   } catch (e) {
     log.error("model_info_failed", { err: e instanceof Error ? e.message : String(e) });
@@ -1960,7 +1971,7 @@ export const TOOLS: ToolSpec[] = [
   {
     name: "session_stats",
     description:
-      "Read a session JSONL and return event counts by type. Useful for quick inspection of a session's content shape.",
+      "Read a session JSONL and return event counts by type. Useful for quick inspection of a session's content shape. Counts are raw — every line is counted by its `type` field as written, so `totalEvents` equals the file's line count (v0.10.2 fix; earlier versions validated while counting and silently dropped ~13% of a real transcript). `unmodelledTypes` lists types Claude Code writes that this plugin's schema does not model, with counts — empty is normal, non-empty means the schema is behind, not that the count is short. `malformedLines` counts lines that are not valid JSON.",
     inputSchema: {
       type: "object",
       properties: {
@@ -2297,7 +2308,7 @@ export const TOOLS: ToolSpec[] = [
   {
     name: "model_info",
     description:
-      "Return canonical Claude model metadata: context window, max output, pricing, capabilities (vision / extended thinking / adaptive thinking), knowledge cutoff, lifecycle status (current/legacy/deprecated). Static lookup — no JSONL scan, no network calls. Source: Anthropic platform docs (https://platform.claude.com/docs/en/about-claude/models/overview), verified 2026-06-29. Pass `model` to query specific id (date suffix and [1m] tag are stripped automatically). Pass `generation` to filter (current/legacy/deprecated). No args = list all known models.",
+      "Return canonical Claude model metadata: context window, max output, pricing, capabilities (vision / extended thinking / adaptive thinking), knowledge cutoff, lifecycle status (current/legacy/deprecated). Static lookup — no JSONL scan, no network calls. Context window / max output / capabilities are checked against `GET /v1/models` by the test suite; price and lifecycle are hand-copied from the docs pages (https://platform.claude.com/docs/en/about-claude/pricing) and are not available from any API. Verified 2026-08-04 against 11 models. `effectivePricing` resolves published rate changes against today's date — Sonnet 5 is $2/$10 per MTok through 2026-08-31 and $3/$15 after, so read `effectivePricing`, not `model.pricing`. Pass `model` to query specific id (date suffix and [1m] tag are stripped automatically). Pass `generation` to filter (current/legacy/deprecated). No args = list all known models.",
     inputSchema: {
       type: "object",
       properties: {

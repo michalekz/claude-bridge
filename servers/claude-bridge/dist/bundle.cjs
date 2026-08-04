@@ -18243,7 +18243,7 @@ var StdioServerTransport = class {
 // package.json
 var package_default = {
   name: "claude-bridge",
-  version: "0.10.2-rc.3",
+  version: "0.10.2",
   private: true,
   description: "MCP server for cross-Claude-Code-chat orchestration over local session JSONL files",
   type: "module",
@@ -20997,6 +20997,9 @@ var SessionEventSchema = external_exports.discriminatedUnion("type", [
   AiTitleEventSchema,
   FileHistorySnapshotEventSchema
 ]);
+var KNOWN_EVENT_TYPES = new Set(
+  SessionEventSchema.options.map((o) => o.shape.type.value)
+);
 
 // src/parser/jsonl.ts
 async function* parseSessionFile(filePath, options = {}) {
@@ -21022,11 +21025,30 @@ async function* parseSessionFile(filePath, options = {}) {
   }
 }
 async function countEventsByType(filePath) {
-  const counts = {};
-  for await (const event of parseSessionFile(filePath)) {
-    counts[event.type] = (counts[event.type] ?? 0) + 1;
+  const byType = {};
+  const unmodelledTypes = {};
+  let total = 0;
+  let malformedLines = 0;
+  const stream = (0, import_node_fs2.createReadStream)(filePath, { encoding: "utf-8" });
+  const lines = (0, import_node_readline.createInterface)({ input: stream, crlfDelay: Number.POSITIVE_INFINITY });
+  for await (const line of lines) {
+    if (line.trim().length === 0) continue;
+    let raw;
+    try {
+      raw = JSON.parse(line);
+    } catch {
+      malformedLines++;
+      continue;
+    }
+    const type = raw?.type;
+    const key = typeof type === "string" && type.length > 0 ? type : "(no type field)";
+    byType[key] = (byType[key] ?? 0) + 1;
+    total++;
+    if (!KNOWN_EVENT_TYPES.has(key)) {
+      unmodelledTypes[key] = (unmodelledTypes[key] ?? 0) + 1;
+    }
   }
-  return counts;
+  return { byType, total, unmodelledTypes, malformedLines };
 }
 async function* parseSessionFileRaw(filePath, options = {}) {
   const stream = (0, import_node_fs2.createReadStream)(filePath, { encoding: "utf-8" });
@@ -21048,6 +21070,19 @@ var STANDARD_LIMIT = 2e5;
 var ONE_M_LIMIT = 1e6;
 var MODELS = [
   // ---- Current generation ----
+  {
+    id: "claude-opus-5",
+    displayName: "Claude Opus 5",
+    family: "opus",
+    generation: "current",
+    contextWindow: ONE_M_LIMIT,
+    maxOutputTokens: 128e3,
+    pricing: { inputPerMTok: 5, outputPerMTok: 25 },
+    capabilities: { vision: true, extendedThinking: false, adaptiveThinking: true },
+    knowledgeCutoff: "2026-05",
+    trainingDataCutoff: "2026-05",
+    notes: "Missing from this table until 2026-08-04 \u2014 see CHANGELOG v0.10.2."
+  },
   {
     id: "claude-fable-5",
     displayName: "Claude Fable 5",
@@ -21094,11 +21129,16 @@ var MODELS = [
     generation: "current",
     contextWindow: ONE_M_LIMIT,
     maxOutputTokens: 128e3,
-    pricing: { inputPerMTok: 3, outputPerMTok: 15 },
+    pricing: {
+      inputPerMTok: 2,
+      outputPerMTok: 10,
+      until: "2026-08-31",
+      after: { inputPerMTok: 3, outputPerMTok: 15 }
+    },
     capabilities: { vision: true, extendedThinking: false, adaptiveThinking: true },
     knowledgeCutoff: "2026-01",
     trainingDataCutoff: "2026-01",
-    notes: "Introductory pricing $2/$10 per MTok through 2026-08-31. Default effort=high on Claude API and Claude Code."
+    notes: "Default effort=high on Claude API and Claude Code."
   },
   {
     id: "claude-haiku-4-5",
@@ -21157,7 +21197,10 @@ var MODELS = [
     displayName: "Claude Sonnet 4.5 (legacy)",
     family: "sonnet",
     generation: "legacy",
-    contextWindow: STANDARD_LIMIT,
+    // 1M, not the 200k this table claimed until 2026-08-04. peer_context_status
+    // divides by this number, so the old value put a peer at 100% of context
+    // while it was actually at 20% — an autocompact alarm four fifths early.
+    contextWindow: ONE_M_LIMIT,
     maxOutputTokens: 64e3,
     pricing: { inputPerMTok: 3, outputPerMTok: 15 },
     capabilities: { vision: true, extendedThinking: true, adaptiveThinking: false },
@@ -21200,9 +21243,25 @@ function lookupModel(model) {
   const baseId = normalizeModelId(model);
   return MODEL_BY_ID[baseId] ?? null;
 }
+function isDated(p) {
+  return "until" in p && "after" in p;
+}
+function effectivePricing(model, now = /* @__PURE__ */ new Date()) {
+  const p = model.pricing;
+  if (!isDated(p)) return { inputPerMTok: p.inputPerMTok, outputPerMTok: p.outputPerMTok };
+  const expiresAt = /* @__PURE__ */ new Date(`${p.until}T23:59:59.999Z`);
+  if (now > expiresAt) return { ...p.after };
+  return {
+    inputPerMTok: p.inputPerMTok,
+    outputPerMTok: p.outputPerMTok,
+    pendingChange: { on: p.until, to: p.after }
+  };
+}
 var MODEL_METADATA_SOURCE = {
   source: "https://platform.claude.com/docs/en/about-claude/models/overview",
-  verifiedAt: "2026-06-29"
+  pricingSource: "https://platform.claude.com/docs/en/about-claude/pricing",
+  verifiedAt: "2026-08-04",
+  verifiedAgainst: "GET /v1/models (11 models) + published pricing page"
 };
 
 // src/parser/jsonl-context.ts
@@ -22156,12 +22215,16 @@ async function sessionStatsTool(args) {
     }
     const results = [];
     for (const s of filtered) {
-      const byType = await countEventsByType(s.filePath);
-      const totalEvents = Object.values(byType).reduce((a, b) => a + b, 0);
+      const counts = await countEventsByType(s.filePath);
       results.push({
         ...serializeSessionRef(s),
-        totalEvents,
-        eventsByType: byType
+        totalEvents: counts.total,
+        eventsByType: counts.byType,
+        // Types Claude Code writes that our schema does not model. Empty is the
+        // normal case; non-empty says the schema is behind, not that the count
+        // is short (fix, 2026-08-04 — the count used to silently omit these).
+        unmodelledTypes: counts.unmodelledTypes,
+        malformedLines: counts.malformedLines
       });
     }
     return ok2({ sessionId: args.sessionId, instances: results });
@@ -23291,6 +23354,8 @@ async function modelInfoTool(args) {
       }
       return ok2({
         source: MODEL_METADATA_SOURCE,
+        // `pricing` may carry a published end date; this is what applies today.
+        effectivePricing: effectivePricing(found),
         model: found
       });
     }
@@ -23301,7 +23366,7 @@ async function modelInfoTool(args) {
     return ok2({
       source: MODEL_METADATA_SOURCE,
       modelsCount: list.length,
-      models: list
+      models: list.map((m) => ({ ...m, effectivePricing: effectivePricing(m) }))
     });
   } catch (e) {
     log6.error("model_info_failed", { err: e instanceof Error ? e.message : String(e) });
@@ -23350,7 +23415,7 @@ var TOOLS = [
   },
   {
     name: "session_stats",
-    description: "Read a session JSONL and return event counts by type. Useful for quick inspection of a session's content shape.",
+    description: "Read a session JSONL and return event counts by type. Useful for quick inspection of a session's content shape. Counts are raw \u2014 every line is counted by its `type` field as written, so `totalEvents` equals the file's line count (v0.10.2 fix; earlier versions validated while counting and silently dropped ~13% of a real transcript). `unmodelledTypes` lists types Claude Code writes that this plugin's schema does not model, with counts \u2014 empty is normal, non-empty means the schema is behind, not that the count is short. `malformedLines` counts lines that are not valid JSON.",
     inputSchema: {
       type: "object",
       properties: {
@@ -23663,7 +23728,7 @@ var TOOLS = [
   },
   {
     name: "model_info",
-    description: "Return canonical Claude model metadata: context window, max output, pricing, capabilities (vision / extended thinking / adaptive thinking), knowledge cutoff, lifecycle status (current/legacy/deprecated). Static lookup \u2014 no JSONL scan, no network calls. Source: Anthropic platform docs (https://platform.claude.com/docs/en/about-claude/models/overview), verified 2026-06-29. Pass `model` to query specific id (date suffix and [1m] tag are stripped automatically). Pass `generation` to filter (current/legacy/deprecated). No args = list all known models.",
+    description: "Return canonical Claude model metadata: context window, max output, pricing, capabilities (vision / extended thinking / adaptive thinking), knowledge cutoff, lifecycle status (current/legacy/deprecated). Static lookup \u2014 no JSONL scan, no network calls. Context window / max output / capabilities are checked against `GET /v1/models` by the test suite; price and lifecycle are hand-copied from the docs pages (https://platform.claude.com/docs/en/about-claude/pricing) and are not available from any API. Verified 2026-08-04 against 11 models. `effectivePricing` resolves published rate changes against today's date \u2014 Sonnet 5 is $2/$10 per MTok through 2026-08-31 and $3/$15 after, so read `effectivePricing`, not `model.pricing`. Pass `model` to query specific id (date suffix and [1m] tag are stripped automatically). Pass `generation` to filter (current/legacy/deprecated). No args = list all known models.",
     inputSchema: {
       type: "object",
       properties: {
