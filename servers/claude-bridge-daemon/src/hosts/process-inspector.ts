@@ -1,4 +1,4 @@
-import { readFile, readdir } from "node:fs/promises";
+import { readFile, readdir, readlink } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, join } from "node:path";
 
@@ -24,6 +24,20 @@ export interface ProcessRecord {
   sessionIdSource: "sessions-json" | "resume-arg" | "none";
   /** Full command line, space-joined. Diagnostics only. */
   cmdline: string;
+  /**
+   * `/proc/<pid>/cmdline` split on its NUL separators — the executable followed
+   * by its arguments, exactly as the process was launched.
+   *
+   * Adoption needs the argv boundaries, not the joined string: a peer adopted
+   * without them carries no `command`/`spawnArgs`, and the first daemon-issued
+   * `peer_restart` then falls back to a bare `claude`. On this fleet that
+   * resolves to nothing (nvm), so adoption would look complete while the
+   * control layer was unusable at the exact moment anyone first needed it
+   * (raised by plt-designer, 2026-08-04).
+   */
+  argv: string[];
+  /** Resolved `/proc/<pid>/cwd`. Null when the link cannot be read. */
+  cwd: string | null;
 }
 
 export interface ProcessInspector {
@@ -113,12 +127,24 @@ export class LinuxProcessInspector implements ProcessInspector {
       const stat = await this.readProcFile(pid, "stat");
       const ppid = stat ? parsePpidFromStat(stat) : null;
       const raw = await this.readProcFile(pid, "cmdline");
-      const cmdline = (raw ?? "").replace(/\0/g, " ").trim();
+      const argv = (raw ?? "").split("\0").filter((a) => a.length > 0);
+      const cmdline = argv.join(" ").trim();
+      const cwd = await this.readProcCwd(pid);
 
       const { sessionId, source } = await this.resolveSessionId(pid, cmdline);
-      out.push({ pid, ppid: ppid ?? 0, sessionId, sessionIdSource: source, cmdline });
+      out.push({ pid, ppid: ppid ?? 0, sessionId, sessionIdSource: source, cmdline, argv, cwd });
     }
     return out;
+  }
+
+  private async readProcCwd(pid: number): Promise<string | null> {
+    try {
+      return await readlink(join(this.procRoot, String(pid), "cwd"));
+    } catch {
+      // Not readable for another user's process, and absent in the test fixtures
+      // that fake /proc with plain files. Neither is a reason to fail adoption.
+      return null;
+    }
   }
 
   async ancestorsOf(pid: number, maxDepth = DEFAULT_MAX_DEPTH): Promise<number[]> {

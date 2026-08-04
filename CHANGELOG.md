@@ -6,6 +6,110 @@ All notable changes to this project are documented here. Format follows [Keep a 
 
 _Nothing yet._
 
+## [0.10.6-rc.1] — 2026-08-04 (pre-release, development channel)
+
+The four remaining tools from the 2026-08-04 MCP test. With `peer_restart`
+(v0.10.2/.3) and the environment whitelist (v0.10.5), that closes the gate the
+owner set for a stable release: every tool from that test fixed and measured.
+
+Every one is the same defect: **the tool described behaviour it did not have.**
+
+### `peer_chat_search` — two claims, neither true
+
+The description said *"Self session is excluded (already in context)"*. Nothing
+in the code excluded it. The premise was wrong as well: after an autocompact or
+a `/clear`, a peer's own transcript holds a great deal its context does not,
+which is exactly why `peer_chat_read` allows reading it. So the claim was
+dropped rather than implemented — self stays in scope, is tagged `*(self)*` in
+the output, and `includeSelf: false` exists for callers who mean it.
+
+`Hits: X/Y` left the reader guessing what `Y` was. Not the scope, not the
+sessions with a match — however many the loop reached before `maxMatches`
+stopped it. Sessions never opened counted the same as sessions searched and
+found empty:
+
+```
+Scope: 12 sessions in scope, 1 examined (0 MB) in 8 ms
+Hits:  1 matches in 1 of the 1 sessions examined (truncated at maxMatches)
+⚠ Incomplete: stopped at maxMatches=1 — 11 sessions in scope were never opened.
+```
+
+### `peer_chat_read` — counted through a filter and called it a total
+
+`totalEventsScanned` came from a sweep through `parseSessionFile`, the
+validating parser, which drops every line the schema rejects. Same root cause
+as the `session_stats` undercount. Now two numbers, because they answer two
+questions: `totalEvents` (every line, matches `wc -l`), `eventsParsed` (what
+the schema could read), `unmodelledTypes` (the difference, named).
+
+The description said "another peer's chat" while the code deliberately allowed
+reading your own. The description was the part that was wrong, and now says so.
+
+### `rate_limit_status` — richer data lost every comparison
+
+The two live sources were **chosen between**, not combined. statusLine is
+written on every render, so it was nearly always the newer capture and nearly
+always won — carrying only `five_hour` and `seven_day`. Everything the
+description promises from the OAuth capture (`scopedLimits`, including the
+`weekly_scoped` per-model budget, plus `spend`, `extraUsage`, `perModelWeekly`)
+reached no caller.
+
+Worse, the statusLine path **invented** the fields it lacked, reporting
+`severity: "normal"` and `isActive: true` unconditionally. Measured on live data:
+
+```
+before                              after
+session 0.88  severity "normal"     session 0.89  severity "warning"
+scopedLimits: absent                scopedLimits: weekly_scoped 0.42 (Fable)
+                                    secondary: oauth-api, 158 s old, 5 fields
+```
+
+Sources are now composed: numbers from the newer capture, single-source fields
+from the OAuth one, and `secondary` states which fields were borrowed and how
+old that half is. Where nothing was measured, `severity` is `"unknown"` and
+`isActive` is absent — an invented value is worse than a missing one.
+
+### `team_adopt` — planned four peers on a fleet of twenty-three
+
+It was not choosing. `listSessions()` reports `#{pane_pid}` per tmux SESSION —
+the active pane of the active window, one pid however many windows the session
+holds. The fleet runs one peer per window: four sessions, twenty-three windows.
+Nineteen were never looked at, and `ambiguous: []` was true and worthless.
+
+```
+tmux list-sessions  → 4       tmux list-panes -a  → 23
+```
+
+Adoption now enumerates windows, and the plan reports `hostWindowsSeen` so
+"4 planned" can never again be read without its denominator.
+
+**A window is addressed by its tmux window id (`@42`), never by
+`session:index`.** Found while writing the test: `renumber-windows` is `on`, so
+killing window 2 of {1,2,3} renumbers 3 down to 2. An index is a position, not
+an identity — a stored `hmh:5` would quietly come to mean a different peer. The
+window id is assigned once and survives renumbering; `session:index` remains
+only as a human-facing label.
+
+The driver now knows which kind a target is, because `kill-session -t hmh:3`
+does not kill window three — it kills the session `hmh`, and on this fleet that
+is seven peers for one requested stop. Window kills go through `kill-window`,
+and the linked-window guard is back: a window linked into another session is
+**unlinked** rather than killed.
+
+Adopted records carry `command`, `spawnArgs` and `cwd` read from `/proc`.
+Without them the first daemon-issued `peer_restart` falls back to a bare
+`claude`, which resolves to nothing under nvm — adoption would look complete
+while the control layer was unusable at the moment it was first needed.
+`--resume` and `--model` are stripped from the captured argv, since `peer_spawn`
+appends its own.
+
+Manual mapping accepts a window id, a `session:index` label, or a session name —
+and a session holding several windows is reported as **ambiguous**, not resolved
+by picking the first.
+
+Tests 475 (+21), each verified by restoring the old behaviour.
+
+
 ## [0.10.5] — 2026-08-04
 
 ### The environment whitelist never reached the process it was protecting

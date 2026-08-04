@@ -4287,7 +4287,7 @@ async function resolvePeer(idOrName, root = bridgeRoot(), now = Date.now()) {
 // package.json
 var package_default = {
   name: "claude-bridge-daemon",
-  version: "0.10.5",
+  version: "0.10.6-rc.1",
   private: true,
   description: "Control-plane daemon for the claude-bridge plugin: peer lifecycle, telemetry, audit. Distributed as opt-in artefact \u2014 see ADR-008.",
   type: "module",
@@ -5305,6 +5305,14 @@ async function handlePeerRestart(req, ctx) {
 }
 
 // src/hosts/driver.ts
+var WINDOW_ID = /^@\d+$/;
+function parseHostTarget(key) {
+  if (WINDOW_ID.test(key)) return { kind: "window", windowId: key };
+  return { kind: "session", session: sanitizeSessionKey(key) };
+}
+function formatHostTarget(t) {
+  return t.kind === "window" ? t.windowId : t.session;
+}
 var UNSAFE_TARGET_CHARS = /[^A-Za-z0-9_-]/g;
 function sanitizeSessionKey(rawName) {
   const sanitized = rawName.replace(UNSAFE_TARGET_CHARS, "_");
@@ -5358,11 +5366,20 @@ var LinuxProcessInspector = class {
       const stat4 = await this.readProcFile(pid, "stat");
       const ppid = stat4 ? parsePpidFromStat(stat4) : null;
       const raw = await this.readProcFile(pid, "cmdline");
-      const cmdline = (raw ?? "").replace(/\0/g, " ").trim();
+      const argv = (raw ?? "").split("\0").filter((a) => a.length > 0);
+      const cmdline = argv.join(" ").trim();
+      const cwd = await this.readProcCwd(pid);
       const { sessionId, source } = await this.resolveSessionId(pid, cmdline);
-      out.push({ pid, ppid: ppid ?? 0, sessionId, sessionIdSource: source, cmdline });
+      out.push({ pid, ppid: ppid ?? 0, sessionId, sessionIdSource: source, cmdline, argv, cwd });
     }
     return out;
+  }
+  async readProcCwd(pid) {
+    try {
+      return await (0, import_promises8.readlink)((0, import_node_path8.join)(this.procRoot, String(pid), "cwd"));
+    } catch {
+      return null;
+    }
   }
   async ancestorsOf(pid, maxDepth = DEFAULT_MAX_DEPTH) {
     const chain = [];
@@ -5415,6 +5432,18 @@ var TeamAdoptArgsSchema = external_exports.object({
   /** Safe by default — see the note above. */
   dryRun: external_exports.boolean().default(true)
 }).strict();
+function stripReappendedArgs(argv) {
+  const out = [];
+  for (let i = 0; i < argv.length; i++) {
+    const a = argv[i];
+    if (a === "--resume" || a === "--model") {
+      i++;
+      continue;
+    }
+    if (a !== void 0) out.push(a);
+  }
+  return out;
+}
 async function discoverCandidates(ctx, hostSessions) {
   const inspector = ctx.processInspector ?? defaultProcessInspector();
   const peers = await inspector.listClaudePeers();
@@ -5452,11 +5481,18 @@ async function discoverCandidates(ctx, hostSessions) {
       });
       continue;
     }
+    const [command, ...rest] = proc.argv;
     candidates.push({
       sessionKey: session.sessionKey,
+      label: session.label,
       sessionId: proc.sessionId,
       pid: proc.pid,
-      sessionIdSource: proc.sessionIdSource
+      sessionIdSource: proc.sessionIdSource,
+      ...command ? { command } : {},
+      // `--resume <id>` and `--model <m>` are re-appended by peer_spawn, so
+      // strip them here or the next restart would carry them twice.
+      spawnArgs: stripReappendedArgs(rest),
+      ...proc.cwd ? { cwd: proc.cwd } : {}
     });
   }
   return { candidates, ambiguous, skips };
@@ -5474,19 +5510,58 @@ async function handleTeamAdopt(req, ctx) {
       team: args.team
     });
   }
-  const hostSessions = await ctx.hostDriver.listSessions();
+  const windows = ctx.hostDriver.listWindows ? await ctx.hostDriver.listWindows() : [];
+  const hostSessions = windows.length > 0 ? windows.map((w) => ({
+    sessionKey: w.target,
+    label: w.windowName || w.label,
+    pid: w.pid
+  })) : (await ctx.hostDriver.listSessions()).map((s) => ({
+    sessionKey: s.sessionKey,
+    label: s.sessionKey,
+    pid: s.pid
+  }));
   let candidates = [];
   let ambiguous = [];
   let skips = [];
   if (args.mode === "manual") {
     for (const [rawKey, sessionId] of Object.entries(args.mapping ?? {})) {
-      const sessionKey = sanitizeSessionKey(rawKey);
-      const host = hostSessions.find((s) => s.sessionKey === sessionKey);
+      const target = parseHostTarget(rawKey);
+      const sessionKey = formatHostTarget(target);
+      const byLabel = windows.find((w) => w.label === rawKey || w.windowName === rawKey);
+      let host = hostSessions.find((s) => s.sessionKey === sessionKey) ?? (byLabel ? {
+        sessionKey: byLabel.target,
+        label: byLabel.windowName || byLabel.label,
+        pid: byLabel.pid
+      } : void 0);
+      if (!host && target.kind === "session") {
+        const inSession = windows.filter((w) => w.session === sessionKey);
+        if (inSession.length > 1) {
+          ambiguous.push({
+            sessionKey,
+            candidates: inSession.map((w) => ({ pid: w.pid ?? -1, sessionId: null }))
+          });
+          continue;
+        }
+        const only = inSession[0];
+        host = only ? { sessionKey: only.target, label: only.windowName || only.label, pid: only.pid } : hostSessions.find((s) => s.sessionKey === sessionKey);
+      }
       if (!host) {
         skips.push({ sessionKey, reason: "not_on_host" });
         continue;
       }
-      candidates.push({ sessionKey, sessionId, pid: host.pid, sessionIdSource: "manual" });
+      const procs = await ctx.processInspector?.listClaudePeers();
+      const owning = procs?.find((pr) => pr.pid === host.pid);
+      const [manualCommand, ...manualRest] = owning?.argv ?? [];
+      candidates.push({
+        sessionKey: host.sessionKey,
+        label: host.label,
+        sessionId,
+        pid: host.pid,
+        sessionIdSource: "manual",
+        ...manualCommand ? { command: manualCommand } : {},
+        spawnArgs: stripReappendedArgs(manualRest),
+        ...owning?.cwd ? { cwd: owning.cwd } : {}
+      });
     }
   } else {
     const found = await discoverCandidates(ctx, hostSessions);
@@ -5519,11 +5594,18 @@ async function handleTeamAdopt(req, ctx) {
   const plan = {
     team: args.team,
     mode: args.mode,
+    hostWindowsSeen: hostSessions.length,
     planned: fresh.map((c) => ({
       sessionKey: c.sessionKey,
+      label: c.label ?? c.sessionKey,
       sessionId: c.sessionId,
       pid: c.pid,
-      sessionIdSource: c.sessionIdSource
+      sessionIdSource: c.sessionIdSource,
+      // Shown in the plan so a dry run can prove the record will be
+      // restartable BEFORE anything is written.
+      command: c.command ?? null,
+      spawnArgs: c.spawnArgs ?? [],
+      cwd: c.cwd ?? null
     })),
     ambiguous,
     skipped: skips
@@ -5544,7 +5626,7 @@ async function handleTeamAdopt(req, ctx) {
     await applyStateChange(ctx.state, (draft) => {
       draft.peers[c.sessionId] = {
         sessionId: c.sessionId,
-        name: c.sessionKey,
+        name: c.label ?? c.sessionKey,
         hostDriver: hostDriverName,
         tmuxTarget: c.sessionKey,
         pid: c.pid,
@@ -5553,6 +5635,11 @@ async function handleTeamAdopt(req, ctx) {
         // Flags that the daemon did not start this process: `startedAt` is
         // when we adopted it, not when it actually booted.
         adopted: true,
+        // Carried from /proc so an adopted peer is restartable. Without these
+        // the record is a name with no way to relaunch what it names.
+        ...c.command ? { command: c.command } : {},
+        ...c.spawnArgs ? { spawnArgs: c.spawnArgs } : {},
+        ...c.cwd ? { cwd: c.cwd } : {},
         model: null,
         accountProfile: null,
         startedAt: now,
@@ -6442,15 +6529,87 @@ var TmuxDriver = class {
     this.sendVerifyDelayMs = opts.sendVerifyDelayMs ?? DEFAULT_SEND_VERIFY_DELAY_MS;
   }
   async hasSession(sessionKey) {
-    const canonical = sanitizeSessionKey(sessionKey);
+    const t = parseHostTarget(sessionKey);
+    if (t.kind === "window") {
+      const windows = await this.listWindows();
+      return windows.some((w) => w.target === t.windowId);
+    }
     try {
-      await execFileAsync(this.tmuxBin, ["has-session", "-t", canonical], {
+      await execFileAsync(this.tmuxBin, ["has-session", "-t", t.session], {
         ...EXEC_DEFAULTS,
         timeout: QUERY_TIMEOUT_MS
       });
       return true;
     } catch {
       return false;
+    }
+  }
+  async listWindows() {
+    try {
+      const { stdout } = await execFileAsync(
+        this.tmuxBin,
+        [
+          "list-panes",
+          "-a",
+          "-F",
+          "#{window_id}	#{session_name}	#{window_index}	#{window_name}	#{pane_pid}"
+        ],
+        { ...EXEC_DEFAULTS, timeout: QUERY_TIMEOUT_MS }
+      );
+      const out = [];
+      const seen = /* @__PURE__ */ new Set();
+      for (const line of stdout.split("\n")) {
+        const trimmed = line.trim();
+        if (!trimmed) continue;
+        const [windowId, session, idxStr, windowName, pidStr] = trimmed.split("	");
+        if (!windowId || !session || idxStr === void 0) continue;
+        const window = Number.parseInt(idxStr, 10);
+        if (Number.isNaN(window)) continue;
+        const target = windowId;
+        if (seen.has(target)) continue;
+        seen.add(target);
+        const pid = pidStr ? Number.parseInt(pidStr, 10) : Number.NaN;
+        out.push({
+          target,
+          label: `${session}:${window}`,
+          session,
+          window,
+          windowName: windowName ?? "",
+          pid: Number.isNaN(pid) ? null : pid
+        });
+      }
+      return out;
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      if (msg.includes("no server running")) return [];
+      throw e;
+    }
+  }
+  /**
+   * Sessions that also hold this window, other than its own.
+   *
+   * tmux can link one window into several sessions. `kill-window` removes it
+   * from all of them at once, so a linked window must be UNLINKED from the
+   * caller's session instead — killing it would take a peer out of somebody
+   * else's session too. v0.10.1 measured that `kill-session` has no such
+   * hazard and dropped the guard; `kill-window` is now reachable, so it is back.
+   */
+  async linkedElsewhere(target) {
+    try {
+      const { stdout } = await execFileAsync(
+        this.tmuxBin,
+        ["display-message", "-p", "-t", target, "#{window_linked_sessions_list}"],
+        { ...EXEC_DEFAULTS, timeout: QUERY_TIMEOUT_MS }
+      );
+      const { stdout: ownOut } = await execFileAsync(
+        this.tmuxBin,
+        ["display-message", "-p", "-t", target, "#{session_name}"],
+        { ...EXEC_DEFAULTS, timeout: QUERY_TIMEOUT_MS }
+      );
+      const own = ownOut.trim();
+      return stdout.trim().split(/[\s,]+/).filter((n) => n.length > 0 && n !== own);
+    } catch {
+      return [];
     }
   }
   async spawn(opts) {
@@ -6502,17 +6661,30 @@ var TmuxDriver = class {
     return { sessionKey: canonicalKey, alive: pid !== null, pid };
   }
   async kill(sessionKey, opts = {}) {
-    const canonical = sanitizeSessionKey(sessionKey);
+    const t = parseHostTarget(sessionKey);
+    const canonical = t.kind === "window" ? t.windowId : t.session;
     if (!await this.hasSession(canonical)) return;
+    const verb = t.kind === "window" ? "kill-window" : "kill-session";
+    if (t.kind === "window") {
+      const linked = await this.linkedElsewhere(t.windowId);
+      if (linked.length > 0) {
+        log6.warn("tmux_window_linked_unlinking", { target: t.windowId, linkedSessions: linked });
+        await execFileAsync(this.tmuxBin, ["unlink-window", "-t", t.windowId], {
+          ...EXEC_DEFAULTS,
+          timeout: MUTATE_TIMEOUT_MS
+        });
+        return;
+      }
+    }
     try {
-      await execFileAsync(this.tmuxBin, ["kill-session", "-t", canonical], {
+      await execFileAsync(this.tmuxBin, [verb, "-t", canonical], {
         ...EXEC_DEFAULTS,
         timeout: MUTATE_TIMEOUT_MS
       });
     } catch (e) {
       if (!await this.hasSession(canonical)) return;
       const msg = e instanceof Error ? e.message : String(e);
-      if (msg.includes("can't find session")) return;
+      if (msg.includes("can't find session") || msg.includes("can't find window")) return;
       throw e;
     }
     const budget = opts.force === true ? this.verifyTimeoutMs / 2 : this.verifyTimeoutMs;

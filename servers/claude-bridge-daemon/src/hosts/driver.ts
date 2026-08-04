@@ -28,6 +28,58 @@ export interface SessionHostRecord {
   pid: number | null;
 }
 
+/**
+ * What a target string points at.
+ *
+ * The daemon spawns one tmux SESSION per peer, so for everything it started
+ * itself a target is a session name. Peers started by the team scripts live one
+ * per tmux WINDOW inside a shared session — `hmh` holds seven of them — and
+ * adoption has to be able to address those individually.
+ *
+ * The distinction is not cosmetic. `kill-session -t hmh:3` does not kill window
+ * three; it kills the session `hmh`, and with it all seven peers. Which target
+ * kind a key denotes therefore decides which tmux verb may touch it, and that
+ * has to be explicit rather than inferred at the call site.
+ *
+ * A window is addressed by its tmux WINDOW ID (`@42`), never by
+ * `session:index`. Measured 2026-08-04 on this host: `renumber-windows` is
+ * `on`, so killing window 2 of {1,2,3} renumbers 3 down to 2 — an index is a
+ * position, not an identity, and a stored `hmh:5` would quietly come to mean a
+ * different peer. `#{window_id}` is assigned once, is unique per server, never
+ * reused while the window lives, and tmux accepts it as a target directly.
+ *
+ * `@` is a safe discriminator: `sanitizeSessionKey` does not produce it and
+ * tmux reserves it for exactly this.
+ */
+export type HostTarget =
+  | { kind: "session"; session: string }
+  | { kind: "window"; windowId: string };
+
+const WINDOW_ID = /^@\d+$/;
+
+export function parseHostTarget(key: string): HostTarget {
+  if (WINDOW_ID.test(key)) return { kind: "window", windowId: key };
+  return { kind: "session", session: sanitizeSessionKey(key) };
+}
+
+/** The canonical string form of a target — what goes into `PeerRecord.tmuxTarget`. */
+export function formatHostTarget(t: HostTarget): string {
+  return t.kind === "window" ? t.windowId : t.session;
+}
+
+/** A window record as adoption sees it — one entry per pane, not per session. */
+export interface HostWindowRecord {
+  /** tmux window id (`@42`) — the address. Stable across renumbering. */
+  target: string;
+  /** `session:index` — for humans reading a plan. NOT an address. */
+  label: string;
+  session: string;
+  /** Current index. Shifts when a lower-numbered window is killed. */
+  window: number;
+  windowName: string;
+  pid: number | null;
+}
+
 export interface SessionHostDriver {
   /** Static identifier — matches values in `state.peers[<id>].hostDriver`. */
   readonly name: "tmux" | "bg-pty" | "mock";
@@ -44,8 +96,20 @@ export interface SessionHostDriver {
    */
   kill(sessionKey: string, opts?: { force?: boolean }): Promise<void>;
 
-  /** All sessions this driver knows about. */
+  /** All sessions this driver knows about. One entry per tmux SESSION. */
   listSessions(): Promise<SessionHostRecord[]>;
+
+  /**
+   * Every window, across every session — one entry per pane.
+   *
+   * `listSessions()` reports `#{pane_pid}` of a session, which is the active
+   * pane of its active window: one pid per session however many windows it
+   * holds. Adoption used that and consequently planned four peers on a fleet of
+   * twenty-three, reporting `ambiguous: []` because each session had yielded
+   * exactly one process. It was not choosing between candidates — it never saw
+   * the other nineteen windows (fix, 2026-08-04).
+   */
+  listWindows?(): Promise<HostWindowRecord[]>;
 
   /**
    * Optional — used by the compact watchdog (F2). Absent implementations

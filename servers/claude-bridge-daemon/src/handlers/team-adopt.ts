@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { writeEvent } from "../events.ts";
-import { sanitizeSessionKey } from "../hosts/driver.ts";
+import { formatHostTarget, parseHostTarget, sanitizeSessionKey } from "../hosts/driver.ts";
 import { type ProcessRecord, defaultProcessInspector } from "../hosts/process-inspector.ts";
 import type { RequestEnvelope, ResultEnvelope } from "../rpc.ts";
 import { errResult, okResult } from "../rpc.ts";
@@ -50,12 +50,38 @@ interface AdoptionCandidate {
   sessionId: string;
   pid: number | null;
   sessionIdSource: ProcessRecord["sessionIdSource"] | "manual";
+  /** Human-readable name — window name or `session:index`. Never the address. */
+  label?: string;
+  /** Read from /proc so the adopted record can be restarted (2026-08-04). */
+  command?: string;
+  spawnArgs?: string[];
+  cwd?: string;
 }
 
 interface AdoptionSkip {
   sessionKey: string;
   reason: "already_adopted" | "no_claude_process" | "no_session_id" | "not_on_host";
   details?: string;
+}
+
+/**
+ * Drop the flags `peer_spawn` adds back on its own.
+ *
+ * A running peer's argv already contains `--resume <uuid>` and possibly
+ * `--model <m>`, because that is how it was started. Storing them and then
+ * letting peer_spawn append its own would hand tmux two of each.
+ */
+export function stripReappendedArgs(argv: string[]): string[] {
+  const out: string[] = [];
+  for (let i = 0; i < argv.length; i++) {
+    const a = argv[i];
+    if (a === "--resume" || a === "--model") {
+      i++; // skip its value too
+      continue;
+    }
+    if (a !== undefined) out.push(a);
+  }
+  return out;
 }
 
 interface AdoptionAmbiguity {
@@ -73,7 +99,7 @@ interface AdoptionAmbiguity {
  */
 async function discoverCandidates(
   ctx: HandlerContext,
-  hostSessions: Array<{ sessionKey: string; pid: number | null }>,
+  hostSessions: Array<{ sessionKey: string; label: string; pid: number | null }>,
 ): Promise<{
   candidates: AdoptionCandidate[];
   ambiguous: AdoptionAmbiguity[];
@@ -121,11 +147,24 @@ async function discoverCandidates(
       });
       continue;
     }
+    // Launch parameters come from /proc, the way a replay script reads them.
+    // Without them an adopted record has no `command`/`spawnArgs`/`cwd`, and
+    // the first daemon-issued peer_restart falls back to a bare `claude` —
+    // which resolves to nothing under nvm. Adoption would look complete while
+    // the control layer was unusable at the exact moment it was first needed
+    // (raised by plt-designer, 2026-08-04).
+    const [command, ...rest] = proc.argv;
     candidates.push({
       sessionKey: session.sessionKey,
+      label: session.label,
       sessionId: proc.sessionId,
       pid: proc.pid,
       sessionIdSource: proc.sessionIdSource,
+      ...(command ? { command } : {}),
+      // `--resume <id>` and `--model <m>` are re-appended by peer_spawn, so
+      // strip them here or the next restart would carry them twice.
+      spawnArgs: stripReappendedArgs(rest),
+      ...(proc.cwd ? { cwd: proc.cwd } : {}),
     });
   }
   return { candidates, ambiguous, skips };
@@ -149,7 +188,30 @@ export async function handleTeamAdopt(
     });
   }
 
-  const hostSessions = await ctx.hostDriver.listSessions();
+  // Enumerate WINDOWS, not sessions (fix, 2026-08-04).
+  //
+  // `listSessions()` reports `#{pane_pid}` per tmux SESSION — the active pane
+  // of the active window, one pid however many windows the session holds. The
+  // fleet runs one peer per window: four sessions, twenty-three windows. So
+  // adoption saw four candidates, reported `ambiguous: []` because each session
+  // had produced exactly one process, and never mentioned the nineteen windows
+  // it had not looked at. The plan was not incomplete on purpose; it did not
+  // know there was anything else to find.
+  const windows = ctx.hostDriver.listWindows ? await ctx.hostDriver.listWindows() : [];
+  // `sessionKey` is the ADDRESS (a `@id` for a window, a name for a session);
+  // `label` is what a human reads in the plan and what the peer gets named.
+  const hostSessions: Array<{ sessionKey: string; label: string; pid: number | null }> =
+    windows.length > 0
+      ? windows.map((w) => ({
+          sessionKey: w.target,
+          label: w.windowName || w.label,
+          pid: w.pid,
+        }))
+      : (await ctx.hostDriver.listSessions()).map((s) => ({
+          sessionKey: s.sessionKey,
+          label: s.sessionKey,
+          pid: s.pid,
+        }));
 
   let candidates: AdoptionCandidate[] = [];
   let ambiguous: AdoptionAmbiguity[] = [];
@@ -157,13 +219,60 @@ export async function handleTeamAdopt(
 
   if (args.mode === "manual") {
     for (const [rawKey, sessionId] of Object.entries(args.mapping ?? {})) {
-      const sessionKey = sanitizeSessionKey(rawKey);
-      const host = hostSessions.find((s) => s.sessionKey === sessionKey);
+      // A mapping key may name a whole session or one window. Since discovery
+      // now enumerates windows, a bare session name has to be resolved — and a
+      // session holding several windows is ambiguous, not a free choice. On
+      // this fleet `hmh` means seven peers; picking one would adopt an
+      // arbitrary peer under the operator's chosen identity.
+      // A mapping key may be a window id (`@42`), a `session:index` label, or a
+      // bare session name. A session holding several windows is ambiguous, not
+      // a free choice: on this fleet `hmh` means seven peers, and picking one
+      // would adopt an arbitrary peer under the operator's chosen identity.
+      const target = parseHostTarget(rawKey);
+      const sessionKey = formatHostTarget(target);
+      // Address first, then the human-facing forms: `session:index` label or
+      // window name.
+      const byLabel = windows.find((w) => w.label === rawKey || w.windowName === rawKey);
+      let host =
+        hostSessions.find((s) => s.sessionKey === sessionKey) ??
+        (byLabel
+          ? {
+              sessionKey: byLabel.target,
+              label: byLabel.windowName || byLabel.label,
+              pid: byLabel.pid,
+            }
+          : undefined);
+      if (!host && target.kind === "session") {
+        const inSession = windows.filter((w) => w.session === sessionKey);
+        if (inSession.length > 1) {
+          ambiguous.push({
+            sessionKey,
+            candidates: inSession.map((w) => ({ pid: w.pid ?? -1, sessionId: null })),
+          });
+          continue;
+        }
+        const only = inSession[0];
+        host = only
+          ? { sessionKey: only.target, label: only.windowName || only.label, pid: only.pid }
+          : hostSessions.find((s) => s.sessionKey === sessionKey);
+      }
       if (!host) {
         skips.push({ sessionKey, reason: "not_on_host" });
         continue;
       }
-      candidates.push({ sessionKey, sessionId, pid: host.pid, sessionIdSource: "manual" });
+      const procs = await ctx.processInspector?.listClaudePeers();
+      const owning = procs?.find((pr) => pr.pid === host.pid);
+      const [manualCommand, ...manualRest] = owning?.argv ?? [];
+      candidates.push({
+        sessionKey: host.sessionKey,
+        label: host.label,
+        sessionId,
+        pid: host.pid,
+        sessionIdSource: "manual",
+        ...(manualCommand ? { command: manualCommand } : {}),
+        spawnArgs: stripReappendedArgs(manualRest),
+        ...(owning?.cwd ? { cwd: owning.cwd } : {}),
+      });
     }
   } else {
     const found = await discoverCandidates(ctx, hostSessions);
@@ -201,11 +310,18 @@ export async function handleTeamAdopt(
   const plan = {
     team: args.team,
     mode: args.mode,
+    hostWindowsSeen: hostSessions.length,
     planned: fresh.map((c) => ({
       sessionKey: c.sessionKey,
+      label: c.label ?? c.sessionKey,
       sessionId: c.sessionId,
       pid: c.pid,
       sessionIdSource: c.sessionIdSource,
+      // Shown in the plan so a dry run can prove the record will be
+      // restartable BEFORE anything is written.
+      command: c.command ?? null,
+      spawnArgs: c.spawnArgs ?? [],
+      cwd: c.cwd ?? null,
     })),
     ambiguous,
     skipped: skips,
@@ -230,7 +346,7 @@ export async function handleTeamAdopt(
     await applyStateChange(ctx.state, (draft) => {
       draft.peers[c.sessionId] = {
         sessionId: c.sessionId,
-        name: c.sessionKey,
+        name: c.label ?? c.sessionKey,
         hostDriver: hostDriverName,
         tmuxTarget: c.sessionKey,
         pid: c.pid,
@@ -239,6 +355,11 @@ export async function handleTeamAdopt(
         // Flags that the daemon did not start this process: `startedAt` is
         // when we adopted it, not when it actually booted.
         adopted: true,
+        // Carried from /proc so an adopted peer is restartable. Without these
+        // the record is a name with no way to relaunch what it names.
+        ...(c.command ? { command: c.command } : {}),
+        ...(c.spawnArgs ? { spawnArgs: c.spawnArgs } : {}),
+        ...(c.cwd ? { cwd: c.cwd } : {}),
         model: null,
         accountProfile: null,
         startedAt: now,

@@ -131,8 +131,14 @@ export interface RateLimitBucket {
   utilization: number;
   resetsAt: string;
   hoursUntilReset: number;
+  /** `"unknown"` when the source that produced this bucket does not carry severity. */
   severity: string;
-  isActive: boolean;
+  /**
+   * Absent when nobody measured it — the statusLine payload has no such field.
+   * Optional rather than defaulted, because `false` and "not reported" are
+   * different answers and the old code returned a hardcoded `true` for both.
+   */
+  isActive?: boolean;
   windowExpired: boolean;
 }
 
@@ -174,7 +180,22 @@ export interface RateLimitExtraUsage {
  * Which live source was chosen. v0.9.0 no longer reads fossil cache; either
  * source can be missing (returns `hasLiveData: false`).
  */
-export type RateLimitSource = "statusline-stdin" | "oauth-api" | "no-live-data";
+export type RateLimitSource = "statusline-stdin" | "oauth-api" | "composed" | "no-live-data";
+
+/**
+ * Where the fields that only one source carries came from, and how old they are.
+ *
+ * Reported because a composed answer mixes two ages: utilization is as fresh as
+ * the newest capture, while severity / scopedLimits / spend can only come from
+ * the OAuth capture, which is throttled to roughly once a minute.
+ */
+export interface SecondarySourceInfo {
+  source: RateLimitSource;
+  capturedAt: string;
+  capturedAgeSeconds: number;
+  /** Field names taken from this older capture. */
+  fields: string[];
+}
 
 export interface RateLimitStatus {
   hasLiveData: boolean;
@@ -194,6 +215,8 @@ export interface RateLimitStatus {
   extraUsage?: RateLimitExtraUsage;
   perModelWeekly?: Record<string, number>;
   rawExperimental?: Record<string, unknown>;
+  /** Present when two captures were combined — says which fields came from the older one. */
+  secondary?: SecondarySourceInfo;
   /** Setup instruction pointer when hasLiveData=false. */
   setupPointer?: string;
 }
@@ -414,8 +437,11 @@ export function normalizeFromStatusLine(
       utilization: w.used_percentage / 100,
       resetsAt: resetsAtIso,
       hoursUntilReset: hoursBetween(resetsAtIso, now),
-      severity: "normal", // statusLine payload doesn't carry per-bucket severity
-      isActive: true, // statusLine payload doesn't carry is_active either
+      // The statusLine payload carries neither of these. It used to claim
+      // "normal" and `true` anyway, which is how a session at 88% was reported
+      // as normal while the API called the same number a warning. An invented
+      // value is worse than an absent one (fix, 2026-08-04).
+      severity: "unknown",
       windowExpired: isWindowExpired(resetsAtIso, now),
     };
   }
@@ -479,11 +505,101 @@ export async function readLiveRateLimits(now: Date = new Date()): Promise<RateLi
     return oauthResult as RateLimitStatus;
   }
 
-  // Both present: prefer the newer one. OAuth response is richer, but a
-  // fresh statusLine capture is more current than a stale OAuth cache.
+  // Both present: COMBINE them, do not pick one (fix, 2026-08-04).
+  //
+  // Picking looked reasonable and was not. statusLine is written on every
+  // render, so it is almost always the newer capture and therefore almost
+  // always won -- and it carries only `five_hour` and `seven_day`. Everything
+  // the tool's own description promises from the OAuth capture --
+  // `scopedLimits` (including the `weekly_scoped` per-model budget), `spend`,
+  // `extraUsage`, `perModelWeekly`, and the only real `severity` / `isActive`
+  // there is -- lost the comparison every time and reached no caller. Measured
+  // 2026-08-04: the API reported a `weekly_scoped` bucket at 41% and a session
+  // severity of `warning`; the tool returned no scopedLimits at all and called
+  // an 88% session "normal".
+  //
+  // So: the newer capture supplies the numbers, the OAuth capture supplies the
+  // fields only it has, and `secondary` records how old that half is. Mixing
+  // two ages silently would just be a quieter version of the same lie.
   const statusAge = statusResult?.capturedAgeSeconds ?? Number.POSITIVE_INFINITY;
   const oauthAge = oauthResult?.capturedAgeSeconds ?? Number.POSITIVE_INFINITY;
-  return statusAge <= oauthAge
-    ? (statusResult as RateLimitStatus)
-    : (oauthResult as RateLimitStatus);
+  const statusStatus = statusResult as RateLimitStatus;
+  const oauthStatus = oauthResult as RateLimitStatus;
+
+  // OAuth newer AND already the richer source -- nothing to add.
+  if (oauthAge <= statusAge) return oauthStatus;
+
+  return composeFromStatusLineAndOAuth(statusStatus, oauthStatus);
+}
+
+/**
+ * Fresh numbers from the statusLine capture, richer fields from the older
+ * OAuth capture, and an explicit note of which half is stale.
+ */
+export function composeFromStatusLineAndOAuth(
+  fresh: RateLimitStatus,
+  older: RateLimitStatus,
+): RateLimitStatus {
+  const borrowed: string[] = [];
+  const out: RateLimitStatus = { ...fresh, source: "composed" };
+
+  // Severity and isActive exist only in the OAuth payload. Carry them onto the
+  // fresh buckets rather than leaving "unknown" beside data that IS known.
+  const mergeBucket = (
+    freshBucket: RateLimitBucket | undefined,
+    olderBucket: RateLimitBucket | undefined,
+    label: string,
+  ): RateLimitBucket | undefined => {
+    if (!freshBucket) return olderBucket;
+    if (!olderBucket) return freshBucket;
+    const merged: RateLimitBucket = { ...freshBucket };
+    if (freshBucket.severity === "unknown" && olderBucket.severity !== "unknown") {
+      merged.severity = olderBucket.severity;
+      borrowed.push(`${label}.severity`);
+    }
+    if (freshBucket.isActive === undefined && olderBucket.isActive !== undefined) {
+      merged.isActive = olderBucket.isActive;
+      borrowed.push(`${label}.isActive`);
+    }
+    return merged;
+  };
+
+  const session = mergeBucket(fresh.session, older.session, "session");
+  const week = mergeBucket(fresh.week, older.week, "week");
+  if (session) out.session = session;
+  if (week) out.week = week;
+
+  // Fields the statusLine capture has no equivalent for at all.
+  if (older.scopedLimits) {
+    out.scopedLimits = older.scopedLimits;
+    borrowed.push("scopedLimits");
+  }
+  if (older.spend) {
+    out.spend = older.spend;
+    borrowed.push("spend");
+  }
+  if (older.extraUsage) {
+    out.extraUsage = older.extraUsage;
+    borrowed.push("extraUsage");
+  }
+  if (older.perModelWeekly) {
+    out.perModelWeekly = older.perModelWeekly;
+    borrowed.push("perModelWeekly");
+  }
+  if (older.rawExperimental) {
+    out.rawExperimental = older.rawExperimental;
+    borrowed.push("rawExperimental");
+  }
+
+  // Nothing worth borrowing -- say statusline-stdin rather than claim a
+  // composition that did not happen.
+  if (borrowed.length === 0) return fresh;
+
+  out.secondary = {
+    source: older.source,
+    capturedAt: older.capturedAt ?? "",
+    capturedAgeSeconds: older.capturedAgeSeconds ?? 0,
+    fields: borrowed,
+  };
+  return out;
 }

@@ -398,4 +398,89 @@ describe("peer_chat_search", () => {
     const text = result.content[0]?.text ?? "";
     expect(text).not.toContain('zzz-absent-token-qqq"');
   });
+
+  /**
+   * Two claims in `peer_chat_search` did not hold (MCP test 2026-08-04, #7).
+   *
+   * The description said "Self session is excluded (already in context)". No code
+   * anywhere did that. The premise was wrong too: after an autocompact or a
+   * `/clear` a peer's own transcript holds a great deal its context does not,
+   * which is exactly why `peer_chat_read` allows reading it. So self stays in
+   * scope by default, is tagged in the output, and `includeSelf: false` exists
+   * for callers who mean it.
+   *
+   * And `Hits: X/Y` left the reader guessing what Y was. Not the scope, not the
+   * sessions with a match — however many the loop reached before `maxMatches`
+   * stopped it. Sessions never opened were reported as if they had been searched
+   * and found nothing.
+   */
+  describe("peer_chat_search says what it actually did", () => {
+    let ctx: ServerContext;
+    let selfId: string;
+
+    beforeEach(async () => {
+      ctx = await makeContext("plt-searcher");
+      selfId = ctx.self.id;
+      // The caller's own transcript, holding a term nothing else has.
+      await writeSession(projectADir, selfId, [
+        userEvent(selfId, "2026-08-04T10:00:00.000Z", "we agreed on the SENTINEL approach"),
+      ]);
+    });
+
+    async function search(over: Record<string, unknown> = {}): Promise<string> {
+      const args = PeerChatSearchArgs.parse({ query: "SENTINEL", ...over });
+      const res: ToolResult = await peerChatSearchTool(ctx, args);
+      return res.content[0]?.text ?? "";
+    }
+
+    test("THE REGRESSION: own session is searched, and marked as own", async () => {
+      const out = await search();
+      expect(out).toContain("SENTINEL");
+      // Tagged, so a reader can tell "I already knew this" from "a peer said it".
+      expect(out).toContain("*(self)*");
+      expect(out).toContain("own session is included");
+    });
+
+    test("includeSelf:false excludes it — the option means what it says", async () => {
+      const out = await search({ includeSelf: false });
+      expect(out).toContain("**Total matches:** 0");
+      expect(out).not.toContain("*(self)*");
+    });
+
+    test("another peer's session is unaffected by the self switch", async () => {
+      const other = uuid();
+      await writeSession(projectADir, other, [
+        assistantEvent(other, "2026-08-04T11:00:00.000Z", "the SENTINEL value is 42"),
+      ]);
+
+      const out = await search({ includeSelf: false });
+      expect(out).toContain("the SENTINEL value is 42");
+      expect(out).not.toContain("*(self)*");
+    });
+
+    test("THE REGRESSION: sessions never opened are declared, not counted as misses", async () => {
+      // Three more sessions that all match. With maxMatches=1 the sweep stops
+      // after the first, leaving the rest unopened.
+      for (let i = 0; i < 3; i++) {
+        const id = uuid();
+        await writeSession(projectADir, id, [
+          userEvent(id, `2026-08-04T12:0${i}:00.000Z`, "another SENTINEL mention"),
+        ]);
+      }
+
+      const out = await search({ maxMatches: 1 });
+
+      // Before the fix: "Hits: 1/1 sessions" — indistinguishable from a scope of
+      // one, and silent about the three it never looked at.
+      expect(out).toContain("⚠ Incomplete");
+      expect(out).toMatch(/sessions in scope, 1 examined/);
+      expect(out).toMatch(/3 sessions in scope were never opened/);
+    });
+
+    test("a complete sweep says so by NOT warning", async () => {
+      const out = await search({ maxMatches: 500 });
+      expect(out).not.toContain("⚠ Incomplete");
+      expect(out).toMatch(/matches in \d+ of the \d+ sessions examined/);
+    });
+  });
 });

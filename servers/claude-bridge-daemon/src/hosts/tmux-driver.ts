@@ -5,9 +5,11 @@ import { join } from "node:path";
 import { promisify } from "node:util";
 import { controlDir, makeLogger } from "@claude-bridge/shared";
 import {
+  type HostWindowRecord,
   type SessionHostDriver,
   type SessionHostRecord,
   type SessionHostSpawnOptions,
+  parseHostTarget,
   sanitizeSessionKey,
 } from "./driver.ts";
 
@@ -136,15 +138,98 @@ export class TmuxDriver implements SessionHostDriver {
   }
 
   async hasSession(sessionKey: string): Promise<boolean> {
-    const canonical = sanitizeSessionKey(sessionKey);
+    const t = parseHostTarget(sessionKey);
+    // `has-session -t hmh:3` answers for the SESSION hmh, so a window target
+    // has to be checked by listing the session's windows instead — otherwise a
+    // vanished window reports itself alive as long as its session survives.
+    if (t.kind === "window") {
+      const windows = await this.listWindows();
+      return windows.some((w) => w.target === t.windowId);
+    }
     try {
-      await execFileAsync(this.tmuxBin, ["has-session", "-t", canonical], {
+      await execFileAsync(this.tmuxBin, ["has-session", "-t", t.session], {
         ...EXEC_DEFAULTS,
         timeout: QUERY_TIMEOUT_MS,
       });
       return true;
     } catch {
       return false;
+    }
+  }
+
+  async listWindows(): Promise<HostWindowRecord[]> {
+    try {
+      const { stdout } = await execFileAsync(
+        this.tmuxBin,
+        [
+          "list-panes",
+          "-a",
+          "-F",
+          "#{window_id}\t#{session_name}\t#{window_index}\t#{window_name}\t#{pane_pid}",
+        ],
+        { ...EXEC_DEFAULTS, timeout: QUERY_TIMEOUT_MS },
+      );
+      const out: HostWindowRecord[] = [];
+      const seen = new Set<string>();
+      for (const line of stdout.split("\n")) {
+        const trimmed = line.trim();
+        if (!trimmed) continue;
+        const [windowId, session, idxStr, windowName, pidStr] = trimmed.split("\t");
+        if (!windowId || !session || idxStr === undefined) continue;
+        const window = Number.parseInt(idxStr, 10);
+        if (Number.isNaN(window)) continue;
+        // The ADDRESS is the window id; `session:index` is only a label.
+        const target = windowId;
+        // A window can hold several panes; the peer is one process, so report
+        // the window once, keyed on its first pane.
+        if (seen.has(target)) continue;
+        seen.add(target);
+        const pid = pidStr ? Number.parseInt(pidStr, 10) : Number.NaN;
+        out.push({
+          target,
+          label: `${session}:${window}`,
+          session,
+          window,
+          windowName: windowName ?? "",
+          pid: Number.isNaN(pid) ? null : pid,
+        });
+      }
+      return out;
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      if (msg.includes("no server running")) return [];
+      throw e;
+    }
+  }
+
+  /**
+   * Sessions that also hold this window, other than its own.
+   *
+   * tmux can link one window into several sessions. `kill-window` removes it
+   * from all of them at once, so a linked window must be UNLINKED from the
+   * caller's session instead — killing it would take a peer out of somebody
+   * else's session too. v0.10.1 measured that `kill-session` has no such
+   * hazard and dropped the guard; `kill-window` is now reachable, so it is back.
+   */
+  private async linkedElsewhere(target: string): Promise<string[]> {
+    try {
+      const { stdout } = await execFileAsync(
+        this.tmuxBin,
+        ["display-message", "-p", "-t", target, "#{window_linked_sessions_list}"],
+        { ...EXEC_DEFAULTS, timeout: QUERY_TIMEOUT_MS },
+      );
+      const { stdout: ownOut } = await execFileAsync(
+        this.tmuxBin,
+        ["display-message", "-p", "-t", target, "#{session_name}"],
+        { ...EXEC_DEFAULTS, timeout: QUERY_TIMEOUT_MS },
+      );
+      const own = ownOut.trim();
+      return stdout
+        .trim()
+        .split(/[\s,]+/)
+        .filter((n) => n.length > 0 && n !== own);
+    } catch {
+      return [];
     }
   }
 
@@ -218,19 +303,40 @@ export class TmuxDriver implements SessionHostDriver {
   }
 
   async kill(sessionKey: string, opts: { force?: boolean } = {}): Promise<void> {
-    const canonical = sanitizeSessionKey(sessionKey);
+    const t = parseHostTarget(sessionKey);
+    const canonical = t.kind === "window" ? t.windowId : t.session;
     // Idempotent — the caller may not know whether the session is still
     // there (v0.10.0-rc.2 fix for T2 „stopping without host" reconcile).
     if (!(await this.hasSession(canonical))) return;
+
+    // A window target must NEVER reach kill-session. `kill-session -t hmh:3`
+    // kills the session `hmh` — on this fleet that is seven peers instead of
+    // one, and nothing in the result would say so (fix, 2026-08-04).
+    const verb = t.kind === "window" ? "kill-window" : "kill-session";
+
+    if (t.kind === "window") {
+      const linked = await this.linkedElsewhere(t.windowId);
+      if (linked.length > 0) {
+        // Unlink rather than kill: the window belongs to other sessions too and
+        // kill-window would remove it from all of them.
+        log.warn("tmux_window_linked_unlinking", { target: t.windowId, linkedSessions: linked });
+        await execFileAsync(this.tmuxBin, ["unlink-window", "-t", t.windowId], {
+          ...EXEC_DEFAULTS,
+          timeout: MUTATE_TIMEOUT_MS,
+        });
+        return;
+      }
+    }
+
     try {
-      await execFileAsync(this.tmuxBin, ["kill-session", "-t", canonical], {
+      await execFileAsync(this.tmuxBin, [verb, "-t", canonical], {
         ...EXEC_DEFAULTS,
         timeout: MUTATE_TIMEOUT_MS,
       });
     } catch (e) {
       if (!(await this.hasSession(canonical))) return;
       const msg = e instanceof Error ? e.message : String(e);
-      if (msg.includes("can't find session")) return;
+      if (msg.includes("can't find session") || msg.includes("can't find window")) return;
       throw e;
     }
     const budget = opts.force === true ? this.verifyTimeoutMs / 2 : this.verifyTimeoutMs;

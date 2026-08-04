@@ -724,7 +724,15 @@ interface SessionMeta {
 interface ChatReadMeta {
   peer: { id: string; name: string | null; aiTitle?: string };
   session: { project: string; file: string; modifiedAt: string; sizeBytes: number };
-  scanned: { totalEvents: number; matchedMessages: number; queryMatches?: number };
+  scanned: {
+    /** Every line in the file, counted raw. */
+    totalEvents: number;
+    /** Of those, the ones the schema models and the sweep could read. */
+    eventsParsed: number;
+    unmodelledTypes?: Record<string, number>;
+    matchedMessages: number;
+    queryMatches?: number;
+  };
   truncated: { byLastN: boolean; byBytes: boolean; bySinceLastUserPrompt: boolean };
   query?: { text: string; regex: boolean; contextLines: number };
   returnedCount: number;
@@ -779,7 +787,7 @@ function formatMarkdown(meta: ChatReadMeta, messages: ChatMessage[]): string {
     `**Session:** \`${meta.session.file}\` (${Math.round(meta.session.sizeBytes / 1024)} KB, mod ${meta.session.modifiedAt})`,
   );
   lines.push(
-    `**Scanned:** ${meta.scanned.totalEvents} events → ${meta.scanned.matchedMessages} matched → returned ${meta.returnedCount} (truncated: ${formatTruncationNote(meta.truncated)})`,
+    `**Scanned:** ${meta.scanned.totalEvents} events in file (${meta.scanned.eventsParsed} readable) → ${meta.scanned.matchedMessages} matched → returned ${meta.returnedCount} (truncated: ${formatTruncationNote(meta.truncated)})`,
   );
   if (meta.query) {
     const flavour = meta.query.regex ? "regex" : "substring";
@@ -833,7 +841,7 @@ function formatCompact(meta: ChatReadMeta, messages: ChatMessage[]): string {
   const queryPart = meta.query
     ? ` | query: "${meta.query.text}" → ${meta.scanned.queryMatches ?? 0} matches`
     : "";
-  const header = `peer: ${peerLabel} [${shortId(meta.peer.id)}] | ${meta.scanned.totalEvents} events, ${meta.scanned.matchedMessages} matched, ${meta.returnedCount} returned (trunc: ${formatTruncationNote(meta.truncated)})${queryPart}`;
+  const header = `peer: ${peerLabel} [${shortId(meta.peer.id)}] | ${meta.scanned.totalEvents} events (${meta.scanned.eventsParsed} readable), ${meta.scanned.matchedMessages} matched, ${meta.returnedCount} returned (trunc: ${formatTruncationNote(meta.truncated)})${queryPart}`;
   const lines: string[] = [header, ""];
   for (const m of messages) {
     const t = timeOfDay(m.ts);
@@ -876,6 +884,17 @@ export async function peerChatReadTool(
   const sessionMeta: SessionMeta = {};
   let totalEventsScanned = 0;
   let lastUserPromptIndex = -1;
+
+  // The reported event count came from the loop below, which streams through
+  // `parseSessionFile` — the VALIDATING parser. It drops every line the schema
+  // rejects, and the schema models nine of the fourteen `type` discriminants a
+  // live transcript carries, so the number was ~13% short of the file and
+  // disagreed with anything counted off disk (MCP test 2026-08-04, #6; same
+  // root cause as the session_stats undercount).
+  //
+  // Counting is now separate from parsing: raw for the file total, parsed for
+  // the messages actually rendered. Two different questions, two numbers.
+  const rawCounts = await countEventsByType(sessionFile.filePath);
 
   try {
     for await (const event of parseSessionFile(sessionFile.filePath)) {
@@ -994,7 +1013,12 @@ export async function peerChatReadTool(
       sizeBytes: sessionFile.sizeBytes,
     },
     scanned: {
-      totalEvents: totalEventsScanned,
+      /** Every line in the file, counted raw — matches `wc -l`. */
+      totalEvents: rawCounts.total,
+      /** Of those, the ones this plugin's schema models and the sweep could read. */
+      eventsParsed: totalEventsScanned,
+      /** Types Claude Code writes that the schema does not model. Empty is normal. */
+      unmodelledTypes: rawCounts.unmodelledTypes,
       matchedMessages: messages.length,
       ...(queryMatchCount !== undefined ? { queryMatches: queryMatchCount } : {}),
     },
@@ -1032,6 +1056,7 @@ export const PeerChatSearchArgs = z
     contextLines: z.number().int().min(0).max(10).default(1),
     maxMatches: z.number().int().positive().max(500).default(30),
     maxBytes: z.number().int().positive().max(1_000_000).default(30_000),
+    includeSelf: z.boolean().default(true),
   })
   .strict();
 
@@ -1049,7 +1074,23 @@ interface SearchMatchEntry {
  * sessions, the on-disk JSONL holds detail no longer in the in-memory context
  * window, and searching it is a legitimate recovery path.
  */
-async function resolveSearchSessions(scope: "project" | "all-projects"): Promise<SessionRef[]> {
+/**
+ * Sessions in scope for a search.
+ *
+ * `selfId` is excluded only when the caller asks. Until 2026-08-04 the tool
+ * description claimed "Self session is excluded (already in context)" and no
+ * code anywhere did that — the claim was simply false. Rather than make the
+ * code match the claim, the claim was dropped: the premise is wrong. After an
+ * autocompact or a `/clear`, a peer's own transcript holds a great deal that is
+ * no longer in its context, which is exactly why `peer_chat_read` allows
+ * reading it. Searching it is the same case, so self is included by default and
+ * labelled in the output, and `includeSelf: false` is there for callers who
+ * genuinely want only other sessions.
+ */
+async function resolveSearchSessions(
+  scope: "project" | "all-projects",
+  selfId?: string,
+): Promise<SessionRef[]> {
   const cutoffMs = Date.now() - SEARCH_MAX_AGE_DAYS * 24 * 60 * 60 * 1000;
 
   let sessions: SessionRef[];
@@ -1063,7 +1104,8 @@ async function resolveSearchSessions(scope: "project" | "all-projects"): Promise
     sessions = matching ? await listSessionsInProject(matching) : [];
   }
 
-  return sessions.filter((s) => s.modifiedAt.getTime() >= cutoffMs);
+  const fresh = sessions.filter((s) => s.modifiedAt.getTime() >= cutoffMs);
+  return selfId ? fresh.filter((s) => s.sessionId !== selfId) : fresh;
 }
 
 const PREFILTER_CHUNK_BYTES = 256 * 1024;
@@ -1152,7 +1194,10 @@ export async function peerChatSearchTool(
     return err("invalid_query_regex", `Cannot compile regex: ${eventMatcher.error}`);
   }
 
-  const sessions = await resolveSearchSessions(args.scope);
+  const sessions = await resolveSearchSessions(
+    args.scope,
+    args.includeSelf ? undefined : ctx.self.id,
+  );
   if (sessions.length === 0) {
     return okText(
       `# Search: \`${args.query}\`\n\n**Scope:** ${args.scope}\n**Total matches:** 0 (no sessions in scope after maxAgeDays=${SEARCH_MAX_AGE_DAYS} filter)`,
@@ -1169,13 +1214,20 @@ export async function peerChatSearchTool(
 
   const startMs = Date.now();
   const matches: SearchMatchEntry[] = [];
-  let sessionsScanned = 0;
+  let sessionsExamined = 0;
   let sessionsHit = 0;
   let bytesScanned = 0;
+  // Sessions never looked at because maxMatches was reached first. Reported,
+  // because "0 matches in the rest" and "never opened the rest" are different
+  // answers and the old output could not tell them apart (fix, 2026-08-04).
+  let sessionsNotReached = 0;
 
   for (const session of sessions) {
-    if (matches.length >= args.maxMatches) break;
-    sessionsScanned++;
+    if (matches.length >= args.maxMatches) {
+      sessionsNotReached++;
+      continue;
+    }
+    sessionsExamined++;
     bytesScanned += session.sizeBytes;
 
     // Stage 1: streamed pre-filter — fast reject without JSON parsing, and
@@ -1253,9 +1305,12 @@ export async function peerChatSearchTool(
   return okText(
     renderSearchMarkdown(args, matches, {
       sessionsInScope: sessions.length,
-      sessionsScanned,
+      sessionsExamined,
+      sessionsNotReached,
       sessionsHit,
       bytesScanned,
+      selfIncluded: args.includeSelf,
+      selfId: ctx.self.id,
       elapsedMs,
       truncated,
       maxBytes: args.maxBytes,
@@ -1265,9 +1320,15 @@ export async function peerChatSearchTool(
 
 interface SearchRenderMeta {
   sessionsInScope: number;
-  sessionsScanned: number;
+  /** Sessions actually opened. Lower than `sessionsInScope` when maxMatches cut the sweep short. */
+  sessionsExamined: number;
+  /** Sessions in scope the sweep never opened, because maxMatches was already reached. */
+  sessionsNotReached: number;
+  /** Of those examined, how many contained the query at all. */
   sessionsHit: number;
   bytesScanned: number;
+  selfIncluded: boolean;
+  selfId: string;
   elapsedMs: number;
   truncated: boolean;
   maxBytes: number;
@@ -1281,11 +1342,24 @@ function renderSearchMarkdown(
   const lines: string[] = [];
   const flavour = args.queryRegex ? "regex" : "substring";
   lines.push(`# Search: \`${args.query}\` (${flavour}, scope=${args.scope})`);
+  // `Hits: X/Y` used to leave the reader guessing what Y was — it was neither
+  // the scope nor the sessions with a match, but however many the loop got
+  // through before maxMatches stopped it. Each number is now named (2026-08-04).
   lines.push(
-    `**Scope:** ${meta.sessionsInScope} sessions × ${Math.round(meta.bytesScanned / 1024 / 1024)} MB scanned in ${meta.elapsedMs} ms`,
+    `**Scope:** ${meta.sessionsInScope} sessions in scope, ${meta.sessionsExamined} examined (${Math.round(meta.bytesScanned / 1024 / 1024)} MB) in ${meta.elapsedMs} ms`,
   );
   lines.push(
-    `**Hits:** ${meta.sessionsHit}/${meta.sessionsScanned} sessions, ${matches.length} matches${meta.truncated ? " (truncated at maxMatches)" : ""}`,
+    `**Hits:** ${matches.length} matches in ${meta.sessionsHit} of the ${meta.sessionsExamined} sessions examined${meta.truncated ? " (truncated at maxMatches)" : ""}`,
+  );
+  if (meta.sessionsNotReached > 0) {
+    lines.push(
+      `**⚠ Incomplete:** stopped at maxMatches=${args.maxMatches} — ${meta.sessionsNotReached} sessions in scope were never opened. Raise maxMatches or narrow the query to see the rest.`,
+    );
+  }
+  lines.push(
+    meta.selfIncluded
+      ? "**Self:** this peer's own session is included and marked `(self)` below."
+      : "**Self:** this peer's own session is excluded (`includeSelf: false`).",
   );
   lines.push("");
 
@@ -1313,11 +1387,15 @@ function renderSearchMarkdown(
     if (!first) continue;
     const sess = first.session;
     const label = first.aiTitle ?? `session ${shortId(sess.sessionId)}`;
+    // Mark the caller's own transcript. It is in scope by default and that is
+    // deliberate, but a reader must be able to tell "I already knew this" from
+    // "another peer said this" at a glance.
+    const selfTag = sess.sessionId === meta.selfId ? " *(self)*" : "";
     const sessionLines: string[] = [];
     sessionLines.push("---");
     sessionLines.push("");
     sessionLines.push(
-      `## ${label} \`${shortId(sess.sessionId)}\` — ${sessionMatches.length} match${sessionMatches.length === 1 ? "" : "es"}`,
+      `## ${label} \`${shortId(sess.sessionId)}\`${selfTag} — ${sessionMatches.length} match${sessionMatches.length === 1 ? "" : "es"}`,
     );
     sessionLines.push(`**Project:** \`${sess.projectDir}\` | mod ${sess.modifiedAt.toISOString()}`);
     sessionLines.push("");
@@ -2068,7 +2146,7 @@ export const TOOLS: ToolSpec[] = [
   {
     name: "peer_chat_read",
     description:
-      "Read content of another peer's chat (their session JSONL). Returns last N user+assistant messages, or filtered by query. Default output is a markdown transcript (agent-friendly). Default: last 10 messages, text only (no tool_use, no thinking), 30KB cap. IDE-injected noise tags (<ide_*>, <system-reminder>) are always stripped. Tool_use inputs / tool_result content over 500 chars get truncated. Use `to` = peer id (UUID) or name (see peer_list). Set crossProject:true to read any session by UUID. sinceLastUserPrompt:true returns just the most recent user turn + its replies. query:'string' filters to messages containing the substring (case-insensitive); queryRegex:true treats query as a regex pattern; contextLines:N includes ±N neighbor messages around each match. format: 'markdown' (default), 'json' (structured), 'compact' (skim). For cross-project search use the upcoming peer_chat_search tool (v0.4+) — peer_chat_read is single-peer scope.",
+      "Read the content of a peer's chat (their session JSONL) — INCLUDING your own, which is deliberate: after an autocompact or a /clear your on-disk transcript holds detail your context window no longer does, and re-reading it is the point. Earlier versions of this text said \"another peer's chat\" while the code allowed self, so the description was the part that was wrong. Returns last N user+assistant messages, or filtered by query. Default output is a markdown transcript (agent-friendly). Default: last 10 messages, text only (no tool_use, no thinking), 30KB cap. IDE-injected noise tags (<ide_*>, <system-reminder>) are always stripped. Tool_use inputs / tool_result content over 500 chars get truncated. Use `to` = peer id (UUID) or name (see peer_list). Set crossProject:true to read any session by UUID. sinceLastUserPrompt:true returns just the most recent user turn + its replies. query:'string' filters to messages containing the substring (case-insensitive); queryRegex:true treats query as a regex pattern; contextLines:N includes ±N neighbor messages around each match. format: 'markdown' (default), 'json' (structured), 'compact' (skim). For cross-project search use peer_chat_search — peer_chat_read is single-peer scope. Counts are reported as two numbers, not one: `totalEvents` is every line in the file (matches `wc -l`) and `eventsParsed` is how many this plugin's schema could read. They differ because Claude Code writes more event types than the schema models; `unmodelledTypes` names the difference. Before v0.10.6 only the parsed number was reported, labelled as the total, and it ran ~13% short of the file.",
     inputSchema: {
       type: "object",
       properties: {
@@ -2151,7 +2229,7 @@ export const TOOLS: ToolSpec[] = [
   {
     name: "peer_chat_search",
     description:
-      "Cross-session text search across the current project (default) or all projects. Returns matches with surrounding context. Single peer scope? Use peer_chat_read with query — that's the right tool for one session. peer_chat_search is for 'where in any of my chats did we talk about X'. Search matches only message text (not thinking, not tool blocks). Sessions older than 30 days are skipped. Self session is excluded (already in context). Hard scope cap at 200 MB scanned — large scopes return scope_too_large with a hint to narrow query or wait for FTS5 backend (v0.5+).",
+      "Cross-session text search across the current project (default) or all projects. Returns matches with surrounding context. Single peer scope? Use peer_chat_read with query — that's the right tool for one session. peer_chat_search is for 'where in any of my chats did we talk about X'. Search matches only message text (not thinking, not tool blocks). Sessions older than 30 days are skipped. This peer's OWN session is included by default and tagged `(self)` in the output — earlier versions of this text claimed it was excluded, which was never true in the code, and the premise was wrong anyway: after an autocompact or /clear a peer's transcript holds plenty its context no longer does. Pass `includeSelf: false` to search only other sessions. Output names each count separately: sessions in scope, sessions examined, and sessions containing a match — and warns explicitly when maxMatches stopped the sweep before every session was opened. Hard scope cap at 200 MB scanned — large scopes return scope_too_large with a hint to narrow query or wait for FTS5 backend (v0.5+).",
     inputSchema: {
       type: "object",
       properties: {
@@ -2187,6 +2265,11 @@ export const TOOLS: ToolSpec[] = [
           description: "Hard cap on output bytes (default 30000). Sessions truncated last-first.",
           minimum: 1,
           maximum: 1_000_000,
+        },
+        includeSelf: {
+          type: "boolean",
+          description:
+            "Search this peer's own session too (default true). Own transcript often holds what an autocompact dropped from context; matches in it are tagged `(self)`. Set false to search only other sessions.",
         },
       },
       required: ["query"],
@@ -2272,7 +2355,7 @@ export const TOOLS: ToolSpec[] = [
   {
     name: "rate_limit_status",
     description:
-      "Read account-scoped rate limits (5-hour session + 7-day weekly + spend + extras) from LIVE data sources (v0.9.0+, BREAKING). USER-scoped — all peers on the same POSIX account share one set. Live source priority: (1) ~/.claude-bridge/live/statusline.json — written by plugin's chained statusLine wrapper per CC render (primary, per-turn); (2) ~/.claude-bridge/live/oauth-api.json — written by PostToolUse hook calling OAuth /api/oauth/usage endpoint, throttled ~1/min (secondary, richer fields incl. spend/extras/per-model/codenames); (3) neither → `hasLiveData: false` + `setupPointer`. When both are present the newer capture wins. Fossil ~/.claude/.usage_cache.json read from v0.8.x is REMOVED. Returns: hasLiveData, source ('statusline-stdin' | 'oauth-api' | 'no-live-data'), capturedAt, capturedAgeSeconds, staleness ('fresh'/'stale'/'expired-window'), session bucket, week bucket, plus (oauth-api only) scopedLimits, spend, extraUsage, perModelWeekly, rawExperimental. Each bucket has utilization (0-1), resetsAt, hoursUntilReset, severity, isActive, windowExpired. Includes `guard` config field if `peer_set_rate_limit_guard` was configured. See docs/SETUP-LIVE-DATA.md for install.",
+      "Read account-scoped rate limits (5-hour session + 7-day weekly + spend + extras) from LIVE data sources (v0.9.0+, BREAKING). USER-scoped — all peers on the same POSIX account share one set. Live source priority: (1) ~/.claude-bridge/live/statusline.json — written by plugin's chained statusLine wrapper per CC render (primary, per-turn); (2) ~/.claude-bridge/live/oauth-api.json — written by PostToolUse hook calling OAuth /api/oauth/usage endpoint, throttled ~1/min (secondary, richer fields incl. spend/extras/per-model/codenames); (3) neither → `hasLiveData: false` + `setupPointer`. When both are present the newer capture wins. Fossil ~/.claude/.usage_cache.json read from v0.8.x is REMOVED. When both captures exist the sources are COMBINED, not chosen between (v0.10.6 fix): utilization and reset times come from whichever is newer, while `scopedLimits` (including the `weekly_scoped` per-model budget), `spend`, `extraUsage`, `perModelWeekly`, `severity` and `isActive` come from the OAuth capture, which is the only one carrying them. `source` is then 'composed' and `secondary` states which fields were borrowed, from which capture, and how many seconds old it is — the two halves have different ages and the output says so. Before this, the newer capture simply won; statusLine is written every render, so it nearly always won and every richer field was silently dropped. Returns: hasLiveData, source ('statusline-stdin' | 'oauth-api' | 'composed' | 'no-live-data'), capturedAt, capturedAgeSeconds, staleness ('fresh'/'stale'/'expired-window'), session bucket, week bucket, scopedLimits, spend, extraUsage, perModelWeekly, rawExperimental, secondary. Each bucket has utilization (0-1), resetsAt, hoursUntilReset, severity, windowExpired, and isActive when known. `severity` is `'unknown'` and `isActive` is absent when the producing capture does not carry them — earlier versions reported 'normal' and true regardless, so a session at 88% was labelled normal while the API called it a warning. Includes `guard` config field if `peer_set_rate_limit_guard` was configured. See docs/SETUP-LIVE-DATA.md for install.",
     inputSchema: { type: "object", properties: {}, additionalProperties: false },
     handler: async () => rateLimitStatusTool(),
   },

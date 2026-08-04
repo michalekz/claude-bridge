@@ -354,8 +354,24 @@ describe("readLiveRateLimits — source priority", () => {
     expect(s.scopedLimits).toHaveLength(1);
   });
 
-  test("both present → newer capturedAt wins", async () => {
-    // statusLine captured 1 minute ago, OAuth captured 1 hour ago → statusLine wins.
+  /**
+   * This case used to assert `source === "statusline-stdin"` — that the newer
+   * capture WINS and the other is discarded. It encoded the defect (MCP test
+   * 2026-08-04, #8).
+   *
+   * statusLine is written on every render, so it is nearly always the newer
+   * capture and nearly always won. It carries only `five_hour` and `seven_day`.
+   * Everything the tool's description promises from the OAuth capture —
+   * `scopedLimits` (the `weekly_scoped` per-model budget among them), `spend`,
+   * `extraUsage`, and the only real `severity`/`isActive` there is — lost every
+   * comparison and reached no caller. Measured on live data: the API reported a
+   * `weekly_scoped` bucket at 41% and a session severity of `warning` while the
+   * tool returned no scopedLimits at all and called an 88% session "normal".
+   *
+   * The sources are now combined, and the age of the borrowed half is stated.
+   */
+  test("both present → numbers from the newer, richer fields from the OAuth capture", async () => {
+    // statusLine captured 1 minute ago, OAuth captured 1 hour ago.
     const now = new Date("2026-07-06T04:00:00Z");
     await writeStatusLineLive({
       capturedAt: new Date(now.getTime() - 60_000).toISOString(),
@@ -378,7 +394,29 @@ describe("readLiveRateLimits — source priority", () => {
       data: OAUTH_DATA,
     });
     const s = await readLiveRateLimits(now);
+
+    expect(s.source).toBe("composed");
+    // Numbers come from the fresh capture...
+    expect(s.session?.utilization).toBe(0.4);
+    expect(s.capturedAgeSeconds).toBe(60);
+    // ...and the fields only OAuth carries are no longer thrown away.
+    expect(s.scopedLimits).toHaveLength(1);
+    expect(s.session?.severity).not.toBe("unknown");
+    // The borrowed half is an hour old and says so, rather than passing for live.
+    expect(s.secondary?.source).toBe("oauth-api");
+    expect(s.secondary?.capturedAgeSeconds).toBe(3600);
+    expect(s.secondary?.fields).toContain("scopedLimits");
+  });
+
+  test("a statusLine bucket admits it does not know severity", async () => {
+    // Alone, the statusLine capture has no severity and no is_active. It used
+    // to report "normal" and `true` regardless — invented values that made a
+    // session at 88% look calm.
+    await writeStatusLineLive(makeStatusLineEnvelope("2026-07-05T15:30:00Z"));
+    const s = await readLiveRateLimits(FIXED_NOW);
     expect(s.source).toBe("statusline-stdin");
+    expect(s.session?.severity).toBe("unknown");
+    expect(s.session?.isActive).toBeUndefined();
   });
 
   test("statusLine without rate_limits + OAuth present → OAuth wins", async () => {

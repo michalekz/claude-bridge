@@ -712,4 +712,73 @@ describe("peer_chat_read", () => {
     // Parses as JSON
     expect(() => JSON.parse(text)).not.toThrow();
   });
+
+  /**
+   * The reported event count came from a sweep through `parseSessionFile` — the
+   * VALIDATING parser. It drops every line the schema rejects, and the schema
+   * models nine of the fourteen `type` discriminants a live transcript carries,
+   * so the number ran ~13% short of the file and disagreed with anything counted
+   * off disk (MCP test 2026-08-04, #6; same root cause as the session_stats
+   * undercount).
+   *
+   * Counting is now separate from parsing: `totalEvents` is every line,
+   * `eventsParsed` is what the sweep could read, and `unmodelledTypes` names the
+   * difference. Two questions, two numbers.
+   */
+  describe("event counts agree with the file on disk", () => {
+    test("THE REGRESSION: totalEvents counts lines the schema cannot read", async () => {
+      const me = await makeContext("me-counts");
+      const peer = await makeContext("peer-counts");
+      await registerPeer(me);
+      await registerPeer(peer);
+
+      await writeSession(peer.self.id, [
+        userEvent(peer.self.id, "2026-08-04T10:00:00Z", "hello"),
+        assistantEvent(peer.self.id, "2026-08-04T10:00:01Z", [{ type: "text", text: "hi" }]),
+        // Types Claude Code writes that our schema does not model. The old
+        // count simply omitted them.
+        { type: "pr-link", sessionId: peer.self.id } as unknown as JsonlEvent,
+        { type: "mode", sessionId: peer.self.id } as unknown as JsonlEvent,
+        { type: "permission-mode", sessionId: peer.self.id } as unknown as JsonlEvent,
+      ]);
+
+      const { ok, payload } = parseResult(await callRead(me, { to: "peer-counts" }));
+      expect(ok).toBe(true);
+      const scanned = payload["scanned"] as Record<string, number | Record<string, number>>;
+
+      // Five lines in the file. Before the fix this said two.
+      expect(scanned["totalEvents"]).toBe(5);
+      expect(scanned["eventsParsed"]).toBe(2);
+      expect(scanned["unmodelledTypes"]).toEqual({ "pr-link": 1, mode: 1, "permission-mode": 1 });
+    });
+
+    test("a file the schema fully models reports the same number twice", async () => {
+      const me = await makeContext("me-clean");
+      const peer = await makeContext("peer-clean");
+      await registerPeer(me);
+      await registerPeer(peer);
+
+      await writeSession(peer.self.id, [
+        userEvent(peer.self.id, "2026-08-04T10:00:00Z", "one"),
+        assistantEvent(peer.self.id, "2026-08-04T10:00:01Z", [{ type: "text", text: "two" }]),
+      ]);
+
+      const { payload } = parseResult(await callRead(me, { to: "peer-clean" }));
+      const scanned = payload["scanned"] as Record<string, number | Record<string, number>>;
+      expect(scanned["totalEvents"]).toBe(2);
+      expect(scanned["eventsParsed"]).toBe(2);
+      expect(scanned["unmodelledTypes"]).toEqual({});
+    });
+
+    test("reading own session is allowed — the description now says so too", async () => {
+      const me = await makeContext("me-self-read");
+      await registerPeer(me);
+      await writeSession(me.self.id, [userEvent(me.self.id, "2026-08-04T10:00:00Z", "own words")]);
+
+      // Legitimate after an autocompact: the transcript holds what context lost.
+      const { ok, payload } = parseResult(await callRead(me, { to: "me-self-read" }));
+      expect(ok).toBe(true);
+      expect(JSON.stringify(payload)).toContain("own words");
+    });
+  });
 });

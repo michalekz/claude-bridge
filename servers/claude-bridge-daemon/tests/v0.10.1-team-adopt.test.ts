@@ -51,13 +51,24 @@ function fakeInspector(peers: ProcRec[], parents: Record<number, number> = {}) {
   };
 }
 
-function peer(pid: number, ppid: number, sessionId: string | null): ProcRec {
+function peer(
+  pid: number,
+  ppid: number,
+  sessionId: string | null,
+  over: Partial<ProcRec> = {},
+): ProcRec {
+  // An absolute interpreter path, the way an nvm-installed `claude` appears in
+  // /proc — a bare name would hide the very case adoption has to carry through.
+  const argv = ["/home/u/.nvm/versions/node/v24/bin/claude", "--resume", sessionId ?? "none"];
   return {
     pid,
     ppid,
     sessionId,
     sessionIdSource: sessionId ? "sessions-json" : "none",
-    cmdline: `claude --resume /x/${sessionId ?? "none"}.jsonl`,
+    cmdline: argv.join(" "),
+    argv,
+    cwd: "/opt/project",
+    ...over,
   };
 }
 
@@ -260,6 +271,64 @@ describe("v0.10.1 team_adopt", () => {
     );
     expect(res.outcome).toBe("error");
     expect(res.error?.code).toBe("mapping_required");
+  });
+
+  /**
+   * An adopted record has to carry HOW to relaunch the peer, not just its name.
+   *
+   * Without `command`/`spawnArgs`/`cwd` the first daemon-issued `peer_restart`
+   * falls back to a bare `claude`, which under nvm resolves to nothing. Adopting
+   * twenty-three peers that way would look complete and leave the control layer
+   * unusable at the exact moment anyone first reached for it (raised by
+   * plt-designer, 2026-08-04).
+   */
+  it("THE REGRESSION: adoption records command, args and cwd from /proc", async () => {
+    const { handlers, state } = await importAll();
+    const doc = state.emptyState("0.10.1-rc.1");
+    const { driver, inspector } = await twoSessionFixture();
+
+    const res = await handlers.dispatch(
+      makeRequest("team_adopt", { team: "hmh", dryRun: false }, "adopt-launch"),
+      { state: doc, hostDriver: driver, daemonVersion: "0.10.1-rc.1", processInspector: inspector },
+    );
+    expect(res.outcome).toBe("ok");
+
+    const records = Object.values(doc.peers);
+    expect(records.length).toBeGreaterThan(0);
+    for (const rec of records) {
+      // The absolute path the process was actually started with — not "claude".
+      expect(rec.command).toBe("/home/u/.nvm/versions/node/v24/bin/claude");
+      expect(rec.cwd).toBe("/opt/project");
+      // `--resume` is re-appended by peer_spawn; storing it would double it.
+      expect(rec.spawnArgs).not.toContain("--resume");
+    }
+  });
+
+  it("a dry run shows the launch parameters before anything is written", async () => {
+    const { handlers, state } = await importAll();
+    const doc = state.emptyState("0.10.1-rc.1");
+    const { driver, inspector } = await twoSessionFixture();
+
+    const res = await handlers.dispatch(
+      makeRequest("team_adopt", { team: "hmh", dryRun: true }, "adopt-preview"),
+      { state: doc, hostDriver: driver, daemonVersion: "0.10.1-rc.1", processInspector: inspector },
+    );
+    expect(res.outcome).toBe("ok");
+    const plan = res.data as {
+      planned: Array<{ command: string | null; cwd: string | null }>;
+      hostWindowsSeen: number;
+    };
+    // Visible in the PLAN, so a pilot can prove restartability before granting
+    // dryRun:false — the gate that is still closed on this layout.
+    expect(plan.planned.length).toBeGreaterThan(0);
+    for (const p of plan.planned) {
+      expect(p.command).toBe("/home/u/.nvm/versions/node/v24/bin/claude");
+      expect(p.cwd).toBe("/opt/project");
+    }
+    // And the plan states how many host windows it looked at, so "4 planned"
+    // can never again be read without knowing the denominator.
+    expect(plan.hostWindowsSeen).toBeGreaterThan(0);
+    expect(Object.keys(doc.peers)).toHaveLength(0);
   });
 });
 
