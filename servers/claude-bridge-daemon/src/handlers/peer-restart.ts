@@ -164,8 +164,15 @@ export async function handlePeerRestart(
   // peer was relaunched as a session of its own anyway. The v0.10.7 fix was
   // correct and unreachable (plt-designer, re-pilot: @652 in `obetni` came back
   // as a standalone session `w1`). Ask the host while the answer still exists.
-  let inSession: string | null = null;
-  if (record.tmuxTarget && parseHostTarget(record.tmuxTarget).kind === "window") {
+  // The record knows its home. Asking the host is only a fallback for records
+  // written before homeSession existed — and it fails exactly when it matters
+  // most, because a peer whose window already died has no window to ask.
+  let inSession: string | null = record.homeSession ?? null;
+  if (
+    inSession === null &&
+    record.tmuxTarget &&
+    parseHostTarget(record.tmuxTarget).kind === "window"
+  ) {
     const windows = ctx.hostDriver.listWindows ? await ctx.hostDriver.listWindows() : [];
     inSession = windows.find((w) => w.target === record.tmuxTarget)?.session ?? null;
     if (inSession === null) {
@@ -191,6 +198,7 @@ export async function handlePeerRestart(
   const provenance = {
     ...(record.team !== undefined ? { team: record.team } : {}),
     ...(record.adopted !== undefined ? { adopted: record.adopted } : {}),
+    ...(inSession ? { homeSession: inSession } : {}),
   };
 
   const stopArgs = {

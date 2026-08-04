@@ -6,6 +6,33 @@ All notable changes to this project are documented here. Format follows [Keep a 
 
 _Nothing yet._
 
+## [0.10.10] — 2026-08-04
+
+### A peer whose window had already died still escaped its session
+
+Found while testing v0.10.9 against the live host, in the fix shipped an hour
+earlier.
+
+v0.10.9 made `peer_restart` look up a peer's home tmux session **before** the
+stop, which is right — but it looked it up from the live window. A peer whose
+window had already gone (crashed, killed, exited on its own) had no window to
+ask, so the lookup failed, the documented fallback fired, and the peer came
+back as a session of its own. Measured: after a manual kill, `pw1` returned as
+a standalone session `pw1` while the audit log dutifully recorded
+`peer_restart_window_home_unknown`.
+
+The warning was honest and the outcome was still wrong. On a fleet roll this is
+not an edge case — it is every peer that died before its turn.
+
+A peer's home no longer depends on its window surviving. `PeerRecord.homeSession`
+is written at spawn and at adoption, when the answer is certain, and
+`peer_restart` reads it from there. The live-window lookup remains only for
+records written before this release.
+
+Tests 539 (+1), verified by removing the record read: the case falls back to the
+old behaviour and fails.
+
+
 ## [0.10.9] — 2026-08-04
 
 Five findings from plt-designer's re-pilot of v0.10.7. Three of the five

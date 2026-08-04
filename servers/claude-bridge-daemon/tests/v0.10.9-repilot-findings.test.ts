@@ -105,6 +105,55 @@ describe("D — a restart asks for the peer's home BEFORE destroying it", () => 
     expect(seen[0]).toBe("obetni");
     driver.reset();
   });
+
+  it("THE HOLE IN THE FIX: a peer whose window already died still goes home", async () => {
+    const { handlers, state, mock } = await importAll();
+    homeHolder.current = `/tmp/cbd-orphan-${process.hrtime.bigint()}`;
+    const doc = state.emptyState("0.10.9-test");
+    doc.peers["p"] = {
+      sessionId: "p",
+      name: "w1",
+      hostDriver: "mock",
+      tmuxTarget: "@728",
+      pid: 500,
+      status: "live",
+      team: "obetni",
+      adopted: true,
+      command: "/bin/sh",
+      spawnArgs: ["-c", "sleep 30"],
+      cwd: "/tmp",
+      // Known since the peer was created, so it survives the window.
+      homeSession: "obetni",
+      model: null,
+      accountProfile: null,
+      startedAt: "2026-08-04T10:00:00.000Z",
+      lastUpdatedAt: "2026-08-04T10:00:00.000Z",
+    };
+    const driver = new mock.MockDriver();
+    // The window is ALREADY gone — the peer crashed before its turn in a roll.
+    // biome-ignore lint/suspicious/noExplicitAny: narrow shim for the optional method
+    (driver as any).listWindows = async () => [];
+    const seen: Array<string | undefined> = [];
+    const originalSpawn = driver.spawn.bind(driver);
+    driver.spawn = async (opts) => {
+      seen.push(opts.inSession);
+      return originalSpawn(opts);
+    };
+
+    await handlers.dispatch(makeRequest("peer_restart", { peer: "p" }, "req-orphan"), {
+      state: doc,
+      hostDriver: driver,
+      daemonVersion: "0.10.9-test",
+      restartSettleMs: 0,
+    });
+
+    // Deriving the home from the live window worked only while the window
+    // lived. Measured on a real host: after a manual kill, the peer came back
+    // as a standalone session called `pw1`. On a fleet roll that is every peer
+    // that died before its turn.
+    expect(seen[0]).toBe("obetni");
+    driver.reset();
+  });
 });
 
 describe("H — a restart keeps the peer's provenance", () => {

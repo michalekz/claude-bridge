@@ -75,6 +75,17 @@ export interface PeerRecord {
    */
   command?: string;
   spawnArgs?: string[];
+  /**
+   * The tmux session this peer belongs to, when it lives in a WINDOW of a
+   * shared one.
+   *
+   * Recorded at spawn/adopt time rather than derived from the live window at
+   * restart time. Deriving it worked only while the window still existed, so a
+   * peer whose window had already died escaped into a session of its own —
+   * which on a fleet roll is every peer that crashed before its turn. Measured
+   * 2026-08-04: after a manual kill, `pw1` came back as a standalone session.
+   */
+  homeSession?: string;
   model: string | null;
   accountProfile: string | null;
   startedAt: string;

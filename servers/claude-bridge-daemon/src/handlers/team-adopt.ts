@@ -65,6 +65,8 @@ interface AdoptionCandidate {
   cwd?: string;
   /** From `--model` in the running argv. Restored as PeerRecord.model. */
   model?: string | null;
+  /** The tmux session the peer's window belongs to. */
+  homeSession?: string;
 }
 
 interface AdoptionSkip {
@@ -160,7 +162,12 @@ interface AdoptionAmbiguity {
  */
 async function discoverCandidates(
   ctx: HandlerContext,
-  hostSessions: Array<{ sessionKey: string; label: string; pid: number | null }>,
+  hostSessions: Array<{
+    sessionKey: string;
+    label: string;
+    homeSession?: string;
+    pid: number | null;
+  }>,
 ): Promise<{
   candidates: AdoptionCandidate[];
   ambiguous: AdoptionAmbiguity[];
@@ -218,6 +225,7 @@ async function discoverCandidates(
     candidates.push({
       sessionKey: session.sessionKey,
       label: session.label,
+      ...(session.homeSession ? { homeSession: session.homeSession } : {}),
       sessionId: proc.sessionId,
       pid: proc.pid,
       sessionIdSource: proc.sessionIdSource,
@@ -268,11 +276,17 @@ export async function handleTeamAdopt(
   }
   // `sessionKey` is the ADDRESS (a `@id` for a window, a name for a session);
   // `label` is what a human reads in the plan and what the peer gets named.
-  const hostSessions: Array<{ sessionKey: string; label: string; pid: number | null }> =
+  const hostSessions: Array<{
+    sessionKey: string;
+    label: string;
+    homeSession?: string;
+    pid: number | null;
+  }> =
     windows.length > 0
       ? windows.map((w) => ({
           sessionKey: w.target,
           label: w.windowName || w.label,
+          homeSession: w.session,
           pid: w.pid,
         }))
       : (await ctx.hostDriver.listSessions())
@@ -437,6 +451,7 @@ export async function handleTeamAdopt(
         ...(c.command ? { command: c.command } : {}),
         ...(c.spawnArgs ? { spawnArgs: c.spawnArgs } : {}),
         ...(c.cwd ? { cwd: c.cwd } : {}),
+        ...(c.homeSession ? { homeSession: c.homeSession } : {}),
         model: c.model ?? null,
         accountProfile: null,
         startedAt: now,

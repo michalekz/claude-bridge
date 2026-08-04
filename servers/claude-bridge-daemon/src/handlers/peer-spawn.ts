@@ -142,6 +142,9 @@ export async function handlePeerSpawn(
       cwd: args.cwd,
       command: args.command,
       spawnArgs: args.args,
+      // Where this peer belongs, so a later restart does not have to ask a
+      // window that may no longer exist.
+      ...(args.inSession ? { homeSession: args.inSession } : {}),
       model: args.model ?? null,
       accountProfile: args.accountProfile ?? null,
       startedAt: new Date().toISOString(),

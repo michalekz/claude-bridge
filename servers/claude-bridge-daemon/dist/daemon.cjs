@@ -4287,7 +4287,7 @@ async function resolvePeer(idOrName, root = bridgeRoot(), now = Date.now()) {
 // package.json
 var package_default = {
   name: "claude-bridge-daemon",
-  version: "0.10.9",
+  version: "0.10.10",
   private: true,
   description: "Control-plane daemon for the claude-bridge plugin: peer lifecycle, telemetry, audit. Distributed as opt-in artefact \u2014 see ADR-008.",
   type: "module",
@@ -4985,6 +4985,9 @@ async function handlePeerSpawn(req, ctx) {
       cwd: args.cwd,
       command: args.command,
       spawnArgs: args.args,
+      // Where this peer belongs, so a later restart does not have to ask a
+      // window that may no longer exist.
+      ...args.inSession ? { homeSession: args.inSession } : {},
       model: args.model ?? null,
       accountProfile: args.accountProfile ?? null,
       startedAt: (/* @__PURE__ */ new Date()).toISOString(),
@@ -5286,8 +5289,8 @@ async function handlePeerRestart(req, ctx) {
       { peer: args.peer }
     );
   }
-  let inSession = null;
-  if (record.tmuxTarget && parseHostTarget(record.tmuxTarget).kind === "window") {
+  let inSession = record.homeSession ?? null;
+  if (inSession === null && record.tmuxTarget && parseHostTarget(record.tmuxTarget).kind === "window") {
     const windows = ctx.hostDriver.listWindows ? await ctx.hostDriver.listWindows() : [];
     inSession = windows.find((w) => w.target === record.tmuxTarget)?.session ?? null;
     if (inSession === null) {
@@ -5306,7 +5309,8 @@ async function handlePeerRestart(req, ctx) {
   }
   const provenance = {
     ...record.team !== void 0 ? { team: record.team } : {},
-    ...record.adopted !== void 0 ? { adopted: record.adopted } : {}
+    ...record.adopted !== void 0 ? { adopted: record.adopted } : {},
+    ...inSession ? { homeSession: inSession } : {}
   };
   const stopArgs = {
     schemaVersion: req.schemaVersion,
@@ -5643,6 +5647,7 @@ async function discoverCandidates(ctx, hostSessions) {
     candidates.push({
       sessionKey: session.sessionKey,
       label: session.label,
+      ...session.homeSession ? { homeSession: session.homeSession } : {},
       sessionId: proc.sessionId,
       pid: proc.pid,
       sessionIdSource: proc.sessionIdSource,
@@ -5676,6 +5681,7 @@ async function handleTeamAdopt(req, ctx) {
   const hostSessions = windows.length > 0 ? windows.map((w) => ({
     sessionKey: w.target,
     label: w.windowName || w.label,
+    homeSession: w.session,
     pid: w.pid
   })) : (await ctx.hostDriver.listSessions()).filter((s) => sessionFilter === void 0 || s.sessionKey === sessionFilter).map((s) => ({
     sessionKey: s.sessionKey,
@@ -5804,6 +5810,7 @@ async function handleTeamAdopt(req, ctx) {
         ...c.command ? { command: c.command } : {},
         ...c.spawnArgs ? { spawnArgs: c.spawnArgs } : {},
         ...c.cwd ? { cwd: c.cwd } : {},
+        ...c.homeSession ? { homeSession: c.homeSession } : {},
         model: c.model ?? null,
         accountProfile: null,
         startedAt: now,
