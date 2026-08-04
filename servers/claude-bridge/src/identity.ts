@@ -344,11 +344,21 @@ export async function resolvePeerIdentity(opts: IdentityOptions = {}): Promise<R
   // The pre-existing retry only covers an ABSENT file; a provisional one is
   // present and well-formed, so nothing retried.
   //
-  // Retrying until the two agree was the first fix I wrote, and it was
-  // wrong: the observed window ran to roughly 15 s, well past the ~3 s
-  // retry budget, so exhaustion would leave the server refusing to start —
-  // worse than a wrong id. `--resume` is fixed at launch and cannot drift,
-  // so prefer it outright and close the window instead of narrowing it.
+  // Measured live, twice, once the fix was already in:
+  //
+  //   00:33:04  new  pid 1420859  id=53a70457-…  name=claude-bridge-f9
+  //   00:33:06  CHANGED          id → fb749bc6-…  (name unchanged)
+  //
+  // So the window is ~2 s, and only the id is rewritten — the auto-generated
+  // name is final from the first write.
+  //
+  // Retrying until the two sources agree was the first version of this fix.
+  // It was rejected for the wrong reason ("the window runs to ~15 s, past
+  // the retry budget"); that 15 s was how long the phantom happened to
+  // survive before anyone looked, not how long it existed. Retrying would
+  // probably have worked. Preferring `--resume` is still better — fixed at
+  // launch, cannot drift, closes the window rather than narrowing it, and
+  // costs no startup delay — but the original justification did not hold.
   //
   // Verified against the live fleet: all 21 running peers agree, so in
   // steady state this changes nothing.

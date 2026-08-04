@@ -36,10 +36,32 @@ closes the window rather than narrowing it. Read from `/proc/<ppid>/cmdline`;
 where `/proc` is unavailable (macOS, Windows) the cross-check is skipped and
 behaviour is exactly as before, as it is for sessions that were never resumed.
 
-Retrying until the two sources agreed was the first version of this fix and
-it was wrong: the observed window ran to roughly 15 s, past the retry budget,
-so exhaustion would have left the server refusing to start — worse than a
-wrong id.
+Retrying until the two sources agreed was the first version of this fix. It
+was rejected on a number that turned out to be wrong: "the window runs to
+~15 s, past the ~3 s retry budget". Measured directly afterwards, the window
+is **~2 s** — two independent captures, 00:33:04→00:33:06 and
+00:33:24→00:33:26. The 15 s came from conflating *when the phantom was
+noticed* with *how long it lasted*, so the retry approach would probably
+have worked after all.
+
+Preferring `--resume` is still the better fix — it closes the window instead
+of narrowing it, and adds no startup delay — but the reasoning originally
+given for rejecting the alternative did not hold.
+
+Direct evidence of the mechanism, captured live rather than inferred:
+
+```
+00:33:04  new  pid 1420859  id=53a70457-…  name=claude-bridge-f9
+00:33:06  CHANGED          id → fb749bc6-…  (name unchanged)
+```
+
+Note the name does not change — Claude Code rewrites only the id, which
+refines the description above: the file is created with a provisional *id*
+alongside the final auto-generated name.
+
+After the fix, neither provisional id registered anything: no `status/`
+heartbeat, no inbox directory, and `peer_list` showed the correct id from
+the first call.
 
 Verified against the live fleet before landing: all 21 running peers already
 agree between the two sources, so in steady state the check does nothing.
