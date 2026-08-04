@@ -130,6 +130,25 @@ export async function verifyRestartedIdentity(
   return { mismatch: false, actual: null };
 }
 
+/**
+ * Mark a record as not-running without deleting it.
+ *
+ * Used by every failure path AFTER the spawn reported success. `peer_spawn`
+ * has by then written a fresh record saying `live` with the new pid — and if
+ * the peer did not survive, or came back as somebody else, that record is a
+ * lie with a plausible pid attached. Keeping the row is right; keeping its
+ * claim is not (plt-designer, 4th pilot round, finding M).
+ */
+async function markNotRunning(ctx: HandlerContext, sessionId: string): Promise<void> {
+  await applyStateChange(ctx.state, (draft) => {
+    const rec = draft.peers[sessionId];
+    if (!rec) return;
+    rec.status = "unknown";
+    rec.pid = null;
+    rec.lastUpdatedAt = new Date().toISOString();
+  });
+}
+
 export async function handlePeerRestart(
   req: RequestEnvelope,
   ctx: HandlerContext,
@@ -375,6 +394,10 @@ export async function handlePeerRestart(
     command,
   });
   if (!liveness.ok) {
+    // The spawn wrote a `live` record with the new pid before we learned the
+    // peer was gone. Leave it standing and the state file asserts a running
+    // peer behind a dead pid.
+    await markNotRunning(ctx, record.sessionId);
     await writeEvent({
       event: "peer_restart_died_after_spawn",
       level: "error",
@@ -392,6 +415,10 @@ export async function handlePeerRestart(
   }
 
   if (identity.mismatch) {
+    // Something IS running, but not the peer this record names. Reporting it as
+    // this peer, live, is the worst of the three outcomes: every lifecycle call
+    // would then act on a stranger.
+    await markNotRunning(ctx, record.sessionId);
     await writeEvent({
       event: "peer_restart_identity_mismatch",
       level: "error",

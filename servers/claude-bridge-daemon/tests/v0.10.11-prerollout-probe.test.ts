@@ -172,3 +172,63 @@ describe.skipIf(!haveTmux)("K — a home session that no longer exists is recrea
     await driver.kill(rec.sessionKey);
   });
 });
+
+/**
+ * M — the half of L that did not hold.
+ *
+ * The record survived a failed restart, as intended. It survived saying
+ * `status: "live"` with the pid of the process that had just died, because the
+ * restore only ran in the SPAWN-error branch — and this failure happens later,
+ * on the liveness check, by which point `peer_spawn` has already written a
+ * fresh `live` record (plt-designer, 4th pilot round).
+ *
+ * Keeping the row was right. Keeping its claim was not.
+ */
+describe("M — a record that outlives a failed restart does not claim to be live", () => {
+  beforeEach(() => {
+    homeHolder.current = `/tmp/cbd-m-${process.hrtime.bigint()}`;
+    vi.resetModules();
+  });
+
+  it("THE REGRESSION: a peer that died after spawning reads unknown, not live", async () => {
+    const { handlers, state, mock } = await importAll();
+    const doc = state.emptyState("0.10.12-test");
+    doc.peers["p"] = {
+      sessionId: "p",
+      name: "w2",
+      hostDriver: "mock",
+      tmuxTarget: "w2",
+      pid: 500,
+      status: "live",
+      team: "obetni",
+      adopted: true,
+      // Starts, then exits at once — the shape of a failed resume.
+      command: "/bin/sh",
+      spawnArgs: ["-c", "exit 0"],
+      cwd: "/tmp",
+      model: null,
+      accountProfile: null,
+      startedAt: "2026-08-04T10:00:00.000Z",
+      lastUpdatedAt: "2026-08-04T10:00:00.000Z",
+    };
+    const driver = new mock.MockDriver();
+
+    const res = await handlers.dispatch(makeRequest("peer_restart", { peer: "p" }, "req-m"), {
+      state: doc,
+      hostDriver: driver,
+      daemonVersion: "0.10.12-test",
+      restartSettleMs: 300,
+    });
+
+    expect(res.outcome).toBe("error");
+    expect(res.error?.code).toBe("restart_died_after_spawn");
+    const rec = doc.peers["p"];
+    // Kept — that half already worked.
+    expect(rec).toBeDefined();
+    expect(rec?.team).toBe("obetni");
+    // And no longer asserting a running peer behind a dead pid.
+    expect(rec?.status).toBe("unknown");
+    expect(rec?.pid).toBeNull();
+    driver.reset();
+  });
+});

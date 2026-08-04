@@ -4287,7 +4287,7 @@ async function resolvePeer(idOrName, root = bridgeRoot(), now = Date.now()) {
 // package.json
 var package_default = {
   name: "claude-bridge-daemon",
-  version: "0.10.11",
+  version: "0.10.12",
   private: true,
   description: "Control-plane daemon for the claude-bridge plugin: peer lifecycle, telemetry, audit. Distributed as opt-in artefact \u2014 see ADR-008.",
   type: "module",
@@ -5271,6 +5271,15 @@ async function verifyRestartedIdentity(expected, pid, opts = {}) {
   }
   return { mismatch: false, actual: null };
 }
+async function markNotRunning(ctx, sessionId) {
+  await applyStateChange(ctx.state, (draft) => {
+    const rec = draft.peers[sessionId];
+    if (!rec) return;
+    rec.status = "unknown";
+    rec.pid = null;
+    rec.lastUpdatedAt = (/* @__PURE__ */ new Date()).toISOString();
+  });
+}
 async function handlePeerRestart(req, ctx) {
   const parsed = PeerRestartArgsSchema.safeParse(req.args);
   if (!parsed.success) {
@@ -5430,6 +5439,7 @@ async function handlePeerRestart(req, ctx) {
     command
   });
   if (!liveness.ok) {
+    await markNotRunning(ctx, record.sessionId);
     await writeEvent({
       event: "peer_restart_died_after_spawn",
       level: "error",
@@ -5446,6 +5456,7 @@ async function handlePeerRestart(req, ctx) {
     );
   }
   if (identity.mismatch) {
+    await markNotRunning(ctx, record.sessionId);
     await writeEvent({
       event: "peer_restart_identity_mismatch",
       level: "error",

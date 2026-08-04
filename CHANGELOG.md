@@ -6,6 +6,32 @@ All notable changes to this project are documented here. Format follows [Keep a 
 
 _Nothing yet._
 
+## [0.10.12] — 2026-08-04
+
+### A record that outlived a failed restart still claimed to be live
+
+v0.10.11 kept the record when a restart failed, so an operator had something to
+retry. It kept it saying `status: "live"` with the pid of the process that had
+just died.
+
+The restore ran only in the spawn-error branch. This failure happens later — on
+the liveness check — and by then `peer_spawn` has already written a fresh
+`live` record with the new pid. Keeping the row was right; keeping its claim
+was not.
+
+Every failure path after a successful spawn now marks the record `unknown` with
+no pid: the liveness failure, and an identity mismatch too. The second matters
+more than it looks — something *is* running there, just not the peer the record
+names, so reporting it as that peer, live, would point every later lifecycle
+call at a stranger.
+
+`team_reconcile` caught it within seconds either way (`record is 'live' but pid
+2902353 is not running`), which is why the pilot could continue. A net that
+catches the fall is not a reason to leave the hole.
+
+Tests 545 (+1), verified by removing the mark.
+
+
 ## [0.10.11] — 2026-08-04
 
 Three findings from plt-designer's pre-rollout probe. All nine earlier findings
