@@ -141,6 +141,37 @@ describe("team_reconcile reports the gap between state and reality", () => {
     expect(rep.drift[0]?.actualPid).toBe(2002);
   });
 
+  it("THE FALSE ALARM: a pane holding a SHELL that owns the peer is not drift", async () => {
+    await alive(1001);
+    await alive(2002);
+    // The pane pid is a shell (2002); the peer (1001) is its child. That is how
+    // every launcher-script peer looks, and reconcile called all of them
+    // `pid_changed` — accusing the host of holding a stranger when the peer was
+    // exactly where it belonged (plt-designer, recovery round).
+    const { handlers, doc, ctx } = await fixture({ windows: [{ target: "@1", pid: 2002 }] });
+    doc.peers["a"] = record("a", "plt-a", 1001, "@1");
+    // biome-ignore lint/suspicious/noExplicitAny: narrow shim for the fake inspector
+    (ctx as any).processInspector.ancestorsOf = async (pid: number) =>
+      pid === 1001 ? [2002, 1] : [];
+
+    const res = await handlers.dispatch(makeRequest("team_reconcile", {}), ctx);
+    expect((res.data as { driftCount: number }).driftCount).toBe(0);
+  });
+
+  it("a pane holding an UNRELATED process still is", async () => {
+    await alive(1001);
+    await alive(3003);
+    const { handlers, doc, ctx } = await fixture({ windows: [{ target: "@1", pid: 3003 }] });
+    doc.peers["a"] = record("a", "plt-a", 1001, "@1");
+    // biome-ignore lint/suspicious/noExplicitAny: narrow shim for the fake inspector
+    (ctx as any).processInspector.ancestorsOf = async () => [1];
+
+    const res = await handlers.dispatch(makeRequest("team_reconcile", {}), ctx);
+    const drift = (res.data as { drift: Array<{ kind: string }> }).drift;
+    // Suppressing the false alarm must not suppress the real one.
+    expect(drift[0]?.kind).toBe("pid_changed");
+  });
+
   it("HOST_MISSING: the process lives on, its window does not", async () => {
     await alive(1001);
     const { handlers, doc, ctx } = await fixture({ windows: [{ target: "@9", pid: 9009 }] });

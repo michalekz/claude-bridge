@@ -6,6 +6,42 @@ All notable changes to this project are documented here. Format follows [Keep a 
 
 _Nothing yet._
 
+## [0.10.15] — 2026-08-04
+
+Two findings from the recovery of the v0.10.13 outage. Both were worked around
+by hand at the time; neither should need a hand next time.
+
+### Adoption took the label off the window instead of the peer's own name
+
+tmux names a window after its command, so after the outage every window read
+`claude`. Adoption reads the window name as the peer's name — so re-adopting
+would have called all twenty-one peers `claude`, taking their identities with
+it, and `team_restart`'s velitel-last ordering matches on the name. plt-designer
+renamed twenty-one windows by hand before adopting, which is the only reason
+the recovery ordered correctly.
+
+The bridge registry already knows what each peer calls itself. Adoption now
+takes the name from there, keyed on the session id it has already discovered,
+and falls back to the window label only for a peer that never registered. A
+peer's own claim about its identity beats a title somebody typed.
+
+### `team_reconcile` accused the host of holding a stranger
+
+A pane's pid is often a **shell**, with the peer as its child. Reconcile
+compared the pane pid against the record's pid directly and reported
+`pid_changed` — the drift kind it calls the dangerous one — for every peer
+behind a launcher script. Two false alarms on the live fleet, on the only two
+peers nobody had restarted.
+
+Adoption already descends the ancestry to find the peer inside a pane;
+reconcile now does the same before deciding the host holds someone else. When
+the ancestry cannot be read it says nothing rather than accusing: a false
+`pid_changed` sends an operator hunting a peer that is exactly where it belongs.
+
+Tests 554 (+4), each verified by restoring the old behaviour. The reconcile fix
+has a second test proving it did not also silence the real `pid_changed`.
+
+
 ## [0.10.14] — 2026-08-04
 
 ### Re-adopting a peer broken by v0.10.5 would have baked the breakage in

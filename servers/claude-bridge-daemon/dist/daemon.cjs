@@ -4287,7 +4287,7 @@ async function resolvePeer(idOrName, root = bridgeRoot(), now = Date.now()) {
 // package.json
 var package_default = {
   name: "claude-bridge-daemon",
-  version: "0.10.14",
+  version: "0.10.15",
   private: true,
   description: "Control-plane daemon for the claude-bridge plugin: peer lifecycle, telemetry, audit. Distributed as opt-in artefact \u2014 see ADR-008.",
   type: "module",
@@ -5682,6 +5682,11 @@ async function claudeInside(ctx, panePid) {
   }
   return void 0;
 }
+async function registeredPeerName(sessionId) {
+  if (!sessionId) return null;
+  const found = await resolvePeer(sessionId);
+  return found.outcome === "found" ? found.peer.displayName || found.peer.name : null;
+}
 function ensureCommandDirOnPath(env, command) {
   if (!command || !command.startsWith("/")) return env;
   const dir = command.slice(0, command.lastIndexOf("/"));
@@ -5746,11 +5751,12 @@ async function discoverCandidates(ctx, hostSessions) {
       });
       continue;
     }
+    const registered = await registeredPeerName(proc.sessionId);
     const launch = extractLaunchParams(proc.argv);
     if (proc.resolvedCommand) launch.command = proc.resolvedCommand;
     candidates.push({
       sessionKey: session.sessionKey,
-      label: session.label,
+      label: registered ?? session.label,
       ...session.homeSession ? { homeSession: session.homeSession } : {},
       sessionId: proc.sessionId,
       pid: proc.pid,
@@ -6353,6 +6359,14 @@ var TeamReconcileArgsSchema = external_exports.object({
 function pidAlive(pid, procRoot) {
   return (0, import_node_fs3.existsSync)((0, import_node_path12.join)(procRoot, String(pid)));
 }
+async function ownsProcess(inspector, panePid, childPid) {
+  if (panePid === childPid) return true;
+  try {
+    return (await inspector.ancestorsOf(childPid)).includes(panePid);
+  } catch {
+    return true;
+  }
+}
 async function handleTeamReconcile(req, ctx) {
   const parsed = TeamReconcileArgsSchema.safeParse(req.args);
   if (!parsed.success) {
@@ -6409,7 +6423,8 @@ async function handleTeamReconcile(req, ctx) {
       continue;
     }
     const targetPid = rec.tmuxTarget !== null ? hostTargets.get(rec.tmuxTarget) ?? null : null;
-    if (targetPid !== null && rec.pid !== null && targetPid !== rec.pid) {
+    const targetOwnsRecord = targetPid !== null && rec.pid !== null && await ownsProcess(inspector, targetPid, rec.pid);
+    if (targetPid !== null && rec.pid !== null && targetPid !== rec.pid && !targetOwnsRecord) {
       drift.push({
         ...base,
         kind: "pid_changed",

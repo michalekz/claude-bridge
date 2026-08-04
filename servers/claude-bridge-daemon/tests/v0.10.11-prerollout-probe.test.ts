@@ -371,3 +371,97 @@ describe("P — a poisoned PATH is repaired, not baked in", () => {
     expect(adopt.ensureCommandDirOnPath(env, "claude")["PATH"]).toBe("/usr/bin");
   });
 });
+
+/**
+ * N — adoption took the label off the window instead of the peer's own name.
+ *
+ * After the v0.10.13 outage every window read `claude`, because tmux names a
+ * window after its command. Re-adopting would have called all twenty-one peers
+ * `claude` — taking their identities and with them `team_restart`'s
+ * velitel-last ordering, which matches on the name. plt-designer renamed
+ * twenty-one windows by hand to get through the recovery.
+ */
+describe("N — a peer is adopted under its own name", () => {
+  let home: string;
+
+  beforeEach(async () => {
+    home = await mkdtemp(join(tmpdir(), "cb-names-"));
+    homeHolder.current = home;
+    await mkdir(join(home, ".claude-bridge", "status"), { recursive: true });
+    vi.resetModules();
+  });
+
+  afterEach(async () => {
+    await rm(home, { recursive: true, force: true });
+  });
+
+  const SID = "aaaaaaaa-1111-4111-8111-aaaaaaaaaaaa";
+
+  async function register(name: string) {
+    await writeFile(
+      join(home, ".claude-bridge", "status", `${SID}.json`),
+      JSON.stringify({
+        id: SID,
+        name,
+        displayName: name,
+        pid: 1,
+        lastSeen: new Date().toISOString(),
+      }),
+      "utf-8",
+    );
+  }
+
+  async function adoptOnce() {
+    const { handlers, state, mock } = await importAll();
+    const doc = state.emptyState("0.10.15-test");
+    const driver = new mock.MockDriver();
+    driver.listSessions = async () => [];
+    // biome-ignore lint/suspicious/noExplicitAny: narrow shim for the optional method
+    (driver as any).listWindows = async () => [
+      // The window says `claude`, which is what tmux calls it by default.
+      { target: "@1", label: "hmh:1", session: "hmh", window: 1, windowName: "claude", pid: 101 },
+    ];
+    const inspector = {
+      listClaudePeers: async () => [
+        {
+          pid: 101,
+          ppid: 1,
+          sessionId: SID,
+          sessionIdSource: "sessions-json" as const,
+          cmdline: "",
+          argv: ["/nvm/bin/claude"],
+          cwd: "/x",
+          resolvedCommand: "/nvm/bin/claude",
+          environ: { PATH: "/nvm/bin:/usr/bin" },
+        },
+      ],
+      ancestorsOf: async () => [],
+    };
+    const res = await handlers.dispatch(
+      makeRequest("team_adopt", { team: "hmh", dryRun: false }, "req-n"),
+      {
+        state: doc,
+        hostDriver: driver,
+        daemonVersion: "0.10.15-test",
+        processInspector: inspector,
+      },
+    );
+    return { res, doc };
+  }
+
+  it("THE REGRESSION: a window called `claude` does not rename the peer", async () => {
+    await register("hmh-velitel");
+    const { doc } = await adoptOnce();
+    const rec = Object.values(doc.peers)[0];
+    // Before this, twenty-one peers would all have been adopted as `claude`.
+    expect(rec?.name).toBe("hmh-velitel");
+    // And with it, the ordering that puts the coordinator last still works.
+    expect(rec?.name.includes("velitel")).toBe(true);
+  });
+
+  it("an unregistered peer still falls back to the window label", async () => {
+    // No status file — nothing better to go on, so the label is what there is.
+    const { doc } = await adoptOnce();
+    expect(Object.values(doc.peers)[0]?.name).toBe("claude");
+  });
+});

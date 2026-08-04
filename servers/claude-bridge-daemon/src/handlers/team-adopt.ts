@@ -1,3 +1,4 @@
+import { resolvePeer } from "@claude-bridge/shared";
 import { z } from "zod";
 import { sanitizeEnv } from "../env-whitelist.ts";
 import { writeEvent } from "../events.ts";
@@ -102,6 +103,16 @@ async function claudeInside(
     if (chain.includes(panePid)) return proc;
   }
   return undefined;
+}
+
+/**
+ * What a peer calls itself, from the bridge registry, or null if it has not
+ * registered. Keyed on sessionId — a name lookup would defeat the purpose.
+ */
+async function registeredPeerName(sessionId: string | null): Promise<string | null> {
+  if (!sessionId) return null;
+  const found = await resolvePeer(sessionId);
+  return found.outcome === "found" ? found.peer.displayName || found.peer.name : null;
 }
 
 /**
@@ -250,6 +261,19 @@ async function discoverCandidates(
     // which resolves to nothing under nvm. Adoption would look complete while
     // the control layer was unusable at the exact moment it was first needed
     // (raised by plt-designer, 2026-08-04).
+    // The peer's OWN name, not the label on its window.
+    //
+    // Adoption took the tmux window name, which is whatever a human last typed
+    // there — and after the v0.10.13 outage every window read `claude`, because
+    // tmux names a window after its command. Re-adopting would have called all
+    // twenty-one peers `claude`, taking their identities and with them
+    // `team_restart`'s velitel-last ordering, which matches on the name.
+    // plt-designer had to rename twenty-one windows by hand before adopting
+    // (4th recovery round, 2026-08-04).
+    //
+    // The bridge registry already knows what each peer calls itself. That is
+    // the peer's own claim about its identity; a window title is a label.
+    const registered = await registeredPeerName(proc.sessionId);
     const launch = extractLaunchParams(proc.argv);
     // Prefer the absolute path resolved through the peer's own PATH. A bare
     // `claude` — which is how this whole fleet runs — does not resolve inside
@@ -258,7 +282,7 @@ async function discoverCandidates(
     if (proc.resolvedCommand) launch.command = proc.resolvedCommand;
     candidates.push({
       sessionKey: session.sessionKey,
-      label: session.label,
+      label: registered ?? session.label,
       ...(session.homeSession ? { homeSession: session.homeSession } : {}),
       sessionId: proc.sessionId,
       pid: proc.pid,

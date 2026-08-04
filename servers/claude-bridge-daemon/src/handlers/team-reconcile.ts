@@ -75,6 +75,27 @@ function pidAlive(pid: number, procRoot: string): boolean {
   return existsSync(join(procRoot, String(pid)));
 }
 
+/**
+ * Is `childPid` the peer running inside the pane whose pid is `panePid`?
+ *
+ * True when they are the same process, or when the pane is an ancestor — a
+ * shell, a wrapper script, anything between tmux and the peer.
+ */
+async function ownsProcess(
+  inspector: { ancestorsOf: (pid: number, maxDepth?: number) => Promise<number[]> },
+  panePid: number,
+  childPid: number,
+): Promise<boolean> {
+  if (panePid === childPid) return true;
+  try {
+    return (await inspector.ancestorsOf(childPid)).includes(panePid);
+  } catch {
+    // Cannot tell. Say nothing rather than accuse — a false `pid_changed`
+    // sends an operator hunting a peer that is exactly where it should be.
+    return true;
+  }
+}
+
 export async function handleTeamReconcile(
   req: RequestEnvelope,
   ctx: HandlerContext,
@@ -147,7 +168,15 @@ export async function handleTeamReconcile(
     }
 
     const targetPid = rec.tmuxTarget !== null ? (hostTargets.get(rec.tmuxTarget) ?? null) : null;
-    if (targetPid !== null && rec.pid !== null && targetPid !== rec.pid) {
+    // A pane pid is often a SHELL, with the peer as its child. Comparing it
+    // directly against the record's pid called every shell-wrapped peer
+    // `pid_changed` — two false drifts on the live fleet, on the only peers
+    // nobody had restarted (plt-designer, recovery round). Adoption already
+    // descends the ancestry; reconcile has to as well, or it accuses the host
+    // of holding a stranger whenever a launcher script sits in between.
+    const targetOwnsRecord =
+      targetPid !== null && rec.pid !== null && (await ownsProcess(inspector, targetPid, rec.pid));
+    if (targetPid !== null && rec.pid !== null && targetPid !== rec.pid && !targetOwnsRecord) {
       // The record and the host disagree about WHO is there. Every lifecycle
       // call on this record would reach the wrong peer.
       drift.push({
