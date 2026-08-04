@@ -176,7 +176,7 @@ function isPowerOfTwo(n) {
 // package.json
 var package_default = {
   name: "claude-bridge-daemon",
-  version: "0.10.2-rc.1",
+  version: "0.10.2-rc.2",
   private: true,
   description: "Control-plane daemon for the claude-bridge plugin: peer lifecycle, telemetry, audit. Distributed as opt-in artefact \u2014 see ADR-008.",
   type: "module",

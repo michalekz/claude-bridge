@@ -1344,14 +1344,15 @@ function formatSender(m: MessageEnvelope): string {
   return shortId(m.from);
 }
 
-function formatInboxBlock(messages: MessageEnvelope[]): string {
+function formatInboxBlock(messages: MessageEnvelope[], echoed: Set<string> = new Set()): string {
   if (messages.length === 0) return "";
   const lines: string[] = [];
   lines.push(`─── 📬 INBOX (${messages.length} new) ───`);
   for (const m of messages) {
     const ts = m.sentAt.slice(11, 19); // HH:MM:SS
     lines.push("");
-    lines.push(`[${m.id}] from ${formatSender(m)} (${m.kind}) at ${ts}:`);
+    const echo = echoed.has(m.id) ? " [already pushed to channel]" : "";
+    lines.push(`[${m.id}] from ${formatSender(m)} (${m.kind}) at ${ts}${echo}:`);
     lines.push(`  ${m.content.split("\n").join("\n  ")}`);
     if (m.inReplyTo) lines.push(`  in_reply_to: ${m.inReplyTo}`);
     if (m.threadId) lines.push(`  thread: ${m.threadId}`);
@@ -1382,19 +1383,34 @@ export async function piggybackInbox(
   if (pending.length === 0) return result;
 
   const consumedForBlock: MessageEnvelope[] = [];
+  const echoed = new Set<string>();
   for (const p of pending) {
     const c = await ctx.inbox.consume(ctx.self.id, p.id);
     if (!c) continue;
-    // Skip in output block if already shown to agent via push channel.
-    // The message has been archived (consume above), so peer_reply still works.
-    if (ctx.pushedMsgIds.has(c.id)) {
-      ctx.pushedMsgIds.delete(c.id);
-      continue;
-    }
+    // v0.10.2 fix — a message that `pushedMsgIds` claims was delivered is
+    // STILL shown here, just marked.
+    //
+    // The old code skipped it entirely, on the reasoning that the agent had
+    // already seen it as a `<channel>` notification and a second copy is
+    // noise. That reasoning rests on `channel.push()` returning
+    // `delivered: true` — which only means the notification call did not
+    // throw. It says nothing about whether Claude Code rendered anything.
+    //
+    // On 2026-08-04 it didn't: mid-migration, a peer on the renamed plugin
+    // identity had its notifications dropped silently. Push "succeeded", the
+    // id went into pushedMsgIds, piggyback then archived the message to
+    // done/ and omitted it from the block. The message was gone — present on
+    // disk, invisible to the agent, and `peer_inbox_read` answered count: 0.
+    // Evidence: msg msdv3vmc, sent 23:30:24, ctime in done/ 23:34:04.
+    //
+    // The delivery test cannot belong to the component doing the delivering.
+    // Until a receiver-side acknowledgement exists, the safe default is to
+    // show it: a duplicate line is an annoyance, a lost message is data loss.
+    if (ctx.pushedMsgIds.delete(c.id)) echoed.add(c.id);
     consumedForBlock.push(c);
   }
 
-  const block = formatInboxBlock(consumedForBlock);
+  const block = formatInboxBlock(consumedForBlock, echoed);
   if (!block) return result;
   return {
     ...(result.isError !== undefined ? { isError: result.isError } : {}),

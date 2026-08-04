@@ -18243,7 +18243,7 @@ var StdioServerTransport = class {
 // package.json
 var package_default = {
   name: "claude-bridge",
-  version: "0.10.2-rc.1",
+  version: "0.10.2-rc.2",
   private: true,
   description: "MCP server for cross-Claude-Code-chat orchestration over local session JSONL files",
   type: "module",
@@ -22924,14 +22924,15 @@ function formatSender(m) {
   if (m.fromName) return `${m.fromName} (${shortId(m.from)})`;
   return shortId(m.from);
 }
-function formatInboxBlock(messages) {
+function formatInboxBlock(messages, echoed = /* @__PURE__ */ new Set()) {
   if (messages.length === 0) return "";
   const lines = [];
   lines.push(`\u2500\u2500\u2500 \u{1F4EC} INBOX (${messages.length} new) \u2500\u2500\u2500`);
   for (const m of messages) {
     const ts = m.sentAt.slice(11, 19);
     lines.push("");
-    lines.push(`[${m.id}] from ${formatSender(m)} (${m.kind}) at ${ts}:`);
+    const echo = echoed.has(m.id) ? " [already pushed to channel]" : "";
+    lines.push(`[${m.id}] from ${formatSender(m)} (${m.kind}) at ${ts}${echo}:`);
     lines.push(`  ${m.content.split("\n").join("\n  ")}`);
     if (m.inReplyTo) lines.push(`  in_reply_to: ${m.inReplyTo}`);
     if (m.threadId) lines.push(`  thread: ${m.threadId}`);
@@ -22947,16 +22948,14 @@ async function piggybackInbox(ctx, toolName, result) {
   const pending = await ctx.inbox.listPending(ctx.self.id);
   if (pending.length === 0) return result;
   const consumedForBlock = [];
+  const echoed = /* @__PURE__ */ new Set();
   for (const p of pending) {
     const c = await ctx.inbox.consume(ctx.self.id, p.id);
     if (!c) continue;
-    if (ctx.pushedMsgIds.has(c.id)) {
-      ctx.pushedMsgIds.delete(c.id);
-      continue;
-    }
+    if (ctx.pushedMsgIds.delete(c.id)) echoed.add(c.id);
     consumedForBlock.push(c);
   }
-  const block = formatInboxBlock(consumedForBlock);
+  const block = formatInboxBlock(consumedForBlock, echoed);
   if (!block) return result;
   return {
     ...result.isError !== void 0 ? { isError: result.isError } : {},

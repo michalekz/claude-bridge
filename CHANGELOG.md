@@ -2,7 +2,38 @@
 
 All notable changes to this project are documented here. Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-## [Unreleased] — v0.10.2 (development channel)
+## [0.10.2-rc.2] — 2026-08-04 (pre-release, development channel)
+
+### Messages could be archived without ever being shown
+
+Found in live operation during the plugin-identity migration, not by a test.
+
+A peer stopped receiving mail. The messages were on disk in `inbox/<peer>/done/`, the sender saw a successful send, and `peer_inbox_read` answered `count: 0`. Nothing anywhere reported an error.
+
+The chain:
+
+1. A message arrives; the inbox watcher calls `pumpInboxToChannel`, which calls `channel.push()`.
+2. `push()` returns `delivered: true`. That only means `server.notification()` did not throw — it says **nothing** about whether Claude Code rendered anything. The id goes into `pushedMsgIds`. The pump correctly leaves the message in `pending/`.
+3. Claude Code drops the notification silently. In this case because the renamed plugin identity was not in the org-managed channel allowlist, but any drop does it.
+4. The next tool call runs `piggybackInbox`, which consumes the message (`pending/` → `done/`) and then **skips it from the output block** because `pushedMsgIds` says it was already shown.
+
+The message is gone: archived, invisible, unrecoverable by the agent. Evidence: msg `msdv3vmc`, sent 23:30:24, moved to `done/` at 23:34:04 (`ctime` — `mtime` preserves the sender's timestamp and is useless here).
+
+**The delivery test cannot belong to the component doing the delivering.** Until a receiver-side acknowledgement exists, previously-pushed messages are still listed in the inbox block, marked `[already pushed to channel]`. A duplicate line is an annoyance; a lost message is data loss.
+
+This is **not** a v0.10.2 regression — the code is unchanged since before v0.10.0-rc.2, so every version the fleet has run carries it. The rename only created the conditions that expose it. Rolling back would not have helped.
+
+Tests: `push-silent-loss.test.ts`, 4 cases, verified by restoring the old logic — 2 of 4 fail against it.
+
+Two existing tests had to be **reversed**, which is worth naming plainly: `piggyback dedup: messages delivered via push are drained but NOT re-rendered in block` and `when ALL pending messages were pushed, no INBOX block appended`. Both asserted the buggy behaviour as correct, so the suite stayed green while messages were being lost in production. A test that encodes an unverified assumption protects the assumption, not the user.
+
+Totals: 413 (337 MCP, 69 daemon, 7 shared).
+
+### Operational note discovered alongside it
+
+`allowedChannelPlugins` in an org's **Managed Settings** (claude.ai → Admin settings → Claude Code) overrides the user's `~/.claude/settings.json`, and is read at Claude Code **startup**, not live. A plugin whose identity is missing there has its channel notifications dropped without an error. Renaming a plugin — including switching between the stable and development channel entries — therefore needs the new identity added to the managed allowlist and every peer restarted.
+
+## [0.10.2-rc.1] — 2026-08-03 (pre-release, development channel)
 
 ### Memory — the leak a user reported, and what measurement said about it
 

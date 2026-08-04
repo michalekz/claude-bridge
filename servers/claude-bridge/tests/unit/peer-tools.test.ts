@@ -443,7 +443,17 @@ describe("piggyback inbox consumption", () => {
     expect(await mantis.inbox.countPending(mantis.self.id)).toBe(1);
   });
 
-  test("piggyback dedup: messages delivered via push are drained but NOT re-rendered in block", async () => {
+  // REVERSED 2026-08-04. This test used to assert that a push-delivered
+  // message is drained WITHOUT appearing in the block. That assertion
+  // encoded the bug: `pushedMsgIds` records that `channel.push()` did not
+  // throw, which is not evidence the agent saw anything. When Claude Code
+  // dropped the notification (renamed plugin missing from the managed
+  // channel allowlist), the message was archived and never rendered —
+  // invisible to the agent, `peer_inbox_read` answering count: 0.
+  //
+  // The behaviour now asserted is the opposite: always render, mark the
+  // ones believed already pushed. See push-silent-loss.test.ts.
+  test("push-delivered messages are still rendered, marked as an echo", async () => {
     const coord = await makeContext(baseDir, "coordinator");
     const mantis = await makeContext(baseDir, "mantis");
     await registerInRegistry(coord, mantis);
@@ -466,19 +476,25 @@ describe("piggyback inbox consumption", () => {
     expect(await mantis.inbox.countPending(mantis.self.id)).toBe(0);
     expect((await mantis.inbox.listDone(mantis.self.id)).length).toBe(2);
 
-    // But block should only mention msg B (msg A already shown via push)
+    // Both appear. A carries the echo marker so the agent can tell a second
+    // copy from a second message; B does not.
     expect(out.content.length).toBe(2);
     const block = out.content[1]?.text ?? "";
     expect(block).toContain("msg B (not pushed)");
-    expect(block).not.toContain("msg A (via push)");
-    expect(block).toContain("1 new");
+    expect(block).toContain("msg A (via push)");
+    expect(block).toContain("[already pushed to channel]");
+    expect(block).toContain("2 new");
 
     // pushedMsgIds should be cleaned (consumed)
     expect(mantis.pushedMsgIds.has(msgA)).toBe(false);
     expect(mantis.pushedMsgIds.has(msgB)).toBe(false);
   });
 
-  test("piggyback: when ALL pending messages were pushed, no INBOX block appended", async () => {
+  // REVERSED 2026-08-04, same reason as the test above. "Everything was
+  // pushed, so render nothing" is the precise shape of the failure seen in
+  // production: a peer whose channel silently stopped rendering received an
+  // empty block on every turn while its mail piled up in done/.
+  test("piggyback: when ALL pending messages were pushed, they are STILL rendered", async () => {
     const coord = await makeContext(baseDir, "coordinator");
     const mantis = await makeContext(baseDir, "mantis");
     await registerInRegistry(coord, mantis);
@@ -490,9 +506,12 @@ describe("piggyback inbox consumption", () => {
     const result: ToolResult = { content: [{ type: "text", text: "{}" }] };
     const out = await piggybackInbox(mantis, "list_projects", result);
 
-    // No second content block (everything was pushed → dedup → empty block)
-    expect(out.content.length).toBe(1);
-    // But message IS archived
+    // A block IS appended — the only way the agent learns the message exists
+    // when the push rendered nothing.
+    expect(out.content.length).toBe(2);
+    expect(out.content[1]?.text ?? "").toContain("pushed");
+    expect(out.content[1]?.text ?? "").toContain("[already pushed to channel]");
+    // And it is archived exactly as before.
     expect(await mantis.inbox.countPending(mantis.self.id)).toBe(0);
     expect((await mantis.inbox.listDone(mantis.self.id)).length).toBe(1);
   });
