@@ -180,6 +180,7 @@ describe("E — adoption can be scoped to one host session", () => {
           argv: [CLAUDE],
           cwd: "/x",
           resolvedCommand: CLAUDE,
+          environ: { PATH: "/nvm/bin:/usr/bin", HOME: "/home/u" },
         },
         {
           pid: 102,
@@ -190,6 +191,7 @@ describe("E — adoption can be scoped to one host session", () => {
           argv: [CLAUDE],
           cwd: "/x",
           resolvedCommand: CLAUDE,
+          environ: { PATH: "/nvm/bin:/usr/bin", HOME: "/home/u" },
         },
         {
           pid: 103,
@@ -200,6 +202,7 @@ describe("E — adoption can be scoped to one host session", () => {
           argv: [CLAUDE],
           cwd: "/x",
           resolvedCommand: CLAUDE,
+          environ: { PATH: "/nvm/bin:/usr/bin", HOME: "/home/u" },
         },
       ],
       ancestorsOf: async () => [],

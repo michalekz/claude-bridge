@@ -6,6 +6,47 @@ All notable changes to this project are documented here. Format follows [Keep a 
 
 _Nothing yet._
 
+## [0.10.13] — 2026-08-04
+
+### The relaunch environment came from the daemon, and took the fleet down
+
+**This one caused an outage.** Twenty-one restarted peers lost their statusLine,
+their hooks and their own MCP server at once — the whole fleet went
+bridge-mute. Reported by plt-designer over tmux, because the bridge could no
+longer carry the message.
+
+v0.10.5 made a peer's environment explicit with `env -i`, which was right and
+still is. Its **values** came from `process.env` — the daemon's — because that
+was what was at hand. The daemon runs under systemd with a stock `PATH` and no
+nvm, so every relaunched peer got a `PATH` without `node`:
+
+```
+statusLine → node not found
+hooks      → fail
+MCP server → cannot spawn  ⇒ the peer is bridge-mute
+```
+
+v0.10.11 resolved the peer's *command* through its own `PATH`, which fixed
+`claude` and nothing else. The peer's environment as a whole was still the
+daemon's.
+
+**The whitelist decides which variables a relaunch gets. It was never supposed
+to decide their values.** Adoption now captures the peer's own environment from
+`/proc/<pid>/environ`, filters it through the same whitelist, and stores it as
+`PeerRecord.spawnEnv`; a relaunch builds from that. Same names, right values.
+
+The filter is unchanged and tested as such: a peer carrying
+`ANTHROPIC_API_KEY` hands over its `PATH` and not its key. Changing where the
+values come from must not reopen the billing incident v0.10.5 closed.
+
+### Windows are named after the peer
+
+tmux names a window after its command, so every peer's window read `claude` and
+nobody could tell them apart. Noticed by the owner while the fleet was down.
+
+Tests 547 (+2), verified by restoring the daemon's environment as the source.
+
+
 ## [0.10.12] — 2026-08-04
 
 ### A record that outlived a failed restart still claimed to be live

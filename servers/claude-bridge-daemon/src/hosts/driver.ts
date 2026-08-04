@@ -26,6 +26,12 @@ export interface SessionHostSpawnOptions {
    * and returns the new window's id as the record's target.
    */
   inSession?: string;
+  /**
+   * Name for the tmux window. Without it tmux names the window after the
+   * command, so every peer's window read `claude` and a human looking at the
+   * session could not tell them apart (Zdeněk, 2026-08-04).
+   */
+  windowName?: string;
   cwd: string;
   command: string;
   args: string[];

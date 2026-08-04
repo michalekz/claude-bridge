@@ -218,6 +218,7 @@ export async function handlePeerRestart(
     ...(record.team !== undefined ? { team: record.team } : {}),
     ...(record.adopted !== undefined ? { adopted: record.adopted } : {}),
     ...(inSession ? { homeSession: inSession } : {}),
+    ...(record.spawnEnv ? { spawnEnv: record.spawnEnv } : {}),
   };
 
   const stopArgs = {
@@ -300,6 +301,9 @@ export async function handlePeerRestart(
       command: process.env["CLAUDE_BRIDGE_TEST_COMMAND"] ?? command,
       args: commandArgs,
       ...(inSession ? { inSession } : {}),
+      // The peer's own environment. Without it the relaunch inherits the
+      // daemon's PATH and comes up unable to find node.
+      ...(record.spawnEnv ? { envBase: record.spawnEnv } : {}),
       // Only resume something that CAN be resumed.
       //
       // This was an unconditional `true`. For a peer spawned under a stable

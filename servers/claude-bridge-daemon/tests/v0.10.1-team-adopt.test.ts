@@ -69,6 +69,7 @@ function peer(
     argv,
     cwd: "/opt/project",
     resolvedCommand: argv[0] ?? null,
+    environ: { PATH: "/home/u/.nvm/versions/node/v24/bin:/usr/bin", HOME: "/home/u" },
     ...over,
   };
 }

@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { sanitizeEnv } from "../env-whitelist.ts";
 import { writeEvent } from "../events.ts";
 import { formatHostTarget, parseHostTarget, sanitizeSessionKey } from "../hosts/driver.ts";
 import { type ProcessRecord, defaultProcessInspector } from "../hosts/process-inspector.ts";
@@ -67,6 +68,8 @@ interface AdoptionCandidate {
   model?: string | null;
   /** The tmux session the peer's window belongs to. */
   homeSession?: string;
+  /** The peer's own whitelisted environment — the source of PATH and friends. */
+  spawnEnv?: Record<string, string>;
 }
 
 interface AdoptionSkip {
@@ -237,6 +240,9 @@ async function discoverCandidates(
       ...(launch.command ? { command: launch.command } : {}),
       spawnArgs: launch.spawnArgs,
       model: launch.model,
+      // The peer's own environment, filtered by the same whitelist. Its PATH is
+      // the one that can actually find its `node` and its `claude`.
+      spawnEnv: sanitizeEnv(proc.environ),
       ...(proc.cwd ? { cwd: proc.cwd } : {}),
     });
   }
@@ -366,6 +372,7 @@ export async function handleTeamAdopt(
         ...(launch.command ? { command: launch.command } : {}),
         spawnArgs: launch.spawnArgs,
         model: launch.model,
+        ...(owning ? { spawnEnv: sanitizeEnv(owning.environ) } : {}),
         ...(owning?.cwd ? { cwd: owning.cwd } : {}),
       });
     }
@@ -458,6 +465,7 @@ export async function handleTeamAdopt(
         ...(c.spawnArgs ? { spawnArgs: c.spawnArgs } : {}),
         ...(c.cwd ? { cwd: c.cwd } : {}),
         ...(c.homeSession ? { homeSession: c.homeSession } : {}),
+        ...(c.spawnEnv ? { spawnEnv: c.spawnEnv } : {}),
         model: c.model ?? null,
         accountProfile: null,
         startedAt: now,

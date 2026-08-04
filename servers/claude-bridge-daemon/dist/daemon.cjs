@@ -4287,7 +4287,7 @@ async function resolvePeer(idOrName, root = bridgeRoot(), now = Date.now()) {
 // package.json
 var package_default = {
   name: "claude-bridge-daemon",
-  version: "0.10.12",
+  version: "0.10.13",
   private: true,
   description: "Control-plane daemon for the claude-bridge plugin: peer lifecycle, telemetry, audit. Distributed as opt-in artefact \u2014 see ADR-008.",
   type: "module",
@@ -4920,6 +4920,12 @@ var PeerSpawnArgsSchema = external_exports.object({
    * home is a window of a shared session.
    */
   inSession: external_exports.string().min(1).optional(),
+  /**
+   * Values to build the peer's environment from, instead of the daemon's own.
+   * Still filtered by the same whitelist — this changes where the values come
+   * from, not which names get through.
+   */
+  envBase: external_exports.record(external_exports.string()).optional(),
   model: external_exports.string().nullable().optional(),
   accountProfile: external_exports.string().nullable().optional().describe("Name of the account profile under ~/.claude-bridge/control/accounts/"),
   extraAllowEnv: external_exports.array(external_exports.string()).default([]).describe("Additional env var names to pass through beyond the base whitelist"),
@@ -4958,7 +4964,7 @@ async function handlePeerSpawn(req, ctx) {
   if (args.accountProfile) {
     overrides["CLAUDE_CONFIG_DIR"] = `${process.env["HOME"] ?? ""}/.claude-bridge/control/accounts/${args.accountProfile}`;
   }
-  const env = sanitizeEnv(process.env, {
+  const env = sanitizeEnv(args.envBase ?? process.env, {
     extraAllow: args.extraAllowEnv,
     overrides
   });
@@ -4988,6 +4994,7 @@ async function handlePeerSpawn(req, ctx) {
       // Where this peer belongs, so a later restart does not have to ask a
       // window that may no longer exist.
       ...args.inSession ? { homeSession: args.inSession } : {},
+      ...args.envBase ? { spawnEnv: sanitizeEnv(args.envBase) } : {},
       model: args.model ?? null,
       accountProfile: args.accountProfile ?? null,
       startedAt: (/* @__PURE__ */ new Date()).toISOString(),
@@ -4998,6 +5005,9 @@ async function handlePeerSpawn(req, ctx) {
     const record = await ctx.hostDriver.spawn({
       sessionKey,
       ...args.inSession ? { inSession: args.inSession } : {},
+      // Name the window after the peer. tmux otherwise names it after the
+      // command, so every window read `claude`.
+      windowName: args.displayName,
       cwd: args.cwd,
       command: args.command,
       args: spawnArgs,
@@ -5319,7 +5329,8 @@ async function handlePeerRestart(req, ctx) {
   const provenance = {
     ...record.team !== void 0 ? { team: record.team } : {},
     ...record.adopted !== void 0 ? { adopted: record.adopted } : {},
-    ...inSession ? { homeSession: inSession } : {}
+    ...inSession ? { homeSession: inSession } : {},
+    ...record.spawnEnv ? { spawnEnv: record.spawnEnv } : {}
   };
   const stopArgs = {
     schemaVersion: req.schemaVersion,
@@ -5378,6 +5389,9 @@ async function handlePeerRestart(req, ctx) {
       command: process.env["CLAUDE_BRIDGE_TEST_COMMAND"] ?? command,
       args: commandArgs,
       ...inSession ? { inSession } : {},
+      // The peer's own environment. Without it the relaunch inherits the
+      // daemon's PATH and comes up unable to find node.
+      ...record.spawnEnv ? { envBase: record.spawnEnv } : {},
       // Only resume something that CAN be resumed.
       //
       // This was an unconditional `true`. For a peer spawned under a stable
@@ -5539,6 +5553,7 @@ var LinuxProcessInspector = class {
       const cmdline = argv.join(" ").trim();
       const cwd = await this.readProcCwd(pid);
       const resolvedCommand = await this.resolveViaProcessPath(pid, argv[0] ?? "");
+      const environ = await this.readProcEnviron(pid);
       const { sessionId, source } = await this.resolveSessionId(pid, cmdline);
       out.push({
         pid,
@@ -5548,8 +5563,21 @@ var LinuxProcessInspector = class {
         cmdline,
         argv,
         cwd,
-        resolvedCommand
+        resolvedCommand,
+        environ
       });
+    }
+    return out;
+  }
+  /** Every `KEY=value` pair in `/proc/<pid>/environ`, unfiltered. */
+  async readProcEnviron(pid) {
+    const raw = await this.readProcFile(pid, "environ");
+    if (!raw) return {};
+    const out = {};
+    for (const entry of raw.split("\0")) {
+      const eq = entry.indexOf("=");
+      if (eq <= 0) continue;
+      out[entry.slice(0, eq)] = entry.slice(eq + 1);
     }
     return out;
   }
@@ -5722,6 +5750,9 @@ async function discoverCandidates(ctx, hostSessions) {
       ...launch.command ? { command: launch.command } : {},
       spawnArgs: launch.spawnArgs,
       model: launch.model,
+      // The peer's own environment, filtered by the same whitelist. Its PATH is
+      // the one that can actually find its `node` and its `claude`.
+      spawnEnv: sanitizeEnv(proc.environ),
       ...proc.cwd ? { cwd: proc.cwd } : {}
     });
   }
@@ -5797,6 +5828,7 @@ async function handleTeamAdopt(req, ctx) {
         ...launch.command ? { command: launch.command } : {},
         spawnArgs: launch.spawnArgs,
         model: launch.model,
+        ...owning ? { spawnEnv: sanitizeEnv(owning.environ) } : {},
         ...owning?.cwd ? { cwd: owning.cwd } : {}
       });
     }
@@ -5880,6 +5912,7 @@ async function handleTeamAdopt(req, ctx) {
         ...c.spawnArgs ? { spawnArgs: c.spawnArgs } : {},
         ...c.cwd ? { cwd: c.cwd } : {},
         ...c.homeSession ? { homeSession: c.homeSession } : {},
+        ...c.spawnEnv ? { spawnEnv: c.spawnEnv } : {},
         model: c.model ?? null,
         accountProfile: null,
         startedAt: now,
@@ -7332,6 +7365,7 @@ var TmuxDriver = class {
     const args = asWindow ? [
       "new-window",
       "-d",
+      ...opts.windowName ? ["-n", sanitizeSessionKey(opts.windowName)] : [],
       "-P",
       // Print the new window's id so the caller can address it. A window
       // index would be wrong: `renumber-windows` shifts those on every kill.
@@ -7348,6 +7382,7 @@ var TmuxDriver = class {
     ] : [
       "new-session",
       "-d",
+      ...opts.windowName ? ["-n", sanitizeSessionKey(opts.windowName)] : [],
       "-s",
       canonicalKey,
       "-c",
@@ -7364,6 +7399,7 @@ var TmuxDriver = class {
       effectiveArgs = [
         "new-session",
         "-d",
+        ...opts.windowName ? ["-n", sanitizeSessionKey(opts.windowName)] : [],
         // Print the window id here too: the record's address must stay a window
         // id whether the session was already there or had to be remade.
         "-P",

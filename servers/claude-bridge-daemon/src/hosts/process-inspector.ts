@@ -54,6 +54,18 @@ export interface ProcessRecord {
    * then keeps argv[0] as given rather than inventing a path.
    */
   resolvedCommand: string | null;
+  /**
+   * The peer's own environment, as key/value pairs read from
+   * `/proc/<pid>/environ`. Unfiltered — the caller applies the whitelist.
+   *
+   * The whitelist decides WHICH variables a relaunch gets; it was never
+   * supposed to decide their VALUES. Those came from `process.env` of the
+   * daemon simply because that was what was at hand, and under systemd the
+   * daemon's `PATH` has no nvm — so a relaunched peer lost `node`, its
+   * statusLine, its hooks and its MCP server, all at once. Twenty-one peers on
+   * 2026-08-04. The peer's own environment is the right source.
+   */
+  environ: Record<string, string>;
 }
 
 export interface ProcessInspector {
@@ -147,6 +159,7 @@ export class LinuxProcessInspector implements ProcessInspector {
       const cmdline = argv.join(" ").trim();
       const cwd = await this.readProcCwd(pid);
       const resolvedCommand = await this.resolveViaProcessPath(pid, argv[0] ?? "");
+      const environ = await this.readProcEnviron(pid);
 
       const { sessionId, source } = await this.resolveSessionId(pid, cmdline);
       out.push({
@@ -158,7 +171,21 @@ export class LinuxProcessInspector implements ProcessInspector {
         argv,
         cwd,
         resolvedCommand,
+        environ,
       });
+    }
+    return out;
+  }
+
+  /** Every `KEY=value` pair in `/proc/<pid>/environ`, unfiltered. */
+  async readProcEnviron(pid: number): Promise<Record<string, string>> {
+    const raw = await this.readProcFile(pid, "environ");
+    if (!raw) return {};
+    const out: Record<string, string> = {};
+    for (const entry of raw.split("\0")) {
+      const eq = entry.indexOf("=");
+      if (eq <= 0) continue;
+      out[entry.slice(0, eq)] = entry.slice(eq + 1);
     }
     return out;
   }

@@ -258,6 +258,7 @@ export class TmuxDriver implements SessionHostDriver {
       ? [
           "new-window",
           "-d",
+          ...(opts.windowName ? ["-n", sanitizeSessionKey(opts.windowName)] : []),
           "-P",
           // Print the new window's id so the caller can address it. A window
           // index would be wrong: `renumber-windows` shifts those on every kill.
@@ -275,6 +276,7 @@ export class TmuxDriver implements SessionHostDriver {
       : [
           "new-session",
           "-d",
+          ...(opts.windowName ? ["-n", sanitizeSessionKey(opts.windowName)] : []),
           "-s",
           canonicalKey,
           "-c",
@@ -303,6 +305,7 @@ export class TmuxDriver implements SessionHostDriver {
       effectiveArgs = [
         "new-session",
         "-d",
+        ...(opts.windowName ? ["-n", sanitizeSessionKey(opts.windowName)] : []),
         // Print the window id here too: the record's address must stay a window
         // id whether the session was already there or had to be remade.
         "-P",

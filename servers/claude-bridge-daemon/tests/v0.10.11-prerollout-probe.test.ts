@@ -232,3 +232,112 @@ describe("M — a record that outlives a failed restart does not claim to be liv
     driver.reset();
   });
 });
+
+/**
+ * P — the fleet outage.
+ *
+ * `env -i` (v0.10.5) made a peer's environment explicit, which was right. Its
+ * VALUES came from `process.env` — the DAEMON's, and under systemd that `PATH`
+ * has no nvm. So every relaunched peer lost `node`: no statusLine, hooks
+ * failing, and its own MCP server unable to spawn. Twenty-one peers went
+ * bridge-mute at once on 2026-08-04.
+ *
+ * The whitelist decides WHICH variables get through. It was never supposed to
+ * decide their values.
+ */
+describe("P — a relaunch uses the peer's own environment, not the daemon's", () => {
+  beforeEach(() => {
+    homeHolder.current = `/tmp/cbd-p-${process.hrtime.bigint()}`;
+    vi.resetModules();
+  });
+
+  const NVM = "/home/u/.nvm/versions/node/v24/bin";
+
+  it("THE OUTAGE: the peer's PATH is what reaches the relaunch", async () => {
+    const { handlers, state, mock } = await importAll();
+    const doc = state.emptyState("0.10.13-test");
+    doc.peers["p"] = {
+      sessionId: "p",
+      name: "p",
+      hostDriver: "mock",
+      tmuxTarget: "p",
+      pid: 500,
+      status: "live",
+      command: "/bin/sh",
+      spawnArgs: ["-c", "sleep 30"],
+      cwd: "/tmp",
+      // Captured from the peer at adoption. Contains nvm; the daemon's does not.
+      spawnEnv: { PATH: `${NVM}:/usr/bin`, HOME: "/home/u" },
+      model: null,
+      accountProfile: null,
+      startedAt: "2026-08-04T10:00:00.000Z",
+      lastUpdatedAt: "2026-08-04T10:00:00.000Z",
+    };
+    const driver = new mock.MockDriver();
+    const seen: Array<Record<string, string>> = [];
+    const original = driver.spawn.bind(driver);
+    driver.spawn = async (opts) => {
+      seen.push(opts.env);
+      return original(opts);
+    };
+
+    await handlers.dispatch(makeRequest("peer_restart", { peer: "p" }, "req-p"), {
+      state: doc,
+      hostDriver: driver,
+      daemonVersion: "0.10.13-test",
+      restartSettleMs: 0,
+    });
+
+    // Before this, the relaunch got the daemon's PATH and could not find node.
+    expect(seen[0]?.["PATH"]).toContain(NVM);
+    expect(seen[0]?.["PATH"]).not.toBe(process.env["PATH"]);
+    driver.reset();
+  });
+
+  it("the whitelist still applies — the peer's values do not smuggle secrets", async () => {
+    const { handlers, state, mock } = await importAll();
+    const doc = state.emptyState("0.10.13-test");
+    doc.peers["p"] = {
+      sessionId: "p",
+      name: "p",
+      hostDriver: "mock",
+      tmuxTarget: "p",
+      pid: 500,
+      status: "live",
+      command: "/bin/sh",
+      spawnArgs: ["-c", "sleep 30"],
+      cwd: "/tmp",
+      // A contaminated peer. Its PATH is welcome; its key is not.
+      spawnEnv: {
+        PATH: `${NVM}:/usr/bin`,
+        ANTHROPIC_API_KEY: "sk-ant-should-never-travel",
+        CLAUDE_CODE_ENTRYPOINT: "cli",
+      },
+      model: null,
+      accountProfile: null,
+      startedAt: "2026-08-04T10:00:00.000Z",
+      lastUpdatedAt: "2026-08-04T10:00:00.000Z",
+    };
+    const driver = new mock.MockDriver();
+    const seen: Array<Record<string, string>> = [];
+    const original = driver.spawn.bind(driver);
+    driver.spawn = async (opts) => {
+      seen.push(opts.env);
+      return original(opts);
+    };
+
+    await handlers.dispatch(makeRequest("peer_restart", { peer: "p" }, "req-p2"), {
+      state: doc,
+      hostDriver: driver,
+      daemonVersion: "0.10.13-test",
+      restartSettleMs: 0,
+    });
+
+    // Changing where values come from must not change which names get through —
+    // otherwise this fix reopens the billing incident v0.10.5 closed.
+    expect(seen[0]?.["PATH"]).toContain(NVM);
+    expect(seen[0]?.["ANTHROPIC_API_KEY"]).toBeUndefined();
+    expect(seen[0]?.["CLAUDE_CODE_ENTRYPOINT"]).toBeUndefined();
+    driver.reset();
+  });
+});

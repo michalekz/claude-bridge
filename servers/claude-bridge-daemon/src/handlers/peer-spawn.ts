@@ -50,6 +50,12 @@ export const PeerSpawnArgsSchema = z
      * home is a window of a shared session.
      */
     inSession: z.string().min(1).optional(),
+    /**
+     * Values to build the peer's environment from, instead of the daemon's own.
+     * Still filtered by the same whitelist — this changes where the values come
+     * from, not which names get through.
+     */
+    envBase: z.record(z.string()).optional(),
     model: z.string().nullable().optional(),
     accountProfile: z
       .string()
@@ -113,7 +119,10 @@ export async function handlePeerSpawn(
     overrides["CLAUDE_CONFIG_DIR"] =
       `${process.env["HOME"] ?? ""}/.claude-bridge/control/accounts/${args.accountProfile}`;
   }
-  const env = sanitizeEnv(process.env, {
+  // Prefer the peer's own values. `process.env` here is the DAEMON's, and
+  // under systemd its PATH has no nvm — a relaunch built from it cannot find
+  // `node`, so the peer comes up without statusLine, hooks or MCP server.
+  const env = sanitizeEnv(args.envBase ?? process.env, {
     extraAllow: args.extraAllowEnv,
     overrides,
   });
@@ -145,6 +154,7 @@ export async function handlePeerSpawn(
       // Where this peer belongs, so a later restart does not have to ask a
       // window that may no longer exist.
       ...(args.inSession ? { homeSession: args.inSession } : {}),
+      ...(args.envBase ? { spawnEnv: sanitizeEnv(args.envBase) } : {}),
       model: args.model ?? null,
       accountProfile: args.accountProfile ?? null,
       startedAt: new Date().toISOString(),
@@ -156,6 +166,9 @@ export async function handlePeerSpawn(
     const record = await ctx.hostDriver.spawn({
       sessionKey,
       ...(args.inSession ? { inSession: args.inSession } : {}),
+      // Name the window after the peer. tmux otherwise names it after the
+      // command, so every window read `claude`.
+      windowName: args.displayName,
       cwd: args.cwd,
       command: args.command,
       args: spawnArgs,

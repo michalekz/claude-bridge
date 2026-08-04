@@ -86,6 +86,17 @@ export interface PeerRecord {
    * 2026-08-04: after a manual kill, `pw1` came back as a standalone session.
    */
   homeSession?: string;
+  /**
+   * The peer's own environment, already whitelisted, captured when the daemon
+   * first saw it.
+   *
+   * The whitelist decides WHICH variables a relaunch gets. Their VALUES used to
+   * come from the daemon's `process.env`, which under systemd has a `PATH`
+   * without nvm — so a relaunched peer could not find `node`, and lost its
+   * statusLine, its hooks and its own MCP server in one step. Twenty-one peers
+   * on 2026-08-04. Values belong to the peer; only the filter is ours.
+   */
+  spawnEnv?: Record<string, string>;
   model: string | null;
   accountProfile: string | null;
   startedAt: string;
