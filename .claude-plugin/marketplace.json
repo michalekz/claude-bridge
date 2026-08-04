@@ -39,11 +39,11 @@
       "source": {
         "source": "github",
         "repo": "michalekz/claude-bridge",
-        "ref": "v0.10.8",
-        "sha": "322535937dbe46b672183b981ca371e0f4ae03b0"
+        "ref": "v0.10.10",
+        "sha": "879aedc31a3b46383f0748b898c5460887e6c036"
       },
-      "version": "0.10.8",
-      "description": "DEVELOPMENT CHANNEL — ahead of stable, not yet promoted. Do NOT install alongside `claude-bridge`: both register an MCP server. v0.10.6 closed an eight-tool quality gate (peer_restart, peer_spawn's environment whitelist, model_info, session_stats, peer_chat_read, peer_chat_search, rate_limit_status, team_adopt) and added three lifecycle tools: team_release (drop a peer from daemon state without touching its process), team_reconcile (report where state and reality disagree — read-only), team_restart (rolling restart that refuses unrestartable peers up front and stops at the first failure). v0.10.7 fixes five findings from the pilot of that release: adoption no longer loses a peer's --model, manual adoption reads launch parameters from /proc like auto mode does, a restart no longer passes --resume for an id that names no transcript (which wedged the peer at an interactive picker) and now verifies the peer came back under the same session id, a restarted adopted peer stays in its team's tmux session instead of moving to one of its own, and adoption can be scoped to a single host session. 515 tests. v0.10.8 fixes peer_list's `pid`: it named this bridge server rather than the Claude Code peer, so acting on it reached the bridge — and after an MCP reconnect it could name a process that had already exited. The peer's pid is now reported; the bridge's own moves to `mcpServerPid`, diagnostics only.",
+      "version": "0.10.10",
+      "description": "DEVELOPMENT CHANNEL — ahead of stable, not yet promoted. Do NOT install alongside `claude-bridge`: both register an MCP server. Closes an eight-tool quality gate (peer_restart, peer_spawn's environment whitelist, model_info, session_stats, peer_chat_read, peer_chat_search, rate_limit_status, team_adopt) and adds three lifecycle tools — team_release (drop a peer from daemon state without touching its process), team_reconcile (report where state and reality disagree, read-only), team_restart (rolling restart that refuses unrestartable peers up front and stops at the first failure) — plus `claude-bridge-daemon send` for delivering a message into a peer's inbox from outside the fleet. Two rounds of live piloting since: adoption carries a peer's model and launch parameters, a restart no longer resumes an id that names no transcript nor reports success over a process that died, an adopted peer stays in its team's tmux session even if its window is already gone, peer_list reports the peer's pid rather than the bridge's, and team_adopt can be scoped to one host session. 539 tests.",
       "author": {
         "name": "Zed Michalek",
         "url": "https://github.com/michalekz"
