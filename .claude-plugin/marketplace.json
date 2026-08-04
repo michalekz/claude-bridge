@@ -39,10 +39,10 @@
       "source": {
         "source": "github",
         "repo": "michalekz/claude-bridge",
-        "ref": "v0.10.2-rc.1",
-        "sha": "5069879ed199b19743e82e675c907b33b65106c6"
+        "ref": "v0.10.2-rc.2",
+        "sha": "6e58771a0a6064da2827f3d009416f9dbbc9605f"
       },
-      "version": "0.10.2-rc.1",
+      "version": "0.10.2-rc.2",
       "description": "DEVELOPMENT CHANNEL — pre-release, not yet proven in operation. Everything the stable channel has, plus what is being prepared for the next release. Do NOT install alongside `claude-bridge`: both register an MCP server and you would run two side by side. Pick this only if you want to try changes early and can tolerate breakage; otherwise install `claude-bridge`. Currently ahead of stable with: a re-entrancy guard and claim-before-dispatch on the daemon's request loop, timeouts on every tmux call, team_stop (controlled sleep of a whole team via a stop-request/ack protocol), and team_layout resuming and waking peers that team_stop put to sleep.",
       "author": {
         "name": "Zed Michalek",
