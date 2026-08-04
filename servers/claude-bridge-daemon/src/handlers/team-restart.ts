@@ -1,0 +1,276 @@
+import { z } from "zod";
+import { writeEvent } from "../events.ts";
+import type { RequestEnvelope, ResultEnvelope } from "../rpc.ts";
+import { errResult, okResult } from "../rpc.ts";
+import type { PeerRecord } from "../state.ts";
+import type { HandlerContext } from "./context.ts";
+import { handlePeerRestart } from "./peer-restart.ts";
+
+/**
+ * team_restart — restart a team one peer at a time, stopping at the first
+ * failure.
+ *
+ * Built to roll a new plugin bundle across the fleet: a peer picks up the
+ * updated bundle from the plugin cache when its process restarts, so a rolling
+ * restart is the deployment. Twenty-three peers, one command.
+ *
+ * Which is exactly why the defaults are cautious. This is the tool with the
+ * widest blast radius in the daemon, and it is built on machinery that only
+ * became honest today — `peer_restart` spent this morning reporting starts it
+ * had not performed, and window targets were only separated from session
+ * targets this afternoon. A rolling restart on top of that, run against a live
+ * fleet, is how one wrong assumption becomes twenty-three stopped peers.
+ *
+ * So:
+ *
+ *   - `dryRun` defaults to TRUE. The plan lists the order and the launch
+ *     parameters each peer would be relaunched with, so the operator can see
+ *     that they exist BEFORE anything stops.
+ *   - **Stops at the first failure.** `continueOnError` exists but defaults to
+ *     false: if peer one comes back wrong, peers two through twenty-three are
+ *     still running and the fleet is half-safe rather than wholly broken.
+ *   - Peers with no recorded `command` are refused up front, not discovered
+ *     halfway through. Those relaunch as a bare `claude`, which resolves to
+ *     nothing under nvm — the failure this release already fixed once, and it
+ *     must not be rediscovered peer by peer.
+ *
+ * Ordering is the array order of `peers`, or state order for a whole team,
+ * with any peer whose `role` is velitel deliberately LAST — the same
+ * convention `team_stop` uses, so the coordinator is the last to go down and
+ * the first to see the others return.
+ */
+
+const DEFAULT_SETTLE_MS = 3_000;
+
+export const TeamRestartArgsSchema = z
+  .object({
+    peers: z.array(z.string().min(1)).optional(),
+    team: z.string().min(1).optional(),
+    reason: z.string().optional(),
+    /**
+     * Milliseconds to wait after each peer before starting the next. Gives the
+     * relaunched process time to come up so a rolling restart does not become a
+     * simultaneous one.
+     */
+    settleMs: z.number().int().min(0).max(120_000).default(DEFAULT_SETTLE_MS),
+    /** Keep going after a peer fails to restart. Off, deliberately. */
+    continueOnError: z.boolean().default(false),
+    dryRun: z.boolean().default(true),
+  })
+  .strict()
+  .refine((a) => (a.peers === undefined) !== (a.team === undefined), {
+    message: "pass exactly one of `peers` or `team`",
+  });
+
+export type TeamRestartArgs = z.infer<typeof TeamRestartArgsSchema>;
+
+interface RestartOutcome {
+  sessionId: string;
+  name: string;
+  outcome: "restarted" | "failed" | "skipped";
+  pidBefore: number | null;
+  pidAfter: number | null;
+  error?: string;
+}
+
+/** Velitel last — the coordinator goes down after the peers it coordinates. */
+function orderPeers(records: PeerRecord[]): PeerRecord[] {
+  const isVelitel = (r: PeerRecord) => (r.name ?? "").includes("velitel");
+  return [...records.filter((r) => !isVelitel(r)), ...records.filter(isVelitel)];
+}
+
+const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
+
+export async function handleTeamRestart(
+  req: RequestEnvelope,
+  ctx: HandlerContext,
+): Promise<ResultEnvelope> {
+  const parsed = TeamRestartArgsSchema.safeParse(req.args);
+  if (!parsed.success) {
+    return errResult(req.id, req.tool, "invalid_args", "Schema validation failed", {
+      issues: parsed.error.issues,
+    });
+  }
+  const args = parsed.data;
+
+  let selected: PeerRecord[];
+  const notFound: string[] = [];
+  if (args.team !== undefined) {
+    selected = Object.values(ctx.state.peers).filter((r) => r.team === args.team);
+    if (selected.length === 0) {
+      return errResult(req.id, req.tool, "team_not_found", `No peers under team '${args.team}'`, {
+        team: args.team,
+      });
+    }
+  } else {
+    selected = [];
+    for (const key of args.peers ?? []) {
+      const rec =
+        ctx.state.peers[key] ?? Object.values(ctx.state.peers).find((r) => r.name === key) ?? null;
+      if (!rec) {
+        notFound.push(key);
+        continue;
+      }
+      if (!selected.some((s) => s.sessionId === rec.sessionId)) selected.push(rec);
+    }
+    if (notFound.length > 0) {
+      // Refuse the whole run rather than restart the ones we found. A partial
+      // roll-out nobody asked for is worse than none.
+      return errResult(
+        req.id,
+        req.tool,
+        "peer_not_found",
+        `Not in daemon state: ${notFound.join(", ")} — nothing was restarted`,
+        { notFound, known: Object.keys(ctx.state.peers) },
+      );
+    }
+  }
+
+  const ordered = orderPeers(selected);
+
+  // Refuse up front, not halfway through. A peer with no recorded command
+  // relaunches as a bare `claude`, which under nvm resolves to nothing.
+  const unrestartable = ordered.filter((r) => !r.command);
+  if (unrestartable.length > 0) {
+    await writeEvent({
+      event: "team_restart_refused",
+      level: "warn",
+      by: { sessionId: req.requestedBy.sessionId, name: req.requestedBy.name },
+      requestId: req.id,
+      details: { missingLaunchParams: unrestartable.map((r) => r.sessionId) },
+    });
+    return errResult(
+      req.id,
+      req.tool,
+      "launch_params_missing",
+      `${unrestartable.length} of ${ordered.length} peers have no recorded command and would relaunch as a bare 'claude'. Nothing was restarted.`,
+      {
+        peers: unrestartable.map((r) => ({ sessionId: r.sessionId, name: r.name })),
+        hint: "Records written before v0.10.3 lack launch parameters. Re-spawn those peers, or adopt them again with a daemon that reads /proc.",
+      },
+    );
+  }
+
+  const plan = {
+    dryRun: args.dryRun,
+    reason: args.reason ?? null,
+    settleMs: args.settleMs,
+    continueOnError: args.continueOnError,
+    order: ordered.map((r) => ({
+      sessionId: r.sessionId,
+      name: r.name,
+      tmuxTarget: r.tmuxTarget,
+      pid: r.pid,
+      command: r.command ?? null,
+      cwd: r.cwd ?? null,
+    })),
+  };
+
+  if (args.dryRun) {
+    await writeEvent({
+      event: "team_restart_preview",
+      by: { sessionId: req.requestedBy.sessionId, name: req.requestedBy.name },
+      requestId: req.id,
+      details: plan,
+    });
+    return okResult(req.id, req.tool, plan);
+  }
+
+  const results: RestartOutcome[] = [];
+  let stoppedEarly = false;
+
+  for (const [i, rec] of ordered.entries()) {
+    if (stoppedEarly) {
+      results.push({
+        sessionId: rec.sessionId,
+        name: rec.name,
+        outcome: "skipped",
+        pidBefore: rec.pid,
+        pidAfter: null,
+      });
+      continue;
+    }
+
+    const pidBefore = rec.pid;
+    const sub = {
+      schemaVersion: req.schemaVersion,
+      id: `${req.id}:restart:${i}`,
+      ts: req.ts,
+      tool: "peer_restart",
+      args: { peer: rec.sessionId, reason: args.reason ?? "team_restart" },
+      requestedBy: req.requestedBy,
+    };
+    const res = await handlePeerRestart(sub, ctx);
+
+    if (res.outcome === "error") {
+      results.push({
+        sessionId: rec.sessionId,
+        name: rec.name,
+        outcome: "failed",
+        pidBefore,
+        pidAfter: null,
+        error: res.error?.message ?? "peer_restart failed",
+      });
+      if (!args.continueOnError) stoppedEarly = true;
+      continue;
+    }
+
+    results.push({
+      sessionId: rec.sessionId,
+      name: rec.name,
+      outcome: "restarted",
+      pidBefore,
+      pidAfter: ctx.state.peers[rec.sessionId]?.pid ?? null,
+    });
+
+    // Let it come up before taking the next one down. Skipped after the last
+    // peer — nothing follows it, and a trailing wait is just a slower answer.
+    if (args.settleMs > 0 && i < ordered.length - 1) await sleep(args.settleMs);
+  }
+
+  const restarted = results.filter((r) => r.outcome === "restarted");
+  const failed = results.filter((r) => r.outcome === "failed");
+  const skipped = results.filter((r) => r.outcome === "skipped");
+
+  await writeEvent({
+    event: "team_restarted",
+    level: failed.length > 0 ? "error" : "info",
+    by: { sessionId: req.requestedBy.sessionId, name: req.requestedBy.name },
+    requestId: req.id,
+    details: {
+      team: args.team ?? null,
+      total: ordered.length,
+      restarted: restarted.length,
+      failed: failed.length,
+      skipped: skipped.length,
+      stoppedEarly,
+      results,
+    },
+  });
+
+  const summary = {
+    dryRun: false,
+    total: ordered.length,
+    restarted: restarted.map((r) => r.sessionId),
+    failed: failed.map((r) => ({ sessionId: r.sessionId, error: r.error })),
+    // Named, not merely absent from the success list: an operator has to know
+    // which peers were never touched so they can finish the roll-out.
+    skipped: skipped.map((r) => r.sessionId),
+    stoppedEarly,
+    results,
+  };
+
+  // A partial roll is a failure of the request even though some peers came
+  // back. Reporting `ok` would leave the caller believing the fleet is done.
+  if (failed.length > 0) {
+    return errResult(
+      req.id,
+      req.tool,
+      "team_restart_incomplete",
+      `${failed.length} peer(s) failed to restart${stoppedEarly ? `, ${skipped.length} never attempted` : ""} — see results`,
+      summary,
+    );
+  }
+
+  return okResult(req.id, req.tool, summary);
+}

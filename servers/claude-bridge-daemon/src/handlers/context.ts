@@ -19,4 +19,9 @@ export interface HandlerContext {
    * inject a fake table instead of needing real tmux and real peers.
    */
   processInspector?: ProcessInspector;
+  /**
+   * Root of the process filesystem. Optional: production uses `/proc`, tests
+   * point it at a fixture directory so liveness can be faked without spawning.
+   */
+  procRoot?: string;
 }

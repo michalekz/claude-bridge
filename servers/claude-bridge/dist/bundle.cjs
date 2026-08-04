@@ -18243,7 +18243,7 @@ var StdioServerTransport = class {
 // package.json
 var package_default = {
   name: "claude-bridge",
-  version: "0.10.6-rc.1",
+  version: "0.10.6",
   private: true,
   description: "MCP server for cross-Claude-Code-chat orchestration over local session JSONL files",
   type: "module",
@@ -18265,13 +18265,13 @@ var package_default = {
     lint: "biome lint src tests"
   },
   dependencies: {
-    "@claude-bridge/shared": "*",
     "@modelcontextprotocol/sdk": "^1.0.4",
     chokidar: "^4.0.1",
     zod: "^3.23.8"
   },
   devDependencies: {
     "@biomejs/biome": "^1.9.4",
+    "@claude-bridge/shared": "*",
     "@types/node": "^22.9.0",
     esbuild: "^0.24.0",
     tsx: "^4.19.2",
@@ -21893,10 +21893,22 @@ async function probeDaemon() {
     readHeartbeatAgeMs()
   ]);
   if (!lock) {
-    return { running: false, reason: "no_lock_file", lock, heartbeatAgeMs, state };
+    return {
+      running: false,
+      reason: "no_lock_file",
+      lock,
+      heartbeatAgeMs,
+      state
+    };
   }
   if (heartbeatAgeMs === null || heartbeatAgeMs > HEARTBEAT_STALE_MS) {
-    return { running: false, reason: "heartbeat_stale", lock, heartbeatAgeMs, state };
+    return {
+      running: false,
+      reason: "heartbeat_stale",
+      lock,
+      heartbeatAgeMs,
+      state
+    };
   }
   return { running: true, lock, heartbeatAgeMs, state };
 }
@@ -21908,7 +21920,12 @@ function ok(data) {
 function err(code, message, details) {
   return {
     isError: true,
-    content: [{ type: "text", text: JSON.stringify({ ok: false, code, message, details }) }]
+    content: [
+      {
+        type: "text",
+        text: JSON.stringify({ ok: false, code, message, details })
+      }
+    ]
   };
 }
 var SETUP_POINTER3 = "Daemon not detected. Install with `node ~/.claude/claude-bridge-daemon.cjs install --systemd` (Linux) \u2014 see docs/architecture.md ADR-008.";
@@ -21994,7 +22011,12 @@ async function submitDaemonRequest(ctx, tool, args, opts) {
     const timeoutMs = opts.timeoutMs ?? 1e4;
     const result = await pollForResult(requestId, timeoutMs);
     if (!result) {
-      return ok({ requestId, queuedAt: envelope.ts, waited: true, timedOut: true });
+      return ok({
+        requestId,
+        queuedAt: envelope.ts,
+        waited: true,
+        timedOut: true
+      });
     }
     return ok({ requestId, queuedAt: envelope.ts, waited: true, result });
   }
@@ -22170,6 +22192,68 @@ async function teamAdoptTool(ctx, args) {
   return submitDaemonRequest(ctx, "team_adopt", daemonArgs, {
     wait: args.wait ?? true,
     timeoutMs: args.timeoutMs ?? 2e4
+  });
+}
+var TeamReleaseArgs = external_exports.object({
+  peers: external_exports.array(external_exports.string().min(1)).optional(),
+  team: external_exports.string().min(1).optional(),
+  reason: external_exports.string().optional(),
+  /** Defaults to TRUE in the daemon. */
+  dryRun: external_exports.boolean().optional(),
+  wait: external_exports.boolean().optional(),
+  timeoutMs: external_exports.number().int().positive().max(6e4).optional()
+}).strict();
+async function teamReleaseTool(ctx, args) {
+  const daemonArgs = {};
+  if (args.peers !== void 0) daemonArgs["peers"] = args.peers;
+  if (args.team !== void 0) daemonArgs["team"] = args.team;
+  if (args.reason !== void 0) daemonArgs["reason"] = args.reason;
+  if (args.dryRun !== void 0) daemonArgs["dryRun"] = args.dryRun;
+  return submitDaemonRequest(ctx, "team_release", daemonArgs, {
+    wait: args.wait ?? true,
+    timeoutMs: args.timeoutMs ?? 15e3
+  });
+}
+var TeamReconcileArgs = external_exports.object({
+  team: external_exports.string().min(1).optional(),
+  markDead: external_exports.boolean().optional(),
+  wait: external_exports.boolean().optional(),
+  timeoutMs: external_exports.number().int().positive().max(6e4).optional()
+}).strict();
+async function teamReconcileTool(ctx, args) {
+  const daemonArgs = {};
+  if (args.team !== void 0) daemonArgs["team"] = args.team;
+  if (args.markDead !== void 0) daemonArgs["markDead"] = args.markDead;
+  return submitDaemonRequest(ctx, "team_reconcile", daemonArgs, {
+    wait: args.wait ?? true,
+    timeoutMs: args.timeoutMs ?? 2e4
+  });
+}
+var TeamRestartArgs = external_exports.object({
+  peers: external_exports.array(external_exports.string().min(1)).optional(),
+  team: external_exports.string().min(1).optional(),
+  reason: external_exports.string().optional(),
+  settleMs: external_exports.number().int().min(0).max(12e4).optional(),
+  continueOnError: external_exports.boolean().optional(),
+  /** Defaults to TRUE in the daemon. */
+  dryRun: external_exports.boolean().optional(),
+  wait: external_exports.boolean().optional(),
+  timeoutMs: external_exports.number().int().positive().max(6e5).optional()
+}).strict();
+async function teamRestartTool(ctx, args) {
+  const daemonArgs = {};
+  if (args.peers !== void 0) daemonArgs["peers"] = args.peers;
+  if (args.team !== void 0) daemonArgs["team"] = args.team;
+  if (args.reason !== void 0) daemonArgs["reason"] = args.reason;
+  if (args.settleMs !== void 0) daemonArgs["settleMs"] = args.settleMs;
+  if (args.continueOnError !== void 0) daemonArgs["continueOnError"] = args.continueOnError;
+  if (args.dryRun !== void 0) daemonArgs["dryRun"] = args.dryRun;
+  const peerCount = args.peers?.length ?? 25;
+  const settle = args.settleMs ?? 3e3;
+  const estimate = peerCount * (settle + 15e3);
+  return submitDaemonRequest(ctx, "team_restart", daemonArgs, {
+    wait: args.wait ?? true,
+    timeoutMs: args.timeoutMs ?? Math.min(6e5, Math.max(6e4, estimate))
   });
 }
 
@@ -22963,7 +23047,11 @@ async function peerChatSearchTool(ctx, args) {
   if (totalBytesScope > SEARCH_MAX_BYTES_SCANNED) {
     return err2(
       "scope_too_large",
-      `Filtered scope is ${Math.round(totalBytesScope / 1024 / 1024)} MB across ${sessions.length} sessions \u2014 over the ${Math.round(SEARCH_MAX_BYTES_SCANNED / 1024 / 1024)} MB cap. Reduce by using scope='project' or wait for FTS5 backend (v0.5+).`
+      // The advice has to depend on where the caller already is. Telling someone
+      // on scope='project' to "use scope='project'" is the tool not reading its
+      // own arguments (plt-designer, 2026-08-04 — /opt/hmh is 824 MB and the
+      // project scope is already the narrow one).
+      args.scope === "all-projects" ? `Filtered scope is ${Math.round(totalBytesScope / 1024 / 1024)} MB across ${sessions.length} sessions \u2014 over the ${Math.round(SEARCH_MAX_BYTES_SCANNED / 1024 / 1024)} MB cap. Narrow it with scope='project'.` : `This project alone is ${Math.round(totalBytesScope / 1024 / 1024)} MB across ${sessions.length} sessions \u2014 over the ${Math.round(SEARCH_MAX_BYTES_SCANNED / 1024 / 1024)} MB cap, and scope='project' is already the narrowest scope there is. Search one session with peer_chat_read instead (same query, no cap), or wait for the FTS5 backend.`
     );
   }
   const startMs = Date.now();
@@ -24216,6 +24304,103 @@ var TOOLS = [
       const parsed = TeamAdoptArgs.safeParse(args);
       if (!parsed.success) return err2("invalid_args", "Schema validation failed", parsed.error);
       return teamAdoptTool(ctx, parsed.data);
+    }
+  },
+  {
+    name: "team_release",
+    description: "Drop a peer from daemon state WITHOUT touching its process \u2014 the undo for adoption. When team_adopt takes over the wrong peer (mismapped session id, a window that belonged to someone else), the only exit used to be peer_stop, which removes the record by killing the work: a running peer's life for a bookkeeping mistake. This is state-only and cannot signal anything; the peer carries on exactly as before the daemon noticed it. Pass either `peers` (ids or names) or `team`, never both. **`dryRun` defaults to TRUE** \u2014 the plan names what would be released, so 'I meant the other team' is caught before it happens. Unknown peers are reported in `notFound`, not silently skipped. The audit event records `processLeftRunning: true` so a later reader cannot mistake a release for a stop. To stop a peer use peer_stop; to restart it use peer_restart.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        peers: {
+          type: "array",
+          items: { type: "string" },
+          description: "Peer ids or names to release. Mutually exclusive with `team`."
+        },
+        team: {
+          type: "string",
+          description: "Release every peer under this team. Mutually exclusive with `peers`."
+        },
+        reason: { type: "string", description: "Recorded in the audit event." },
+        dryRun: {
+          type: "boolean",
+          description: "DEFAULT TRUE. Returns the plan and changes nothing."
+        },
+        wait: { type: "boolean", description: "Default true." },
+        timeoutMs: { type: "number", minimum: 1, maximum: 6e4 }
+      },
+      additionalProperties: false
+    },
+    handler: async (args, ctx) => {
+      const parsed = TeamReleaseArgs.safeParse(args);
+      if (!parsed.success) return err2("invalid_args", "Schema validation failed", parsed.error);
+      return teamReleaseTool(ctx, parsed.data);
+    }
+  },
+  {
+    name: "team_reconcile",
+    description: "Compare what the daemon believes against what is actually running, and report the gap. A record saying status 'live' is a belief about a pid, and it goes stale the moment a process dies without telling anyone \u2014 this is the tool that checks. Four kinds of drift: `dead` (record says live, no process behind the pid), `host_missing` (process alive, its tmux target gone), `pid_changed` (the target holds a DIFFERENT pid than the record \u2014 the dangerous one, because every lifecycle call would then act on a peer nobody meant), `unmanaged` (a Claude peer running with no record at all, always reported whole-host even when `team` filters the rest). Deliberately stopped peers are state, not drift. **READ-ONLY by default.** `markDead: true` is the only write and only sets status 'unknown' on records whose process is gone \u2014 never 'stopped' (nobody asked them to stop), never deletes, never kills, never adopts. Deleting is team_release, killing is peer_stop, adopting is team_adopt.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        team: {
+          type: "string",
+          description: "Restrict the record check to one team. Unmanaged peers are still listed."
+        },
+        markDead: {
+          type: "boolean",
+          description: "DEFAULT FALSE. Sets status to 'unknown' on records whose process is gone. Writes nothing else, removes nothing."
+        },
+        wait: { type: "boolean", description: "Default true." },
+        timeoutMs: { type: "number", minimum: 1, maximum: 6e4 }
+      },
+      additionalProperties: false
+    },
+    handler: async (args, ctx) => {
+      const parsed = TeamReconcileArgs.safeParse(args);
+      if (!parsed.success) return err2("invalid_args", "Schema validation failed", parsed.error);
+      return teamReconcileTool(ctx, parsed.data);
+    }
+  },
+  {
+    name: "team_restart",
+    description: "Restart a team one peer at a time, stopping at the first failure. A peer picks up an updated plugin bundle when its process restarts, so a rolling restart is how a new version reaches a fleet \u2014 the widest blast radius of any tool here, which is why the defaults are cautious. **`dryRun` defaults to TRUE** and the plan lists the order plus the launch parameters each peer would be relaunched with, so an operator can confirm they exist before anything stops. Peers with no recorded `command` are refused UP FRONT rather than discovered mid-roll \u2014 those relaunch as a bare `claude`, which resolves to nothing under nvm. **The roll stops at the first failure** (`continueOnError` defaults false): half a fleet running beats a whole one broken, and peers never attempted are named in `skipped`. A partial roll returns an ERROR, never ok \u2014 reporting success would leave the caller believing the roll-out finished. Order is array order, or state order for a team, with any peer named velitel deliberately LAST. `settleMs` (default 3000) is the pause after each peer so a rolling restart does not become a simultaneous one.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        peers: {
+          type: "array",
+          items: { type: "string" },
+          description: "Peer ids or names, in restart order. Mutually exclusive with `team`."
+        },
+        team: {
+          type: "string",
+          description: "Restart a whole team. Mutually exclusive with `peers`."
+        },
+        reason: { type: "string", description: "Recorded on each restart and in the audit event." },
+        settleMs: {
+          type: "number",
+          minimum: 0,
+          maximum: 12e4,
+          description: "Pause after each peer before the next (default 3000)."
+        },
+        continueOnError: {
+          type: "boolean",
+          description: "DEFAULT FALSE. Keep rolling after a peer fails. Leaving this off is what keeps a bad roll from reaching the whole fleet."
+        },
+        dryRun: {
+          type: "boolean",
+          description: "DEFAULT TRUE. Returns the order and launch parameters, restarts nothing."
+        },
+        wait: { type: "boolean", description: "Default true." },
+        timeoutMs: { type: "number", minimum: 1, maximum: 6e5 }
+      },
+      additionalProperties: false
+    },
+    handler: async (args, ctx) => {
+      const parsed = TeamRestartArgs.safeParse(args);
+      if (!parsed.success) return err2("invalid_args", "Schema validation failed", parsed.error);
+      return teamRestartTool(ctx, parsed.data);
     }
   }
 ];

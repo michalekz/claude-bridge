@@ -110,10 +110,22 @@ export async function probeDaemon(): Promise<DaemonPresence> {
     readHeartbeatAgeMs(),
   ]);
   if (!lock) {
-    return { running: false, reason: "no_lock_file", lock, heartbeatAgeMs, state };
+    return {
+      running: false,
+      reason: "no_lock_file",
+      lock,
+      heartbeatAgeMs,
+      state,
+    };
   }
   if (heartbeatAgeMs === null || heartbeatAgeMs > HEARTBEAT_STALE_MS) {
-    return { running: false, reason: "heartbeat_stale", lock, heartbeatAgeMs, state };
+    return {
+      running: false,
+      reason: "heartbeat_stale",
+      lock,
+      heartbeatAgeMs,
+      state,
+    };
   }
   return { running: true, lock, heartbeatAgeMs, state };
 }
@@ -136,7 +148,12 @@ function ok(data: unknown): ToolResult {
 function err(code: string, message?: string, details?: unknown): ToolResult {
   return {
     isError: true,
-    content: [{ type: "text", text: JSON.stringify({ ok: false, code, message, details }) }],
+    content: [
+      {
+        type: "text",
+        text: JSON.stringify({ ok: false, code, message, details }),
+      },
+    ],
   };
 }
 
@@ -247,7 +264,12 @@ async function submitDaemonRequest(
     const timeoutMs = opts.timeoutMs ?? 10_000;
     const result = await pollForResult(requestId, timeoutMs);
     if (!result) {
-      return ok({ requestId, queuedAt: envelope.ts, waited: true, timedOut: true });
+      return ok({
+        requestId,
+        queuedAt: envelope.ts,
+        waited: true,
+        timedOut: true,
+      });
     }
     return ok({ requestId, queuedAt: envelope.ts, waited: true, result });
   }
@@ -512,5 +534,98 @@ export async function teamAdoptTool(
   return submitDaemonRequest(ctx, "team_adopt", daemonArgs, {
     wait: args.wait ?? true,
     timeoutMs: args.timeoutMs ?? 20_000,
+  });
+}
+
+// ============================================================================
+// team_release / team_reconcile / team_restart — lifecycle trio (v0.10.6)
+// ============================================================================
+
+export const TeamReleaseArgs = z
+  .object({
+    peers: z.array(z.string().min(1)).optional(),
+    team: z.string().min(1).optional(),
+    reason: z.string().optional(),
+    /** Defaults to TRUE in the daemon. */
+    dryRun: z.boolean().optional(),
+    wait: z.boolean().optional(),
+    timeoutMs: z.number().int().positive().max(60_000).optional(),
+  })
+  .strict();
+
+export async function teamReleaseTool(
+  ctx: ServerContext,
+  args: z.infer<typeof TeamReleaseArgs>,
+): Promise<ToolResult> {
+  const daemonArgs: Record<string, unknown> = {};
+  if (args.peers !== undefined) daemonArgs["peers"] = args.peers;
+  if (args.team !== undefined) daemonArgs["team"] = args.team;
+  if (args.reason !== undefined) daemonArgs["reason"] = args.reason;
+  if (args.dryRun !== undefined) daemonArgs["dryRun"] = args.dryRun;
+  return submitDaemonRequest(ctx, "team_release", daemonArgs, {
+    wait: args.wait ?? true,
+    timeoutMs: args.timeoutMs ?? 15_000,
+  });
+}
+
+export const TeamReconcileArgs = z
+  .object({
+    team: z.string().min(1).optional(),
+    markDead: z.boolean().optional(),
+    wait: z.boolean().optional(),
+    timeoutMs: z.number().int().positive().max(60_000).optional(),
+  })
+  .strict();
+
+export async function teamReconcileTool(
+  ctx: ServerContext,
+  args: z.infer<typeof TeamReconcileArgs>,
+): Promise<ToolResult> {
+  const daemonArgs: Record<string, unknown> = {};
+  if (args.team !== undefined) daemonArgs["team"] = args.team;
+  if (args.markDead !== undefined) daemonArgs["markDead"] = args.markDead;
+  // Walks the process table and every tmux window — same budget as adoption.
+  return submitDaemonRequest(ctx, "team_reconcile", daemonArgs, {
+    wait: args.wait ?? true,
+    timeoutMs: args.timeoutMs ?? 20_000,
+  });
+}
+
+export const TeamRestartArgs = z
+  .object({
+    peers: z.array(z.string().min(1)).optional(),
+    team: z.string().min(1).optional(),
+    reason: z.string().optional(),
+    settleMs: z.number().int().min(0).max(120_000).optional(),
+    continueOnError: z.boolean().optional(),
+    /** Defaults to TRUE in the daemon. */
+    dryRun: z.boolean().optional(),
+    wait: z.boolean().optional(),
+    timeoutMs: z.number().int().positive().max(600_000).optional(),
+  })
+  .strict();
+
+export async function teamRestartTool(
+  ctx: ServerContext,
+  args: z.infer<typeof TeamRestartArgs>,
+): Promise<ToolResult> {
+  const daemonArgs: Record<string, unknown> = {};
+  if (args.peers !== undefined) daemonArgs["peers"] = args.peers;
+  if (args.team !== undefined) daemonArgs["team"] = args.team;
+  if (args.reason !== undefined) daemonArgs["reason"] = args.reason;
+  if (args.settleMs !== undefined) daemonArgs["settleMs"] = args.settleMs;
+  if (args.continueOnError !== undefined) daemonArgs["continueOnError"] = args.continueOnError;
+  if (args.dryRun !== undefined) daemonArgs["dryRun"] = args.dryRun;
+
+  // A rolling restart takes as long as the peers do. The default budget covers
+  // a whole fleet at the default settle time — a timeout mid-roll would leave
+  // the caller with no answer about peers that were already restarted, which
+  // is the one outcome worse than a slow one.
+  const peerCount = args.peers?.length ?? 25;
+  const settle = args.settleMs ?? 3_000;
+  const estimate = peerCount * (settle + 15_000);
+  return submitDaemonRequest(ctx, "team_restart", daemonArgs, {
+    wait: args.wait ?? true,
+    timeoutMs: args.timeoutMs ?? Math.min(600_000, Math.max(60_000, estimate)),
   });
 }

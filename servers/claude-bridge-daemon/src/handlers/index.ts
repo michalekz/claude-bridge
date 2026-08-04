@@ -9,6 +9,9 @@ import { handlePeerSpawn } from "./peer-spawn.ts";
 import { handlePeerStop } from "./peer-stop.ts";
 import { handleTeamAdopt } from "./team-adopt.ts";
 import { handleTeamLayout } from "./team-layout.ts";
+import { handleTeamReconcile } from "./team-reconcile.ts";
+import { handleTeamRelease } from "./team-release.ts";
+import { handleTeamRestart } from "./team-restart.ts";
 import { handleTeamStatus } from "./team-status.ts";
 import { handleTeamStop } from "./team-stop.ts";
 
@@ -26,6 +29,9 @@ const HANDLERS: Record<string, Handler> = {
   team_layout: handleTeamLayout,
   team_stop: handleTeamStop,
   team_adopt: handleTeamAdopt,
+  team_release: handleTeamRelease,
+  team_reconcile: handleTeamReconcile,
+  team_restart: handleTeamRestart,
   control_status: handleControlStatus,
 };
 

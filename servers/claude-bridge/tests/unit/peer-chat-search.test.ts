@@ -483,4 +483,42 @@ describe("peer_chat_search", () => {
       expect(out).toMatch(/matches in \d+ of the \d+ sessions examined/);
     });
   });
+
+  /**
+   * The over-cap hint told a caller already on scope='project' to "reduce by
+   * using scope='project'" — the tool not reading its own arguments
+   * (plt-designer, 2026-08-04: /opt/hmh is 824 MB and project IS the narrow one).
+   */
+  describe("the over-cap advice depends on the scope in use", () => {
+    async function oversizedProject(): Promise<ServerContext> {
+      const ctx = await makeContext("plt-oversized");
+      const { open } = await import("node:fs/promises");
+      // One session over the 200 MB cap without writing 200 MB: the check reads
+      // sizeBytes off the file, so a sparse file is enough.
+      const fh = await open(join(projectADir, `${uuid()}.jsonl`), "w");
+      await fh.truncate(220 * 1024 * 1024);
+      await fh.close();
+      return ctx;
+    }
+
+    test("on scope='project' it does NOT suggest scope='project'", async () => {
+      const ctx = await oversizedProject();
+      const res = await callSearch(ctx, { query: "anything", scope: "project" });
+      const text = res.content[0]?.text ?? "";
+      expect(text).toContain("scope_too_large");
+      expect(text).toContain("already the narrowest scope");
+      // The old advice, verbatim — it must be gone.
+      expect(text).not.toContain("Reduce by using scope='project'");
+      // And it points somewhere that actually works.
+      expect(text).toContain("peer_chat_read");
+    });
+
+    test("on scope='all-projects' narrowing IS the right advice", async () => {
+      const ctx = await oversizedProject();
+      const res = await callSearch(ctx, { query: "anything", scope: "all-projects" });
+      const text = res.content[0]?.text ?? "";
+      expect(text).toContain("scope_too_large");
+      expect(text).toContain("scope='project'");
+    });
+  });
 });

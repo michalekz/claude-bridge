@@ -6,6 +6,89 @@ All notable changes to this project are documented here. Format follows [Keep a 
 
 _Nothing yet._
 
+## [0.10.6] — 2026-08-04
+
+The eight-tool quality gate (see 0.10.6-rc.1 below) plus three lifecycle tools.
+Together they close the set the owner named as the precondition for a stable
+release.
+
+### Three tools for the states a fleet actually gets into
+
+**`team_release` — drop a peer from state without touching its process.**
+
+The undo for adoption. `team_adopt` takes over peers the daemon did not start;
+when it takes over the wrong one, the only exit until now was `peer_stop`, which
+removes the record by killing the work — a running peer's life for a bookkeeping
+mistake. Release is state-only and *cannot* signal anything. `dryRun` defaults
+to true, unknown peers are named in `notFound` rather than skipped, and the
+audit event records `processLeftRunning: true` so a later reader cannot mistake
+a release for a stop.
+
+**`team_reconcile` — compare belief against reality, and say the difference.**
+
+Every defect in this release was a claim nobody checked against the world.
+`state.json` is the same kind of claim one storey up: `status: "live"` is a
+belief about a pid, and it goes stale the moment a process dies quietly. Four
+kinds of drift:
+
+```
+dead          record says live, nothing behind the pid
+host_missing  process alive, its tmux target gone
+pid_changed   the target holds a DIFFERENT pid than the record
+unmanaged     a Claude peer running with no record at all
+```
+
+`pid_changed` is the dangerous one — every lifecycle call on such a record would
+act on a peer nobody meant. Deliberately stopped peers are state, not drift.
+
+**Read-only by default.** `markDead: true` is the only write and only sets
+`status: "unknown"` — never `"stopped"`, because nobody asked those peers to
+stop and claiming a clean stop would invent the reason. It never deletes, kills
+or adopts: deleting is `team_release`, killing is `peer_stop`, adopting is
+`team_adopt`. A tool that both diagnoses and repairs gets run for the repair and
+trusted for the diagnosis.
+
+**`team_restart` — roll a team one peer at a time, stopping at the first
+failure.**
+
+A peer picks up an updated bundle when its process restarts, so a rolling
+restart is how a new version reaches a fleet. This has the widest blast radius
+in the daemon and is built on machinery that only became honest today —
+`peer_restart` spent the morning reporting starts it had not performed, and
+window targets were separated from session targets this afternoon. The defaults
+reflect that:
+
+- `dryRun` defaults to **true**, and the plan lists the order plus each peer's
+  launch parameters, so an operator confirms they exist before anything stops.
+- Peers with no recorded `command` are refused **up front**, not discovered
+  mid-roll. Those relaunch as a bare `claude`, which resolves to nothing under
+  nvm — the failure this release already fixed once.
+- The roll **stops at the first failure** (`continueOnError` defaults false).
+  Half a fleet running beats a whole one broken, and peers never attempted are
+  named in `skipped`.
+- A partial roll returns an **error, never `ok`**. Reporting success would leave
+  the caller believing the roll-out finished — the same shape as the phantom
+  restart this release opened with, at fleet scale.
+
+Order is array order, or state order for a team, with any peer named velitel
+deliberately last: the coordinator is the last down and the first to see the
+others return.
+
+### Also
+
+`peer_chat_search`'s over-cap hint told a caller already on `scope='project'` to
+"reduce by using scope='project'" — the tool not reading its own arguments
+(found in the gate pilot: `/opt/hmh` is 824 MB and project *is* the narrow
+scope). The advice now depends on the scope in use and points at
+`peer_chat_read`, which takes the same query and has no cap.
+
+Daemon test files no longer run in parallel. Several drive a real tmux server,
+and since window enumeration became host-wide the suites saw each other's
+fixtures — a failure that appeared only in the full run and never in isolation.
+
+Tests 501 (+26), each verified by restoring the old behaviour.
+
+
 ## [0.10.6-rc.1] — 2026-08-04 (pre-release, development channel)
 
 The four remaining tools from the 2026-08-04 MCP test. With `peer_restart`

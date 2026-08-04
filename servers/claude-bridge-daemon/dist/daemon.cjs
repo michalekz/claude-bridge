@@ -4287,7 +4287,7 @@ async function resolvePeer(idOrName, root = bridgeRoot(), now = Date.now()) {
 // package.json
 var package_default = {
   name: "claude-bridge-daemon",
-  version: "0.10.6-rc.1",
+  version: "0.10.6",
   private: true,
   description: "Control-plane daemon for the claude-bridge plugin: peer lifecycle, telemetry, audit. Distributed as opt-in artefact \u2014 see ADR-008.",
   type: "module",
@@ -6057,6 +6057,453 @@ async function handleTeamLayout(req, ctx) {
   return okResult(req.id, req.tool, result);
 }
 
+// src/handlers/team-reconcile.ts
+var import_node_fs = require("node:fs");
+var import_node_path11 = require("node:path");
+var TeamReconcileArgsSchema = external_exports.object({
+  /** Restrict the report to one team. Unmanaged processes are still listed. */
+  team: external_exports.string().min(1).optional(),
+  /**
+   * Set `status: "unknown"` on records whose process is gone. Nothing else is
+   * written, and nothing is ever removed or signalled.
+   */
+  markDead: external_exports.boolean().default(false)
+}).strict();
+function pidAlive(pid, procRoot) {
+  return (0, import_node_fs.existsSync)((0, import_node_path11.join)(procRoot, String(pid)));
+}
+async function handleTeamReconcile(req, ctx) {
+  const parsed = TeamReconcileArgsSchema.safeParse(req.args);
+  if (!parsed.success) {
+    return errResult(req.id, req.tool, "invalid_args", "Schema validation failed", {
+      issues: parsed.error.issues
+    });
+  }
+  const args = parsed.data;
+  const procRoot = ctx.procRoot ?? "/proc";
+  const inspector = ctx.processInspector ?? defaultProcessInspector();
+  const livePeers = await inspector.listClaudePeers();
+  const windows = ctx.hostDriver.listWindows ? await ctx.hostDriver.listWindows() : [];
+  const sessions = await ctx.hostDriver.listSessions();
+  const hostTargets = /* @__PURE__ */ new Map();
+  for (const w of windows) hostTargets.set(w.target, w.pid);
+  for (const s of sessions)
+    if (!hostTargets.has(s.sessionKey)) hostTargets.set(s.sessionKey, s.pid);
+  const records = Object.values(ctx.state.peers).filter(
+    (r) => args.team === void 0 || r.team === args.team
+  );
+  const drift = [];
+  const healthy = [];
+  const accountedPids = /* @__PURE__ */ new Set();
+  for (const rec of records) {
+    if (rec.pid !== null) accountedPids.add(rec.pid);
+    if (rec.status === "stopped") {
+      healthy.push(rec.sessionId);
+      continue;
+    }
+    const base = {
+      sessionId: rec.sessionId,
+      name: rec.name,
+      team: rec.team ?? null,
+      recordedPid: rec.pid,
+      tmuxTarget: rec.tmuxTarget
+    };
+    const alive = rec.pid !== null && pidAlive(rec.pid, procRoot);
+    if (!alive) {
+      drift.push({
+        ...base,
+        kind: "dead",
+        actualPid: null,
+        detail: rec.pid === null ? `record is '${rec.status}' with no pid at all` : `record is '${rec.status}' but pid ${rec.pid} is not running`
+      });
+      continue;
+    }
+    if (rec.tmuxTarget !== null && hostTargets.size > 0 && !hostTargets.has(rec.tmuxTarget)) {
+      drift.push({
+        ...base,
+        kind: "host_missing",
+        actualPid: rec.pid,
+        detail: `pid ${rec.pid} is alive but host target '${rec.tmuxTarget}' no longer exists`
+      });
+      continue;
+    }
+    const targetPid = rec.tmuxTarget !== null ? hostTargets.get(rec.tmuxTarget) ?? null : null;
+    if (targetPid !== null && rec.pid !== null && targetPid !== rec.pid) {
+      drift.push({
+        ...base,
+        kind: "pid_changed",
+        actualPid: targetPid,
+        detail: `host target '${rec.tmuxTarget}' holds pid ${targetPid}, record says ${rec.pid}`
+      });
+      continue;
+    }
+    healthy.push(rec.sessionId);
+  }
+  const knownSessionIds = new Set(Object.keys(ctx.state.peers));
+  for (const proc of livePeers) {
+    if (proc.sessionId && knownSessionIds.has(proc.sessionId)) continue;
+    if (accountedPids.has(proc.pid)) continue;
+    drift.push({
+      kind: "unmanaged",
+      sessionId: proc.sessionId,
+      name: null,
+      team: null,
+      recordedPid: null,
+      actualPid: proc.pid,
+      tmuxTarget: null,
+      detail: `pid ${proc.pid} is a Claude peer with no record${proc.sessionId ? "" : " and no resolvable session id"}`
+    });
+  }
+  const marked = [];
+  if (args.markDead) {
+    const deadIds = drift.filter((d) => d.kind === "dead" && d.sessionId).map((d) => d.sessionId);
+    if (deadIds.length > 0) {
+      await applyStateChange(ctx.state, (draft) => {
+        for (const id of deadIds) {
+          const rec = draft.peers[id];
+          if (rec) {
+            rec.status = "unknown";
+            rec.lastUpdatedAt = (/* @__PURE__ */ new Date()).toISOString();
+          }
+        }
+      });
+      marked.push(...deadIds);
+    }
+  }
+  const byKind = drift.reduce((acc, d) => {
+    acc[d.kind] = (acc[d.kind] ?? 0) + 1;
+    return acc;
+  }, {});
+  const report = {
+    team: args.team ?? null,
+    recordsChecked: records.length,
+    hostTargetsSeen: hostTargets.size,
+    livePeersSeen: livePeers.length,
+    inSync: healthy.length,
+    driftCount: drift.length,
+    byKind,
+    drift,
+    marked,
+    readOnly: !args.markDead
+  };
+  await writeEvent({
+    event: "team_reconciled",
+    // A clean report is `info`; drift is a warning, because a state file that
+    // disagrees with the host is the precondition for every confident lie the
+    // lifecycle tools can tell.
+    level: drift.length > 0 ? "warn" : "info",
+    by: { sessionId: req.requestedBy.sessionId, name: req.requestedBy.name },
+    requestId: req.id,
+    details: report
+  });
+  return okResult(req.id, req.tool, report);
+}
+
+// src/handlers/team-release.ts
+var TeamReleaseArgsSchema = external_exports.object({
+  /** Release these peers by sessionId or name. Mutually exclusive with `team`. */
+  peers: external_exports.array(external_exports.string().min(1)).optional(),
+  /** Release every peer recorded under this team. Mutually exclusive with `peers`. */
+  team: external_exports.string().min(1).optional(),
+  reason: external_exports.string().optional(),
+  dryRun: external_exports.boolean().default(true)
+}).strict().refine((a) => a.peers === void 0 !== (a.team === void 0), {
+  message: "pass exactly one of `peers` or `team`"
+});
+function describe(rec) {
+  return {
+    sessionId: rec.sessionId,
+    name: rec.name,
+    status: rec.status,
+    team: rec.team ?? null,
+    pid: rec.pid,
+    tmuxTarget: rec.tmuxTarget,
+    adopted: rec.adopted ?? false
+  };
+}
+async function handleTeamRelease(req, ctx) {
+  const parsed = TeamReleaseArgsSchema.safeParse(req.args);
+  if (!parsed.success) {
+    return errResult(req.id, req.tool, "invalid_args", "Schema validation failed", {
+      issues: parsed.error.issues
+    });
+  }
+  const args = parsed.data;
+  const found = [];
+  const notFound = [];
+  if (args.team !== void 0) {
+    for (const rec of Object.values(ctx.state.peers)) {
+      if (rec.team === args.team) found.push(rec);
+    }
+    if (found.length === 0) {
+      return errResult(
+        req.id,
+        req.tool,
+        "team_not_found",
+        `No peers recorded under team '${args.team}'`,
+        {
+          team: args.team,
+          knownTeams: [...new Set(Object.values(ctx.state.peers).map((p) => p.team ?? "(none)"))]
+        }
+      );
+    }
+  } else {
+    for (const key of args.peers ?? []) {
+      const rec = ctx.state.peers[key] ?? Object.values(ctx.state.peers).find((r) => r.name === key) ?? null;
+      if (!rec) {
+        notFound.push(key);
+        continue;
+      }
+      if (!found.some((f) => f.sessionId === rec.sessionId)) found.push(rec);
+    }
+    if (found.length === 0) {
+      return errResult(
+        req.id,
+        req.tool,
+        "peer_not_found",
+        `None of the requested peers are in daemon state: ${notFound.join(", ")}`,
+        { notFound, known: Object.keys(ctx.state.peers) }
+      );
+    }
+  }
+  const plan = {
+    dryRun: args.dryRun,
+    reason: args.reason ?? null,
+    releasing: found.map(describe),
+    notFound,
+    // Said explicitly, because the entire point of this tool is what it does
+    // NOT do, and an operator reading a plan should not have to infer it.
+    processesAffected: 0,
+    note: "State-only. No process is signalled, no host session or window is touched."
+  };
+  if (args.dryRun) {
+    await writeEvent({
+      event: "team_release_preview",
+      by: { sessionId: req.requestedBy.sessionId, name: req.requestedBy.name },
+      requestId: req.id,
+      details: plan
+    });
+    return okResult(req.id, req.tool, plan);
+  }
+  await applyStateChange(ctx.state, (draft) => {
+    for (const rec of found) delete draft.peers[rec.sessionId];
+  });
+  for (const rec of found) {
+    await writeEvent({
+      event: "peer_released",
+      by: { sessionId: req.requestedBy.sessionId, name: req.requestedBy.name },
+      requestId: req.id,
+      details: {
+        sessionId: rec.sessionId,
+        name: rec.name,
+        team: rec.team ?? null,
+        pid: rec.pid,
+        tmuxTarget: rec.tmuxTarget,
+        adopted: rec.adopted ?? false,
+        statusAtRelease: rec.status,
+        reason: args.reason ?? null,
+        // The audit trail has to record that the process outlived the record,
+        // or a later reader will assume a release was a stop.
+        processLeftRunning: true
+      }
+    });
+  }
+  return okResult(req.id, req.tool, {
+    ...plan,
+    dryRun: false,
+    released: found.map((r) => r.sessionId)
+  });
+}
+
+// src/handlers/team-restart.ts
+var DEFAULT_SETTLE_MS = 3e3;
+var TeamRestartArgsSchema = external_exports.object({
+  peers: external_exports.array(external_exports.string().min(1)).optional(),
+  team: external_exports.string().min(1).optional(),
+  reason: external_exports.string().optional(),
+  /**
+   * Milliseconds to wait after each peer before starting the next. Gives the
+   * relaunched process time to come up so a rolling restart does not become a
+   * simultaneous one.
+   */
+  settleMs: external_exports.number().int().min(0).max(12e4).default(DEFAULT_SETTLE_MS),
+  /** Keep going after a peer fails to restart. Off, deliberately. */
+  continueOnError: external_exports.boolean().default(false),
+  dryRun: external_exports.boolean().default(true)
+}).strict().refine((a) => a.peers === void 0 !== (a.team === void 0), {
+  message: "pass exactly one of `peers` or `team`"
+});
+function orderPeers(records) {
+  const isVelitel = (r) => (r.name ?? "").includes("velitel");
+  return [...records.filter((r) => !isVelitel(r)), ...records.filter(isVelitel)];
+}
+var sleep2 = (ms) => new Promise((r) => setTimeout(r, ms));
+async function handleTeamRestart(req, ctx) {
+  const parsed = TeamRestartArgsSchema.safeParse(req.args);
+  if (!parsed.success) {
+    return errResult(req.id, req.tool, "invalid_args", "Schema validation failed", {
+      issues: parsed.error.issues
+    });
+  }
+  const args = parsed.data;
+  let selected;
+  const notFound = [];
+  if (args.team !== void 0) {
+    selected = Object.values(ctx.state.peers).filter((r) => r.team === args.team);
+    if (selected.length === 0) {
+      return errResult(req.id, req.tool, "team_not_found", `No peers under team '${args.team}'`, {
+        team: args.team
+      });
+    }
+  } else {
+    selected = [];
+    for (const key of args.peers ?? []) {
+      const rec = ctx.state.peers[key] ?? Object.values(ctx.state.peers).find((r) => r.name === key) ?? null;
+      if (!rec) {
+        notFound.push(key);
+        continue;
+      }
+      if (!selected.some((s) => s.sessionId === rec.sessionId)) selected.push(rec);
+    }
+    if (notFound.length > 0) {
+      return errResult(
+        req.id,
+        req.tool,
+        "peer_not_found",
+        `Not in daemon state: ${notFound.join(", ")} \u2014 nothing was restarted`,
+        { notFound, known: Object.keys(ctx.state.peers) }
+      );
+    }
+  }
+  const ordered = orderPeers(selected);
+  const unrestartable = ordered.filter((r) => !r.command);
+  if (unrestartable.length > 0) {
+    await writeEvent({
+      event: "team_restart_refused",
+      level: "warn",
+      by: { sessionId: req.requestedBy.sessionId, name: req.requestedBy.name },
+      requestId: req.id,
+      details: { missingLaunchParams: unrestartable.map((r) => r.sessionId) }
+    });
+    return errResult(
+      req.id,
+      req.tool,
+      "launch_params_missing",
+      `${unrestartable.length} of ${ordered.length} peers have no recorded command and would relaunch as a bare 'claude'. Nothing was restarted.`,
+      {
+        peers: unrestartable.map((r) => ({ sessionId: r.sessionId, name: r.name })),
+        hint: "Records written before v0.10.3 lack launch parameters. Re-spawn those peers, or adopt them again with a daemon that reads /proc."
+      }
+    );
+  }
+  const plan = {
+    dryRun: args.dryRun,
+    reason: args.reason ?? null,
+    settleMs: args.settleMs,
+    continueOnError: args.continueOnError,
+    order: ordered.map((r) => ({
+      sessionId: r.sessionId,
+      name: r.name,
+      tmuxTarget: r.tmuxTarget,
+      pid: r.pid,
+      command: r.command ?? null,
+      cwd: r.cwd ?? null
+    }))
+  };
+  if (args.dryRun) {
+    await writeEvent({
+      event: "team_restart_preview",
+      by: { sessionId: req.requestedBy.sessionId, name: req.requestedBy.name },
+      requestId: req.id,
+      details: plan
+    });
+    return okResult(req.id, req.tool, plan);
+  }
+  const results = [];
+  let stoppedEarly = false;
+  for (const [i, rec] of ordered.entries()) {
+    if (stoppedEarly) {
+      results.push({
+        sessionId: rec.sessionId,
+        name: rec.name,
+        outcome: "skipped",
+        pidBefore: rec.pid,
+        pidAfter: null
+      });
+      continue;
+    }
+    const pidBefore = rec.pid;
+    const sub = {
+      schemaVersion: req.schemaVersion,
+      id: `${req.id}:restart:${i}`,
+      ts: req.ts,
+      tool: "peer_restart",
+      args: { peer: rec.sessionId, reason: args.reason ?? "team_restart" },
+      requestedBy: req.requestedBy
+    };
+    const res = await handlePeerRestart(sub, ctx);
+    if (res.outcome === "error") {
+      results.push({
+        sessionId: rec.sessionId,
+        name: rec.name,
+        outcome: "failed",
+        pidBefore,
+        pidAfter: null,
+        error: res.error?.message ?? "peer_restart failed"
+      });
+      if (!args.continueOnError) stoppedEarly = true;
+      continue;
+    }
+    results.push({
+      sessionId: rec.sessionId,
+      name: rec.name,
+      outcome: "restarted",
+      pidBefore,
+      pidAfter: ctx.state.peers[rec.sessionId]?.pid ?? null
+    });
+    if (args.settleMs > 0 && i < ordered.length - 1) await sleep2(args.settleMs);
+  }
+  const restarted = results.filter((r) => r.outcome === "restarted");
+  const failed = results.filter((r) => r.outcome === "failed");
+  const skipped = results.filter((r) => r.outcome === "skipped");
+  await writeEvent({
+    event: "team_restarted",
+    level: failed.length > 0 ? "error" : "info",
+    by: { sessionId: req.requestedBy.sessionId, name: req.requestedBy.name },
+    requestId: req.id,
+    details: {
+      team: args.team ?? null,
+      total: ordered.length,
+      restarted: restarted.length,
+      failed: failed.length,
+      skipped: skipped.length,
+      stoppedEarly,
+      results
+    }
+  });
+  const summary = {
+    dryRun: false,
+    total: ordered.length,
+    restarted: restarted.map((r) => r.sessionId),
+    failed: failed.map((r) => ({ sessionId: r.sessionId, error: r.error })),
+    // Named, not merely absent from the success list: an operator has to know
+    // which peers were never touched so they can finish the roll-out.
+    skipped: skipped.map((r) => r.sessionId),
+    stoppedEarly,
+    results
+  };
+  if (failed.length > 0) {
+    return errResult(
+      req.id,
+      req.tool,
+      "team_restart_incomplete",
+      `${failed.length} peer(s) failed to restart${stoppedEarly ? `, ${skipped.length} never attempted` : ""} \u2014 see results`,
+      summary
+    );
+  }
+  return okResult(req.id, req.tool, summary);
+}
+
 // src/handlers/team-status.ts
 var TeamStatusArgsSchema = external_exports.object({
   team: external_exports.string().optional(),
@@ -6112,7 +6559,7 @@ async function handleTeamStatus(req, ctx) {
 // src/handlers/team-stop.ts
 var import_node_crypto6 = require("node:crypto");
 var import_promises10 = require("node:fs/promises");
-var import_node_path11 = require("node:path");
+var import_node_path12 = require("node:path");
 var DEFAULT_ANCHOR_TIMEOUT_MS2 = 12e4;
 var DEFAULT_ACK_POLL_MS2 = 500;
 var STOP_ACK_FILENAME_EXTENSION = ".json";
@@ -6134,7 +6581,7 @@ var TeamStopArgsSchema = external_exports.object({
   inline: TeamStopFileSchema.optional()
 }).strict();
 function teamFilePath2(team) {
-  return (0, import_node_path11.join)(teamsDir(), `${team}.json`);
+  return (0, import_node_path12.join)(teamsDir(), `${team}.json`);
 }
 async function loadTeamOrder(team) {
   try {
@@ -6150,13 +6597,13 @@ async function loadTeamOrder(team) {
   }
 }
 function stopAckDir() {
-  return (0, import_node_path11.join)(controlDir(), "stop-ack");
+  return (0, import_node_path12.join)(controlDir(), "stop-ack");
 }
 function stopAckPath(sessionId) {
-  return (0, import_node_path11.join)(stopAckDir(), `${sessionId}${STOP_ACK_FILENAME_EXTENSION}`);
+  return (0, import_node_path12.join)(stopAckDir(), `${sessionId}${STOP_ACK_FILENAME_EXTENSION}`);
 }
 function inboxPendingDir5(peerId) {
-  return (0, import_node_path11.join)(bridgeRoot(), "inbox", peerId, "pending");
+  return (0, import_node_path12.join)(bridgeRoot(), "inbox", peerId, "pending");
 }
 function generateMsgId4() {
   const ms = Date.now().toString(36);
@@ -6181,10 +6628,10 @@ async function pollForAck2(sessionId, deadline, pollMs) {
 }
 async function consumeAckFile2(sessionId) {
   const src = stopAckPath(sessionId);
-  const done = (0, import_node_path11.join)(stopAckDir(), "done");
+  const done = (0, import_node_path12.join)(stopAckDir(), "done");
   try {
     await (0, import_promises10.mkdir)(done, { recursive: true });
-    await (0, import_promises10.rename)(src, (0, import_node_path11.join)(done, `${sessionId}-${Date.now()}.json`));
+    await (0, import_promises10.rename)(src, (0, import_node_path12.join)(done, `${sessionId}-${Date.now()}.json`));
   } catch {
     await (0, import_promises10.unlink)(src).catch(() => void 0);
   }
@@ -6203,7 +6650,7 @@ async function writeStopRequestMsg(peerId, threadId, reason) {
       reason
     }
   };
-  const path = (0, import_node_path11.join)(inboxPendingDir5(peerId), `${msgId}.json`);
+  const path = (0, import_node_path12.join)(inboxPendingDir5(peerId), `${msgId}.json`);
   await atomicWriteJson(path, envelope);
   return msgId;
 }
@@ -6441,6 +6888,9 @@ var HANDLERS = {
   team_layout: handleTeamLayout,
   team_stop: handleTeamStop,
   team_adopt: handleTeamAdopt,
+  team_release: handleTeamRelease,
+  team_reconcile: handleTeamReconcile,
+  team_restart: handleTeamRestart,
   control_status: handleControlStatus
 };
 async function dispatch(req, ctx) {
@@ -6493,15 +6943,15 @@ function stopHeartbeat() {
 
 // src/hosts/tmux-driver.ts
 var import_node_child_process = require("node:child_process");
-var import_node_fs = require("node:fs");
+var import_node_fs2 = require("node:fs");
 var import_promises12 = require("node:fs/promises");
-var import_node_path12 = require("node:path");
+var import_node_path13 = require("node:path");
 var import_node_util = require("node:util");
 var execFileAsync = (0, import_node_util.promisify)(import_node_child_process.execFile);
 var log6 = makeLogger("daemon.host.tmux");
 var EXEC_DEFAULTS = { killSignal: "SIGKILL" };
 function envPrefix(env) {
-  const envBin = (0, import_node_fs.existsSync)("/usr/bin/env") ? "/usr/bin/env" : "env";
+  const envBin = (0, import_node_fs2.existsSync)("/usr/bin/env") ? "/usr/bin/env" : "env";
   return [envBin, "-i", ...Object.entries(env).map(([k, v]) => `${k}=${v}`)];
 }
 var QUERY_TIMEOUT_MS = 5e3;
@@ -6812,10 +7262,10 @@ var TmuxDriver = class {
   }
   async logSendKeys(sessionKey, entry) {
     try {
-      const dir = (0, import_node_path12.join)(controlDir(), "logs");
+      const dir = (0, import_node_path13.join)(controlDir(), "logs");
       await (0, import_promises12.mkdir)(dir, { recursive: true });
       const line = JSON.stringify({ ts: (/* @__PURE__ */ new Date()).toISOString(), sessionKey, ...entry });
-      await (0, import_promises12.appendFile)((0, import_node_path12.join)(dir, `sendkeys-${sessionKey}.log`), `${line}
+      await (0, import_promises12.appendFile)((0, import_node_path13.join)(dir, `sendkeys-${sessionKey}.log`), `${line}
 `, "utf-8");
     } catch {
     }
@@ -6858,7 +7308,7 @@ function defaultHostDriver() {
 }
 
 // src/lock.ts
-var import_node_fs2 = require("node:fs");
+var import_node_fs3 = require("node:fs");
 var import_promises13 = require("node:fs/promises");
 var log8 = makeLogger("daemon.lock");
 var LockAcquireError = class extends Error {
@@ -6871,7 +7321,7 @@ var LockAcquireError = class extends Error {
 function readProcStart(pid) {
   if (process.platform !== "linux") return null;
   try {
-    const stat4 = (0, import_node_fs2.readFileSync)(`/proc/${pid}/stat`, "utf-8");
+    const stat4 = (0, import_node_fs3.readFileSync)(`/proc/${pid}/stat`, "utf-8");
     const afterComm = stat4.slice(stat4.lastIndexOf(")") + 1).trim();
     const fields = afterComm.split(/\s+/);
     const starttime = fields[19];
@@ -7064,14 +7514,14 @@ async function runDaemon(opts) {
 var import_node_child_process2 = require("node:child_process");
 var import_promises14 = require("node:fs/promises");
 var import_node_os3 = require("node:os");
-var import_node_path13 = require("node:path");
+var import_node_path14 = require("node:path");
 var log10 = makeLogger("daemon.install");
 var UNIT_NAME = "claude-bridge-daemon.service";
 function systemdUserDir() {
-  return (0, import_node_path13.join)((0, import_node_os3.homedir)(), ".config", "systemd", "user");
+  return (0, import_node_path14.join)((0, import_node_os3.homedir)(), ".config", "systemd", "user");
 }
 function unitPath() {
-  return (0, import_node_path13.join)(systemdUserDir(), UNIT_NAME);
+  return (0, import_node_path14.join)(systemdUserDir(), UNIT_NAME);
 }
 function assertLinux() {
   if (process.platform !== "linux") {
@@ -7083,15 +7533,15 @@ function assertLinux() {
 function resolveDaemonBin() {
   const argv1 = process.argv[1];
   if (!argv1) throw new Error("process.argv[1] missing \u2014 cannot determine daemon binary path");
-  if (!argv1.startsWith("/")) return (0, import_node_path13.resolve)(process.cwd(), argv1);
+  if (!argv1.startsWith("/")) return (0, import_node_path14.resolve)(process.cwd(), argv1);
   return argv1;
 }
 async function readTemplate() {
   const anchor = resolveDaemonBin();
-  const anchorDir = (0, import_node_path13.dirname)(anchor);
+  const anchorDir = (0, import_node_path14.dirname)(anchor);
   const candidates = [
-    (0, import_node_path13.resolve)(anchorDir, "..", "templates", UNIT_NAME),
-    (0, import_node_path13.resolve)(anchorDir, "templates", UNIT_NAME)
+    (0, import_node_path14.resolve)(anchorDir, "..", "templates", UNIT_NAME),
+    (0, import_node_path14.resolve)(anchorDir, "templates", UNIT_NAME)
   ];
   for (const candidate of candidates) {
     try {
@@ -7105,24 +7555,24 @@ function findNodeBin() {
   return process.execPath;
 }
 function deployedDaemonPath() {
-  return (0, import_node_path13.join)((0, import_node_os3.homedir)(), ".claude-bridge", "bin", "claude-bridge-daemon.cjs");
+  return (0, import_node_path14.join)((0, import_node_os3.homedir)(), ".claude-bridge", "bin", "claude-bridge-daemon.cjs");
 }
 function deployMetaPath() {
-  return (0, import_node_path13.join)((0, import_node_path13.dirname)(deployedDaemonPath()), "deployed-from.json");
+  return (0, import_node_path14.join)((0, import_node_path14.dirname)(deployedDaemonPath()), "deployed-from.json");
 }
 async function deployDaemonBinary(sourceBin) {
   const target = deployedDaemonPath();
-  if ((0, import_node_path13.resolve)(sourceBin) === (0, import_node_path13.resolve)(target)) {
+  if ((0, import_node_path14.resolve)(sourceBin) === (0, import_node_path14.resolve)(target)) {
     log10.info("deploy_skipped_same_path", { path: target });
     return target;
   }
-  await (0, import_promises14.mkdir)((0, import_node_path13.dirname)(target), { recursive: true });
+  await (0, import_promises14.mkdir)((0, import_node_path14.dirname)(target), { recursive: true });
   await (0, import_promises14.copyFile)(sourceBin, target);
   await (0, import_promises14.chmod)(target, 493);
   try {
     const templateSource = await readTemplate();
-    const templateTarget = (0, import_node_path13.join)((0, import_node_path13.dirname)(target), "templates", UNIT_NAME);
-    await (0, import_promises14.mkdir)((0, import_node_path13.dirname)(templateTarget), { recursive: true });
+    const templateTarget = (0, import_node_path14.join)((0, import_node_path14.dirname)(target), "templates", UNIT_NAME);
+    await (0, import_promises14.mkdir)((0, import_node_path14.dirname)(templateTarget), { recursive: true });
     await (0, import_promises14.writeFile)(templateTarget, templateSource, "utf-8");
   } catch (e) {
     log10.warn("template_deploy_failed", { err: String(e) });
@@ -7130,14 +7580,14 @@ async function deployDaemonBinary(sourceBin) {
   let version = "unknown";
   try {
     const pkg = JSON.parse(
-      await (0, import_promises14.readFile)((0, import_node_path13.resolve)((0, import_node_path13.dirname)(sourceBin), "..", "package.json"), "utf-8")
+      await (0, import_promises14.readFile)((0, import_node_path14.resolve)((0, import_node_path14.dirname)(sourceBin), "..", "package.json"), "utf-8")
     );
     version = pkg.version ?? "unknown";
   } catch {
   }
   await (0, import_promises14.writeFile)(
     deployMetaPath(),
-    `${JSON.stringify({ source: (0, import_node_path13.resolve)(sourceBin), version, deployedAt: (/* @__PURE__ */ new Date()).toISOString() }, null, 2)}
+    `${JSON.stringify({ source: (0, import_node_path14.resolve)(sourceBin), version, deployedAt: (/* @__PURE__ */ new Date()).toISOString() }, null, 2)}
 `,
     "utf-8"
   );
