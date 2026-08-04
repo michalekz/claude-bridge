@@ -1,6 +1,7 @@
 import { readFile } from "node:fs/promises";
 import { mkdir } from "node:fs/promises";
 import { join } from "node:path";
+import { isSyntheticSender } from "@claude-bridge/shared";
 import { z } from "zod";
 import { type MessageEnvelope, type MessageKind, generateMessageId } from "../inbox/store.ts";
 import {
@@ -436,6 +437,24 @@ export async function peerReplyTool(
     );
   }
   const original = found.envelope;
+
+  // A message injected from outside the fleet has no inbox to reply into.
+  // Writing one would create `inbox/external:<label>/pending/`, a directory no
+  // process drains — the reply would sit there looking delivered forever. Refuse
+  // instead, and say where the answer has to go (v0.10.3).
+  if (isSyntheticSender(original.from)) {
+    return err(
+      "sender_is_external",
+      `Message ${args.inReplyTo} came from '${original.fromName ?? original.from}', which is not a peer — there is no inbox to reply into.`,
+      {
+        from: original.from,
+        hint:
+          "External messages are injected by `claude-bridge-daemon send` (a Teams relay, a cron job). " +
+          "Replying would write to a directory nothing reads. Answer through whatever carried the message in.",
+      },
+    );
+  }
+
   // If push delivered the message inline but piggyback hasn't drained yet,
   // archive it now so peer_reply has a consistent post-condition.
   if (found.location === "pending") {

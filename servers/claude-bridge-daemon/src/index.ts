@@ -4,6 +4,7 @@ import packageJson from "../package.json" with { type: "json" };
 import { runDaemon } from "./daemon.ts";
 import { installSystemd, uninstallSystemd } from "./install.ts";
 import { readLock } from "./lock.ts";
+import { SEND_HELP, runSend } from "./send.ts";
 
 const log = makeLogger("daemon.cli");
 const DAEMON_VERSION = (packageJson as { version: string }).version;
@@ -16,6 +17,8 @@ Commands:
   uninstall --systemd
                      Stop, disable, and remove the systemd --user service
   status             Print daemon lock + heartbeat freshness
+  send               Deliver one message into a peer's inbox from outside the
+                     fleet (see \`send --help\`)
   version            Print the daemon version
   help               Print this message
 `;
@@ -67,6 +70,17 @@ async function main(argv: string[]): Promise<void> {
     }
     case "status": {
       await statusCommand();
+      return;
+    }
+    case "send": {
+      if (argv[1] === "--help" || argv[1] === "-h") {
+        process.stdout.write(SEND_HELP);
+        return;
+      }
+      const outcome = await runSend(argv.slice(1));
+      if (outcome.stdout) process.stdout.write(outcome.stdout);
+      if (outcome.stderr) process.stderr.write(outcome.stderr);
+      process.exitCode = outcome.code;
       return;
     }
     case "version": {

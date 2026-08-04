@@ -7,7 +7,7 @@ var __export = (target, all) => {
 };
 
 // src/index.ts
-var import_promises14 = require("node:fs/promises");
+var import_promises16 = require("node:fs/promises");
 
 // ../../packages/shared/src/atomic-write.ts
 var import_node_crypto = require("node:crypto");
@@ -173,210 +173,10 @@ function isPowerOfTwo(n) {
   return n > 0 && (n & n - 1) === 0;
 }
 
-// package.json
-var package_default = {
-  name: "claude-bridge-daemon",
-  version: "0.10.3",
-  private: true,
-  description: "Control-plane daemon for the claude-bridge plugin: peer lifecycle, telemetry, audit. Distributed as opt-in artefact \u2014 see ADR-008.",
-  type: "module",
-  main: "dist/daemon.cjs",
-  bin: {
-    "claude-bridge-daemon": "dist/daemon.cjs"
-  },
-  scripts: {
-    build: "esbuild src/index.ts --bundle --platform=node --target=node18 --format=cjs --outfile=dist/daemon.cjs --banner:js='#!/usr/bin/env node' --loader:.json=json && mkdir -p templates && cp src/templates/claude-bridge-daemon.service templates/",
-    dev: "tsx --watch src/index.ts",
-    start: "node dist/daemon.cjs",
-    test: "vitest run tests/",
-    "test:watch": "vitest tests/",
-    typecheck: "tsc --noEmit",
-    check: "biome check src tests"
-  },
-  dependencies: {
-    "@claude-bridge/shared": "*",
-    zod: "^3.23.8"
-  },
-  devDependencies: {
-    "@biomejs/biome": "^1.9.4",
-    "@types/node": "^22.9.0",
-    esbuild: "^0.24.0",
-    tsx: "^4.19.2",
-    typescript: "^5.6.3",
-    vitest: "^2.1.8"
-  },
-  engines: {
-    node: ">=18"
-  }
-};
-
-// src/events.ts
+// ../../packages/shared/src/inbox-envelope.ts
+var import_node_crypto2 = require("node:crypto");
 var import_promises2 = require("node:fs/promises");
 var import_node_path4 = require("node:path");
-var log = makeLogger("daemon.events");
-var EVENTS_SCHEMA_VERSION = 1;
-var ensured = false;
-async function ensureDir() {
-  if (ensured) return;
-  await (0, import_promises2.mkdir)((0, import_node_path4.dirname)(eventsFilePath()), { recursive: true });
-  ensured = true;
-}
-var EVENTS_MAX_BYTES_DEFAULT = 16 * 1024 * 1024;
-var EVENTS_KEEP_ROTATIONS = 3;
-function eventsMaxBytes() {
-  const raw = process.env["CLAUDE_BRIDGE_EVENTS_MAX_BYTES"];
-  if (!raw) return EVENTS_MAX_BYTES_DEFAULT;
-  const n = Number(raw);
-  return Number.isFinite(n) && n > 0 ? n : EVENTS_MAX_BYTES_DEFAULT;
-}
-var liveBytes = -1;
-async function rotateIfNeeded(pendingBytes) {
-  const path = eventsFilePath();
-  const maxBytes = eventsMaxBytes();
-  if (liveBytes < 0) {
-    try {
-      liveBytes = (await (0, import_promises2.stat)(path)).size;
-    } catch {
-      liveBytes = 0;
-    }
-  }
-  if (liveBytes + pendingBytes <= maxBytes) {
-    liveBytes += pendingBytes;
-    return;
-  }
-  for (let i = EVENTS_KEEP_ROTATIONS - 1; i >= 1; i--) {
-    await (0, import_promises2.rename)(`${path}.${i}`, `${path}.${i + 1}`).catch(() => void 0);
-  }
-  try {
-    await (0, import_promises2.rename)(path, `${path}.1`);
-    liveBytes = pendingBytes;
-    log.info("events_rotated", { keep: EVENTS_KEEP_ROTATIONS, maxBytes });
-  } catch (e) {
-    liveBytes = 0;
-    log.warn("events_rotate_failed", { err: String(e) });
-  }
-}
-var writeChain = Promise.resolve();
-async function writeEvent(evt) {
-  const run = writeChain.then(() => writeEventInner(evt));
-  writeChain = run.catch(() => void 0);
-  return run;
-}
-async function writeEventInner(evt) {
-  try {
-    await ensureDir();
-    const wire = {
-      schemaVersion: EVENTS_SCHEMA_VERSION,
-      ts: (/* @__PURE__ */ new Date()).toISOString(),
-      pid: process.pid,
-      level: evt.level ?? "info",
-      event: evt.event,
-      by: evt.by ?? null,
-      requestId: evt.requestId ?? null,
-      details: evt.details ?? {}
-    };
-    const line = `${JSON.stringify(wire)}
-`;
-    await rotateIfNeeded(Buffer.byteLength(line, "utf-8"));
-    await (0, import_promises2.appendFile)(eventsFilePath(), line, "utf-8");
-  } catch (e) {
-    log.error("event_write_failed", { event: evt.event, err: String(e) });
-  }
-}
-async function writeDaemonEvent(event, details = {}, level = "info") {
-  await writeEvent({
-    event,
-    level,
-    by: { sessionId: null, name: "daemon" },
-    details
-  });
-}
-
-// src/rpc.ts
-var import_promises3 = require("node:fs/promises");
-var log2 = makeLogger("daemon.rpc");
-var REQUEST_SCHEMA_VERSION = 1;
-async function ensureRpcDirs() {
-  await (0, import_promises3.mkdir)(requestsDir(), { recursive: true });
-  await (0, import_promises3.mkdir)(requestsDoneDir(), { recursive: true });
-  await (0, import_promises3.mkdir)(resultsDir(), { recursive: true });
-}
-async function listPendingRequests() {
-  try {
-    const files = await (0, import_promises3.readdir)(requestsDir());
-    return files.filter((f) => f.endsWith(".json")).sort();
-  } catch (e) {
-    const code = e.code;
-    if (code === "ENOENT") return [];
-    log2.warn("requests_list_error", { err: String(e) });
-    return [];
-  }
-}
-async function readRequest(fileName) {
-  const requestId = fileName.replace(/\.json$/, "");
-  try {
-    const raw = await (0, import_promises3.readFile)(requestPath(requestId), "utf-8");
-    const parsed = JSON.parse(raw);
-    if (!parsed.id || !parsed.tool) {
-      log2.warn("request_invalid_shape", { fileName });
-      return null;
-    }
-    return parsed;
-  } catch (e) {
-    log2.warn("request_read_error", { fileName, err: String(e) });
-    return null;
-  }
-}
-async function markRequestDone(requestId) {
-  try {
-    await (0, import_promises3.rename)(requestPath(requestId), requestDonePath(requestId));
-    return true;
-  } catch (e) {
-    const code = e.code;
-    if (code === "ENOENT") return true;
-    log2.warn("request_mark_done_failed", { requestId, err: String(e) });
-    return false;
-  }
-}
-async function writeResult(res) {
-  await atomicWriteJson(resultPath(res.id), res);
-}
-function okResult(id, tool, data) {
-  return {
-    schemaVersion: REQUEST_SCHEMA_VERSION,
-    id,
-    tool,
-    outcome: "ok",
-    finishedAt: (/* @__PURE__ */ new Date()).toISOString(),
-    data
-  };
-}
-function errResult(id, tool, code, message, details) {
-  return {
-    schemaVersion: REQUEST_SCHEMA_VERSION,
-    id,
-    tool,
-    outcome: "error",
-    finishedAt: (/* @__PURE__ */ new Date()).toISOString(),
-    error: { code, message, details }
-  };
-}
-
-// src/handlers/control-status.ts
-async function handleControlStatus(req, ctx) {
-  return okResult(req.id, req.tool, {
-    daemonVersion: ctx.daemonVersion,
-    daemonStartedAt: ctx.state.daemonStartedAt,
-    stateVersion: ctx.state.stateVersion,
-    peerCount: Object.keys(ctx.state.peers).length,
-    hostDriver: ctx.hostDriver.name
-  });
-}
-
-// src/handlers/peer-compact.ts
-var import_node_crypto3 = require("node:crypto");
-var import_promises5 = require("node:fs/promises");
-var import_node_path6 = require("node:path");
 
 // ../../node_modules/zod/v3/external.js
 var external_exports = {};
@@ -4419,20 +4219,290 @@ var coerce = {
 };
 var NEVER = INVALID;
 
-// src/event-subscribers.ts
-var import_node_crypto2 = require("node:crypto");
-var import_promises4 = require("node:fs/promises");
+// ../../packages/shared/src/inbox-envelope.ts
+var MessageKindSchema = external_exports.enum(["ask", "reply", "broadcast"]);
+var MessageEnvelopeSchema = external_exports.object({
+  id: external_exports.string().min(1),
+  /** Sender peer id. For an external injector, a synthetic label (see `isSyntheticSender`). */
+  from: external_exports.string().min(1),
+  fromName: external_exports.string().optional(),
+  /** Recipient peer id — a sessionId UUID, never a display name. Names the inbox directory. */
+  to: external_exports.string().min(1),
+  toName: external_exports.string().optional(),
+  kind: MessageKindSchema,
+  sentAt: external_exports.string(),
+  content: external_exports.string(),
+  threadId: external_exports.string().optional(),
+  inReplyTo: external_exports.string().optional()
+}).passthrough();
+function generateMessageId(now = Date.now()) {
+  return `${now.toString(36)}-${(0, import_node_crypto2.randomBytes)(4).toString("hex")}`;
+}
+var SYNTHETIC_SENDER_PREFIX = "external:";
+function syntheticSenderId(label) {
+  return label.startsWith(SYNTHETIC_SENDER_PREFIX) ? label : `${SYNTHETIC_SENDER_PREFIX}${label}`;
+}
+function inboxPendingDir(peerId, root = bridgeRoot()) {
+  return (0, import_node_path4.join)(root, "inbox", peerId, "pending");
+}
+async function writeEnvelope(envelope, root = bridgeRoot()) {
+  const parsed = MessageEnvelopeSchema.parse(envelope);
+  const path = (0, import_node_path4.join)(inboxPendingDir(parsed.to, root), `${parsed.id}.json`);
+  await atomicWriteJson(path, parsed);
+  return path;
+}
+async function resolvePeer(idOrName, root = bridgeRoot(), now = Date.now()) {
+  const dir = (0, import_node_path4.join)(root, "status");
+  let files;
+  try {
+    files = (await (0, import_promises2.readdir)(dir)).filter((f) => f.endsWith(".json"));
+  } catch {
+    return { outcome: "not_found" };
+  }
+  const peers = [];
+  for (const file of files) {
+    try {
+      const raw = JSON.parse(await (0, import_promises2.readFile)((0, import_node_path4.join)(dir, file), "utf-8"));
+      const id = typeof raw["id"] === "string" ? raw["id"] : null;
+      const name = typeof raw["name"] === "string" ? raw["name"] : null;
+      if (!id || !name) continue;
+      const lastSeen = typeof raw["lastSeen"] === "string" ? Date.parse(raw["lastSeen"]) : Number.NaN;
+      peers.push({
+        id,
+        name,
+        ...typeof raw["displayName"] === "string" ? { displayName: raw["displayName"] } : {},
+        lastSeenAgeMs: Number.isNaN(lastSeen) ? Number.POSITIVE_INFINITY : now - lastSeen
+      });
+    } catch {
+    }
+  }
+  const byId = peers.find((p) => p.id === idOrName);
+  if (byId) return { outcome: "found", peer: byId };
+  const byName = peers.filter((p) => p.name === idOrName || p.displayName === idOrName);
+  if (byName.length === 1 && byName[0]) return { outcome: "found", peer: byName[0] };
+  if (byName.length > 1) return { outcome: "ambiguous", candidates: byName };
+  return { outcome: "not_found" };
+}
+
+// package.json
+var package_default = {
+  name: "claude-bridge-daemon",
+  version: "0.10.4",
+  private: true,
+  description: "Control-plane daemon for the claude-bridge plugin: peer lifecycle, telemetry, audit. Distributed as opt-in artefact \u2014 see ADR-008.",
+  type: "module",
+  main: "dist/daemon.cjs",
+  bin: {
+    "claude-bridge-daemon": "dist/daemon.cjs"
+  },
+  scripts: {
+    build: "esbuild src/index.ts --bundle --platform=node --target=node18 --format=cjs --outfile=dist/daemon.cjs --banner:js='#!/usr/bin/env node' --loader:.json=json && mkdir -p templates && cp src/templates/claude-bridge-daemon.service templates/",
+    dev: "tsx --watch src/index.ts",
+    start: "node dist/daemon.cjs",
+    test: "vitest run tests/",
+    "test:watch": "vitest tests/",
+    typecheck: "tsc --noEmit",
+    check: "biome check src tests"
+  },
+  dependencies: {
+    "@claude-bridge/shared": "*",
+    zod: "^3.23.8"
+  },
+  devDependencies: {
+    "@biomejs/biome": "^1.9.4",
+    "@types/node": "^22.9.0",
+    esbuild: "^0.24.0",
+    tsx: "^4.19.2",
+    typescript: "^5.6.3",
+    vitest: "^2.1.8"
+  },
+  engines: {
+    node: ">=18"
+  }
+};
+
+// src/events.ts
+var import_promises3 = require("node:fs/promises");
 var import_node_path5 = require("node:path");
+var log = makeLogger("daemon.events");
+var EVENTS_SCHEMA_VERSION = 1;
+var ensured = false;
+async function ensureDir() {
+  if (ensured) return;
+  await (0, import_promises3.mkdir)((0, import_node_path5.dirname)(eventsFilePath()), { recursive: true });
+  ensured = true;
+}
+var EVENTS_MAX_BYTES_DEFAULT = 16 * 1024 * 1024;
+var EVENTS_KEEP_ROTATIONS = 3;
+function eventsMaxBytes() {
+  const raw = process.env["CLAUDE_BRIDGE_EVENTS_MAX_BYTES"];
+  if (!raw) return EVENTS_MAX_BYTES_DEFAULT;
+  const n = Number(raw);
+  return Number.isFinite(n) && n > 0 ? n : EVENTS_MAX_BYTES_DEFAULT;
+}
+var liveBytes = -1;
+async function rotateIfNeeded(pendingBytes) {
+  const path = eventsFilePath();
+  const maxBytes = eventsMaxBytes();
+  if (liveBytes < 0) {
+    try {
+      liveBytes = (await (0, import_promises3.stat)(path)).size;
+    } catch {
+      liveBytes = 0;
+    }
+  }
+  if (liveBytes + pendingBytes <= maxBytes) {
+    liveBytes += pendingBytes;
+    return;
+  }
+  for (let i = EVENTS_KEEP_ROTATIONS - 1; i >= 1; i--) {
+    await (0, import_promises3.rename)(`${path}.${i}`, `${path}.${i + 1}`).catch(() => void 0);
+  }
+  try {
+    await (0, import_promises3.rename)(path, `${path}.1`);
+    liveBytes = pendingBytes;
+    log.info("events_rotated", { keep: EVENTS_KEEP_ROTATIONS, maxBytes });
+  } catch (e) {
+    liveBytes = 0;
+    log.warn("events_rotate_failed", { err: String(e) });
+  }
+}
+var writeChain = Promise.resolve();
+async function writeEvent(evt) {
+  const run = writeChain.then(() => writeEventInner(evt));
+  writeChain = run.catch(() => void 0);
+  return run;
+}
+async function writeEventInner(evt) {
+  try {
+    await ensureDir();
+    const wire = {
+      schemaVersion: EVENTS_SCHEMA_VERSION,
+      ts: (/* @__PURE__ */ new Date()).toISOString(),
+      pid: process.pid,
+      level: evt.level ?? "info",
+      event: evt.event,
+      by: evt.by ?? null,
+      requestId: evt.requestId ?? null,
+      details: evt.details ?? {}
+    };
+    const line = `${JSON.stringify(wire)}
+`;
+    await rotateIfNeeded(Buffer.byteLength(line, "utf-8"));
+    await (0, import_promises3.appendFile)(eventsFilePath(), line, "utf-8");
+  } catch (e) {
+    log.error("event_write_failed", { event: evt.event, err: String(e) });
+  }
+}
+async function writeDaemonEvent(event, details = {}, level = "info") {
+  await writeEvent({
+    event,
+    level,
+    by: { sessionId: null, name: "daemon" },
+    details
+  });
+}
+
+// src/rpc.ts
+var import_promises4 = require("node:fs/promises");
+var log2 = makeLogger("daemon.rpc");
+var REQUEST_SCHEMA_VERSION = 1;
+async function ensureRpcDirs() {
+  await (0, import_promises4.mkdir)(requestsDir(), { recursive: true });
+  await (0, import_promises4.mkdir)(requestsDoneDir(), { recursive: true });
+  await (0, import_promises4.mkdir)(resultsDir(), { recursive: true });
+}
+async function listPendingRequests() {
+  try {
+    const files = await (0, import_promises4.readdir)(requestsDir());
+    return files.filter((f) => f.endsWith(".json")).sort();
+  } catch (e) {
+    const code = e.code;
+    if (code === "ENOENT") return [];
+    log2.warn("requests_list_error", { err: String(e) });
+    return [];
+  }
+}
+async function readRequest(fileName) {
+  const requestId = fileName.replace(/\.json$/, "");
+  try {
+    const raw = await (0, import_promises4.readFile)(requestPath(requestId), "utf-8");
+    const parsed = JSON.parse(raw);
+    if (!parsed.id || !parsed.tool) {
+      log2.warn("request_invalid_shape", { fileName });
+      return null;
+    }
+    return parsed;
+  } catch (e) {
+    log2.warn("request_read_error", { fileName, err: String(e) });
+    return null;
+  }
+}
+async function markRequestDone(requestId) {
+  try {
+    await (0, import_promises4.rename)(requestPath(requestId), requestDonePath(requestId));
+    return true;
+  } catch (e) {
+    const code = e.code;
+    if (code === "ENOENT") return true;
+    log2.warn("request_mark_done_failed", { requestId, err: String(e) });
+    return false;
+  }
+}
+async function writeResult(res) {
+  await atomicWriteJson(resultPath(res.id), res);
+}
+function okResult(id, tool, data) {
+  return {
+    schemaVersion: REQUEST_SCHEMA_VERSION,
+    id,
+    tool,
+    outcome: "ok",
+    finishedAt: (/* @__PURE__ */ new Date()).toISOString(),
+    data
+  };
+}
+function errResult(id, tool, code, message, details) {
+  return {
+    schemaVersion: REQUEST_SCHEMA_VERSION,
+    id,
+    tool,
+    outcome: "error",
+    finishedAt: (/* @__PURE__ */ new Date()).toISOString(),
+    error: { code, message, details }
+  };
+}
+
+// src/handlers/control-status.ts
+async function handleControlStatus(req, ctx) {
+  return okResult(req.id, req.tool, {
+    daemonVersion: ctx.daemonVersion,
+    daemonStartedAt: ctx.state.daemonStartedAt,
+    stateVersion: ctx.state.stateVersion,
+    peerCount: Object.keys(ctx.state.peers).length,
+    hostDriver: ctx.hostDriver.name
+  });
+}
+
+// src/handlers/peer-compact.ts
+var import_node_crypto4 = require("node:crypto");
+var import_promises6 = require("node:fs/promises");
+var import_node_path7 = require("node:path");
+
+// src/event-subscribers.ts
+var import_node_crypto3 = require("node:crypto");
+var import_promises5 = require("node:fs/promises");
+var import_node_path6 = require("node:path");
 var log3 = makeLogger("daemon.subscribers");
 function subscribersFilePath() {
-  return (0, import_node_path5.join)(controlDir(), "subscribers.json");
+  return (0, import_node_path6.join)(controlDir(), "subscribers.json");
 }
-function inboxPendingDir(peerId) {
-  return (0, import_node_path5.join)(bridgeRoot(), "inbox", peerId, "pending");
+function inboxPendingDir2(peerId) {
+  return (0, import_node_path6.join)(bridgeRoot(), "inbox", peerId, "pending");
 }
 async function readSubscribers() {
   try {
-    const raw = await (0, import_promises4.readFile)(subscribersFilePath(), "utf-8");
+    const raw = await (0, import_promises5.readFile)(subscribersFilePath(), "utf-8");
     const parsed = JSON.parse(raw);
     return parsed.subscribers ?? [];
   } catch (e) {
@@ -4444,7 +4514,7 @@ async function readSubscribers() {
 }
 function generateMsgId() {
   const ms = Date.now().toString(36);
-  const rand = (0, import_node_crypto2.randomBytes)(4).toString("hex");
+  const rand = (0, import_node_crypto3.randomBytes)(4).toString("hex");
   return `${ms}-${rand}`;
 }
 async function publishLifecycleEvent(payload) {
@@ -4467,7 +4537,7 @@ async function publishLifecycleEvent(payload) {
       }
     };
     try {
-      const path = (0, import_node_path5.join)(inboxPendingDir(sub.peerId), `${msgId}.json`);
+      const path = (0, import_node_path6.join)(inboxPendingDir2(sub.peerId), `${msgId}.json`);
       await atomicWriteJson(path, envelope);
     } catch (e) {
       log3.warn("subscriber_dispatch_failed", {
@@ -4492,22 +4562,22 @@ var PeerCompactArgsSchema = external_exports.object({
   reason: external_exports.string().optional()
 }).strict();
 function compactAckDir() {
-  return (0, import_node_path6.join)(controlDir(), "compact-ack");
+  return (0, import_node_path7.join)(controlDir(), "compact-ack");
 }
 function compactAckPath(sessionId) {
-  return (0, import_node_path6.join)(compactAckDir(), `${sessionId}${COMPACT_ACK_FILENAME_EXTENSION}`);
+  return (0, import_node_path7.join)(compactAckDir(), `${sessionId}${COMPACT_ACK_FILENAME_EXTENSION}`);
 }
-function inboxPendingDir2(peerId) {
-  return (0, import_node_path6.join)(bridgeRoot(), "inbox", peerId, "pending");
+function inboxPendingDir3(peerId) {
+  return (0, import_node_path7.join)(bridgeRoot(), "inbox", peerId, "pending");
 }
 function generateMsgId2() {
   const ms = Date.now().toString(36);
-  const rand = (0, import_node_crypto3.randomBytes)(4).toString("hex");
+  const rand = (0, import_node_crypto4.randomBytes)(4).toString("hex");
   return `${ms}-${rand}`;
 }
 async function fileExists(path) {
   try {
-    await (0, import_promises5.access)(path);
+    await (0, import_promises6.access)(path);
     return true;
   } catch {
     return false;
@@ -4523,12 +4593,12 @@ async function pollForAck(sessionId, deadline, pollMs) {
 }
 async function consumeAckFile(sessionId) {
   const src = compactAckPath(sessionId);
-  const done = (0, import_node_path6.join)(compactAckDir(), "done");
+  const done = (0, import_node_path7.join)(compactAckDir(), "done");
   try {
-    await (0, import_promises5.mkdir)(done, { recursive: true });
-    await (0, import_promises5.rename)(src, (0, import_node_path6.join)(done, `${sessionId}-${Date.now()}.json`));
+    await (0, import_promises6.mkdir)(done, { recursive: true });
+    await (0, import_promises6.rename)(src, (0, import_node_path7.join)(done, `${sessionId}-${Date.now()}.json`));
   } catch {
-    await (0, import_promises5.unlink)(src).catch(() => void 0);
+    await (0, import_promises6.unlink)(src).catch(() => void 0);
   }
 }
 async function writeAnchorRequestMsg(peerId, threadId) {
@@ -4544,7 +4614,7 @@ async function writeAnchorRequestMsg(peerId, threadId) {
       instruction: "Write your compact anchor file and touch ~/.claude-bridge/control/compact-ack/<sessionId>.json when ready."
     }
   };
-  const path = (0, import_node_path6.join)(inboxPendingDir2(peerId), `${msgId}.json`);
+  const path = (0, import_node_path7.join)(inboxPendingDir3(peerId), `${msgId}.json`);
   await atomicWriteJson(path, envelope);
   return msgId;
 }
@@ -4594,7 +4664,7 @@ async function handlePeerCompact(req, ctx) {
   const anchorTimeoutMs = args.anchorTimeoutMs ?? DEFAULT_ANCHOR_TIMEOUT_MS;
   const ackPollMs = args.ackPollMs ?? DEFAULT_ACK_POLL_MS;
   const threadId = `compact:${sessionId}:${Date.now().toString(36)}`;
-  await (0, import_promises5.mkdir)(compactAckDir(), { recursive: true });
+  await (0, import_promises6.mkdir)(compactAckDir(), { recursive: true });
   let anchorMsgId = null;
   if (!args.skipAnchorRequest) {
     try {
@@ -4753,7 +4823,7 @@ async function forkGuard(state, driver, opts) {
 }
 
 // src/state.ts
-var import_promises6 = require("node:fs/promises");
+var import_promises7 = require("node:fs/promises");
 var log4 = makeLogger("daemon.state");
 var STATE_VERSION = 1;
 var StateVersionMismatch = class extends Error {
@@ -4776,7 +4846,7 @@ function emptyState(daemonVersion) {
 }
 async function loadState(daemonVersion) {
   try {
-    const raw = await (0, import_promises6.readFile)(stateFilePath(), "utf-8");
+    const raw = await (0, import_promises7.readFile)(stateFilePath(), "utf-8");
     const parsed = JSON.parse(raw);
     const onDisk = parsed.stateVersion ?? 0;
     if (onDisk > STATE_VERSION) throw new StateVersionMismatch(onDisk, STATE_VERSION);
@@ -5245,9 +5315,9 @@ function sanitizeSessionKey(rawName) {
 }
 
 // src/hosts/process-inspector.ts
-var import_promises7 = require("node:fs/promises");
+var import_promises8 = require("node:fs/promises");
 var import_node_os2 = require("node:os");
-var import_node_path7 = require("node:path");
+var import_node_path8 = require("node:path");
 var DEFAULT_MAX_DEPTH = 8;
 var UUID_RE = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i;
 function parsePpidFromStat(stat4) {
@@ -5262,7 +5332,7 @@ function sessionIdFromCmdline(cmdline) {
   if (idx === -1) return null;
   const rest = cmdline.slice(idx + "--resume".length).trim();
   const token = rest.split(/\s+/)[0] ?? "";
-  const match = UUID_RE.exec((0, import_node_path7.basename)(token));
+  const match = UUID_RE.exec((0, import_node_path8.basename)(token));
   return match ? match[0] : null;
 }
 var LinuxProcessInspector = class {
@@ -5270,12 +5340,12 @@ var LinuxProcessInspector = class {
   sessionsDir;
   constructor(opts = {}) {
     this.procRoot = opts.procRoot ?? "/proc";
-    this.sessionsDir = opts.sessionsDir ?? (0, import_node_path7.join)((0, import_node_os2.homedir)(), ".claude", "sessions");
+    this.sessionsDir = opts.sessionsDir ?? (0, import_node_path8.join)((0, import_node_os2.homedir)(), ".claude", "sessions");
   }
   async listClaudePeers() {
     let entries;
     try {
-      entries = await (0, import_promises7.readdir)(this.procRoot);
+      entries = await (0, import_promises8.readdir)(this.procRoot);
     } catch {
       return [];
     }
@@ -5315,7 +5385,7 @@ var LinuxProcessInspector = class {
    */
   async resolveSessionId(pid, cmdline) {
     try {
-      const raw = await (0, import_promises7.readFile)((0, import_node_path7.join)(this.sessionsDir, `${pid}.json`), "utf-8");
+      const raw = await (0, import_promises8.readFile)((0, import_node_path8.join)(this.sessionsDir, `${pid}.json`), "utf-8");
       const parsed = JSON.parse(raw);
       if (parsed.sessionId) return { sessionId: parsed.sessionId, source: "sessions-json" };
     } catch {
@@ -5326,7 +5396,7 @@ var LinuxProcessInspector = class {
   }
   async readProcFile(pid, name) {
     try {
-      return await (0, import_promises7.readFile)((0, import_node_path7.join)(this.procRoot, String(pid), name), "utf-8");
+      return await (0, import_promises8.readFile)((0, import_node_path8.join)(this.procRoot, String(pid), name), "utf-8");
     } catch {
       return null;
     }
@@ -5522,20 +5592,20 @@ async function handleTeamAdopt(req, ctx) {
 }
 
 // src/handlers/team-layout.ts
-var import_promises8 = require("node:fs/promises");
-var import_node_path9 = require("node:path");
+var import_promises9 = require("node:fs/promises");
+var import_node_path10 = require("node:path");
 
 // src/handlers/wake.ts
-var import_node_crypto4 = require("node:crypto");
-var import_node_path8 = require("node:path");
+var import_node_crypto5 = require("node:crypto");
+var import_node_path9 = require("node:path");
 var DEFAULT_WAKE_DELAY_MS = 8e3;
 var DEFAULT_WAKE_PROMPT = "[daemon] Wake \u2014 you were resumed from a stopped state. Re-onboard from your anchor, read your inbox (peer_inbox_read) and report to whoever woke you.";
-function inboxPendingDir3(peerId) {
-  return (0, import_node_path8.join)(bridgeRoot(), "inbox", peerId, "pending");
+function inboxPendingDir4(peerId) {
+  return (0, import_node_path9.join)(bridgeRoot(), "inbox", peerId, "pending");
 }
 function generateMsgId3() {
   const ms = Date.now().toString(36);
-  const rand = (0, import_node_crypto4.randomBytes)(4).toString("hex");
+  const rand = (0, import_node_crypto5.randomBytes)(4).toString("hex");
   return `${ms}-${rand}`;
 }
 async function writeWakeMsg(opts, threadId) {
@@ -5557,7 +5627,7 @@ async function writeWakeMsg(opts, threadId) {
       } : {}
     }
   };
-  await atomicWriteJson((0, import_node_path8.join)(inboxPendingDir3(opts.sessionId), `${msgId}.json`), envelope);
+  await atomicWriteJson((0, import_node_path9.join)(inboxPendingDir4(opts.sessionId), `${msgId}.json`), envelope);
   return msgId;
 }
 async function wakePeer(req, ctx, opts) {
@@ -5682,11 +5752,11 @@ var TeamLayoutArgsSchema = external_exports.object({
   wakeDelayMs: external_exports.number().int().min(0).max(12e4).optional()
 }).strict();
 function teamFilePath(team) {
-  return (0, import_node_path9.join)(teamsDir(), `${team}.json`);
+  return (0, import_node_path10.join)(teamsDir(), `${team}.json`);
 }
 async function loadTeamSpec(team) {
   try {
-    const raw = await (0, import_promises8.readFile)(teamFilePath(team), "utf-8");
+    const raw = await (0, import_promises9.readFile)(teamFilePath(team), "utf-8");
     const parsed = TeamFileSchema.safeParse(JSON.parse(raw));
     if (!parsed.success) throw new Error(`Team spec parse failed: ${parsed.error.message}`);
     return parsed.data;
@@ -5953,9 +6023,9 @@ async function handleTeamStatus(req, ctx) {
 }
 
 // src/handlers/team-stop.ts
-var import_node_crypto5 = require("node:crypto");
-var import_promises9 = require("node:fs/promises");
-var import_node_path10 = require("node:path");
+var import_node_crypto6 = require("node:crypto");
+var import_promises10 = require("node:fs/promises");
+var import_node_path11 = require("node:path");
 var DEFAULT_ANCHOR_TIMEOUT_MS2 = 12e4;
 var DEFAULT_ACK_POLL_MS2 = 500;
 var STOP_ACK_FILENAME_EXTENSION = ".json";
@@ -5977,11 +6047,11 @@ var TeamStopArgsSchema = external_exports.object({
   inline: TeamStopFileSchema.optional()
 }).strict();
 function teamFilePath2(team) {
-  return (0, import_node_path10.join)(teamsDir(), `${team}.json`);
+  return (0, import_node_path11.join)(teamsDir(), `${team}.json`);
 }
 async function loadTeamOrder(team) {
   try {
-    const raw = await (0, import_promises9.readFile)(teamFilePath2(team), "utf-8");
+    const raw = await (0, import_promises10.readFile)(teamFilePath2(team), "utf-8");
     const json = JSON.parse(raw);
     const parsed = TeamStopFileSchema.safeParse(json);
     if (!parsed.success) throw new Error(`Team spec parse failed: ${parsed.error.message}`);
@@ -5993,22 +6063,22 @@ async function loadTeamOrder(team) {
   }
 }
 function stopAckDir() {
-  return (0, import_node_path10.join)(controlDir(), "stop-ack");
+  return (0, import_node_path11.join)(controlDir(), "stop-ack");
 }
 function stopAckPath(sessionId) {
-  return (0, import_node_path10.join)(stopAckDir(), `${sessionId}${STOP_ACK_FILENAME_EXTENSION}`);
+  return (0, import_node_path11.join)(stopAckDir(), `${sessionId}${STOP_ACK_FILENAME_EXTENSION}`);
 }
-function inboxPendingDir4(peerId) {
-  return (0, import_node_path10.join)(bridgeRoot(), "inbox", peerId, "pending");
+function inboxPendingDir5(peerId) {
+  return (0, import_node_path11.join)(bridgeRoot(), "inbox", peerId, "pending");
 }
 function generateMsgId4() {
   const ms = Date.now().toString(36);
-  const rand = (0, import_node_crypto5.randomBytes)(4).toString("hex");
+  const rand = (0, import_node_crypto6.randomBytes)(4).toString("hex");
   return `${ms}-${rand}`;
 }
 async function fileExists2(path) {
   try {
-    await (0, import_promises9.access)(path);
+    await (0, import_promises10.access)(path);
     return true;
   } catch {
     return false;
@@ -6024,12 +6094,12 @@ async function pollForAck2(sessionId, deadline, pollMs) {
 }
 async function consumeAckFile2(sessionId) {
   const src = stopAckPath(sessionId);
-  const done = (0, import_node_path10.join)(stopAckDir(), "done");
+  const done = (0, import_node_path11.join)(stopAckDir(), "done");
   try {
-    await (0, import_promises9.mkdir)(done, { recursive: true });
-    await (0, import_promises9.rename)(src, (0, import_node_path10.join)(done, `${sessionId}-${Date.now()}.json`));
+    await (0, import_promises10.mkdir)(done, { recursive: true });
+    await (0, import_promises10.rename)(src, (0, import_node_path11.join)(done, `${sessionId}-${Date.now()}.json`));
   } catch {
-    await (0, import_promises9.unlink)(src).catch(() => void 0);
+    await (0, import_promises10.unlink)(src).catch(() => void 0);
   }
 }
 async function writeStopRequestMsg(peerId, threadId, reason) {
@@ -6046,7 +6116,7 @@ async function writeStopRequestMsg(peerId, threadId, reason) {
       reason
     }
   };
-  const path = (0, import_node_path10.join)(inboxPendingDir4(peerId), `${msgId}.json`);
+  const path = (0, import_node_path11.join)(inboxPendingDir5(peerId), `${msgId}.json`);
   await atomicWriteJson(path, envelope);
   return msgId;
 }
@@ -6089,7 +6159,7 @@ async function stopSinglePeer(req, ctx, peer, args, threadId, anchorTimeoutMs, a
     });
     return { sessionId: peer.sessionId, displayName: peer.displayName, outcome: "dead" };
   }
-  await (0, import_promises9.mkdir)(stopAckDir(), { recursive: true });
+  await (0, import_promises10.mkdir)(stopAckDir(), { recursive: true });
   let stopReqMsgId;
   try {
     stopReqMsgId = await writeStopRequestMsg(
@@ -6304,17 +6374,17 @@ async function dispatch(req, ctx) {
 }
 
 // src/heartbeat.ts
-var import_promises10 = require("node:fs/promises");
+var import_promises11 = require("node:fs/promises");
 var log5 = makeLogger("daemon.heartbeat");
 var timer = null;
 async function touch() {
   const now = /* @__PURE__ */ new Date();
   try {
-    await (0, import_promises10.utimes)(heartbeatPath(), now, now);
+    await (0, import_promises11.utimes)(heartbeatPath(), now, now);
   } catch (e) {
     const code = e.code;
     if (code === "ENOENT") {
-      await (0, import_promises10.writeFile)(heartbeatPath(), "");
+      await (0, import_promises11.writeFile)(heartbeatPath(), "");
     } else {
       log5.warn("heartbeat_touch_failed", { err: String(e) });
     }
@@ -6336,8 +6406,8 @@ function stopHeartbeat() {
 
 // src/hosts/tmux-driver.ts
 var import_node_child_process = require("node:child_process");
-var import_promises11 = require("node:fs/promises");
-var import_node_path11 = require("node:path");
+var import_promises12 = require("node:fs/promises");
+var import_node_path12 = require("node:path");
 var import_node_util = require("node:util");
 var execFileAsync = (0, import_node_util.promisify)(import_node_child_process.execFile);
 var log6 = makeLogger("daemon.host.tmux");
@@ -6560,10 +6630,10 @@ var TmuxDriver = class {
   }
   async logSendKeys(sessionKey, entry) {
     try {
-      const dir = (0, import_node_path11.join)(controlDir(), "logs");
-      await (0, import_promises11.mkdir)(dir, { recursive: true });
+      const dir = (0, import_node_path12.join)(controlDir(), "logs");
+      await (0, import_promises12.mkdir)(dir, { recursive: true });
       const line = JSON.stringify({ ts: (/* @__PURE__ */ new Date()).toISOString(), sessionKey, ...entry });
-      await (0, import_promises11.appendFile)((0, import_node_path11.join)(dir, `sendkeys-${sessionKey}.log`), `${line}
+      await (0, import_promises12.appendFile)((0, import_node_path12.join)(dir, `sendkeys-${sessionKey}.log`), `${line}
 `, "utf-8");
     } catch {
     }
@@ -6607,7 +6677,7 @@ function defaultHostDriver() {
 
 // src/lock.ts
 var import_node_fs = require("node:fs");
-var import_promises12 = require("node:fs/promises");
+var import_promises13 = require("node:fs/promises");
 var log8 = makeLogger("daemon.lock");
 var LockAcquireError = class extends Error {
   constructor(message, heldBy) {
@@ -6648,7 +6718,7 @@ function isStale(payload) {
 }
 async function readLock() {
   try {
-    const raw = await (0, import_promises12.readFile)(daemonLockPath(), "utf-8");
+    const raw = await (0, import_promises13.readFile)(daemonLockPath(), "utf-8");
     const parsed = JSON.parse(raw);
     if (typeof parsed.pid !== "number") return null;
     return parsed;
@@ -6682,7 +6752,7 @@ async function acquireLock() {
 }
 async function releaseLock() {
   try {
-    await (0, import_promises12.unlink)(daemonLockPath());
+    await (0, import_promises13.unlink)(daemonLockPath());
     log8.info("lock_released");
   } catch (e) {
     const code = e.code;
@@ -6810,16 +6880,16 @@ async function runDaemon(opts) {
 
 // src/install.ts
 var import_node_child_process2 = require("node:child_process");
-var import_promises13 = require("node:fs/promises");
+var import_promises14 = require("node:fs/promises");
 var import_node_os3 = require("node:os");
-var import_node_path12 = require("node:path");
+var import_node_path13 = require("node:path");
 var log10 = makeLogger("daemon.install");
 var UNIT_NAME = "claude-bridge-daemon.service";
 function systemdUserDir() {
-  return (0, import_node_path12.join)((0, import_node_os3.homedir)(), ".config", "systemd", "user");
+  return (0, import_node_path13.join)((0, import_node_os3.homedir)(), ".config", "systemd", "user");
 }
 function unitPath() {
-  return (0, import_node_path12.join)(systemdUserDir(), UNIT_NAME);
+  return (0, import_node_path13.join)(systemdUserDir(), UNIT_NAME);
 }
 function assertLinux() {
   if (process.platform !== "linux") {
@@ -6831,19 +6901,19 @@ function assertLinux() {
 function resolveDaemonBin() {
   const argv1 = process.argv[1];
   if (!argv1) throw new Error("process.argv[1] missing \u2014 cannot determine daemon binary path");
-  if (!argv1.startsWith("/")) return (0, import_node_path12.resolve)(process.cwd(), argv1);
+  if (!argv1.startsWith("/")) return (0, import_node_path13.resolve)(process.cwd(), argv1);
   return argv1;
 }
 async function readTemplate() {
   const anchor = resolveDaemonBin();
-  const anchorDir = (0, import_node_path12.dirname)(anchor);
+  const anchorDir = (0, import_node_path13.dirname)(anchor);
   const candidates = [
-    (0, import_node_path12.resolve)(anchorDir, "..", "templates", UNIT_NAME),
-    (0, import_node_path12.resolve)(anchorDir, "templates", UNIT_NAME)
+    (0, import_node_path13.resolve)(anchorDir, "..", "templates", UNIT_NAME),
+    (0, import_node_path13.resolve)(anchorDir, "templates", UNIT_NAME)
   ];
   for (const candidate of candidates) {
     try {
-      return await (0, import_promises13.readFile)(candidate, "utf-8");
+      return await (0, import_promises14.readFile)(candidate, "utf-8");
     } catch {
     }
   }
@@ -6853,39 +6923,39 @@ function findNodeBin() {
   return process.execPath;
 }
 function deployedDaemonPath() {
-  return (0, import_node_path12.join)((0, import_node_os3.homedir)(), ".claude-bridge", "bin", "claude-bridge-daemon.cjs");
+  return (0, import_node_path13.join)((0, import_node_os3.homedir)(), ".claude-bridge", "bin", "claude-bridge-daemon.cjs");
 }
 function deployMetaPath() {
-  return (0, import_node_path12.join)((0, import_node_path12.dirname)(deployedDaemonPath()), "deployed-from.json");
+  return (0, import_node_path13.join)((0, import_node_path13.dirname)(deployedDaemonPath()), "deployed-from.json");
 }
 async function deployDaemonBinary(sourceBin) {
   const target = deployedDaemonPath();
-  if ((0, import_node_path12.resolve)(sourceBin) === (0, import_node_path12.resolve)(target)) {
+  if ((0, import_node_path13.resolve)(sourceBin) === (0, import_node_path13.resolve)(target)) {
     log10.info("deploy_skipped_same_path", { path: target });
     return target;
   }
-  await (0, import_promises13.mkdir)((0, import_node_path12.dirname)(target), { recursive: true });
-  await (0, import_promises13.copyFile)(sourceBin, target);
-  await (0, import_promises13.chmod)(target, 493);
+  await (0, import_promises14.mkdir)((0, import_node_path13.dirname)(target), { recursive: true });
+  await (0, import_promises14.copyFile)(sourceBin, target);
+  await (0, import_promises14.chmod)(target, 493);
   try {
     const templateSource = await readTemplate();
-    const templateTarget = (0, import_node_path12.join)((0, import_node_path12.dirname)(target), "templates", UNIT_NAME);
-    await (0, import_promises13.mkdir)((0, import_node_path12.dirname)(templateTarget), { recursive: true });
-    await (0, import_promises13.writeFile)(templateTarget, templateSource, "utf-8");
+    const templateTarget = (0, import_node_path13.join)((0, import_node_path13.dirname)(target), "templates", UNIT_NAME);
+    await (0, import_promises14.mkdir)((0, import_node_path13.dirname)(templateTarget), { recursive: true });
+    await (0, import_promises14.writeFile)(templateTarget, templateSource, "utf-8");
   } catch (e) {
     log10.warn("template_deploy_failed", { err: String(e) });
   }
   let version = "unknown";
   try {
     const pkg = JSON.parse(
-      await (0, import_promises13.readFile)((0, import_node_path12.resolve)((0, import_node_path12.dirname)(sourceBin), "..", "package.json"), "utf-8")
+      await (0, import_promises14.readFile)((0, import_node_path13.resolve)((0, import_node_path13.dirname)(sourceBin), "..", "package.json"), "utf-8")
     );
     version = pkg.version ?? "unknown";
   } catch {
   }
-  await (0, import_promises13.writeFile)(
+  await (0, import_promises14.writeFile)(
     deployMetaPath(),
-    `${JSON.stringify({ source: (0, import_node_path12.resolve)(sourceBin), version, deployedAt: (/* @__PURE__ */ new Date()).toISOString() }, null, 2)}
+    `${JSON.stringify({ source: (0, import_node_path13.resolve)(sourceBin), version, deployedAt: (/* @__PURE__ */ new Date()).toISOString() }, null, 2)}
 `,
     "utf-8"
   );
@@ -6900,8 +6970,8 @@ async function installSystemd() {
   const daemonBin = await deployDaemonBinary(sourceBin);
   const template = await readTemplate();
   const rendered = template.replace(/__NODE_BIN__/g, nodeBin).replace(/__DAEMON_BIN__/g, daemonBin);
-  await (0, import_promises13.mkdir)(systemdUserDir(), { recursive: true });
-  await (0, import_promises13.writeFile)(unitPath(), rendered, "utf-8");
+  await (0, import_promises14.mkdir)(systemdUserDir(), { recursive: true });
+  await (0, import_promises14.writeFile)(unitPath(), rendered, "utf-8");
   log10.info("unit_written", { path: unitPath(), execStart: daemonBin });
   runSystemctl("daemon-reload");
   runSystemctl("enable", UNIT_NAME);
@@ -6921,14 +6991,14 @@ async function uninstallSystemd() {
     log10.warn("systemd_disable_failed", { err: String(e) });
   }
   try {
-    await (0, import_promises13.unlink)(unitPath());
+    await (0, import_promises14.unlink)(unitPath());
   } catch (e) {
     const code = e.code;
     if (code !== "ENOENT") log10.warn("unit_unlink_failed", { err: String(e) });
   }
   for (const path of [deployedDaemonPath(), deployMetaPath()]) {
     try {
-      await (0, import_promises13.unlink)(path);
+      await (0, import_promises14.unlink)(path);
     } catch (e) {
       const code = e.code;
       if (code !== "ENOENT") log10.warn("deployed_binary_unlink_failed", { path, err: String(e) });
@@ -6946,11 +7016,163 @@ async function ensureBinariesExist(daemonBin, nodeBin) {
     ["node", nodeBin]
   ]) {
     try {
-      await (0, import_promises13.stat)(path);
+      await (0, import_promises14.stat)(path);
     } catch {
       throw new Error(`${label} binary not found at ${path} \u2014 build daemon first (npm run build)`);
     }
   }
+}
+
+// src/send.ts
+var import_promises15 = require("node:fs/promises");
+var EXIT_OK = 0;
+var EXIT_PEER = 2;
+var EXIT_USAGE = 3;
+var EXIT_WRITE = 4;
+var SEND_HELP = `Usage: claude-bridge-daemon send --to <peer> --from-label <label> [options]
+
+  --to <peer>           recipient peer id or display name (name must be unique)
+  --from-label <label>  who this is from, e.g. "teams:uzaverka"
+  --text <text>         message body
+  --text-file <path>    read the body from a file, or "-" for stdin
+  --kind <kind>         ask | reply | broadcast   (default: ask)
+  --thread <id>         correlation id for a multi-turn exchange
+  --in-reply-to <id>    msgId this answers
+
+Exit: 0 delivered \xB7 2 recipient not found/ambiguous \xB7 3 bad invocation \xB7 4 write failed
+`;
+var FLAG_MAP = {
+  "--to": "to",
+  "--from-label": "fromLabel",
+  "--text": "text",
+  "--text-file": "textFile",
+  "--kind": "kind",
+  "--thread": "thread",
+  "--in-reply-to": "inReplyTo"
+};
+function parseSendFlags(argv) {
+  const out = {};
+  for (let i = 0; i < argv.length; i++) {
+    const flag = argv[i];
+    if (flag === void 0) continue;
+    const key = FLAG_MAP[flag];
+    if (!key) return { error: `unknown flag '${flag}'` };
+    const value = argv[i + 1];
+    if (value === void 0 || value.startsWith("--")) {
+      return { error: `flag '${flag}' needs a value` };
+    }
+    out[key] = value;
+    i++;
+  }
+  return out;
+}
+async function readStdin() {
+  const chunks = [];
+  for await (const chunk of process.stdin) chunks.push(Buffer.from(chunk));
+  return Buffer.concat(chunks).toString("utf-8");
+}
+async function runSend(argv, now = Date.now()) {
+  const parsed = parseSendFlags(argv);
+  if ("error" in parsed) {
+    return { code: EXIT_USAGE, stderr: `send: ${parsed.error}
+
+${SEND_HELP}` };
+  }
+  if (!parsed.to) return { code: EXIT_USAGE, stderr: `send: --to is required
+
+${SEND_HELP}` };
+  if (!parsed.fromLabel) {
+    return { code: EXIT_USAGE, stderr: `send: --from-label is required
+
+${SEND_HELP}` };
+  }
+  if (parsed.text !== void 0 && parsed.textFile !== void 0) {
+    return { code: EXIT_USAGE, stderr: "send: pass --text or --text-file, not both\n" };
+  }
+  const kindResult = MessageKindSchema.safeParse(parsed.kind ?? "ask");
+  if (!kindResult.success) {
+    return {
+      code: EXIT_USAGE,
+      stderr: `send: --kind must be ask, reply or broadcast (got '${parsed.kind}')
+`
+    };
+  }
+  let content;
+  if (parsed.textFile !== void 0) {
+    try {
+      content = parsed.textFile === "-" ? await readStdin() : await (0, import_promises15.readFile)(parsed.textFile, "utf-8");
+    } catch (e) {
+      return { code: EXIT_USAGE, stderr: `send: cannot read --text-file: ${String(e)}
+` };
+    }
+  } else {
+    content = parsed.text ?? "";
+  }
+  if (content.trim().length === 0) {
+    return { code: EXIT_USAGE, stderr: "send: message body is empty\n" };
+  }
+  const lookup = await resolvePeer(parsed.to);
+  if (lookup.outcome === "not_found") {
+    return {
+      code: EXIT_PEER,
+      stderr: `send: no peer with id or name '${parsed.to}' \u2014 check ~/.claude-bridge/status/
+`
+    };
+  }
+  if (lookup.outcome === "ambiguous") {
+    const ids = lookup.candidates.map((c) => c.id).join(", ");
+    return {
+      code: EXIT_PEER,
+      stderr: `send: '${parsed.to}' matches ${lookup.candidates.length} peers (${ids}) \u2014 address one by id
+`
+    };
+  }
+  const peer = lookup.peer;
+  const envelope = {
+    id: generateMessageId(now),
+    from: syntheticSenderId(parsed.fromLabel),
+    fromName: parsed.fromLabel,
+    to: peer.id,
+    toName: peer.displayName ?? peer.name,
+    kind: kindResult.data,
+    sentAt: new Date(now).toISOString(),
+    content,
+    ...parsed.thread ? { threadId: parsed.thread } : {},
+    ...parsed.inReplyTo ? { inReplyTo: parsed.inReplyTo } : {}
+  };
+  let path;
+  try {
+    path = await writeEnvelope(envelope);
+  } catch (e) {
+    return { code: EXIT_WRITE, stderr: `send: could not write the message: ${String(e)}
+` };
+  }
+  await writeEvent({
+    event: "external_message_sent",
+    by: { sessionId: null, name: envelope.from },
+    details: {
+      msgId: envelope.id,
+      to: peer.id,
+      toName: envelope.toName,
+      kind: envelope.kind,
+      contentLength: content.length,
+      // The body is NOT logged — it can carry anything the relay picked up.
+      peerHeartbeatAgeMs: peer.lastSeenAgeMs
+    }
+  });
+  return {
+    code: EXIT_OK,
+    stdout: `${JSON.stringify({
+      ok: true,
+      msgId: envelope.id,
+      to: { id: peer.id, name: envelope.toName },
+      from: envelope.from,
+      kind: envelope.kind,
+      path,
+      peerHeartbeatAgeMs: peer.lastSeenAgeMs
+    })}
+`
+  };
 }
 
 // src/index.ts
@@ -6964,6 +7186,8 @@ Commands:
   uninstall --systemd
                      Stop, disable, and remove the systemd --user service
   status             Print daemon lock + heartbeat freshness
+  send               Deliver one message into a peer's inbox from outside the
+                     fleet (see \`send --help\`)
   version            Print the daemon version
   help               Print this message
 `;
@@ -6971,7 +7195,7 @@ async function statusCommand() {
   const lock = await readLock();
   let heartbeatAgeMs = null;
   try {
-    const s = await (0, import_promises14.stat)(heartbeatPath());
+    const s = await (0, import_promises16.stat)(heartbeatPath());
     heartbeatAgeMs = Date.now() - s.mtimeMs;
   } catch {
     heartbeatAgeMs = null;
@@ -7016,6 +7240,17 @@ ${HELP}`);
     }
     case "status": {
       await statusCommand();
+      return;
+    }
+    case "send": {
+      if (argv[1] === "--help" || argv[1] === "-h") {
+        process.stdout.write(SEND_HELP);
+        return;
+      }
+      const outcome = await runSend(argv.slice(1));
+      if (outcome.stdout) process.stdout.write(outcome.stdout);
+      if (outcome.stderr) process.stderr.write(outcome.stderr);
+      process.exitCode = outcome.code;
       return;
     }
     case "version": {

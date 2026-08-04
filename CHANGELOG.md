@@ -6,6 +6,58 @@ All notable changes to this project are documented here. Format follows [Keep a 
 
 _Nothing yet._
 
+## [0.10.4] — 2026-08-04
+
+### `claude-bridge-daemon send` — a supported way in from outside the fleet
+
+A relay that polls named Teams threads needs to deliver each new message to a
+configured peer. It could write `inbox/<peer>/pending/<id>.json` itself; that
+works, which is the problem.
+
+`MessageEnvelopeSchema` is `.passthrough()`, so a writer that drifts from the
+format **does not fail**. It writes a subtly wrong file, the watcher delivers
+it, and the recipient gets something broken with no error on either side. Two
+further requirements are invisible from the format alone:
+
+- ids must be **time-prefixed base36** — the inbox has no index, order is the
+  lexical sort of filenames, and a synthetic id delivers messages out of order
+- `to` must be a **peer id**, never a display name — the id names the directory
+
+```
+claude-bridge-daemon send --to <peer-id|name> --from-label "teams:uzaverka" \
+                          [--text <s> | --text-file <path|->] \
+                          [--kind ask|reply|broadcast] [--thread <id>]
+
+0  delivered (JSON with msgId on stdout, for the caller's cursor)
+2  recipient not found, or a name matching more than one peer
+3  malformed invocation
+4  the write failed
+```
+
+Names resolve through the heartbeat files in `~/.claude-bridge/status/`. A name
+matching two peers is **refused, not guessed** — picking one delivers somebody's
+mail to the wrong peer, silently. Each injection writes an
+`external_message_sent` audit event; the message body is not logged, since a
+relay carries whatever the source thread said.
+
+**Replying to an external sender now fails loudly.** External messages carry an
+`external:` sender prefix, and `peer_reply` refuses them with
+`sender_is_external`. Without it the reply went to
+`inbox/external:<label>/pending/` — a directory no process drains — and
+returned `ok`. The same confirmed-without-checking shape as the push that
+reported `delivered` for a message nobody rendered.
+
+The envelope, the id generator and the peer lookup moved to
+`@claude-bridge/shared`, so the daemon does not become a third definition of the
+on-disk format. A contract test in the MCP package feeds the shared writer's
+output to that package's own reader schema; if the two drift, it fails.
+Full unification is still task #65.
+
+Tests 454 (+12), verified by breaking each: renaming a field in the writer fails
+the contract test, disabling the reply guard fails the regression test.
+End-to-end smoke on the live fleet: exit 2 for an unknown recipient, exit 3 for
+an empty body, and a real message delivered through the channel.
+
 ## [0.10.3] — 2026-08-04
 
 ### `peer_restart` relaunched every peer with a command it had made up

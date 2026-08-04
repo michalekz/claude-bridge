@@ -18243,7 +18243,7 @@ var StdioServerTransport = class {
 // package.json
 var package_default = {
   name: "claude-bridge",
-  version: "0.10.3",
+  version: "0.10.4",
   private: true,
   description: "MCP server for cross-Claude-Code-chat orchestration over local session JSONL files",
   type: "module",
@@ -18265,6 +18265,7 @@ var package_default = {
     lint: "biome lint src tests"
   },
   dependencies: {
+    "@claude-bridge/shared": "*",
     "@modelcontextprotocol/sdk": "^1.0.4",
     chokidar: "^4.0.1",
     zod: "^3.23.8"
@@ -20851,6 +20852,33 @@ var import_promises15 = require("node:fs/promises");
 var import_promises16 = require("node:fs/promises");
 var import_node_path12 = require("node:path");
 
+// ../../packages/shared/src/logger.ts
+var LEVELS2 = { debug: 10, info: 20, warn: 30, error: 40 };
+var envLevel2 = process.env["LOG_LEVEL"] || "info";
+var minLevel2 = LEVELS2[envLevel2] ?? LEVELS2.info;
+var pretty2 = process.env["LOG_FORMAT"] === "pretty";
+
+// ../../packages/shared/src/inbox-envelope.ts
+var MessageKindSchema2 = external_exports.enum(["ask", "reply", "broadcast"]);
+var MessageEnvelopeSchema2 = external_exports.object({
+  id: external_exports.string().min(1),
+  /** Sender peer id. For an external injector, a synthetic label (see `isSyntheticSender`). */
+  from: external_exports.string().min(1),
+  fromName: external_exports.string().optional(),
+  /** Recipient peer id — a sessionId UUID, never a display name. Names the inbox directory. */
+  to: external_exports.string().min(1),
+  toName: external_exports.string().optional(),
+  kind: MessageKindSchema2,
+  sentAt: external_exports.string(),
+  content: external_exports.string(),
+  threadId: external_exports.string().optional(),
+  inReplyTo: external_exports.string().optional()
+}).passthrough();
+var SYNTHETIC_SENDER_PREFIX = "external:";
+function isSyntheticSender(from) {
+  return from.startsWith(SYNTHETIC_SENDER_PREFIX);
+}
+
 // src/parser/jsonl-context.ts
 var import_promises10 = require("node:fs/promises");
 
@@ -22346,6 +22374,16 @@ async function peerReplyTool(ctx, args) {
     );
   }
   const original = found.envelope;
+  if (isSyntheticSender(original.from)) {
+    return err2(
+      "sender_is_external",
+      `Message ${args.inReplyTo} came from '${original.fromName ?? original.from}', which is not a peer \u2014 there is no inbox to reply into.`,
+      {
+        from: original.from,
+        hint: "External messages are injected by `claude-bridge-daemon send` (a Teams relay, a cron job). Replying would write to a directory nothing reads. Answer through whatever carried the message in."
+      }
+    );
+  }
   if (found.location === "pending") {
     await ctx.inbox.consume(ctx.self.id, args.inReplyTo);
   }
