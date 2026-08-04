@@ -4287,7 +4287,7 @@ async function resolvePeer(idOrName, root = bridgeRoot(), now = Date.now()) {
 // package.json
 var package_default = {
   name: "claude-bridge-daemon",
-  version: "0.10.8",
+  version: "0.10.9",
   private: true,
   description: "Control-plane daemon for the claude-bridge plugin: peer lifecycle, telemetry, audit. Distributed as opt-in artefact \u2014 see ADR-008.",
   type: "module",
@@ -4741,6 +4741,7 @@ async function handlePeerCompact(req, ctx) {
 }
 
 // src/handlers/peer-restart.ts
+var import_node_fs = require("node:fs");
 var import_promises8 = require("node:fs/promises");
 var import_node_os2 = require("node:os");
 var import_node_path8 = require("node:path");
@@ -5233,6 +5234,23 @@ var UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 function isResumableSessionId(sessionId) {
   return UUID_RE.test(sessionId);
 }
+async function confirmStillRunning(pid, identity, expectedSessionId, opts = {}) {
+  if (pid === null) return { ok: false, reason: "no pid was reported by the spawn" };
+  const settleMs = opts.settleMs ?? 2500;
+  const procRoot = opts.procRoot ?? "/proc";
+  await new Promise((r) => setTimeout(r, settleMs));
+  if (!(0, import_node_fs.existsSync)((0, import_node_path8.join)(procRoot, String(pid)))) {
+    return { ok: false, reason: `pid ${pid} exited within ${settleMs} ms of starting` };
+  }
+  const isClaude = (opts.command ?? "").split("/").pop() === "claude";
+  if (isClaude && isResumableSessionId(expectedSessionId) && identity.actual === null) {
+    return {
+      ok: false,
+      reason: `pid ${pid} is running but registered no session \u2014 ~/.claude/sessions/${pid}.json never appeared`
+    };
+  }
+  return { ok: true, reason: "alive and registered" };
+}
 async function verifyRestartedIdentity(expected, pid, opts = {}) {
   if (pid === null || !isResumableSessionId(expected)) return { mismatch: false, actual: null };
   const attempts = opts.attempts ?? 8;
@@ -5268,6 +5286,28 @@ async function handlePeerRestart(req, ctx) {
       { peer: args.peer }
     );
   }
+  let inSession = null;
+  if (record.tmuxTarget && parseHostTarget(record.tmuxTarget).kind === "window") {
+    const windows = ctx.hostDriver.listWindows ? await ctx.hostDriver.listWindows() : [];
+    inSession = windows.find((w) => w.target === record.tmuxTarget)?.session ?? null;
+    if (inSession === null) {
+      await writeEvent({
+        event: "peer_restart_window_home_unknown",
+        level: "warn",
+        by: { sessionId: req.requestedBy.sessionId, name: req.requestedBy.name },
+        requestId: req.id,
+        details: {
+          sessionId: record.sessionId,
+          tmuxTarget: record.tmuxTarget,
+          hint: "The window is not on the host, so its parent session cannot be read. The peer will be relaunched as a session of its own."
+        }
+      });
+    }
+  }
+  const provenance = {
+    ...record.team !== void 0 ? { team: record.team } : {},
+    ...record.adopted !== void 0 ? { adopted: record.adopted } : {}
+  };
   const stopArgs = {
     schemaVersion: req.schemaVersion,
     id: `${req.id}:stop`,
@@ -5311,24 +5351,6 @@ async function handlePeerRestart(req, ctx) {
       }
     });
   }
-  let inSession = null;
-  if (record.tmuxTarget && parseHostTarget(record.tmuxTarget).kind === "window") {
-    const windows = ctx.hostDriver.listWindows ? await ctx.hostDriver.listWindows() : [];
-    inSession = windows.find((w) => w.target === record.tmuxTarget)?.session ?? null;
-    if (inSession === null) {
-      await writeEvent({
-        event: "peer_restart_window_home_unknown",
-        level: "warn",
-        by: { sessionId: req.requestedBy.sessionId, name: req.requestedBy.name },
-        requestId: req.id,
-        details: {
-          sessionId: record.sessionId,
-          tmuxTarget: record.tmuxTarget,
-          hint: "The window is gone, so its parent session cannot be read. The peer will be relaunched as a session of its own."
-        }
-      });
-    }
-  }
   const spawnArgs = {
     schemaVersion: req.schemaVersion,
     id: `${req.id}:spawn`,
@@ -5371,8 +5393,35 @@ async function handlePeerRestart(req, ctx) {
       { spawnResult }
     );
   }
+  if (Object.keys(provenance).length > 0) {
+    await applyStateChange(ctx.state, (draft) => {
+      const rec = draft.peers[record.sessionId];
+      if (rec) Object.assign(rec, provenance);
+    });
+  }
   const newPid = spawnResult.data?.pid ?? null;
   const identity = await verifyRestartedIdentity(record.sessionId, newPid);
+  const liveness = await confirmStillRunning(newPid, identity, record.sessionId, {
+    ...ctx.restartSettleMs !== void 0 ? { settleMs: ctx.restartSettleMs } : {},
+    ...ctx.procRoot ? { procRoot: ctx.procRoot } : {},
+    command
+  });
+  if (!liveness.ok) {
+    await writeEvent({
+      event: "peer_restart_died_after_spawn",
+      level: "error",
+      by: { sessionId: req.requestedBy.sessionId, name: req.requestedBy.name },
+      requestId: req.id,
+      details: { sessionId: record.sessionId, pid: newPid, reason: liveness.reason }
+    });
+    return errResult(
+      req.id,
+      req.tool,
+      "restart_died_after_spawn",
+      `The relaunched peer did not survive: ${liveness.reason}`,
+      { sessionId: record.sessionId, pid: newPid, reason: liveness.reason }
+    );
+  }
   if (identity.mismatch) {
     await writeEvent({
       event: "peer_restart_identity_mismatch",
@@ -6173,7 +6222,7 @@ async function handleTeamLayout(req, ctx) {
 }
 
 // src/handlers/team-reconcile.ts
-var import_node_fs = require("node:fs");
+var import_node_fs2 = require("node:fs");
 var import_node_path12 = require("node:path");
 var TeamReconcileArgsSchema = external_exports.object({
   /** Restrict the report to one team. Unmanaged processes are still listed. */
@@ -6185,7 +6234,7 @@ var TeamReconcileArgsSchema = external_exports.object({
   markDead: external_exports.boolean().default(false)
 }).strict();
 function pidAlive(pid, procRoot) {
-  return (0, import_node_fs.existsSync)((0, import_node_path12.join)(procRoot, String(pid)));
+  return (0, import_node_fs2.existsSync)((0, import_node_path12.join)(procRoot, String(pid)));
 }
 async function handleTeamReconcile(req, ctx) {
   const parsed = TeamReconcileArgsSchema.safeParse(req.args);
@@ -6638,7 +6687,18 @@ async function handleTeamStatus(req, ctx) {
   } catch (e) {
     hostSessions = [];
   }
-  const hostByKey = new Map(hostSessions.map((s) => [s.sessionKey, s]));
+  let hostWindows = [];
+  try {
+    hostWindows = ctx.hostDriver.listWindows ? await ctx.hostDriver.listWindows() : [];
+  } catch {
+    hostWindows = [];
+  }
+  const hostByKey = new Map(
+    hostSessions.map((s) => [s.sessionKey, { sessionKey: s.sessionKey, pid: s.pid }])
+  );
+  for (const w of hostWindows) {
+    if (!hostByKey.has(w.target)) hostByKey.set(w.target, { sessionKey: w.target, pid: w.pid });
+  }
   const peers = Object.values(ctx.state.peers).map((record) => {
     const key = record.tmuxTarget ?? record.name;
     const host = hostByKey.get(key);
@@ -7058,7 +7118,7 @@ function stopHeartbeat() {
 
 // src/hosts/tmux-driver.ts
 var import_node_child_process = require("node:child_process");
-var import_node_fs2 = require("node:fs");
+var import_node_fs3 = require("node:fs");
 var import_promises13 = require("node:fs/promises");
 var import_node_path14 = require("node:path");
 var import_node_util = require("node:util");
@@ -7066,7 +7126,7 @@ var execFileAsync = (0, import_node_util.promisify)(import_node_child_process.ex
 var log6 = makeLogger("daemon.host.tmux");
 var EXEC_DEFAULTS = { killSignal: "SIGKILL" };
 function envPrefix(env) {
-  const envBin = (0, import_node_fs2.existsSync)("/usr/bin/env") ? "/usr/bin/env" : "env";
+  const envBin = (0, import_node_fs3.existsSync)("/usr/bin/env") ? "/usr/bin/env" : "env";
   return [envBin, "-i", ...Object.entries(env).map(([k, v]) => `${k}=${v}`)];
 }
 var QUERY_TIMEOUT_MS = 5e3;
@@ -7444,7 +7504,7 @@ function defaultHostDriver() {
 }
 
 // src/lock.ts
-var import_node_fs3 = require("node:fs");
+var import_node_fs4 = require("node:fs");
 var import_promises14 = require("node:fs/promises");
 var log8 = makeLogger("daemon.lock");
 var LockAcquireError = class extends Error {
@@ -7457,7 +7517,7 @@ var LockAcquireError = class extends Error {
 function readProcStart(pid) {
   if (process.platform !== "linux") return null;
   try {
-    const stat4 = (0, import_node_fs3.readFileSync)(`/proc/${pid}/stat`, "utf-8");
+    const stat4 = (0, import_node_fs4.readFileSync)(`/proc/${pid}/stat`, "utf-8");
     const afterComm = stat4.slice(stat4.lastIndexOf(")") + 1).trim();
     const fields = afterComm.split(/\s+/);
     const starttime = fields[19];

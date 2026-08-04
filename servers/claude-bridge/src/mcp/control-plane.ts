@@ -510,6 +510,8 @@ export const TeamAdoptArgs = z
   .object({
     team: z.string().min(1),
     mode: z.enum(["auto", "manual"]).optional(),
+    /** Adopt only peers whose host session matches. Plain name or `/regex/`. */
+    hostSession: z.string().min(1).optional(),
     /** manual mode: host session key -> Claude session id. */
     mapping: z.record(z.string().min(1)).optional(),
     /**
@@ -528,6 +530,7 @@ export async function teamAdoptTool(
 ): Promise<ToolResult> {
   const daemonArgs: Record<string, unknown> = { team: args.team };
   if (args.mode !== undefined) daemonArgs["mode"] = args.mode;
+  if (args.hostSession !== undefined) daemonArgs["hostSession"] = args.hostSession;
   if (args.mapping !== undefined) daemonArgs["mapping"] = args.mapping;
   if (args.dryRun !== undefined) daemonArgs["dryRun"] = args.dryRun;
   // Discovery scans the process table; always worth waiting for the answer.

@@ -24,4 +24,10 @@ export interface HandlerContext {
    * point it at a fixture directory so liveness can be faked without spawning.
    */
   procRoot?: string;
+  /**
+   * How long `peer_restart` waits before confirming the relaunched process is
+   * still alive. Production uses 2.5 s — long enough for a failed resume to
+   * exit. Tests set 0 so the suite does not pay it per case.
+   */
+  restartSettleMs?: number;
 }

@@ -41,7 +41,22 @@ export async function handleTeamStatus(
     hostSessions = [];
     void e;
   }
-  const hostByKey = new Map(hostSessions.map((s) => [s.sessionKey, s]));
+  // Window-keyed records (`@42`) are invisible to `listSessions`, which only
+  // reports tmux SESSIONS. Every adopted peer therefore read `hostAlive: false`
+  // while its process and its window were both plainly there (plt-designer,
+  // v0.10.7 re-pilot, finding I). Fold the windows in.
+  let hostWindows: Array<{ target: string; pid: number | null }> = [];
+  try {
+    hostWindows = ctx.hostDriver.listWindows ? await ctx.hostDriver.listWindows() : [];
+  } catch {
+    hostWindows = [];
+  }
+  const hostByKey = new Map<string, { sessionKey: string; pid: number | null }>(
+    hostSessions.map((s) => [s.sessionKey, { sessionKey: s.sessionKey, pid: s.pid }]),
+  );
+  for (const w of hostWindows) {
+    if (!hostByKey.has(w.target)) hostByKey.set(w.target, { sessionKey: w.target, pid: w.pid });
+  }
 
   const peers = Object.values(ctx.state.peers).map((record) => {
     const key = record.tmuxTarget ?? record.name;

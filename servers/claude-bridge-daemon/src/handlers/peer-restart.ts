@@ -1,3 +1,4 @@
+import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -9,6 +10,7 @@ import { errResult, okResult } from "../rpc.ts";
 import type { HandlerContext } from "./context.ts";
 import { handlePeerSpawn } from "./peer-spawn.ts";
 import { handlePeerStop } from "./peer-stop.ts";
+import { applyStateChange } from "./state-writer.ts";
 
 /**
  * peer_restart — stop + spawn using the parameters recorded in
@@ -46,6 +48,48 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
  */
 export function isResumableSessionId(sessionId: string): boolean {
   return UUID_RE.test(sessionId);
+}
+
+export interface LivenessCheck {
+  ok: boolean;
+  reason: string;
+}
+
+/**
+ * Confirm the relaunched process is still alive, and that a resumable peer
+ * actually registered a session.
+ *
+ * Two different failures wear the same face. A process that vanished leaves no
+ * pid; a process that is running but never registered leaves a pid and no
+ * session file. Both are reported, separately, rather than folded into one
+ * vague "did not come up".
+ */
+export async function confirmStillRunning(
+  pid: number | null,
+  identity: IdentityCheck,
+  expectedSessionId: string,
+  opts: { settleMs?: number; procRoot?: string; command?: string } = {},
+): Promise<LivenessCheck> {
+  if (pid === null) return { ok: false, reason: "no pid was reported by the spawn" };
+  const settleMs = opts.settleMs ?? 2_500;
+  const procRoot = opts.procRoot ?? "/proc";
+  await new Promise((r) => setTimeout(r, settleMs));
+  if (!existsSync(join(procRoot, String(pid)))) {
+    return { ok: false, reason: `pid ${pid} exited within ${settleMs} ms of starting` };
+  }
+  // The session file is the proof a peer got as far as being a peer — but only
+  // Claude Code writes one. Requiring it from any other command would fail
+  // every legitimate relaunch of something else (a shell in the acceptance
+  // suite, a wrapper on a host that uses one), so the rule applies to the
+  // process that is actually supposed to register.
+  const isClaude = (opts.command ?? "").split("/").pop() === "claude";
+  if (isClaude && isResumableSessionId(expectedSessionId) && identity.actual === null) {
+    return {
+      ok: false,
+      reason: `pid ${pid} is running but registered no session — ~/.claude/sessions/${pid}.json never appeared`,
+    };
+  }
+  return { ok: true, reason: "alive and registered" };
 }
 
 export interface IdentityCheck {
@@ -113,6 +157,42 @@ export async function handlePeerRestart(
     );
   }
 
+  // Read the peer's home BEFORE stopping it.
+  //
+  // This lookup used to sit after the stop, by which point the window had
+  // already been destroyed — so `inSession` was always null and every adopted
+  // peer was relaunched as a session of its own anyway. The v0.10.7 fix was
+  // correct and unreachable (plt-designer, re-pilot: @652 in `obetni` came back
+  // as a standalone session `w1`). Ask the host while the answer still exists.
+  let inSession: string | null = null;
+  if (record.tmuxTarget && parseHostTarget(record.tmuxTarget).kind === "window") {
+    const windows = ctx.hostDriver.listWindows ? await ctx.hostDriver.listWindows() : [];
+    inSession = windows.find((w) => w.target === record.tmuxTarget)?.session ?? null;
+    if (inSession === null) {
+      await writeEvent({
+        event: "peer_restart_window_home_unknown",
+        level: "warn",
+        by: { sessionId: req.requestedBy.sessionId, name: req.requestedBy.name },
+        requestId: req.id,
+        details: {
+          sessionId: record.sessionId,
+          tmuxTarget: record.tmuxTarget,
+          hint: "The window is not on the host, so its parent session cannot be read. The peer will be relaunched as a session of its own.",
+        },
+      });
+    }
+  }
+
+  // Provenance the spawn does not know about. `peer_spawn` writes a fresh
+  // record, so without carrying these forward a restart silently stripped
+  // `team` and `adopted` from every peer it touched — and a fleet roll would
+  // have left every team-scoped operation with nothing to match on
+  // (plt-designer, v0.10.7 re-pilot, finding H).
+  const provenance = {
+    ...(record.team !== undefined ? { team: record.team } : {}),
+    ...(record.adopted !== undefined ? { adopted: record.adopted } : {}),
+  };
+
   const stopArgs = {
     schemaVersion: req.schemaVersion,
     id: `${req.id}:stop`,
@@ -179,29 +259,6 @@ export async function handlePeerRestart(
     });
   }
 
-  // An adopted peer's home is a WINDOW of a shared session. Relaunching it as a
-  // session of its own would quietly move it out of its team (plt-designer,
-  // v0.10.6 pilot: @548 became @549 in a new session). Find the session the old
-  // window belonged to and put the replacement back in it.
-  let inSession: string | null = null;
-  if (record.tmuxTarget && parseHostTarget(record.tmuxTarget).kind === "window") {
-    const windows = ctx.hostDriver.listWindows ? await ctx.hostDriver.listWindows() : [];
-    inSession = windows.find((w) => w.target === record.tmuxTarget)?.session ?? null;
-    if (inSession === null) {
-      await writeEvent({
-        event: "peer_restart_window_home_unknown",
-        level: "warn",
-        by: { sessionId: req.requestedBy.sessionId, name: req.requestedBy.name },
-        requestId: req.id,
-        details: {
-          sessionId: record.sessionId,
-          tmuxTarget: record.tmuxTarget,
-          hint: "The window is gone, so its parent session cannot be read. The peer will be relaunched as a session of its own.",
-        },
-      });
-    }
-  }
-
   const spawnArgs = {
     schemaVersion: req.schemaVersion,
     id: `${req.id}:spawn`,
@@ -245,6 +302,13 @@ export async function handlePeerRestart(
     );
   }
 
+  if (Object.keys(provenance).length > 0) {
+    await applyStateChange(ctx.state, (draft) => {
+      const rec = draft.peers[record.sessionId];
+      if (rec) Object.assign(rec, provenance);
+    });
+  }
+
   // Did the peer come back as ITSELF?
   //
   // A restart can succeed at the level of "a process is running" and still be
@@ -255,6 +319,40 @@ export async function handlePeerRestart(
   // cheap check, so there is no excuse for not making it.
   const newPid = (spawnResult.data as { pid?: number | null } | undefined)?.pid ?? null;
   const identity = await verifyRestartedIdentity(record.sessionId, newPid);
+
+  // Is it still there a moment later?
+  //
+  // `spawn_produced_no_process` catches a command that never started. It does
+  // NOT catch one that started and died a second later — a failed resume exits
+  // in about two seconds, tmux removes the window, and the identity check finds
+  // no session file. "Silence is not a mismatch" was right, but it let that
+  // case through as a PASS and the tool answered `restarted: ok` over a corpse
+  // (plt-designer, v0.10.7 re-pilot, finding G).
+  //
+  // Absence of evidence had to stop meaning evidence of absence in BOTH
+  // directions: not a mismatch, and not a pass either.
+  const liveness = await confirmStillRunning(newPid, identity, record.sessionId, {
+    ...(ctx.restartSettleMs !== undefined ? { settleMs: ctx.restartSettleMs } : {}),
+    ...(ctx.procRoot ? { procRoot: ctx.procRoot } : {}),
+    command,
+  });
+  if (!liveness.ok) {
+    await writeEvent({
+      event: "peer_restart_died_after_spawn",
+      level: "error",
+      by: { sessionId: req.requestedBy.sessionId, name: req.requestedBy.name },
+      requestId: req.id,
+      details: { sessionId: record.sessionId, pid: newPid, reason: liveness.reason },
+    });
+    return errResult(
+      req.id,
+      req.tool,
+      "restart_died_after_spawn",
+      `The relaunched peer did not survive: ${liveness.reason}`,
+      { sessionId: record.sessionId, pid: newPid, reason: liveness.reason },
+    );
+  }
+
   if (identity.mismatch) {
     await writeEvent({
       event: "peer_restart_identity_mismatch",

@@ -6,6 +6,70 @@ All notable changes to this project are documented here. Format follows [Keep a 
 
 _Nothing yet._
 
+## [0.10.9] — 2026-08-04
+
+Five findings from plt-designer's re-pilot of v0.10.7. Three of the five
+v0.10.7 fixes were confirmed working; these are what the pilot found instead.
+
+### The v0.10.6 window fix was written, shipped, and never ran
+
+`peer_restart` looks up which tmux session an adopted peer lives in, so the
+replacement can be created as a window there. The lookup sat **after** the stop
+that destroys the window. It therefore found nothing every time, `inSession`
+was always null, and every adopted peer was still relaunched as a session of
+its own — `@652` in `obetni` came back as a standalone session `w1`.
+
+Correct code in the wrong place is indistinguishable from no code, and only a
+live pilot could tell. The lookup now runs before the stop, while the answer
+still exists.
+
+### A restart stripped the peer's provenance
+
+`peer_spawn` writes a fresh record, so `team` and `adopted` did not survive a
+restart: the pilot's restarted peer read `team: null, adopted: false` beside an
+untouched sibling still carrying `team: "obetni", adopted: true`. A fleet roll
+would have removed the team stamp from every peer it touched and left every
+team-scoped operation with nothing to match on. Provenance is now captured
+before the stop and restored after the spawn.
+
+### `restarted: ok` over a corpse
+
+A relaunch whose resume fails exits in about two seconds; tmux removes the
+window and no session file is ever written. `spawn_produced_no_process` does
+not see it — the process *did* start. The identity check found no session file
+and, correctly, did not call that a mismatch — but it also let it pass.
+
+"Absence of evidence is not evidence of absence" had to hold in **both**
+directions. A restart now also confirms the process is still alive after a
+settle, and that a peer which is supposed to register a session did register
+one; failing either returns `restart_died_after_spawn`. Only Claude Code writes
+a session file, so that half of the rule applies to `claude` and not to
+whatever else a host might relaunch.
+
+### `team_adopt` advertised an argument it refused
+
+`hostSession` was in the tool's JSON schema and absent from the Zod validator
+behind it, which rejected the key as unrecognised. I introduced it by running a
+string replacement without checking that the pattern matched: it silently
+changed nothing, and I reported the feature as delivered.
+
+Fixed — and a **schema-parity test** now compares every daemon-backed tool's
+advertised properties against its validator's accepted keys, printing the
+offending names rather than a boolean. The two halves are hand-written in two
+files, so drift is a question of when.
+
+### `hostAlive: false` for peers that were plainly alive
+
+`team_status` matched records against `listSessions()`, which reports tmux
+SESSIONS only. Every window-keyed record — that is, every adopted peer — read
+`hostAlive: false` while its window and its process were both there. Windows
+are now folded into the lookup.
+
+Tests 538 (+23), each verified by restoring the old behaviour. The liveness
+check has two: one on the function and one on the handler, because a handler
+that ignores a correct answer is exactly the failure this release opened with.
+
+
 ## [0.10.8] — 2026-08-04
 
 ### `peer_list.pid` named the wrong process

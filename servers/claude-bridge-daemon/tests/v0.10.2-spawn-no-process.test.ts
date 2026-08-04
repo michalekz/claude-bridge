@@ -56,7 +56,12 @@ async function harness() {
   return {
     dispatch,
     driver,
-    ctx: { state: emptyState("0.10.2-test"), hostDriver: driver, daemonVersion: "0.10.2-test" },
+    ctx: {
+      state: emptyState("0.10.2-test"),
+      hostDriver: driver,
+      daemonVersion: "0.10.2-test",
+      restartSettleMs: 0,
+    },
   };
 }
 

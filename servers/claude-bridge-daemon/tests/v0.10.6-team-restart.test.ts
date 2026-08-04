@@ -74,7 +74,7 @@ describe("team_restart rolls a team, and stops when something is wrong", () => {
       handlers,
       doc,
       driver,
-      ctx: { state: doc, hostDriver: driver, daemonVersion: "0.10.6-test" },
+      ctx: { state: doc, hostDriver: driver, daemonVersion: "0.10.6-test", restartSettleMs: 0 },
     };
   }
 

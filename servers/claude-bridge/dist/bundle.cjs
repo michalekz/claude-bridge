@@ -18243,7 +18243,7 @@ var StdioServerTransport = class {
 // package.json
 var package_default = {
   name: "claude-bridge",
-  version: "0.10.8",
+  version: "0.10.9",
   private: true,
   description: "MCP server for cross-Claude-Code-chat orchestration over local session JSONL files",
   type: "module",
@@ -22198,6 +22198,8 @@ async function teamStopTool(ctx, args) {
 var TeamAdoptArgs = external_exports.object({
   team: external_exports.string().min(1),
   mode: external_exports.enum(["auto", "manual"]).optional(),
+  /** Adopt only peers whose host session matches. Plain name or `/regex/`. */
+  hostSession: external_exports.string().min(1).optional(),
   /** manual mode: host session key -> Claude session id. */
   mapping: external_exports.record(external_exports.string().min(1)).optional(),
   /**
@@ -22211,6 +22213,7 @@ var TeamAdoptArgs = external_exports.object({
 async function teamAdoptTool(ctx, args) {
   const daemonArgs = { team: args.team };
   if (args.mode !== void 0) daemonArgs["mode"] = args.mode;
+  if (args.hostSession !== void 0) daemonArgs["hostSession"] = args.hostSession;
   if (args.mapping !== void 0) daemonArgs["mapping"] = args.mapping;
   if (args.dryRun !== void 0) daemonArgs["dryRun"] = args.dryRun;
   return submitDaemonRequest(ctx, "team_adopt", daemonArgs, {
