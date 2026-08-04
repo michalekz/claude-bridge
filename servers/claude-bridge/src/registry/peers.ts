@@ -39,7 +39,20 @@ export const HeartbeatSchema = z
     name: z.string().min(1),
     /** Human-readable original title (defaults to `name` if no raw available). */
     displayName: z.string().optional(),
+    /**
+     * The PEER's pid — the Claude Code process, not this MCP server.
+     *
+     * Until v0.10.7 this carried `process.pid`, which is the bridge's own
+     * server subprocess (`comm=MainThread`, parent `claude`). Anyone reading
+     * `peer_list` and acting on the number reached the bridge instead of the
+     * peer, and after an MCP reconnect the old server was gone — so the field
+     * could name a DEAD pid, which Linux is free to hand to an unrelated
+     * process. Found by plt-designer in the v0.10.6 pilot: 2676018 (dead)
+     * where the peer was 1470502.
+     */
     pid: z.number().int(),
+    /** This bridge server's own pid. Diagnostics only — never a lifecycle target. */
+    mcpServerPid: z.number().int().optional(),
     cwd: z.string().optional(),
     lastSeen: z.string(), // ISO 8601
     source: z.string().optional(), // IdentitySource for display name
@@ -54,7 +67,10 @@ export interface Heartbeat {
   id: string;
   name: string;
   displayName?: string;
+  /** The PEER's pid (the Claude Code process). See the schema note above. */
   pid: number;
+  /** This bridge server's own pid. Diagnostics only. */
+  mcpServerPid?: number;
   cwd?: string;
   lastSeen: string;
   source?: string;
@@ -67,6 +83,7 @@ export interface HeartbeatInput {
   name: string;
   displayName?: string;
   pid: number;
+  mcpServerPid?: number;
   cwd?: string;
   source?: string;
   version?: string;

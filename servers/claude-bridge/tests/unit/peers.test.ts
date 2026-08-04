@@ -211,3 +211,24 @@ describe("createPeerRegistry — startHeartbeat / listActivePeers", () => {
     await handle.stop();
   });
 });
+
+/**
+ * `peer_list.pid` named the wrong process.
+ *
+ * The heartbeat recorded `process.pid` — this bridge server, a child of
+ * `claude` (`comm=MainThread`). Anyone reading peer_list and acting on the
+ * number reached the bridge instead of the peer; and because the server is
+ * replaced on every MCP reconnect, a heartbeat could outlive its writer and
+ * name a DEAD pid, which Linux is free to reuse for something unrelated.
+ * Measured on the live fleet: 1 of 26 heartbeats pointed at a dead process
+ * (plt-designer, v0.10.6 pilot: 2676018 where the peer was 1470502).
+ */
+describe("the heartbeat names the peer, not the bridge", () => {
+  test("THE REGRESSION: peerPid() is the parent — the Claude Code process", async () => {
+    const { peerPid } = await import("../../src/mcp/context.ts");
+    // We are spawned BY claude, so our parent IS the peer. Reporting our own
+    // pid was the bug.
+    expect(peerPid()).toBe(process.ppid);
+    expect(peerPid()).not.toBe(process.pid);
+  });
+});

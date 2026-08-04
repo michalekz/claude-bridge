@@ -6,6 +6,44 @@ All notable changes to this project are documented here. Format follows [Keep a 
 
 _Nothing yet._
 
+## [0.10.8] — 2026-08-04
+
+### `peer_list.pid` named the wrong process
+
+Reported as an aside in the v0.10.6 pilot and deferred by me as "a different
+layer". That was a process reason, not a severity judgement, and the owner was
+right to push back.
+
+The heartbeat recorded `process.pid` — **this bridge server**, which is a child
+of `claude` (`comm=MainThread`, parent `claude`). So the field every consumer
+reads as "the peer" pointed at the bridge. Two consequences, and the second is
+the serious one:
+
+- Acting on it — inspecting, signalling, killing — reaches the bridge, not the
+  peer.
+- The server is replaced on every MCP reconnect, so a heartbeat can outlive its
+  writer and name a **dead** pid. Linux reuses pids. Measured on the live fleet:
+  1 of 26 heartbeats already pointed at a dead process; plt-designer saw
+  2676018 where the peer was 1470502.
+
+The peer's pid was always available: the bridge is spawned by Claude Code, so
+`process.ppid` is the peer. `pid` now carries that, and the bridge's own pid
+moves to `mcpServerPid` — present for diagnostics, explicitly never a lifecycle
+target.
+
+`team_reconcile` and `team_adopt` were unaffected: both read the process table
+through `/proc` and walk ancestry, which is why the fleet reports stayed
+correct while this field did not.
+
+A heartbeat written by an older version keeps the old meaning until that peer's
+server restarts. Heartbeats are rewritten every 5 s, so a peer converges as soon
+as it reconnects — but a *stale* file from a dead server keeps the old semantics
+indefinitely, which is exactly the case that was dangerous. The tool description
+says so rather than leaving the reader to find out.
+
+Tests 515 (+1), verified by making `peerPid()` fall back.
+
+
 ## [0.10.7] — 2026-08-04
 
 Five findings from plt-designer's v0.10.6 pilot. Everything else the pilot

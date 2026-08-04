@@ -18243,7 +18243,7 @@ var StdioServerTransport = class {
 // package.json
 var package_default = {
   name: "claude-bridge",
-  version: "0.10.7",
+  version: "0.10.8",
   private: true,
   description: "MCP server for cross-Claude-Code-chat orchestration over local session JSONL files",
   type: "module",
@@ -20440,7 +20440,20 @@ var HeartbeatSchema = external_exports.object({
   name: external_exports.string().min(1),
   /** Human-readable original title (defaults to `name` if no raw available). */
   displayName: external_exports.string().optional(),
+  /**
+   * The PEER's pid — the Claude Code process, not this MCP server.
+   *
+   * Until v0.10.7 this carried `process.pid`, which is the bridge's own
+   * server subprocess (`comm=MainThread`, parent `claude`). Anyone reading
+   * `peer_list` and acting on the number reached the bridge instead of the
+   * peer, and after an MCP reconnect the old server was gone — so the field
+   * could name a DEAD pid, which Linux is free to hand to an unrelated
+   * process. Found by plt-designer in the v0.10.6 pilot: 2676018 (dead)
+   * where the peer was 1470502.
+   */
   pid: external_exports.number().int(),
+  /** This bridge server's own pid. Diagnostics only — never a lifecycle target. */
+  mcpServerPid: external_exports.number().int().optional(),
   cwd: external_exports.string().optional(),
   lastSeen: external_exports.string(),
   // ISO 8601
@@ -20662,6 +20675,12 @@ function createChannelSender(server) {
 // src/mcp/context.ts
 var log4 = makeLogger("context");
 var DEFAULT_NAME_REFRESH_MS = 6e4;
+function peerPid() {
+  const pp = process.ppid;
+  if (typeof pp === "number" && pp > 1) return pp;
+  log4.warn("peer_pid_unresolved", { fallback: process.pid });
+  return process.pid;
+}
 async function buildContext(opts = {}) {
   const self = opts.identity ?? await resolvePeerIdentityWithRetry(opts.identityOptions ?? {});
   log4.info("identity_resolved", { id: self.id, name: self.name, source: self.source });
@@ -20674,7 +20693,11 @@ async function buildContext(opts = {}) {
       id: self.id,
       name: self.name,
       displayName: self.displayName,
-      pid: process.pid,
+      // The PEER's pid, not ours: the bridge server is a child of `claude`, so
+      // our parent IS the peer. Reporting process.pid pointed every consumer at
+      // the wrong process, and at a dead one after a reconnect (v0.10.7).
+      pid: peerPid(),
+      mcpServerPid: process.pid,
       cwd: process.cwd(),
       source: self.source,
       version: version2
@@ -20785,7 +20808,8 @@ async function migrateIdentity(ctx, fresh) {
     id: fresh.id,
     name: fresh.name,
     displayName: fresh.displayName,
-    pid: process.pid,
+    pid: peerPid(),
+    mcpServerPid: process.pid,
     cwd: process.cwd(),
     source: fresh.source,
     version: ctx.version
@@ -22434,7 +22458,11 @@ async function peerListTool(ctx) {
         id: p.id,
         name: p.name,
         displayName: p.displayName ?? p.name,
+        // The PEER's pid — the Claude Code process. Before v0.10.7 this was
+        // the bridge server's own pid, so anyone acting on it reached the
+        // bridge, and after a reconnect it could name a DEAD process.
         pid: p.pid,
+        mcpServerPid: p.mcpServerPid ?? null,
         cwd: p.cwd,
         ageMs: p.ageMs,
         source: p.source,
@@ -23640,7 +23668,7 @@ var TOOLS = [
   },
   {
     name: "peer_list",
-    description: "List all active claude-bridge peers (other Claude Code chats reachable via shared filesystem). Each peer has stable `id` (sessionId UUID) and display `name` (may collide across peers in same cwd).",
+    description: "List all active claude-bridge peers (other Claude Code chats reachable via shared filesystem). Each peer has stable `id` (sessionId UUID) and display `name` (may collide across peers in same cwd). `pid` is the PEER's process \u2014 the Claude Code process itself. Before v0.10.7 it was this bridge server's own pid, so acting on it reached the bridge rather than the peer, and after an MCP reconnect it could name a process that had already exited; a heartbeat written by an older version still carries the old meaning until that peer's server restarts. `mcpServerPid` is the bridge server, for diagnostics only \u2014 never a lifecycle target.",
     inputSchema: { type: "object", properties: {}, additionalProperties: false },
     handler: async (_args, ctx) => peerListTool(ctx)
   },

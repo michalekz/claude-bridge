@@ -97,6 +97,21 @@ export interface BuildContextOptions {
  */
 export const DEFAULT_NAME_REFRESH_MS = 60_000;
 
+/**
+ * The pid of the peer this bridge serves.
+ *
+ * The MCP server is spawned BY Claude Code, so our parent is the peer. Node
+ * exposes it as `process.ppid`; if that is unavailable we fall back to our own
+ * pid rather than reporting nothing, and say so in the log — a missing number
+ * is harder for a caller to handle than a wrong-but-labelled one.
+ */
+export function peerPid(): number {
+  const pp = process.ppid;
+  if (typeof pp === "number" && pp > 1) return pp;
+  log.warn("peer_pid_unresolved", { fallback: process.pid });
+  return process.pid;
+}
+
 export async function buildContext(opts: BuildContextOptions = {}): Promise<ServerContext> {
   const self = opts.identity ?? (await resolvePeerIdentityWithRetry(opts.identityOptions ?? {}));
   log.info("identity_resolved", { id: self.id, name: self.name, source: self.source });
@@ -111,7 +126,11 @@ export async function buildContext(opts: BuildContextOptions = {}): Promise<Serv
       id: self.id,
       name: self.name,
       displayName: self.displayName,
-      pid: process.pid,
+      // The PEER's pid, not ours: the bridge server is a child of `claude`, so
+      // our parent IS the peer. Reporting process.pid pointed every consumer at
+      // the wrong process, and at a dead one after a reconnect (v0.10.7).
+      pid: peerPid(),
+      mcpServerPid: process.pid,
       cwd: process.cwd(),
       source: self.source,
       version,
@@ -292,7 +311,8 @@ async function migrateIdentity(ctx: ServerContext, fresh: ResolvedIdentity): Pro
     id: fresh.id,
     name: fresh.name,
     displayName: fresh.displayName,
-    pid: process.pid,
+    pid: peerPid(),
+    mcpServerPid: process.pid,
     cwd: process.cwd(),
     source: fresh.source,
     version: ctx.version,

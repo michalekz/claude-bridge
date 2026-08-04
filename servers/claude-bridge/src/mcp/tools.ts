@@ -344,7 +344,11 @@ export async function peerListTool(ctx: ServerContext): Promise<ToolResult> {
         id: p.id,
         name: p.name,
         displayName: p.displayName ?? p.name,
+        // The PEER's pid — the Claude Code process. Before v0.10.7 this was
+        // the bridge server's own pid, so anyone acting on it reached the
+        // bridge, and after a reconnect it could name a DEAD process.
         pid: p.pid,
+        mcpServerPid: p.mcpServerPid ?? null,
         cwd: p.cwd,
         ageMs: p.ageMs,
         source: p.source,
@@ -2099,7 +2103,7 @@ export const TOOLS: ToolSpec[] = [
   {
     name: "peer_list",
     description:
-      "List all active claude-bridge peers (other Claude Code chats reachable via shared filesystem). Each peer has stable `id` (sessionId UUID) and display `name` (may collide across peers in same cwd).",
+      "List all active claude-bridge peers (other Claude Code chats reachable via shared filesystem). Each peer has stable `id` (sessionId UUID) and display `name` (may collide across peers in same cwd). `pid` is the PEER's process — the Claude Code process itself. Before v0.10.7 it was this bridge server's own pid, so acting on it reached the bridge rather than the peer, and after an MCP reconnect it could name a process that had already exited; a heartbeat written by an older version still carries the old meaning until that peer's server restarts. `mcpServerPid` is the bridge server, for diagnostics only — never a lifecycle target.",
     inputSchema: { type: "object", properties: {}, additionalProperties: false },
     handler: async (_args, ctx) => peerListTool(ctx),
   },
