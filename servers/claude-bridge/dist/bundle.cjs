@@ -18243,7 +18243,7 @@ var StdioServerTransport = class {
 // package.json
 var package_default = {
   name: "claude-bridge",
-  version: "0.10.2-rc.2",
+  version: "0.10.2-rc.3",
   private: true,
   description: "MCP server for cross-Claude-Code-chat orchestration over local session JSONL files",
   type: "module",
@@ -18402,6 +18402,20 @@ var IdentityError = class extends Error {
     this.name = "IdentityError";
   }
 };
+var UUID_IN_PATH_RE = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i;
+async function resumedSessionIdFromParent(ppid, procRoot = "/proc") {
+  try {
+    const raw = await (0, import_promises.readFile)((0, import_node_path2.join)(procRoot, String(ppid), "cmdline"), "utf-8");
+    const cmdline = raw.replace(/\0/g, " ");
+    const idx = cmdline.indexOf("--resume");
+    if (idx === -1) return null;
+    const token = cmdline.slice(idx + "--resume".length).trim().split(/\s+/)[0] ?? "";
+    const match = UUID_IN_PATH_RE.exec((0, import_node_path2.basename)(token));
+    return match ? match[0].toLowerCase() : null;
+  } catch {
+    return null;
+  }
+}
 async function resolvePeerIdentity(opts = {}) {
   const home = opts.home ?? (0, import_node_os2.homedir)();
   const ppid = opts.ppid ?? process.ppid;
@@ -18415,10 +18429,25 @@ async function resolvePeerIdentity(opts = {}) {
       "claude-bridge needs ~/.claude/sessions/<ppid>.json with .sessionId to assign a stable peer id. This file is written automatically by Claude Code CLI 2.1.x+ and the VS Code extension. Check that you're running a supported Claude Code version and that ppid resolution is correct."
     );
   }
-  const id = sj.sessionId;
+  const resumedId = opts.resumedSessionId ?? await resumedSessionIdFromParent(ppid, opts.procRoot);
+  const id = resumedId ?? sj.sessionId;
+  if (resumedId && resumedId !== sj.sessionId.toLowerCase()) {
+    process.stderr.write(
+      `${JSON.stringify({
+        ts: (/* @__PURE__ */ new Date()).toISOString(),
+        level: "warn",
+        component: "identity",
+        msg: "provisional_session_json_overridden",
+        fromSessionJson: sj.sessionId,
+        fromResume: resumedId,
+        ppid
+      })}
+`
+    );
+  }
   if (sj.cwd) {
     const encoded = encodeProjectDir(sj.cwd);
-    const jsonlPath = (0, import_node_path2.join)(home, ".claude", "projects", encoded, `${sj.sessionId}.jsonl`);
+    const jsonlPath = (0, import_node_path2.join)(home, ".claude", "projects", encoded, `${id}.jsonl`);
     const title = await readLatestTitleFromJsonl(jsonlPath);
     if (title) {
       const sanitized = sanitizePeerName(title);

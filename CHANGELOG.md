@@ -2,6 +2,51 @@
 
 All notable changes to this project are documented here. Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.10.2-rc.3] — 2026-08-04 (pre-release, development channel)
+
+### The phantom peer id
+
+A peer came up under a session id that existed nowhere: not in any
+`~/.claude/sessions/*.json`, not as a transcript, nowhere on disk. It
+corrected itself a few seconds later. Twice in one night, on two different
+peers, always right after a controlled restart.
+
+The id is never invented — `resolvePeerIdentity` reads it from
+`~/.claude/sessions/<ppid>.json`. Both facts can only hold at once if the
+file's contents changed underneath us, and that is what happens: on a
+resumed session Claude Code first writes a **provisional** identity there (a
+fresh session id plus an auto-generated name of the `<cwd-slug>-<2 hex>`
+form — `claude-bridge-8d`, `hmh-71`, `micronic-0f`), then replaces the id
+with the resumed one moments later.
+
+A server booting inside that window adopts an id that is about to stop
+existing, and everything downstream inherits it: the heartbeat under
+`status/`, the inbox directory, the row other peers see in `peer_list`. Mail
+addressed to it is written to a directory nobody drains — and on disk it
+looks delivered. Observed: this peer registered as `99e371a7` while Claude
+Code held `fb749bc6`, and told another peer to use the phantom.
+
+The pre-existing retry (`resolvePeerIdentityWithRetry`, ~3 s) only covers an
+**absent** file. A provisional one is present and well-formed, so nothing
+retried.
+
+**Fix:** when the parent process was launched with `--resume <path>/<uuid>.jsonl`,
+that uuid is the session id. It is fixed at launch and cannot drift, so this
+closes the window rather than narrowing it. Read from `/proc/<ppid>/cmdline`;
+where `/proc` is unavailable (macOS, Windows) the cross-check is skipped and
+behaviour is exactly as before, as it is for sessions that were never resumed.
+
+Retrying until the two sources agreed was the first version of this fix and
+it was wrong: the observed window ran to roughly 15 s, past the retry budget,
+so exhaustion would have left the server refusing to start — worse than a
+wrong id.
+
+Verified against the live fleet before landing: all 21 running peers already
+agree between the two sources, so in steady state the check does nothing.
+
+Tests: `identity-provisional-session.test.ts`, 8 cases, verified by restoring
+the old logic — 2 fail against it. Totals 421 (345 MCP, 69 daemon, 7 shared).
+
 ## [0.10.2-rc.2] — 2026-08-04 (pre-release, development channel)
 
 ### Messages could be archived without ever being shown

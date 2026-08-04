@@ -240,9 +240,19 @@ export type IdentityOptions = {
   cwd?: string;
   env?: NodeJS.ProcessEnv;
   home?: string;
+  /** Override the `/proc` root — tests only. */
+  procRoot?: string;
+  /**
+   * Override the session id read from the parent's `--resume` — tests only.
+   * Production reads it from `/proc/<ppid>/cmdline`.
+   */
+  resumedSessionId?: string | null;
 };
 
-/** Where the display `name` came from. The `id` always comes from session.json. */
+/**
+ * Where the display `name` came from. The `id` comes from the parent's
+ * `--resume` argument when it has one, otherwise from session.json.
+ */
 export type IdentitySource = "jsonl-title" | "session-json-name" | "env" | "cwd-slug";
 
 export interface ResolvedIdentity {
@@ -268,6 +278,36 @@ export class IdentityError extends Error {
   }
 }
 
+const UUID_IN_PATH_RE = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i;
+
+/**
+ * The session UUID our parent Claude Code was launched to resume, read from
+ * `/proc/<ppid>/cmdline`. Returns null when the process wasn't resumed, or
+ * on any platform without `/proc`.
+ *
+ * `--resume` carries a path (`.../<uuid>.jsonl`), not a bare UUID.
+ */
+export async function resumedSessionIdFromParent(
+  ppid: number,
+  procRoot = "/proc",
+): Promise<string | null> {
+  try {
+    const raw = await readFile(join(procRoot, String(ppid), "cmdline"), "utf-8");
+    const cmdline = raw.replace(/\0/g, " ");
+    const idx = cmdline.indexOf("--resume");
+    if (idx === -1) return null;
+    const token =
+      cmdline
+        .slice(idx + "--resume".length)
+        .trim()
+        .split(/\s+/)[0] ?? "";
+    const match = UUID_IN_PATH_RE.exec(basename(token));
+    return match ? match[0].toLowerCase() : null;
+  } catch {
+    return null; // no /proc, no permission, process gone — cross-check unavailable
+  }
+}
+
 export async function resolvePeerIdentity(opts: IdentityOptions = {}): Promise<ResolvedIdentity> {
   const home = opts.home ?? homedir();
   const ppid = opts.ppid ?? process.ppid;
@@ -286,14 +326,58 @@ export async function resolvePeerIdentity(opts: IdentityOptions = {}): Promise<R
     );
   }
 
-  const id = sj.sessionId;
+  // `--resume` wins over session.json for the id (fix, 2026-08-04).
+  //
+  // On a resumed session Claude Code first writes a PROVISIONAL identity
+  // into sessions/<ppid>.json — a fresh session id plus an auto-generated
+  // name — and only replaces the id with the resumed one moments later. A
+  // server that boots inside that window adopts an id that is about to stop
+  // existing, and everything downstream inherits it: the heartbeat under
+  // status/, an inbox directory, the entry other peers see in peer_list.
+  // Mail addressed to it lands in a directory nobody drains.
+  //
+  // Observed live 2026-08-04: this peer came up as 99e371a7 while Claude
+  // Code held fb749bc6. The phantom existed in no session file and no
+  // transcript — the only way both can be true is that the file's contents
+  // changed underneath us.
+  //
+  // The pre-existing retry only covers an ABSENT file; a provisional one is
+  // present and well-formed, so nothing retried.
+  //
+  // Retrying until the two agree was the first fix I wrote, and it was
+  // wrong: the observed window ran to roughly 15 s, well past the ~3 s
+  // retry budget, so exhaustion would leave the server refusing to start —
+  // worse than a wrong id. `--resume` is fixed at launch and cannot drift,
+  // so prefer it outright and close the window instead of narrowing it.
+  //
+  // Verified against the live fleet: all 21 running peers agree, so in
+  // steady state this changes nothing.
+  const resumedId =
+    opts.resumedSessionId ?? (await resumedSessionIdFromParent(ppid, opts.procRoot));
+  const id = resumedId ?? sj.sessionId;
+  if (resumedId && resumedId !== sj.sessionId.toLowerCase()) {
+    process.stderr.write(
+      `${JSON.stringify({
+        ts: new Date().toISOString(),
+        level: "warn",
+        component: "identity",
+        msg: "provisional_session_json_overridden",
+        fromSessionJson: sj.sessionId,
+        fromResume: resumedId,
+        ppid,
+      })}\n`,
+    );
+  }
 
   // Display name cascade
 
   // A: JSONL title (Claude Code auto-generates after first user message)
   if (sj.cwd) {
     const encoded = encodeProjectDir(sj.cwd);
-    const jsonlPath = join(home, ".claude", "projects", encoded, `${sj.sessionId}.jsonl`);
+    // `id`, not `sj.sessionId` — during the provisional window those differ,
+    // and reading the title out of the phantom's (nonexistent) transcript
+    // would drop us to the auto-generated name for no reason.
+    const jsonlPath = join(home, ".claude", "projects", encoded, `${id}.jsonl`);
     const title = await readLatestTitleFromJsonl(jsonlPath);
     if (title) {
       const sanitized = sanitizePeerName(title);
