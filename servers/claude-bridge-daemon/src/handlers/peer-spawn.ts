@@ -129,9 +129,13 @@ export async function handlePeerSpawn(
       tmuxTarget: sessionKey,
       pid: null,
       status: "starting",
-      // Recorded so peer_restart can put the peer back where it belongs
-      // instead of guessing (2026-08-04).
+      // Recorded so peer_restart can put the peer back where it belongs, and
+      // launch it the way it was launched, instead of guessing (2026-08-04).
+      // `args.args` is the caller's list — NOT spawnArgs, which already has
+      // --resume/--model appended and would double them on the next restart.
       cwd: args.cwd,
+      command: args.command,
+      spawnArgs: args.args,
       model: args.model ?? null,
       accountProfile: args.accountProfile ?? null,
       startedAt: new Date().toISOString(),

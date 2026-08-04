@@ -1,4 +1,4 @@
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -179,5 +179,139 @@ describe("a spawn that starts nothing must not report success", () => {
     expect(live.alive).toBe(true);
     expect(live.pid).toBeGreaterThan(0);
     await driver.kill("live-key");
+  });
+});
+
+/**
+ * The pilot of the `cwd` fix found the other half of the same omission
+ * (plt-designer, 2026-08-04, an hour after v0.10.2 shipped).
+ *
+ * `peer_restart` respawned every peer with the literal string `"claude"`.
+ * Not a degraded absolute path — the command was never carried at all,
+ * exactly as `cwd` had not been. Under nvm the daemon's PATH has no
+ * `claude`, so the respawned process died at once and the restart failed
+ * with `spawn_produced_no_process`.
+ *
+ * That failure was the fix working: honest, and audible enough that the
+ * second omission surfaced within the hour instead of at the next incident.
+ *
+ * The test above covers cwd. These cover the command and its arguments.
+ */
+describe("a restart relaunches the peer the way it was launched", () => {
+  beforeEach(() => {
+    homeHolder.current = `/tmp/cbd-relaunch-${process.hrtime.bigint()}`;
+    vi.resetModules();
+  });
+
+  it("THE REGRESSION: the recorded command is used, not a bare 'claude'", async () => {
+    const { dispatch, ctx, driver } = await harness();
+    const seen: Array<{ command: string; args: string[] }> = [];
+    const original = driver.spawn.bind(driver);
+    driver.spawn = async (opts) => {
+      seen.push({ command: opts.command, args: [...opts.args] });
+      return original(opts);
+    };
+
+    // An interpreter at an absolute path no PATH lookup would find — the same
+    // shape as an nvm-installed `claude`.
+    const ABSOLUTE = "/bin/sh";
+    await dispatch(
+      makeRequest("peer_spawn", {
+        sessionId: "nvm-shaped-0804",
+        displayName: "nvm-shaped-0804",
+        cwd: "/tmp",
+        command: ABSOLUTE,
+        args: ["-c", "sleep 30"],
+        resume: false,
+      }),
+      ctx,
+    );
+    expect(ctx.state.peers["nvm-shaped-0804"]?.command).toBe(ABSOLUTE);
+    expect(ctx.state.peers["nvm-shaped-0804"]?.spawnArgs).toEqual(["-c", "sleep 30"]);
+
+    const res = await dispatch(
+      makeRequest("peer_restart", { peer: "nvm-shaped-0804" }, "req-relaunch"),
+      ctx,
+    );
+
+    expect(seen).toHaveLength(2);
+    // Before the fix this was the literal "claude".
+    expect(seen[1]?.command).toBe(ABSOLUTE);
+    expect(res.outcome).toBe("ok");
+    await driver.kill("nvm-shaped-0804").catch(() => undefined);
+  });
+
+  it("the caller's arguments come back, and --resume is not doubled", async () => {
+    const { dispatch, ctx, driver } = await harness();
+    const seen: string[][] = [];
+    const original = driver.spawn.bind(driver);
+    driver.spawn = async (opts) => {
+      seen.push([...opts.args]);
+      return original(opts);
+    };
+
+    await dispatch(
+      makeRequest("peer_spawn", {
+        sessionId: "carries-args-0804",
+        displayName: "carries-args-0804",
+        cwd: "/tmp",
+        command: "/bin/sh",
+        args: ["-c", "sleep 30"],
+        resume: true,
+      }),
+      ctx,
+    );
+    await dispatch(makeRequest("peer_restart", { peer: "carries-args-0804" }, "req-args"), ctx);
+
+    // The record stores the CALLER's list; peer_spawn appends --resume itself.
+    // Storing the computed list instead would append it again on every restart.
+    const relaunch = seen[1] ?? [];
+    expect(relaunch.slice(0, 2)).toEqual(["-c", "sleep 30"]);
+    expect(relaunch.filter((a) => a === "--resume")).toHaveLength(1);
+    await driver.kill("carries-args-0804").catch(() => undefined);
+  });
+
+  it("a record from before this release falls back loudly, not silently", async () => {
+    const { dispatch, ctx, driver } = await harness();
+
+    // A peer as v0.10.2 would have written it: cwd present, command absent.
+    ctx.state.peers["legacy-record-0804"] = {
+      sessionId: "legacy-record-0804",
+      name: "legacy-record-0804",
+      hostDriver: "mock",
+      tmuxTarget: "legacy-record-0804",
+      pid: 1,
+      status: "live",
+      cwd: "/tmp",
+      model: null,
+      accountProfile: null,
+      startedAt: "2026-08-04T10:00:00.000Z",
+      lastUpdatedAt: "2026-08-04T10:00:00.000Z",
+    };
+
+    process.env["CLAUDE_BRIDGE_TEST_COMMAND"] = "/bin/sh";
+    try {
+      await dispatch(
+        makeRequest("peer_restart", { peer: "legacy-record-0804" }, "req-legacy"),
+        ctx,
+      );
+      const raw = await readFile(
+        join(homeHolder.current, ".claude-bridge", "control", "events.jsonl"),
+        "utf-8",
+      );
+      const events = raw
+        .trim()
+        .split("\n")
+        .map((l) => JSON.parse(l) as { event: string; details?: Record<string, unknown> });
+      const warn = events.find((e) => e.event === "peer_restart_launch_params_unknown");
+      expect(warn).toBeDefined();
+      // cwd IS recorded on this legacy record — only the command is missing, and
+      // the warning must say which, not just that something is.
+      expect(warn?.details?.["missing"]).toEqual(["command"]);
+    } finally {
+      // biome-ignore lint/performance/noDelete: env vars cannot be unset by assignment
+      delete process.env["CLAUDE_BRIDGE_TEST_COMMAND"];
+      await driver.kill("legacy-record-0804").catch(() => undefined);
+    }
   });
 });

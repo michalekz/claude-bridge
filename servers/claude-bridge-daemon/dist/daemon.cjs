@@ -176,7 +176,7 @@ function isPowerOfTwo(n) {
 // package.json
 var package_default = {
   name: "claude-bridge-daemon",
-  version: "0.10.2",
+  version: "0.10.3",
   private: true,
   description: "Control-plane daemon for the claude-bridge plugin: peer lifecycle, telemetry, audit. Distributed as opt-in artefact \u2014 see ADR-008.",
   type: "module",
@@ -4878,9 +4878,13 @@ async function handlePeerSpawn(req, ctx) {
       tmuxTarget: sessionKey,
       pid: null,
       status: "starting",
-      // Recorded so peer_restart can put the peer back where it belongs
-      // instead of guessing (2026-08-04).
+      // Recorded so peer_restart can put the peer back where it belongs, and
+      // launch it the way it was launched, instead of guessing (2026-08-04).
+      // `args.args` is the caller's list — NOT spawnArgs, which already has
+      // --resume/--model appended and would double them on the next restart.
       cwd: args.cwd,
+      command: args.command,
+      spawnArgs: args.args,
       model: args.model ?? null,
       accountProfile: args.accountProfile ?? null,
       startedAt: (/* @__PURE__ */ new Date()).toISOString(),
@@ -5166,16 +5170,23 @@ async function handlePeerRestart(req, ctx) {
     );
   }
   const cwd = record.cwd ?? process.cwd();
-  if (!record.cwd) {
+  const command = record.command ?? "claude";
+  const commandArgs = record.spawnArgs ?? [];
+  const missing = [record.cwd ? null : "cwd", record.command ? null : "command"].filter(
+    (f) => f !== null
+  );
+  if (missing.length > 0) {
     await writeEvent({
-      event: "peer_restart_cwd_unknown",
+      event: "peer_restart_launch_params_unknown",
       level: "warn",
       by: { sessionId: req.requestedBy.sessionId, name: req.requestedBy.name },
       requestId: req.id,
       details: {
         sessionId: record.sessionId,
+        missing,
         fallbackCwd: cwd,
-        hint: "Peer record predates cwd persistence (v0.10.2). Restart may land in the wrong directory; re-spawn the peer to record it."
+        fallbackCommand: command,
+        hint: "Peer record predates launch-parameter persistence (v0.10.3). The restart uses the daemon's cwd and a bare `claude`, which fails on installs where claude is not on the daemon's PATH (nvm). Re-spawn the peer to record its real parameters."
       }
     });
   }
@@ -5188,8 +5199,10 @@ async function handlePeerRestart(req, ctx) {
       sessionId: record.sessionId,
       displayName: record.name,
       cwd,
-      command: process.env["CLAUDE_BRIDGE_TEST_COMMAND"] ?? "claude",
-      args: [],
+      // The test override stays ahead of the record so the acceptance suite can
+      // relaunch something cheaper than a real Claude Code.
+      command: process.env["CLAUDE_BRIDGE_TEST_COMMAND"] ?? command,
+      args: commandArgs,
       resume: true,
       model: args.model ?? record.model ?? null,
       accountProfile: args.accountProfile ?? record.accountProfile ?? null,

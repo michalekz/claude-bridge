@@ -56,6 +56,25 @@ export interface PeerRecord {
    * `peer_restart` warns and falls back rather than refusing to run.
    */
   cwd?: string;
+  /**
+   * The executable the peer was launched with, and the arguments the caller
+   * supplied (before the daemon appends `--resume` / `--model`).
+   *
+   * Added 2026-08-04, hours after `cwd`, for the same reason and by the same
+   * oversight: `peer_restart` had nowhere to read them from, so it relaunched
+   * every peer with the literal string `"claude"` and no arguments. On a PATH
+   * install that happens to work; under nvm — which is how this fleet runs —
+   * `claude` is not on the daemon's PATH and the respawn dies at once.
+   *
+   * Caught by the pilot of the `cwd` fix: the restart now failed honestly
+   * (`spawn_produced_no_process`) instead of claiming success, which is what
+   * made the second half of the same omission visible at all.
+   *
+   * Optional for records written before this release; `peer_restart` warns and
+   * falls back to `"claude"` rather than refusing to run.
+   */
+  command?: string;
+  spawnArgs?: string[];
   model: string | null;
   accountProfile: string | null;
   startedAt: string;

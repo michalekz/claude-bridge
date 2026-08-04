@@ -6,6 +6,46 @@ All notable changes to this project are documented here. Format follows [Keep a 
 
 _Nothing yet._
 
+## [0.10.3] — 2026-08-04
+
+### `peer_restart` relaunched every peer with a command it had made up
+
+Found by the pilot of the v0.10.2 `cwd` fix, an hour after that release.
+
+`peer_restart` respawned peers with the literal string `"claude"`. Not an
+absolute path degraded to a basename — the command was never carried at all,
+in exactly the way `cwd` had not been carried, in the same handler, missed in
+the same fix:
+
+```ts
+command: process.env["CLAUDE_BRIDGE_TEST_COMMAND"] ?? "claude",   // before
+args: [],                                                         //   "
+```
+
+On an installation where `claude` is on the daemon's `PATH` this happens to
+work. Under nvm — which is how this fleet runs — it is not, so the respawned
+process died immediately and the restart failed with
+`spawn_produced_no_process`.
+
+**That failure is v0.10.2 working.** Before it, the same broken respawn
+reported `outcome: ok` and left a phantom live peer. The fix did not make
+`peer_restart` work; it made it audible, and the remaining half of the
+omission surfaced within the hour instead of at the next incident.
+
+`PeerRecord` now carries `command` and `spawnArgs` alongside `cwd`, and
+`peer_restart` uses them. The stored arguments are the **caller's** list, not
+the one the daemon computed — the computed list already has `--resume` and
+`--model` appended, and storing that would append them again on every restart.
+
+`peer_restart_cwd_unknown` is replaced by `peer_restart_launch_params_unknown`,
+which names *which* parameters are missing from a pre-v0.10.3 record rather
+than reporting only that something is. It has the same finite life: `peer_spawn`
+records all three now, so the next fleet cycle fills them in.
+
+Tests 76 daemon (+3), verified by restoring the hardcoded command — 2 of 3 fail
+against it. The third covers the legacy-record warning, which the old code did
+not emit at all.
+
 ## [0.10.2] — 2026-08-04
 
 Three findings from the live MCP tool test of 2026-08-04

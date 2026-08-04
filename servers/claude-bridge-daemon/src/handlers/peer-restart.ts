@@ -95,16 +95,31 @@ export async function handlePeerRestart(
   // measuring it. Both halves are fixed; this is the one that stops the
   // process from dying in the first place.
   const cwd = record.cwd ?? process.cwd();
-  if (!record.cwd) {
+
+  // And launch it the way it was launched. `command` was a hardcoded "claude"
+  // until 2026-08-04 — the identical omission to `cwd`, one field over, in the
+  // same handler, missed in the same fix. Under nvm the daemon's PATH has no
+  // `claude`, so every restart on this fleet respawned a command that did not
+  // exist. Found by the pilot of the cwd fix, because the driver now measures
+  // `alive` and the failure was finally audible.
+  const command = record.command ?? "claude";
+  const commandArgs = record.spawnArgs ?? [];
+
+  const missing = [record.cwd ? null : "cwd", record.command ? null : "command"].filter(
+    (f): f is string => f !== null,
+  );
+  if (missing.length > 0) {
     await writeEvent({
-      event: "peer_restart_cwd_unknown",
+      event: "peer_restart_launch_params_unknown",
       level: "warn",
       by: { sessionId: req.requestedBy.sessionId, name: req.requestedBy.name },
       requestId: req.id,
       details: {
         sessionId: record.sessionId,
+        missing,
         fallbackCwd: cwd,
-        hint: "Peer record predates cwd persistence (v0.10.2). Restart may land in the wrong directory; re-spawn the peer to record it.",
+        fallbackCommand: command,
+        hint: "Peer record predates launch-parameter persistence (v0.10.3). The restart uses the daemon's cwd and a bare `claude`, which fails on installs where claude is not on the daemon's PATH (nvm). Re-spawn the peer to record its real parameters.",
       },
     });
   }
@@ -118,8 +133,10 @@ export async function handlePeerRestart(
       sessionId: record.sessionId,
       displayName: record.name,
       cwd,
-      command: process.env["CLAUDE_BRIDGE_TEST_COMMAND"] ?? "claude",
-      args: [],
+      // The test override stays ahead of the record so the acceptance suite can
+      // relaunch something cheaper than a real Claude Code.
+      command: process.env["CLAUDE_BRIDGE_TEST_COMMAND"] ?? command,
+      args: commandArgs,
       resume: true,
       model: args.model ?? record.model ?? null,
       accountProfile: args.accountProfile ?? record.accountProfile ?? null,
