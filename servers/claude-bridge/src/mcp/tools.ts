@@ -303,8 +303,41 @@ async function resolveTargetPeer(
 
   const byName = peers.filter((p) => p.name === target);
   if (byName.length === 1) return { ok: true, peer: byName[0] as ActivePeer };
-  if (byName.length === 0) return { ok: false, code: "peer_not_found", activePeers: peers };
-  return { ok: false, code: "ambiguous_peer", candidates: byName };
+  if (byName.length > 1) return { ok: false, code: "ambiguous_peer", candidates: byName };
+
+  // Short form, resolved the way a hostname resolves in a search domain.
+  //
+  // The daemon learned this first, and for a while only the daemon had it:
+  // `peer_restart velitel` refused with the three full names while
+  // `peer_context_status velitel` still said peer_not_found. Half a convention
+  // is worse than none, because which half you get depends on which tool you
+  // reached for. Caught by running the tools rather than the tests, 2026-08-05.
+  //
+  // No new state: under the convention a peer's own team is the prefix of its
+  // own name, so the caller carries its search domain in its identity. A fleet
+  // that does not follow the convention has no short forms and loses nothing.
+  const byShort = peers.filter((p) => shortFormOfName(p.name, teamOfName(p.name)) === target);
+  if (byShort.length === 1) return { ok: true, peer: byShort[0] as ActivePeer };
+  if (byShort.length > 1) {
+    const ownTeam = teamOfName(ctx.self.name);
+    const own = ownTeam ? byShort.filter((p) => teamOfName(p.name) === ownTeam) : [];
+    if (own.length === 1) return { ok: true, peer: own[0] as ActivePeer };
+    return { ok: false, code: "ambiguous_peer", candidates: byShort };
+  }
+  return { ok: false, code: "peer_not_found", activePeers: peers };
+}
+
+/** The team a fully qualified name belongs to — `ai-bridge-dev` → `ai`. */
+function teamOfName(name: string): string | null {
+  const i = name.indexOf("-");
+  return i > 0 ? name.slice(0, i) : null;
+}
+
+/** The short form of a name within its own team, or null when it has none. */
+function shortFormOfName(name: string, team: string | null): string | null {
+  if (!team) return null;
+  const short = name.slice(team.length + 1);
+  return short.length > 0 ? short : null;
 }
 
 /**
@@ -1719,16 +1752,21 @@ export async function peerContextStatusTool(
           targets.push({ id: byId.id, name: byId.name });
           continue;
         }
-        const byName = activePeers.filter((p) => p.name === normalized);
-        if (byName.length === 1) {
-          targets.push({ id: byName[0]?.id ?? "", name: byName[0]?.name ?? null });
+        // Same resolution as every other tool — full name, then short form in
+        // the caller's team, then a globally unique short form. This site used
+        // to match only on the full name, so `velitel` answered `peer_not_found`
+        // here while the daemon's tools answered `ambiguous_peer` with the three
+        // candidates. One convention has to mean one thing whichever tool asks.
+        const resolved = await resolveTargetPeer(ctx, normalized);
+        if (resolved.ok) {
+          targets.push({ id: resolved.peer.id, name: resolved.peer.name });
           continue;
         }
-        if (byName.length > 1) {
+        if (resolved.code === "ambiguous_peer") {
           return err(
             "ambiguous_peer",
-            `Multiple peers match name "${normalized}". Use peer id instead.`,
-            byName.map((c) => ({ id: c.id, name: c.name, cwd: c.cwd })),
+            `"${normalized}" matches ${resolved.candidates.length} peers — refusing to guess. Use the full name: ${resolved.candidates.map((c) => c.name).join(", ")}`,
+            resolved.candidates.map((c) => ({ id: c.id, name: c.name, cwd: c.cwd })),
           );
         }
         // Allow UUID fallback even if not active (= dead session, JSONL may still exist)

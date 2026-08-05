@@ -6,6 +6,31 @@ All notable changes to this project are documented here. Format follows [Keep a 
 
 _Nothing yet._
 
+## [0.10.19] — 2026-08-05
+
+### Half a naming convention is worse than none
+
+v0.10.18 taught the daemon to resolve a peer name like a hostname — full name,
+then the short form inside the caller's team, then a globally unique short form.
+Only the daemon learned it. The MCP server kept matching on the full name alone,
+so the same word got two answers depending on which tool you reached for:
+
+```
+peer_restart velitel        ambiguous_peer — mic-velitel, plt-velitel, etl-velitel
+peer_context_status velitel peer_not_found — and a list of twenty-three names
+```
+
+Found by running the tools against the renamed fleet. The suite was green
+throughout, because nothing exercised the MCP resolver with a short name — the
+convention was ratified and implemented on the same day, and the tests were
+written where the code was, not where the users are.
+
+`resolveTargetPeer` now performs the same four steps, and `peer_context_status`
+— which had grown its own copy of the matching — calls it instead of repeating
+it. Under the convention a peer's own team is the prefix of its own name, so the
+caller carries its search domain in its identity and no new state is needed.
+
+
 ## [0.10.18] — 2026-08-05
 
 ### A duplicated peer name was resolved by picking the first match

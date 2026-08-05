@@ -18243,7 +18243,7 @@ var StdioServerTransport = class {
 // package.json
 var package_default = {
   name: "claude-bridge",
-  version: "0.10.18",
+  version: "0.10.19",
   private: true,
   description: "MCP server for cross-Claude-Code-chat orchestration over local session JSONL files",
   type: "module",
@@ -22461,8 +22461,25 @@ async function resolveTargetPeer(ctx, target) {
   if (byId) return { ok: true, peer: byId };
   const byName = peers.filter((p) => p.name === target);
   if (byName.length === 1) return { ok: true, peer: byName[0] };
-  if (byName.length === 0) return { ok: false, code: "peer_not_found", activePeers: peers };
-  return { ok: false, code: "ambiguous_peer", candidates: byName };
+  if (byName.length > 1) return { ok: false, code: "ambiguous_peer", candidates: byName };
+  const byShort = peers.filter((p) => shortFormOfName(p.name, teamOfName(p.name)) === target);
+  if (byShort.length === 1) return { ok: true, peer: byShort[0] };
+  if (byShort.length > 1) {
+    const ownTeam = teamOfName(ctx.self.name);
+    const own = ownTeam ? byShort.filter((p) => teamOfName(p.name) === ownTeam) : [];
+    if (own.length === 1) return { ok: true, peer: own[0] };
+    return { ok: false, code: "ambiguous_peer", candidates: byShort };
+  }
+  return { ok: false, code: "peer_not_found", activePeers: peers };
+}
+function teamOfName(name) {
+  const i = name.indexOf("-");
+  return i > 0 ? name.slice(0, i) : null;
+}
+function shortFormOfName(name, team) {
+  if (!team) return null;
+  const short = name.slice(team.length + 1);
+  return short.length > 0 ? short : null;
 }
 function peerDiagShape(p) {
   return {
@@ -23418,16 +23435,16 @@ async function peerContextStatusTool(ctx, args) {
           targets.push({ id: byId.id, name: byId.name });
           continue;
         }
-        const byName = activePeers.filter((p) => p.name === normalized);
-        if (byName.length === 1) {
-          targets.push({ id: byName[0]?.id ?? "", name: byName[0]?.name ?? null });
+        const resolved = await resolveTargetPeer(ctx, normalized);
+        if (resolved.ok) {
+          targets.push({ id: resolved.peer.id, name: resolved.peer.name });
           continue;
         }
-        if (byName.length > 1) {
+        if (resolved.code === "ambiguous_peer") {
           return err2(
             "ambiguous_peer",
-            `Multiple peers match name "${normalized}". Use peer id instead.`,
-            byName.map((c) => ({ id: c.id, name: c.name, cwd: c.cwd }))
+            `"${normalized}" matches ${resolved.candidates.length} peers \u2014 refusing to guess. Use the full name: ${resolved.candidates.map((c) => c.name).join(", ")}`,
+            resolved.candidates.map((c) => ({ id: c.id, name: c.name, cwd: c.cwd }))
           );
         }
         if (UUID_RE.test(normalized)) {
