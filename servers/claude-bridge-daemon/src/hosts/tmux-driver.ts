@@ -31,38 +31,96 @@ const log = makeLogger("daemon.host.tmux");
 const EXEC_DEFAULTS = { killSignal: "SIGKILL" } as const;
 
 /**
- * Build the pane's environment on the command line, from nothing.
- *
- * The whitelist in `env-whitelist.ts` was composed and then handed to
- * `execFile` as the environment of the **tmux client**. A new pane does not
- * inherit that. tmux's server is a long-lived process, and a session it
- * creates gets the SERVER's global environment plus the handful of variables
- * named in `update-environment` (DISPLAY, SSH_*, XAUTHORITY by default).
- * Nothing the client was given reaches the pane.
- *
- * So the whitelist filtered something tmux never consulted. Measured
- * 2026-08-04 on tmux 3.4: a session created with `env -i` — an entirely empty
- * client environment — produced a pane holding `ANTHROPIC_API_KEY` and eight
- * `CLAUDE_*` variables, taken from the server. That is the 22 July billing
- * incident as a permanent condition rather than an accident, and it is why
- * five peers were found carrying the key.
- *
- * `env -i` makes the pane's environment explicit and independent of tmux's
- * semantics: nothing is inherited, every variable is one we chose. Cleaning
- * the server's global environment (`tmux set-environment -gu`) fixes today's
- * server but not the next one started from a contaminated shell, so it is an
- * operational step, never the mechanism.
- *
- * `execFile` runs without a shell, so values need no quoting.
+ * Variables tmux sets for a pane itself. Passing them in would hand the new
+ * pane the PREVIOUS pane's identity — `kb-ops` came up in `%1011` announcing
+ * itself as `%71` (2026-08-04). Stripped here as well as at harvest time,
+ * because this is the one place every spawn path goes through.
  */
-export function envPrefix(env: Record<string, string>): string[] {
+const TMUX_OWNED_VARS = ["TMUX", "TMUX_PANE"];
+
+/**
+ * The three variables the PANE knows and the daemon cannot.
+ *
+ * Read inside the pane rather than passed in, because neither source the
+ * daemon has is correct:
+ *
+ *   - `TMUX_PANE` does not exist until the pane does, and a value harvested
+ *     from the previous pane points at something already destroyed — `kb-ops`
+ *     carried `%71` while living in `%1011` (2026-08-04).
+ *   - `TERM` is absent from the daemon entirely: it runs under systemd with no
+ *     terminal, so there was never anything to pass on.
+ *
+ * `sh -c` still has what tmux set, so it restates the values on the `env -i`
+ * command line before `env -i` wipes them.
+ */
+const PANE_SELF_DESCRIBING = [
+  // Empty only if tmux failed to set it; the built-in default beats nothing.
+  'TERM="${TERM:-screen-256color}"',
+  'TMUX="$TMUX"',
+  'TMUX_PANE="$TMUX_PANE"',
+];
+
+/** Single-quote for `sh -c`, escaping embedded quotes the POSIX way. */
+function shQuote(value: string): string {
+  return `'${value.replaceAll("'", `'\\''`)}'`;
+}
+
+/**
+ * Build the pane's command line, with its environment stated from nothing.
+ *
+ * **Why `env -i`.** The whitelist in `env-whitelist.ts` was composed and then
+ * handed to `execFile` as the environment of the **tmux client**. A new pane
+ * does not inherit that. tmux's server is long-lived, and a session it creates
+ * gets the SERVER's global environment plus the handful of variables named in
+ * `update-environment`. Nothing the client was given reaches the pane, so the
+ * whitelist was filtering something tmux never consulted. Measured 2026-08-04
+ * on tmux 3.4: a session created with an entirely empty client environment
+ * still produced a pane holding `ANTHROPIC_API_KEY` and eight `CLAUDE_*`
+ * variables from the server. That is the 22 July billing incident as a
+ * permanent condition, and why five peers were found carrying the key.
+ * Cleaning the server's environment fixes today's server but not the next one
+ * started from a contaminated shell — an operational step, never the mechanism.
+ *
+ * **Why a shell.** `env -i` is thorough: it also discards what tmux set for
+ * the pane. Measured 2026-08-05, the same pane both ways —
+ *
+ *   with `env -i`   PATH, HOME and nothing else
+ *   without         TERM=tmux-256color, TMUX=…, TMUX_PANE=%1029
+ *
+ * — so peers came up monochrome, and a `tmux` command run inside a peer could
+ * not find its own server. `sh -c` runs with tmux's environment intact, names
+ * the three pane-scoped values, and `exec`s, leaving no shell behind so
+ * `pane_pid` still points at the peer.
+ *
+ * Values are single-quoted because a shell is now involved; `execFile` itself
+ * still runs without one.
+ */
+export function paneCommand(
+  env: Record<string, string>,
+  command: string,
+  args: readonly string[],
+): string[] {
   // Absolute path, not a bare `env`. tmux resolves the command against the
   // SERVER's PATH, and the PATH we chose is inside this command's arguments —
   // too late to help resolve the binary that applies them. `/usr/bin/env` is
   // the one location POSIX effectively guarantees (every shebang line in the
   // world depends on it); fall back to a PATH lookup only if it is missing.
   const envBin = existsSync("/usr/bin/env") ? "/usr/bin/env" : "env";
-  return [envBin, "-i", ...Object.entries(env).map(([k, v]) => `${k}=${v}`)];
+  const assignments = Object.entries(env)
+    // The pane describes these three itself, below — a value from the caller
+    // would be a stale copy of another pane's identity.
+    .filter(([k]) => !TMUX_OWNED_VARS.includes(k) && k !== "TERM")
+    .map(([k, v]) => `${k}=${shQuote(v)}`);
+  const script = [
+    "exec",
+    envBin,
+    "-i",
+    ...assignments,
+    ...PANE_SELF_DESCRIBING,
+    shQuote(command),
+    ...args.map(shQuote),
+  ].join(" ");
+  return ["/bin/sh", "-c", script];
 }
 /** Read-only queries — must answer immediately or not at all. */
 const QUERY_TIMEOUT_MS = 5_000;
@@ -269,9 +327,7 @@ export class TmuxDriver implements SessionHostDriver {
           "-c",
           opts.cwd,
           "--",
-          ...envPrefix(opts.env),
-          opts.command,
-          ...opts.args,
+          ...paneCommand(opts.env, opts.command, opts.args),
         ]
       : [
           "new-session",
@@ -282,9 +338,7 @@ export class TmuxDriver implements SessionHostDriver {
           "-c",
           opts.cwd,
           "--",
-          ...envPrefix(opts.env),
-          opts.command,
-          ...opts.args,
+          ...paneCommand(opts.env, opts.command, opts.args),
         ];
     // The home session may be gone.
     //
@@ -316,9 +370,7 @@ export class TmuxDriver implements SessionHostDriver {
         "-c",
         opts.cwd,
         "--",
-        ...envPrefix(opts.env),
-        opts.command,
-        ...opts.args,
+        ...paneCommand(opts.env, opts.command, opts.args),
       ];
       recreatedHome = true;
     }

@@ -6,6 +6,52 @@ All notable changes to this project are documented here. Format follows [Keep a 
 
 _Nothing yet._
 
+## [0.10.16] — 2026-08-05
+
+Peers relaunched by the daemon came up monochrome, and one of them was telling
+everybody it lived in a pane that had been destroyed hours earlier.
+
+### One allowlist was answering two different questions
+
+`TERM`, `TMUX` and `TMUX_PANE` describe the **pane**, not the process in it.
+They belong in `BASE_ALLOWLIST` — a peer needs all three to run — and they were
+also being written into `PeerRecord.spawnEnv`, which outlives the pane it was
+harvested from. The same list was serving "what may this peer carry" and "what
+may be stored", and the second question has no stable answer.
+
+Measured across the live fleet on 2026-08-04: `kb-ops` was harvested in pane
+`%71`, relaunched into `%1011`, and kept `TMUX_PANE=%71` — a pointer to
+something already gone. Twenty-one of twenty-three records had no `TERM` at
+all, because the harvest that produced them ran against peers the v0.10.13
+outage had already stripped.
+
+Neither is reachable by editing the allowlist: `TERM` was in it the whole time.
+Harvest and spawn are now separate — `harvestEnv` for what gets stored,
+`sanitizeEnv` for what a process starts with — and records written by earlier
+versions are repaired on load, because `spawnEnv` is captured once and replayed
+by every later restart, so a bad value never expires on its own.
+
+### `env -i` was discarding what tmux had set
+
+The obvious fix — "drop them at harvest, tmux sets them itself" — was wrong,
+and measuring it was the only way to find that out. tmux does set all three
+for a new pane, but `env -i` runs **as** the pane's command and clears the
+environment tmux prepared. Same pane, spawned both ways on tmux 3.4:
+
+```
+with `env -i`   PATH, HOME and nothing else
+without         TERM=tmux-256color, TMUX=…, TMUX_PANE=%1029
+```
+
+So dropping them without replacing them would have swapped a wrong `TERM` for
+no `TERM`, and quietly taken `TMUX` with it — a `tmux` command run inside a
+peer could no longer find its own server.
+
+The pane's own first command is the only process that knows the right answers,
+so that is where they are read now: `sh -c` still holds what tmux set, restates
+the three values on the `env -i` command line, and `exec`s, leaving no shell
+between tmux and the peer so `pane_pid` still points at the peer itself.
+
 ## [0.10.15] — 2026-08-04
 
 Two findings from the recovery of the v0.10.13 outage. Both were worked around

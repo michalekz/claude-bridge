@@ -1,6 +1,6 @@
 import { resolvePeer } from "@claude-bridge/shared";
 import { z } from "zod";
-import { sanitizeEnv } from "../env-whitelist.ts";
+import { harvestEnv } from "../env-whitelist.ts";
 import { writeEvent } from "../events.ts";
 import { formatHostTarget, parseHostTarget, sanitizeSessionKey } from "../hosts/driver.ts";
 import { type ProcessRecord, defaultProcessInspector } from "../hosts/process-inspector.ts";
@@ -290,9 +290,10 @@ async function discoverCandidates(
       ...(launch.command ? { command: launch.command } : {}),
       spawnArgs: launch.spawnArgs,
       model: launch.model,
-      // The peer's own environment, filtered by the same whitelist. Its PATH is
-      // the one that can actually find its `node` and its `claude`.
-      spawnEnv: ensureCommandDirOnPath(sanitizeEnv(proc.environ), launch.command),
+      // The peer's own environment. Its PATH is the one that can actually find
+      // its `node` and its `claude`. `harvestEnv` (not `sanitizeEnv`) because
+      // this is being STORED: the pane-scoped vars would outlive their pane.
+      spawnEnv: ensureCommandDirOnPath(harvestEnv(proc.environ), launch.command),
       ...(proc.cwd ? { cwd: proc.cwd } : {}),
     });
   }
@@ -423,7 +424,7 @@ export async function handleTeamAdopt(
         spawnArgs: launch.spawnArgs,
         model: launch.model,
         ...(owning
-          ? { spawnEnv: ensureCommandDirOnPath(sanitizeEnv(owning.environ), launch.command) }
+          ? { spawnEnv: ensureCommandDirOnPath(harvestEnv(owning.environ), launch.command) }
           : {}),
         ...(owning?.cwd ? { cwd: owning.cwd } : {}),
       });

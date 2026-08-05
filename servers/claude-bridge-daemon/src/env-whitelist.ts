@@ -40,6 +40,29 @@ export const BASE_ALLOWLIST: readonly string[] = Object.freeze([
 ]);
 
 /**
+ * Variables the HOST supplies to whatever it puts in a pane — properties of
+ * the pane, not of the process sitting in it.
+ *
+ * They belong in `BASE_ALLOWLIST` (a peer needs them to run) and must never
+ * be written into `PeerRecord.spawnEnv`, because that record outlives the
+ * pane it was harvested from. `spawnEnv` answers "what may this peer carry";
+ * these answer "where is it running right now" — the same allowlist was
+ * serving both questions, and the second one has no stable answer.
+ *
+ * Observed 2026-08-04: `kb-ops` was harvested in pane `%71`, relaunched into
+ * `%1011`, and kept `TMUX_PANE=%71` in its environment — a pointer to a pane
+ * that no longer exists. `TERM` failed the other way round: the daemon runs
+ * under systemd with no terminal, so a harvest taken from a peer the outage
+ * had already stripped recorded no `TERM` at all, and every later relaunch
+ * reproduced that absence. Neither is fixable by editing the allowlist; both
+ * are fixed by not persisting these three.
+ *
+ * Nothing is lost by dropping them at harvest time: the pane reads all three
+ * from tmux for itself at spawn — see `paneCommand` in `hosts/tmux-driver.ts`.
+ */
+export const HOST_PROVIDED_VARS: readonly string[] = Object.freeze(["TERM", "TMUX", "TMUX_PANE"]);
+
+/**
  * Prefixes that are ALWAYS stripped even when the caller lists them —
  * they carry state that leaks the operator's session into the spawned
  * peer. Match against fully-qualified variable names, case-sensitive.
@@ -88,6 +111,36 @@ export function sanitizeEnv(
       }
       out[key] = value;
     }
+  }
+  return out;
+}
+
+/**
+ * Filter an environment for PERSISTENCE into `PeerRecord.spawnEnv`.
+ *
+ * Same rules as `sanitizeEnv`, minus `HOST_PROVIDED_VARS` — see that constant
+ * for why an environment that is correct to *run* with is wrong to *store*.
+ * Use this at every harvest site (`team_adopt`); use `sanitizeEnv` when
+ * composing the environment a process is about to start with.
+ */
+export function harvestEnv(
+  callerEnv: NodeJS.ProcessEnv,
+  opts: SanitizeEnvOptions = {},
+): Record<string, string> {
+  return stripHostProvided(sanitizeEnv(callerEnv, opts));
+}
+
+/**
+ * Drop `HOST_PROVIDED_VARS` from an already-built environment.
+ *
+ * Also applied when loading state written by an earlier version, so records
+ * harvested before this fix stop carrying a dead `TMUX_PANE` forward.
+ */
+export function stripHostProvided(env: Record<string, string>): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const [key, value] of Object.entries(env)) {
+    if (HOST_PROVIDED_VARS.includes(key)) continue;
+    out[key] = value;
   }
   return out;
 }

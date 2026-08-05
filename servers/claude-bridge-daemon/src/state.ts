@@ -1,5 +1,6 @@
 import { readFile } from "node:fs/promises";
 import { atomicWriteJson, makeLogger, stateFilePath } from "@claude-bridge/shared";
+import { HOST_PROVIDED_VARS, stripHostProvided } from "./env-whitelist.ts";
 
 /**
  * Daemon-authoritative state (single writer).
@@ -131,6 +132,32 @@ export function emptyState(daemonVersion: string): StateDoc {
   };
 }
 
+/**
+ * Drop pane-scoped variables from `spawnEnv` written by an earlier version.
+ *
+ * Not a `stateVersion` migration: bumping the version discards the whole
+ * document, which would lose 23 adopted peers to fix three variables. This is
+ * a repair applied on every load — idempotent, and cheap enough not to care.
+ *
+ * Without it the bad values are self-perpetuating. `spawnEnv` is captured once
+ * at adoption and replayed by every later restart, so `kb-ops` would keep
+ * announcing `TMUX_PANE=%71` from a pane destroyed on 2026-08-04 no matter how
+ * many times it was restarted. See `HOST_PROVIDED_VARS`.
+ */
+function repairHarvestedEnv(peers: Record<string, PeerRecord>): Record<string, PeerRecord> {
+  for (const record of Object.values(peers)) {
+    if (!record.spawnEnv) continue;
+    const cleaned = stripHostProvided(record.spawnEnv);
+    if (Object.keys(cleaned).length === Object.keys(record.spawnEnv).length) continue;
+    log.info("spawn_env_repaired", {
+      sessionId: record.sessionId,
+      dropped: HOST_PROVIDED_VARS.filter((v) => v in (record.spawnEnv ?? {})),
+    });
+    record.spawnEnv = cleaned;
+  }
+  return peers;
+}
+
 export async function loadState(daemonVersion: string): Promise<StateDoc> {
   try {
     const raw = await readFile(stateFilePath(), "utf-8");
@@ -146,7 +173,7 @@ export async function loadState(daemonVersion: string): Promise<StateDoc> {
       stateVersion: STATE_VERSION,
       daemonVersion,
       daemonStartedAt: new Date().toISOString(),
-      peers: parsed.peers ?? {},
+      peers: repairHarvestedEnv(parsed.peers ?? {}),
     };
     return doc;
   } catch (e) {

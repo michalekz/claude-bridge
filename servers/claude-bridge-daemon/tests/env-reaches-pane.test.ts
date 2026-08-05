@@ -3,7 +3,7 @@ import { readFile } from "node:fs/promises";
 import { promisify } from "node:util";
 import { afterAll, describe, expect, it } from "vitest";
 import { sanitizeEnv } from "../src/env-whitelist.ts";
-import { envPrefix } from "../src/hosts/tmux-driver.ts";
+import { paneCommand } from "../src/hosts/tmux-driver.ts";
 
 const execFileAsync = promisify(execFile);
 
@@ -53,14 +53,27 @@ describe("the sanitized environment reaches the process, not just the caller", (
     await execFileAsync("tmux", ["set-environment", "-gu", LEAK]).catch(() => undefined);
   });
 
-  it("envPrefix starts from nothing and names every variable explicitly", () => {
-    const prefix = envPrefix({ PATH: "/usr/bin", HOME: "/home/x" });
+  it("paneCommand starts from nothing and names every variable explicitly", () => {
+    const argv = paneCommand({ PATH: "/usr/bin", HOME: "/home/x" }, "/bin/sh", ["-c", "sleep 1"]);
+    const script = argv[2] ?? "";
     // `-i` is the whole point: without it the child inherits, and inheritance
     // is what put the key in there.
-    expect(prefix[0]).toMatch(/(^|\/)env$/);
-    expect(prefix[1]).toBe("-i");
-    expect(prefix).toContain("PATH=/usr/bin");
-    expect(prefix).toContain("HOME=/home/x");
+    expect(argv[0]).toBe("/bin/sh");
+    expect(argv[1]).toBe("-c");
+    expect(script).toMatch(/exec (\/usr\/bin\/)?env -i /);
+    expect(script).toContain("PATH='/usr/bin'");
+    expect(script).toContain("HOME='/home/x'");
+    // `exec` so no shell is left between tmux and the peer — `pane_pid` has to
+    // keep pointing at the peer itself.
+    expect(script.startsWith("exec ")).toBe(true);
+  });
+
+  it("a value with a quote in it cannot break out of the command", () => {
+    const argv = paneCommand({ PATH: "/usr/bin", HOME: "/home/it's; rm -rf /" }, "/bin/sh", []);
+    const script = argv[2] ?? "";
+    // The apostrophe is escaped, so the `;` stays inside the value instead of
+    // becoming a second command.
+    expect(script).toContain(`HOME='/home/it'\\''s; rm -rf /'`);
   });
 
   it("a polluted caller environment does not survive sanitizeEnv", () => {
@@ -95,10 +108,7 @@ describe("the sanitized environment reaches the process, not just the caller", (
         "-c",
         "/tmp",
         "--",
-        ...envPrefix(clean),
-        "/bin/sh",
-        "-c",
-        "sleep 30",
+        ...paneCommand(clean, "/bin/sh", ["-c", "sleep 30"]),
       ]);
 
       const { stdout } = await execFileAsync("tmux", [

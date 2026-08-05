@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { sanitizeEnv } from "../env-whitelist.ts";
+import { harvestEnv, sanitizeEnv } from "../env-whitelist.ts";
 import { publishLifecycleEvent } from "../event-subscribers.ts";
 import { writeEvent } from "../events.ts";
 import type { RequestEnvelope, ResultEnvelope } from "../rpc.ts";
@@ -154,7 +154,11 @@ export async function handlePeerSpawn(
       // Where this peer belongs, so a later restart does not have to ask a
       // window that may no longer exist.
       ...(args.inSession ? { homeSession: args.inSession } : {}),
-      ...(args.envBase ? { spawnEnv: sanitizeEnv(args.envBase) } : {}),
+      // `harvestEnv`, not `sanitizeEnv`: `env` above is what this peer starts
+      // with, but this is the copy that PERSISTS across restarts, so the
+      // pane-scoped vars have to go — they describe a pane that will not be
+      // the same one next time.
+      ...(args.envBase ? { spawnEnv: harvestEnv(args.envBase) } : {}),
       model: args.model ?? null,
       accountProfile: args.accountProfile ?? null,
       startedAt: new Date().toISOString(),

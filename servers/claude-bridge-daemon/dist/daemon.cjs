@@ -4287,7 +4287,7 @@ async function resolvePeer(idOrName, root = bridgeRoot(), now = Date.now()) {
 // package.json
 var package_default = {
   name: "claude-bridge-daemon",
-  version: "0.10.15",
+  version: "0.10.16",
   private: true,
   description: "Control-plane daemon for the claude-bridge plugin: peer lifecycle, telemetry, audit. Distributed as opt-in artefact \u2014 see ADR-008.",
   type: "module",
@@ -4787,6 +4787,7 @@ var BASE_ALLOWLIST = Object.freeze([
   "XDG_DATA_HOME",
   "XDG_CACHE_HOME"
 ]);
+var HOST_PROVIDED_VARS = Object.freeze(["TERM", "TMUX", "TMUX_PANE"]);
 var HARD_STRIP_PREFIXES = Object.freeze([
   "ANTHROPIC_",
   "CLAUDE_",
@@ -4809,6 +4810,17 @@ function sanitizeEnv(callerEnv, opts = {}) {
       }
       out[key] = value;
     }
+  }
+  return out;
+}
+function harvestEnv(callerEnv, opts = {}) {
+  return stripHostProvided(sanitizeEnv(callerEnv, opts));
+}
+function stripHostProvided(env) {
+  const out = {};
+  for (const [key, value] of Object.entries(env)) {
+    if (HOST_PROVIDED_VARS.includes(key)) continue;
+    out[key] = value;
   }
   return out;
 }
@@ -4868,6 +4880,19 @@ function emptyState(daemonVersion) {
     peers: {}
   };
 }
+function repairHarvestedEnv(peers) {
+  for (const record of Object.values(peers)) {
+    if (!record.spawnEnv) continue;
+    const cleaned = stripHostProvided(record.spawnEnv);
+    if (Object.keys(cleaned).length === Object.keys(record.spawnEnv).length) continue;
+    log4.info("spawn_env_repaired", {
+      sessionId: record.sessionId,
+      dropped: HOST_PROVIDED_VARS.filter((v) => v in (record.spawnEnv ?? {}))
+    });
+    record.spawnEnv = cleaned;
+  }
+  return peers;
+}
 async function loadState(daemonVersion) {
   try {
     const raw = await (0, import_promises7.readFile)(stateFilePath(), "utf-8");
@@ -4882,7 +4907,7 @@ async function loadState(daemonVersion) {
       stateVersion: STATE_VERSION,
       daemonVersion,
       daemonStartedAt: (/* @__PURE__ */ new Date()).toISOString(),
-      peers: parsed.peers ?? {}
+      peers: repairHarvestedEnv(parsed.peers ?? {})
     };
     return doc;
   } catch (e) {
@@ -4994,7 +5019,11 @@ async function handlePeerSpawn(req, ctx) {
       // Where this peer belongs, so a later restart does not have to ask a
       // window that may no longer exist.
       ...args.inSession ? { homeSession: args.inSession } : {},
-      ...args.envBase ? { spawnEnv: sanitizeEnv(args.envBase) } : {},
+      // `harvestEnv`, not `sanitizeEnv`: `env` above is what this peer starts
+      // with, but this is the copy that PERSISTS across restarts, so the
+      // pane-scoped vars have to go — they describe a pane that will not be
+      // the same one next time.
+      ...args.envBase ? { spawnEnv: harvestEnv(args.envBase) } : {},
       model: args.model ?? null,
       accountProfile: args.accountProfile ?? null,
       startedAt: (/* @__PURE__ */ new Date()).toISOString(),
@@ -5764,9 +5793,10 @@ async function discoverCandidates(ctx, hostSessions) {
       ...launch.command ? { command: launch.command } : {},
       spawnArgs: launch.spawnArgs,
       model: launch.model,
-      // The peer's own environment, filtered by the same whitelist. Its PATH is
-      // the one that can actually find its `node` and its `claude`.
-      spawnEnv: ensureCommandDirOnPath(sanitizeEnv(proc.environ), launch.command),
+      // The peer's own environment. Its PATH is the one that can actually find
+      // its `node` and its `claude`. `harvestEnv` (not `sanitizeEnv`) because
+      // this is being STORED: the pane-scoped vars would outlive their pane.
+      spawnEnv: ensureCommandDirOnPath(harvestEnv(proc.environ), launch.command),
       ...proc.cwd ? { cwd: proc.cwd } : {}
     });
   }
@@ -5842,7 +5872,7 @@ async function handleTeamAdopt(req, ctx) {
         ...launch.command ? { command: launch.command } : {},
         spawnArgs: launch.spawnArgs,
         model: launch.model,
-        ...owning ? { spawnEnv: ensureCommandDirOnPath(sanitizeEnv(owning.environ), launch.command) } : {},
+        ...owning ? { spawnEnv: ensureCommandDirOnPath(harvestEnv(owning.environ), launch.command) } : {},
         ...owning?.cwd ? { cwd: owning.cwd } : {}
       });
     }
@@ -7257,9 +7287,29 @@ var import_node_util = require("node:util");
 var execFileAsync = (0, import_node_util.promisify)(import_node_child_process.execFile);
 var log6 = makeLogger("daemon.host.tmux");
 var EXEC_DEFAULTS = { killSignal: "SIGKILL" };
-function envPrefix(env) {
+var TMUX_OWNED_VARS = ["TMUX", "TMUX_PANE"];
+var PANE_SELF_DESCRIBING = [
+  // Empty only if tmux failed to set it; the built-in default beats nothing.
+  'TERM="${TERM:-screen-256color}"',
+  'TMUX="$TMUX"',
+  'TMUX_PANE="$TMUX_PANE"'
+];
+function shQuote(value) {
+  return `'${value.replaceAll("'", `'\\''`)}'`;
+}
+function paneCommand(env, command, args) {
   const envBin = (0, import_node_fs4.existsSync)("/usr/bin/env") ? "/usr/bin/env" : "env";
-  return [envBin, "-i", ...Object.entries(env).map(([k, v]) => `${k}=${v}`)];
+  const assignments = Object.entries(env).filter(([k]) => !TMUX_OWNED_VARS.includes(k) && k !== "TERM").map(([k, v]) => `${k}=${shQuote(v)}`);
+  const script = [
+    "exec",
+    envBin,
+    "-i",
+    ...assignments,
+    ...PANE_SELF_DESCRIBING,
+    shQuote(command),
+    ...args.map(shQuote)
+  ].join(" ");
+  return ["/bin/sh", "-c", script];
 }
 var QUERY_TIMEOUT_MS = 5e3;
 var MUTATE_TIMEOUT_MS = 1e4;
@@ -7399,9 +7449,7 @@ var TmuxDriver = class {
       "-c",
       opts.cwd,
       "--",
-      ...envPrefix(opts.env),
-      opts.command,
-      ...opts.args
+      ...paneCommand(opts.env, opts.command, opts.args)
     ] : [
       "new-session",
       "-d",
@@ -7411,9 +7459,7 @@ var TmuxDriver = class {
       "-c",
       opts.cwd,
       "--",
-      ...envPrefix(opts.env),
-      opts.command,
-      ...opts.args
+      ...paneCommand(opts.env, opts.command, opts.args)
     ];
     let effectiveArgs = args;
     let recreatedHome = false;
@@ -7433,9 +7479,7 @@ var TmuxDriver = class {
         "-c",
         opts.cwd,
         "--",
-        ...envPrefix(opts.env),
-        opts.command,
-        ...opts.args
+        ...paneCommand(opts.env, opts.command, opts.args)
       ];
       recreatedHome = true;
     }
