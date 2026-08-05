@@ -4,6 +4,7 @@ import { writeEvent } from "../events.ts";
 import type { RequestEnvelope, ResultEnvelope } from "../rpc.ts";
 import { errResult, okResult } from "../rpc.ts";
 import type { HandlerContext } from "./context.ts";
+import { ambiguousPeerMessage, resolvePeerRef } from "./peer-ref.ts";
 import { applyStateChange } from "./state-writer.ts";
 
 /**
@@ -45,12 +46,12 @@ export const PeerStopArgsSchema = z
 
 export type PeerStopArgs = z.infer<typeof PeerStopArgsSchema>;
 
-function findPeer(state: HandlerContext["state"], key: string): { sessionId: string } | null {
-  if (state.peers[key]) return { sessionId: key };
-  for (const [id, rec] of Object.entries(state.peers)) {
-    if (rec.name === key) return { sessionId: id };
-  }
-  return null;
+// Resolution lives in peer-ref.ts — see there for why a duplicate name must
+// refuse rather than pick the first match.
+
+/** The team of whoever sent this request — the search domain for short names. */
+function callerTeamOf(req: RequestEnvelope, ctx: HandlerContext): string | null {
+  return ctx.state.peers[req.requestedBy.sessionId]?.team ?? null;
 }
 
 export async function handlePeerStop(
@@ -64,7 +65,24 @@ export async function handlePeerStop(
     });
   }
   const args = parsed.data;
-  const found = findPeer(ctx.state, args.peer);
+  const resolved = resolvePeerRef(ctx.state.peers, args.peer, callerTeamOf(req, ctx));
+  if (resolved.kind === "ambiguous") {
+    await writeEvent({
+      event: "peer_stop_rejected",
+      level: "warn",
+      by: { sessionId: req.requestedBy.sessionId, name: req.requestedBy.name },
+      requestId: req.id,
+      details: { peer: args.peer, reason: "ambiguous_peer", candidates: resolved.candidates },
+    });
+    return errResult(
+      req.id,
+      req.tool,
+      "ambiguous_peer",
+      ambiguousPeerMessage(args.peer, resolved.candidates),
+      { peer: args.peer, candidates: resolved.candidates },
+    );
+  }
+  const found = resolved.kind === "found" ? resolved : null;
   if (!found) {
     await writeEvent({
       event: "peer_stop_rejected",

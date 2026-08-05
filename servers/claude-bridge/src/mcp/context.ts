@@ -382,6 +382,17 @@ export async function pumpInboxToChannel(ctx: ServerContext): Promise<{ pushed: 
     ctx.pushedMsgIds.add(env.id);
     pushed++;
     // Note: NO consume here. Piggyback drains pending → moves to done.
+    //
+    // A note on disk that the push happened, though. `pushedMsgIds` is a Set
+    // for the life of this process, so nothing outside it — an operator, a
+    // later session, a diagnosis — could tell "pushed, not yet confirmed" from
+    // "never left the outbox". Both looked like a file in `pending/`, and on
+    // 2026-08-05 two of us separately spent hours calling healthy peers deaf.
+    //
+    // Recording it must not CHANGE anything: re-pushing after a restart stays
+    // correct, because a push is still not evidence the agent saw it. This is
+    // provenance, not a suppression flag.
+    await ctx.inbox.markPushed(ctx.self.id, env.id);
   }
   return { pushed };
 }

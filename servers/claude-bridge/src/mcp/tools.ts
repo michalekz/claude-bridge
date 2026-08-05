@@ -330,9 +330,40 @@ function shortId(id: string): string {
 
 export const PeerListArgs = z.object({}).strict();
 
+/**
+ * Two numbers that answer "is this peer hearing me?" without a shell.
+ *
+ * `pending` alone cannot answer it. `pending/` means "not confirmed seen by the
+ * agent", not "not delivered" — push is best-effort and only piggyback
+ * consumes, deliberately, so a message Claude Code never rendered is not lost
+ * (see `pumpInboxToChannel`). A file therefore sits there in two very different
+ * situations, and on 2026-08-05 plt-designer and I each spent hours on the
+ * wrong one: of nineteen decidable pending files across the fleet, seventeen
+ * had been delivered and answered.
+ *
+ * `pendingNeverPushed` separates them. Non-zero is the one worth chasing.
+ */
+async function queueHealth(
+  ctx: ServerContext,
+  peerId: string,
+): Promise<{ pending: number; pendingNeverPushed: number }> {
+  try {
+    const pending = await ctx.inbox.listPending(peerId);
+    let neverPushed = 0;
+    for (const env of pending) {
+      if (!(await ctx.inbox.pushRecord(peerId, env.id))) neverPushed++;
+    }
+    return { pending: pending.length, pendingNeverPushed: neverPushed };
+  } catch {
+    // A peer whose inbox cannot be read is not a reason to fail the listing.
+    return { pending: 0, pendingNeverPushed: 0 };
+  }
+}
+
 export async function peerListTool(ctx: ServerContext): Promise<ToolResult> {
   try {
     const peers = await ctx.registry.listActivePeers();
+    const queues = await Promise.all(peers.map((p) => queueHealth(ctx, p.id)));
     return ok({
       self: {
         id: ctx.self.id,
@@ -340,7 +371,7 @@ export async function peerListTool(ctx: ServerContext): Promise<ToolResult> {
         displayName: ctx.self.displayName,
       },
       count: peers.length,
-      peers: peers.map((p) => ({
+      peers: peers.map((p, i) => ({
         id: p.id,
         name: p.name,
         displayName: p.displayName ?? p.name,
@@ -353,6 +384,7 @@ export async function peerListTool(ctx: ServerContext): Promise<ToolResult> {
         ageMs: p.ageMs,
         source: p.source,
         version: p.version,
+        ...queues[i],
       })),
     });
   } catch (e) {

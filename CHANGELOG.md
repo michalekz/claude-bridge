@@ -6,6 +6,73 @@ All notable changes to this project are documented here. Format follows [Keep a 
 
 _Nothing yet._
 
+## [0.10.18] — 2026-08-05
+
+### A duplicated peer name was resolved by picking the first match
+
+Every lifecycle handler looked a peer up with
+`Object.values(peers).find((r) => r.name === key)`, and `find` returns the first
+one it meets. Names were never unique: the live fleet held two peers called
+`admin` and two called `velitel`, because adoption before v0.10.15 took the name
+from the tmux window, and windows are named per team.
+
+So `peer_restart peer:"velitel"` stopped and respawned whichever record was
+enumerated first — a destructive action on a silently wrong target, with nothing
+in the result to show it. `team_restart` compounds it: it orders "velitel last"
+by matching the name, so a duplicate skews the ordering a rollout depends on.
+
+`team_adopt` already refused to guess in this exact situation, and said why —
+"guessing would launder it". `peer_stop`, `peer_restart`, `peer_compact`,
+`team_restart` and `team_release` now hold the same policy, from one resolver.
+
+### Peer names resolve like hostnames
+
+Ratified by the owner the same day: short names inside a team, fully qualified
+names globally, and a collision forces the qualified form.
+
+```
+1. session id                    unique by construction, always wins
+2. full name                     mic-velitel, unambiguous anywhere
+3. short name, caller's team     velitel asked from mic means mic-velitel
+4. short name, globally unique   tester, from anywhere
+5. short name, several matches   refused, and the full names are named
+```
+
+Step 3 is the search domain, and it needs no new state: the request envelope
+carries the caller, and the caller's record carries the team.
+
+A fleet that does not follow the convention loses nothing. Where a name does not
+carry its team prefix there is simply no short form, and only the full name
+resolves — the same as a host with no domain suffix to strip.
+
+The `ambiguous_peer` message offers the full names, not session ids, because
+that is the answer the convention exists to give. Ids appear only when two peers
+share a full name, where nothing else can separate them.
+
+### A pushed message and an unsent one looked identical on disk
+
+`pending/` means "not confirmed seen by the agent", not "not delivered". That is
+deliberate — push is best-effort, and consuming on protocol success would lose
+every message Claude Code never rendered — but it left the two states
+indistinguishable, and the record of which was which lived in a `Set` for the
+lifetime of one process.
+
+It cost two peers hours on 2026-08-05: one diagnosed a peer as deaf from a file
+in `pending/` that had been delivered and answered, and hours later so did
+another, on a different peer. Of nineteen decidable pending files across the
+fleet, seventeen had been delivered.
+
+A push now leaves a note in `inbox/<peer>/pushed/<msgId>.json`, cleared when the
+message is archived. It is provenance and nothing else: re-pushing after a
+restart stays correct, because a push is still not evidence the agent saw it.
+
+Written to a sidecar rather than into the envelope because rewriting a file in
+`pending/` races with `consume` renaming it away, and the loser of that race
+resurrects a message that was already archived.
+
+`peer_list` reports `pending` and `pendingNeverPushed` per peer. The second is
+the one worth chasing; the first, alone, never meant what it looked like.
+
 ## [0.10.17] — 2026-08-05
 
 ### `peer_compact` could not reach a single adopted peer

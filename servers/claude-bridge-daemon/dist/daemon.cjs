@@ -4287,7 +4287,7 @@ async function resolvePeer(idOrName, root = bridgeRoot(), now = Date.now()) {
 // package.json
 var package_default = {
   name: "claude-bridge-daemon",
-  version: "0.10.17",
+  version: "0.10.18",
   private: true,
   description: "Control-plane daemon for the claude-bridge plugin: peer lifecycle, telemetry, audit. Distributed as opt-in artefact \u2014 see ADR-008.",
   type: "module",
@@ -4549,6 +4549,56 @@ async function publishLifecycleEvent(payload) {
   }
 }
 
+// src/handlers/peer-ref.ts
+function shortFormOf(record) {
+  const team = record.team;
+  if (!team) return null;
+  const prefix = `${team}-`;
+  if (!record.name.startsWith(prefix)) return null;
+  const short = record.name.slice(prefix.length);
+  return short.length > 0 ? short : null;
+}
+function resolvePeerRef(peers, ref, callerTeam) {
+  const byId = peers[ref];
+  if (byId) return { kind: "found", sessionId: ref, record: byId };
+  const exact = Object.entries(peers).filter(([, rec]) => rec.name === ref);
+  if (exact.length === 1) {
+    const [sessionId, record] = exact[0];
+    return { kind: "found", sessionId, record };
+  }
+  if (exact.length > 1) return ambiguous(exact);
+  const short = Object.entries(peers).filter(([, rec]) => shortFormOf(rec) === ref);
+  if (short.length === 0) return { kind: "not_found" };
+  if (short.length === 1) {
+    const [sessionId, record] = short[0];
+    return { kind: "found", sessionId, record };
+  }
+  if (callerTeam) {
+    const own = short.filter(([, rec]) => rec.team === callerTeam);
+    if (own.length === 1) {
+      const [sessionId, record] = own[0];
+      return { kind: "found", sessionId, record };
+    }
+  }
+  return ambiguous(short);
+}
+function ambiguous(matches) {
+  return {
+    kind: "ambiguous",
+    candidates: matches.map(([sessionId, rec]) => ({
+      sessionId,
+      name: rec.name,
+      tmuxTarget: rec.tmuxTarget,
+      status: rec.status
+    }))
+  };
+}
+function ambiguousPeerMessage(ref, candidates) {
+  const distinctNames = new Set(candidates.map((c) => c.name));
+  const list = distinctNames.size === candidates.length ? candidates.map((c) => c.name).join(", ") : candidates.map((c) => `${c.name} [${c.sessionId}]`).join(", ");
+  return `'${ref}' matches ${candidates.length} peers \u2014 refusing to guess which one. Use the full name: ${list}`;
+}
+
 // src/handlers/peer-compact.ts
 var DEFAULT_ANCHOR_TIMEOUT_MS = 3e4;
 var DEFAULT_ACK_POLL_MS = 500;
@@ -4618,12 +4668,8 @@ async function writeAnchorRequestMsg(peerId, threadId) {
   await atomicWriteJson(path, envelope);
   return msgId;
 }
-function findPeer(state, key) {
-  if (state.peers[key]) return { sessionId: key };
-  for (const [id, rec] of Object.entries(state.peers)) {
-    if (rec.name === key) return { sessionId: id };
-  }
-  return null;
+function callerTeamOf(req, ctx) {
+  return ctx.state.peers[req.requestedBy.sessionId]?.team ?? null;
 }
 async function handlePeerCompact(req, ctx) {
   const parsed = PeerCompactArgsSchema.safeParse(req.args);
@@ -4633,7 +4679,17 @@ async function handlePeerCompact(req, ctx) {
     });
   }
   const args = parsed.data;
-  const found = findPeer(ctx.state, args.peer);
+  const resolved = resolvePeerRef(ctx.state.peers, args.peer, callerTeamOf(req, ctx));
+  if (resolved.kind === "ambiguous") {
+    return errResult(
+      req.id,
+      req.tool,
+      "ambiguous_peer",
+      ambiguousPeerMessage(args.peer, resolved.candidates),
+      { peer: args.peer, candidates: resolved.candidates }
+    );
+  }
+  const found = resolved.kind === "found" ? resolved : null;
   if (!found) {
     return errResult(
       req.id,
@@ -5152,12 +5208,8 @@ var PeerStopArgsSchema = external_exports.object({
    */
   stoppedCleanly: external_exports.boolean().nullable().optional()
 }).strict();
-function findPeer2(state, key) {
-  if (state.peers[key]) return { sessionId: key };
-  for (const [id, rec] of Object.entries(state.peers)) {
-    if (rec.name === key) return { sessionId: id };
-  }
-  return null;
+function callerTeamOf2(req, ctx) {
+  return ctx.state.peers[req.requestedBy.sessionId]?.team ?? null;
 }
 async function handlePeerStop(req, ctx) {
   const parsed = PeerStopArgsSchema.safeParse(req.args);
@@ -5167,7 +5219,24 @@ async function handlePeerStop(req, ctx) {
     });
   }
   const args = parsed.data;
-  const found = findPeer2(ctx.state, args.peer);
+  const resolved = resolvePeerRef(ctx.state.peers, args.peer, callerTeamOf2(req, ctx));
+  if (resolved.kind === "ambiguous") {
+    await writeEvent({
+      event: "peer_stop_rejected",
+      level: "warn",
+      by: { sessionId: req.requestedBy.sessionId, name: req.requestedBy.name },
+      requestId: req.id,
+      details: { peer: args.peer, reason: "ambiguous_peer", candidates: resolved.candidates }
+    });
+    return errResult(
+      req.id,
+      req.tool,
+      "ambiguous_peer",
+      ambiguousPeerMessage(args.peer, resolved.candidates),
+      { peer: args.peer, candidates: resolved.candidates }
+    );
+  }
+  const found = resolved.kind === "found" ? resolved : null;
   if (!found) {
     await writeEvent({
       event: "peer_stop_rejected",
@@ -5319,6 +5388,9 @@ async function markNotRunning(ctx, sessionId) {
     rec.lastUpdatedAt = (/* @__PURE__ */ new Date()).toISOString();
   });
 }
+function callerTeamOf3(req, ctx) {
+  return ctx.state.peers[req.requestedBy.sessionId]?.team ?? null;
+}
 async function handlePeerRestart(req, ctx) {
   const parsed = PeerRestartArgsSchema.safeParse(req.args);
   if (!parsed.success) {
@@ -5327,7 +5399,17 @@ async function handlePeerRestart(req, ctx) {
     });
   }
   const args = parsed.data;
-  const record = ctx.state.peers[args.peer] ?? Object.values(ctx.state.peers).find((r) => r.name === args.peer) ?? null;
+  const resolved = resolvePeerRef(ctx.state.peers, args.peer, callerTeamOf3(req, ctx));
+  if (resolved.kind === "ambiguous") {
+    return errResult(
+      req.id,
+      req.tool,
+      "ambiguous_peer",
+      ambiguousPeerMessage(args.peer, resolved.candidates),
+      { peer: args.peer, candidates: resolved.candidates }
+    );
+  }
+  const record = resolved.kind === "found" ? resolved.record : null;
   if (!record) {
     return errResult(
       req.id,
@@ -5756,7 +5838,7 @@ async function discoverCandidates(ctx, hostSessions) {
     ownerBySessionKey.set(owner.sessionKey, list);
   }
   const candidates = [];
-  const ambiguous = [];
+  const ambiguous2 = [];
   const skips = [];
   for (const session of hostSessions) {
     const procs = ownerBySessionKey.get(session.sessionKey) ?? [];
@@ -5765,7 +5847,7 @@ async function discoverCandidates(ctx, hostSessions) {
       continue;
     }
     if (procs.length > 1) {
-      ambiguous.push({
+      ambiguous2.push({
         sessionKey: session.sessionKey,
         candidates: procs.map((p) => ({ pid: p.pid, sessionId: p.sessionId }))
       });
@@ -5800,7 +5882,7 @@ async function discoverCandidates(ctx, hostSessions) {
       ...proc.cwd ? { cwd: proc.cwd } : {}
     });
   }
-  return { candidates, ambiguous, skips };
+  return { candidates, ambiguous: ambiguous2, skips };
 }
 async function handleTeamAdopt(req, ctx) {
   const parsed = TeamAdoptArgsSchema.safeParse(req.args);
@@ -5832,7 +5914,7 @@ async function handleTeamAdopt(req, ctx) {
     pid: s.pid
   }));
   let candidates = [];
-  let ambiguous = [];
+  let ambiguous2 = [];
   let skips = [];
   if (args.mode === "manual") {
     for (const [rawKey, sessionId] of Object.entries(args.mapping ?? {})) {
@@ -5847,7 +5929,7 @@ async function handleTeamAdopt(req, ctx) {
       if (!host && target.kind === "session") {
         const inSession = windows.filter((w) => w.session === sessionKey);
         if (inSession.length > 1) {
-          ambiguous.push({
+          ambiguous2.push({
             sessionKey,
             candidates: inSession.map((w) => ({ pid: w.pid ?? -1, sessionId: null }))
           });
@@ -5879,7 +5961,7 @@ async function handleTeamAdopt(req, ctx) {
   } else {
     const found = await discoverCandidates(ctx, hostSessions);
     candidates = found.candidates;
-    ambiguous = found.ambiguous;
+    ambiguous2 = found.ambiguous;
     skips = found.skips;
   }
   const fresh = [];
@@ -5895,7 +5977,7 @@ async function handleTeamAdopt(req, ctx) {
     }
     fresh.push(c);
   }
-  for (const a of ambiguous) {
+  for (const a of ambiguous2) {
     await writeEvent({
       event: "adoption_ambiguous",
       level: "warn",
@@ -5922,7 +6004,7 @@ async function handleTeamAdopt(req, ctx) {
       cwd: c.cwd ?? null,
       model: c.model ?? null
     })),
-    ambiguous,
+    ambiguous: ambiguous2,
     skipped: skips
   };
   if (args.dryRun) {
@@ -5983,7 +6065,7 @@ async function handleTeamAdopt(req, ctx) {
     team: args.team,
     mode: args.mode,
     adopted,
-    ambiguous,
+    ambiguous: ambiguous2,
     skipped: skips
   };
   await writeEvent({
@@ -6547,6 +6629,9 @@ function describe(rec) {
     adopted: rec.adopted ?? false
   };
 }
+function callerTeamOf4(req, ctx) {
+  return ctx.state.peers[req.requestedBy.sessionId]?.team ?? null;
+}
 async function handleTeamRelease(req, ctx) {
   const parsed = TeamReleaseArgsSchema.safeParse(req.args);
   if (!parsed.success) {
@@ -6557,9 +6642,19 @@ async function handleTeamRelease(req, ctx) {
   const args = parsed.data;
   const found = [];
   const notFound = [];
+  const ambiguous2 = [];
   if (args.team !== void 0) {
     for (const rec of Object.values(ctx.state.peers)) {
       if (rec.team === args.team) found.push(rec);
+    }
+    if (ambiguous2.length > 0) {
+      return errResult(
+        req.id,
+        req.tool,
+        "ambiguous_peer",
+        ambiguous2.map((a) => ambiguousPeerMessage(a.ref, a.candidates)).join(" | "),
+        { ambiguous: ambiguous2 }
+      );
     }
     if (found.length === 0) {
       return errResult(
@@ -6575,7 +6670,12 @@ async function handleTeamRelease(req, ctx) {
     }
   } else {
     for (const key of args.peers ?? []) {
-      const rec = ctx.state.peers[key] ?? Object.values(ctx.state.peers).find((r) => r.name === key) ?? null;
+      const resolved = resolvePeerRef(ctx.state.peers, key, callerTeamOf4(req, ctx));
+      if (resolved.kind === "ambiguous") {
+        ambiguous2.push({ ref: key, candidates: resolved.candidates });
+        continue;
+      }
+      const rec = resolved.kind === "found" ? resolved.record : null;
       if (!rec) {
         notFound.push(key);
         continue;
@@ -6664,6 +6764,9 @@ function orderPeers(records) {
   return [...records.filter((r) => !isVelitel(r)), ...records.filter(isVelitel)];
 }
 var sleep2 = (ms) => new Promise((r) => setTimeout(r, ms));
+function callerTeamOf5(req, ctx) {
+  return ctx.state.peers[req.requestedBy.sessionId]?.team ?? null;
+}
 async function handleTeamRestart(req, ctx) {
   const parsed = TeamRestartArgsSchema.safeParse(req.args);
   if (!parsed.success) {
@@ -6674,6 +6777,7 @@ async function handleTeamRestart(req, ctx) {
   const args = parsed.data;
   let selected;
   const notFound = [];
+  const ambiguous2 = [];
   if (args.team !== void 0) {
     selected = Object.values(ctx.state.peers).filter((r) => r.team === args.team);
     if (selected.length === 0) {
@@ -6684,12 +6788,26 @@ async function handleTeamRestart(req, ctx) {
   } else {
     selected = [];
     for (const key of args.peers ?? []) {
-      const rec = ctx.state.peers[key] ?? Object.values(ctx.state.peers).find((r) => r.name === key) ?? null;
+      const resolved = resolvePeerRef(ctx.state.peers, key, callerTeamOf5(req, ctx));
+      if (resolved.kind === "ambiguous") {
+        ambiguous2.push({ ref: key, candidates: resolved.candidates });
+        continue;
+      }
+      const rec = resolved.kind === "found" ? resolved.record : null;
       if (!rec) {
         notFound.push(key);
         continue;
       }
       if (!selected.some((s) => s.sessionId === rec.sessionId)) selected.push(rec);
+    }
+    if (ambiguous2.length > 0) {
+      return errResult(
+        req.id,
+        req.tool,
+        "ambiguous_peer",
+        ambiguous2.map((a) => ambiguousPeerMessage(a.ref, a.candidates)).join(" | "),
+        { ambiguous: ambiguous2 }
+      );
     }
     if (notFound.length > 0) {
       return errResult(

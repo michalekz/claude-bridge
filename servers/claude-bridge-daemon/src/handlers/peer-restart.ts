@@ -8,6 +8,7 @@ import { parseHostTarget } from "../hosts/driver.ts";
 import type { RequestEnvelope, ResultEnvelope } from "../rpc.ts";
 import { errResult, okResult } from "../rpc.ts";
 import type { HandlerContext } from "./context.ts";
+import { ambiguousPeerMessage, resolvePeerRef } from "./peer-ref.ts";
 import { handlePeerSpawn } from "./peer-spawn.ts";
 import { handlePeerStop } from "./peer-stop.ts";
 import { applyStateChange } from "./state-writer.ts";
@@ -149,6 +150,11 @@ async function markNotRunning(ctx: HandlerContext, sessionId: string): Promise<v
   });
 }
 
+/** The team of whoever sent this request — the search domain for short names. */
+function callerTeamOf(req: RequestEnvelope, ctx: HandlerContext): string | null {
+  return ctx.state.peers[req.requestedBy.sessionId]?.team ?? null;
+}
+
 export async function handlePeerRestart(
   req: RequestEnvelope,
   ctx: HandlerContext,
@@ -162,10 +168,17 @@ export async function handlePeerRestart(
   const args = parsed.data;
 
   // Snapshot the record BEFORE stop, since stop removes it.
-  const record =
-    ctx.state.peers[args.peer] ??
-    Object.values(ctx.state.peers).find((r) => r.name === args.peer) ??
-    null;
+  const resolved = resolvePeerRef(ctx.state.peers, args.peer, callerTeamOf(req, ctx));
+  if (resolved.kind === "ambiguous") {
+    return errResult(
+      req.id,
+      req.tool,
+      "ambiguous_peer",
+      ambiguousPeerMessage(args.peer, resolved.candidates),
+      { peer: args.peer, candidates: resolved.candidates },
+    );
+  }
+  const record = resolved.kind === "found" ? resolved.record : null;
   if (!record) {
     return errResult(
       req.id,

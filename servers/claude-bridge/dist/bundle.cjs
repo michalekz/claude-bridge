@@ -18243,7 +18243,7 @@ var StdioServerTransport = class {
 // package.json
 var package_default = {
   name: "claude-bridge",
-  version: "0.10.17",
+  version: "0.10.18",
   private: true,
   description: "MCP server for cross-Claude-Code-chat orchestration over local session JSONL files",
   type: "module",
@@ -18647,7 +18647,35 @@ function createInboxStore(opts = {}) {
           await (0, import_promises3.unlink)(src).catch(() => void 0);
         }
       }
+      await (0, import_promises3.unlink)((0, import_node_path4.join)(peerBase(opts, peerId), "pushed", `${msgId}.json`)).catch(() => void 0);
       return env;
+    },
+    async markPushed(peerId, msgId) {
+      const path = (0, import_node_path4.join)(peerBase(opts, peerId), "pushed", `${msgId}.json`);
+      let pushCount = 1;
+      try {
+        const prev = JSON.parse(await (0, import_promises3.readFile)(path, "utf-8"));
+        const n = prev?.pushCount;
+        if (typeof n === "number" && Number.isFinite(n)) pushCount = n + 1;
+      } catch {
+      }
+      try {
+        await (0, import_promises3.mkdir)((0, import_node_path4.dirname)(path), { recursive: true });
+        await atomicWriteJson(path, { pushedAt: (/* @__PURE__ */ new Date()).toISOString(), pushCount });
+      } catch {
+      }
+    },
+    async pushRecord(peerId, msgId) {
+      try {
+        const raw = JSON.parse(
+          await (0, import_promises3.readFile)((0, import_node_path4.join)(peerBase(opts, peerId), "pushed", `${msgId}.json`), "utf-8")
+        );
+        const rec = raw;
+        if (!rec || typeof rec.pushedAt !== "string") return null;
+        return { pushedAt: rec.pushedAt, pushCount: rec.pushCount ?? 1 };
+      } catch {
+        return null;
+      }
     },
     async countPending(peerId) {
       const entries = await listDir((0, import_node_path4.join)(peerBase(opts, peerId), "pending"));
@@ -20844,6 +20872,7 @@ async function pumpInboxToChannel(ctx) {
     }
     ctx.pushedMsgIds.add(env.id);
     pushed++;
+    await ctx.inbox.markPushed(ctx.self.id, env.id);
   }
   return { pushed };
 }
@@ -22447,9 +22476,22 @@ function shortId(id) {
   return id.slice(0, 8);
 }
 var PeerListArgs = external_exports.object({}).strict();
+async function queueHealth(ctx, peerId) {
+  try {
+    const pending = await ctx.inbox.listPending(peerId);
+    let neverPushed = 0;
+    for (const env of pending) {
+      if (!await ctx.inbox.pushRecord(peerId, env.id)) neverPushed++;
+    }
+    return { pending: pending.length, pendingNeverPushed: neverPushed };
+  } catch {
+    return { pending: 0, pendingNeverPushed: 0 };
+  }
+}
 async function peerListTool(ctx) {
   try {
     const peers = await ctx.registry.listActivePeers();
+    const queues = await Promise.all(peers.map((p) => queueHealth(ctx, p.id)));
     return ok2({
       self: {
         id: ctx.self.id,
@@ -22457,7 +22499,7 @@ async function peerListTool(ctx) {
         displayName: ctx.self.displayName
       },
       count: peers.length,
-      peers: peers.map((p) => ({
+      peers: peers.map((p, i) => ({
         id: p.id,
         name: p.name,
         displayName: p.displayName ?? p.name,
@@ -22469,7 +22511,8 @@ async function peerListTool(ctx) {
         cwd: p.cwd,
         ageMs: p.ageMs,
         source: p.source,
-        version: p.version
+        version: p.version,
+        ...queues[i]
       }))
     });
   } catch (e) {

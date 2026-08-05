@@ -4,6 +4,7 @@ import type { RequestEnvelope, ResultEnvelope } from "../rpc.ts";
 import { errResult, okResult } from "../rpc.ts";
 import type { PeerRecord } from "../state.ts";
 import type { HandlerContext } from "./context.ts";
+import { type PeerRefCandidate, ambiguousPeerMessage, resolvePeerRef } from "./peer-ref.ts";
 import { applyStateChange } from "./state-writer.ts";
 
 /**
@@ -63,6 +64,11 @@ function describe(rec: PeerRecord): ReleasePlanEntry {
   };
 }
 
+/** The team of whoever sent this request — the search domain for short names. */
+function callerTeamOf(req: RequestEnvelope, ctx: HandlerContext): string | null {
+  return ctx.state.peers[req.requestedBy.sessionId]?.team ?? null;
+}
+
 export async function handleTeamRelease(
   req: RequestEnvelope,
   ctx: HandlerContext,
@@ -77,10 +83,23 @@ export async function handleTeamRelease(
 
   const found: PeerRecord[] = [];
   const notFound: string[] = [];
+  const ambiguous: Array<{ ref: string; candidates: PeerRefCandidate[] }> = [];
 
   if (args.team !== undefined) {
     for (const rec of Object.values(ctx.state.peers)) {
       if (rec.team === args.team) found.push(rec);
+    }
+    if (ambiguous.length > 0) {
+      // Refuse the whole call. Releasing the wrong `velitel` hands a peer that
+      // is still running back to nobody's control, which is silent and hard to
+      // notice — exactly the outcome guessing produces.
+      return errResult(
+        req.id,
+        req.tool,
+        "ambiguous_peer",
+        ambiguous.map((a) => ambiguousPeerMessage(a.ref, a.candidates)).join(" | "),
+        { ambiguous },
+      );
     }
     if (found.length === 0) {
       return errResult(
@@ -96,8 +115,12 @@ export async function handleTeamRelease(
     }
   } else {
     for (const key of args.peers ?? []) {
-      const rec =
-        ctx.state.peers[key] ?? Object.values(ctx.state.peers).find((r) => r.name === key) ?? null;
+      const resolved = resolvePeerRef(ctx.state.peers, key, callerTeamOf(req, ctx));
+      if (resolved.kind === "ambiguous") {
+        ambiguous.push({ ref: key, candidates: resolved.candidates });
+        continue;
+      }
+      const rec = resolved.kind === "found" ? resolved.record : null;
       if (!rec) {
         notFound.push(key);
         continue;

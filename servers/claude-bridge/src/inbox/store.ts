@@ -91,6 +91,30 @@ export interface InboxStore {
   findMessage(peerId: string, msgId: string): Promise<FoundMessage | null>;
   /** List all archived messages for a peer (chronological). */
   listDone(peerId: string): Promise<MessageEnvelope[]>;
+  /**
+   * Record that a message was handed to the push channel.
+   *
+   * `pending/` means "not confirmed seen by the agent", NOT "not delivered" —
+   * push is deliberately best-effort and only piggyback consumes (see
+   * `pumpInboxToChannel`). That is the right safety property, but it left the
+   * two states indistinguishable on disk, and on 2026-08-05 it cost two peers
+   * hours each: plt-designer diagnosed a "deaf peer" from a file in `pending/`
+   * that had in fact been delivered and answered, and so did I, on a different
+   * peer, several hours later. Of nineteen decidable pending files, seventeen
+   * turned out to be delivered.
+   *
+   * Written to a sidecar rather than into the envelope, because rewriting a
+   * file in `pending/` races with `consume` renaming it away — the loser of
+   * that race recreates a message that was already archived.
+   */
+  markPushed(peerId: string, msgId: string): Promise<void>;
+  /** When the push channel last took this message, or null if it never did. */
+  pushRecord(peerId: string, msgId: string): Promise<PushRecord | null>;
+}
+
+export interface PushRecord {
+  pushedAt: string;
+  pushCount: number;
 }
 
 function peerBase(opts: InboxStoreOptions, peerId: string): string {
@@ -159,7 +183,43 @@ export function createInboxStore(opts: InboxStoreOptions = {}): InboxStore {
           await unlink(src).catch(() => undefined);
         }
       }
+      // The push record only exists to explain a message still sitting in
+      // pending/. Once it is archived the question cannot be asked any more.
+      await unlink(join(peerBase(opts, peerId), "pushed", `${msgId}.json`)).catch(() => undefined);
       return env;
+    },
+
+    async markPushed(peerId, msgId) {
+      const path = join(peerBase(opts, peerId), "pushed", `${msgId}.json`);
+      let pushCount = 1;
+      try {
+        const prev: unknown = JSON.parse(await readFile(path, "utf-8"));
+        const n = (prev as PushRecord | null)?.pushCount;
+        if (typeof n === "number" && Number.isFinite(n)) pushCount = n + 1;
+      } catch {
+        // First push, or an unreadable record — either way this is push one of
+        // the ones we can account for. Never throw: failing to WRITE the note
+        // must not fail the delivery the note is about.
+      }
+      try {
+        await mkdir(dirname(path), { recursive: true });
+        await atomicWriteJson(path, { pushedAt: new Date().toISOString(), pushCount });
+      } catch {
+        // Same reasoning.
+      }
+    },
+
+    async pushRecord(peerId, msgId) {
+      try {
+        const raw: unknown = JSON.parse(
+          await readFile(join(peerBase(opts, peerId), "pushed", `${msgId}.json`), "utf-8"),
+        );
+        const rec = raw as PushRecord | null;
+        if (!rec || typeof rec.pushedAt !== "string") return null;
+        return { pushedAt: rec.pushedAt, pushCount: rec.pushCount ?? 1 };
+      } catch {
+        return null;
+      }
     },
 
     async countPending(peerId) {

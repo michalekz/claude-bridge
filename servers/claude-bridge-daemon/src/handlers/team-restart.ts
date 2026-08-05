@@ -4,6 +4,7 @@ import type { RequestEnvelope, ResultEnvelope } from "../rpc.ts";
 import { errResult, okResult } from "../rpc.ts";
 import type { PeerRecord } from "../state.ts";
 import type { HandlerContext } from "./context.ts";
+import { type PeerRefCandidate, ambiguousPeerMessage, resolvePeerRef } from "./peer-ref.ts";
 import { handlePeerRestart } from "./peer-restart.ts";
 
 /**
@@ -81,6 +82,11 @@ function orderPeers(records: PeerRecord[]): PeerRecord[] {
 
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
+/** The team of whoever sent this request — the search domain for short names. */
+function callerTeamOf(req: RequestEnvelope, ctx: HandlerContext): string | null {
+  return ctx.state.peers[req.requestedBy.sessionId]?.team ?? null;
+}
+
 export async function handleTeamRestart(
   req: RequestEnvelope,
   ctx: HandlerContext,
@@ -95,6 +101,7 @@ export async function handleTeamRestart(
 
   let selected: PeerRecord[];
   const notFound: string[] = [];
+  const ambiguous: Array<{ ref: string; candidates: PeerRefCandidate[] }> = [];
   if (args.team !== undefined) {
     selected = Object.values(ctx.state.peers).filter((r) => r.team === args.team);
     if (selected.length === 0) {
@@ -105,13 +112,28 @@ export async function handleTeamRestart(
   } else {
     selected = [];
     for (const key of args.peers ?? []) {
-      const rec =
-        ctx.state.peers[key] ?? Object.values(ctx.state.peers).find((r) => r.name === key) ?? null;
+      const resolved = resolvePeerRef(ctx.state.peers, key, callerTeamOf(req, ctx));
+      if (resolved.kind === "ambiguous") {
+        ambiguous.push({ ref: key, candidates: resolved.candidates });
+        continue;
+      }
+      const rec = resolved.kind === "found" ? resolved.record : null;
       if (!rec) {
         notFound.push(key);
         continue;
       }
       if (!selected.some((s) => s.sessionId === rec.sessionId)) selected.push(rec);
+    }
+    if (ambiguous.length > 0) {
+      // Same rule as notFound below: refuse the whole run. Guessing which
+      // `velitel` the caller meant would be worse than doing nothing.
+      return errResult(
+        req.id,
+        req.tool,
+        "ambiguous_peer",
+        ambiguous.map((a) => ambiguousPeerMessage(a.ref, a.candidates)).join(" | "),
+        { ambiguous },
+      );
     }
     if (notFound.length > 0) {
       // Refuse the whole run rather than restart the ones we found. A partial

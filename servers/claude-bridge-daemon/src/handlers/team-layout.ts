@@ -18,7 +18,7 @@ import { type WakeOutcome, wakePeer } from "./wake.ts";
  *   {
  *     "team": "hmh",
  *     "peers": [
- *       { "sessionId": "…", "displayName": "hmh-memory-keeper",
+ *       { "sessionId": "…", "displayName": "plt-keeper",
  *         "cwd": "/opt/hmh", "command": "claude", "args": [],
  *         "model": null, "resume": true }
  *     ]
