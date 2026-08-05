@@ -9,6 +9,7 @@ import {
   type SessionHostDriver,
   type SessionHostRecord,
   type SessionHostSpawnOptions,
+  formatHostTarget,
   parseHostTarget,
   sanitizeSessionKey,
 } from "./driver.ts";
@@ -533,7 +534,13 @@ export class TmuxDriver implements SessionHostDriver {
    * instead of assuming delivery.
    */
   async sendKeys(sessionKey: string, keys: string): Promise<void> {
-    const canonical = sanitizeSessionKey(sessionKey);
+    // `parseHostTarget`, not `sanitizeSessionKey`. A window id IS canonical, and
+    // `@` is in `UNSAFE_TARGET_CHARS` — sanitizing turned `@1011` into `_1011`
+    // and tmux answered "can't find pane _1011". Every adopted peer is keyed by
+    // window id, so `peer_compact` could not reach any of the twenty-three
+    // (plt-designer, live compact orchestration 2026-08-05). This was the last
+    // method still sanitizing a target instead of parsing it.
+    const canonical = formatHostTarget(parseHostTarget(sessionKey));
     const inMode = await this.paneInMode(canonical);
     if (inMode) {
       // A pane left in copy-mode (someone scrolled back) discards send-keys.

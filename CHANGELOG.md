@@ -6,6 +6,27 @@ All notable changes to this project are documented here. Format follows [Keep a 
 
 _Nothing yet._
 
+## [0.10.17] — 2026-08-05
+
+### `peer_compact` could not reach a single adopted peer
+
+`sendKeys` was the last method still running its target through
+`sanitizeSessionKey` instead of `parseHostTarget`. `@` is in
+`UNSAFE_TARGET_CHARS`, so a window id was rewritten before tmux ever saw it:
+
+```
+target @1011  ->  tmux send-keys -t _1011  ->  can't find pane _1011
+```
+
+Every peer on the live fleet is keyed by window id, so this was all
+twenty-three of them. It went unnoticed because peers the daemon spawns itself
+get name-shaped keys, and those are the ones the tool was piloted against —
+the same shape mismatch as the v0.10.6 window-target work, in the one method
+that release did not touch.
+
+A window id is canonical by construction and must pass through untouched;
+`parseHostTarget` already knew that and `sendKeys` was not asking it.
+
 ## [0.10.16] — 2026-08-05
 
 Peers relaunched by the daemon came up monochrome, and one of them was telling

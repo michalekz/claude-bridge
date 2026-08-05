@@ -202,3 +202,46 @@ describe.skipIf(!haveTmux)("an adopted peer stays in its session across a restar
     await driver.kill(rec.sessionKey);
   });
 });
+
+/**
+ * `peer_compact` could not reach a single adopted peer.
+ *
+ * Every peer on the live fleet is keyed by window id, and `sendKeys` was the
+ * one method that still ran its target through `sanitizeSessionKey` instead of
+ * `parseHostTarget`. `@` is in `UNSAFE_TARGET_CHARS`, so `@1011` became
+ * `_1011` and tmux answered "can't find pane _1011" (plt-designer, live
+ * compact orchestration of plt-kb-ops, 2026-08-05).
+ *
+ * Same family as the fix above: a path written for one shape of key met the
+ * other. The name-shaped path was piloted; the id-shaped one never was,
+ * because peers the daemon spawns itself get name keys.
+ */
+describe("sendKeys addresses a window by its id", () => {
+  const SESSION = "cb-sendkeys-window-id";
+
+  afterAll(async () => {
+    await execFileAsync("tmux", ["kill-session", "-t", SESSION]).catch(() => undefined);
+  });
+
+  it("THE REGRESSION: an @window_id target is not mangled into _window_id", async () => {
+    // A window id is already canonical — parsing must leave it exactly alone.
+    expect(formatHostTarget(parseHostTarget("@1011"))).toBe("@1011");
+    // While a display name still gets the substitution it needs.
+    expect(formatHostTarget(parseHostTarget("v16-test:pane.check"))).toBe("v16-test_pane_check");
+  });
+
+  it("delivers to a real window addressed by id", async () => {
+    await execFileAsync("tmux", ["new-session", "-d", "-s", SESSION, "-c", "/tmp", "cat"]);
+    const driver = new TmuxDriver({});
+    const windows = (await driver.listWindows()).filter((w) => w.session === SESSION);
+    const target = windows[0]?.target ?? "";
+    expect(target).toMatch(/^@\d+$/);
+
+    // Before the fix this threw "can't find pane _NNNN" without ever reaching
+    // the pane — and peer_compact surfaced it as send_keys_failed.
+    await driver.sendKeys(target, "hello from the id-shaped path");
+
+    const { stdout } = await execFileAsync("tmux", ["capture-pane", "-p", "-t", target]);
+    expect(stdout).toContain("hello from the id-shaped path");
+  });
+});
