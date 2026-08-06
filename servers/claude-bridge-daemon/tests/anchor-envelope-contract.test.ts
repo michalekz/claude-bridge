@@ -126,3 +126,84 @@ describe("the anchor request is readable by the peer it is written for", () => {
     ).toBe(true);
   });
 });
+
+/**
+ * The same defect stood in `wake.ts`, and it stood there alone for longer.
+ *
+ * Two hand-rolled inbox writers, both disagreeing with the schema in the same
+ * five ways, is not two accidents — it is a missing rule. Waking therefore only
+ * ever worked by half: the key injection made the peer take a turn, while the
+ * message saying WHY it had been woken was never readable, including the
+ * warning that its previous stop was forced and its anchor may be mid-write.
+ *
+ * These cases hold BOTH writers to the contract, because holding one is how the
+ * second survived the first fix.
+ */
+describe("every daemon-written inbox message is readable by its recipient", () => {
+  let root: string;
+
+  beforeEach(async () => {
+    root = await mkdtemp(join(tmpdir(), "cbd-wake-"));
+  });
+
+  afterEach(async () => {
+    await rm(root, { recursive: true, force: true });
+  });
+
+  it("THE REGRESSION: the wake message parses as a message envelope", async () => {
+    const path = await writeEnvelope(
+      {
+        id: "msg-wake-1",
+        from: syntheticSenderId("control-plane-daemon"),
+        fromName: "control-plane-daemon",
+        to: PEER,
+        kind: "ask",
+        sentAt: new Date().toISOString(),
+        threadId: `wake:${PEER}:abc`,
+        content: "You were resumed from a stopped state.\n\nReason: team_layout_resume:smoke",
+      },
+      root,
+    );
+    const parsed = MessageEnvelopeSchema.safeParse(JSON.parse(await readFile(path, "utf-8")));
+    expect(parsed.success).toBe(true);
+  });
+
+  it("the forced-stop warning survives as readable text, not a hidden field", async () => {
+    // It used to live in `content.warning`, which no reader ever reached. A
+    // safety instruction the recipient cannot see is worse than none, because
+    // the sender believes it was given.
+    const content = [
+      "You were resumed from a stopped state.",
+      "",
+      "⚠ Your previous stop was FORCED — verify your anchor before trusting it.",
+    ].join("\n");
+    const path = await writeEnvelope(
+      {
+        id: "msg-wake-2",
+        from: syntheticSenderId("control-plane-daemon"),
+        to: PEER,
+        kind: "ask",
+        sentAt: new Date().toISOString(),
+        content,
+      },
+      root,
+    );
+    const parsed = MessageEnvelopeSchema.parse(JSON.parse(await readFile(path, "utf-8")));
+    expect(parsed.content).toContain("FORCED");
+  });
+
+  it("THE GUARD: the old wake shape cannot reach disk either", async () => {
+    const legacy = {
+      id: "msg-wake-3",
+      ts: new Date().toISOString(),
+      from: { sessionId: "control-plane-daemon", name: "control-plane-daemon" },
+      to: { sessionId: PEER, name: PEER },
+      kind: "peer-wake",
+      content: { instruction: "re-onboard", stoppedCleanly: false },
+    };
+    await expect(
+      // biome-ignore lint/suspicious/noExplicitAny: deliberately the wrong shape
+      writeEnvelope(legacy as any, root),
+    ).rejects.toThrow();
+  });
+});

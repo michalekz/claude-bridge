@@ -254,12 +254,25 @@ describe("v0.10.1 team_layout resume-from-stopped", () => {
     expect(injected[0]?.key).toBe("wk_one");
     expect(injected[0]?.keys).toContain("Wake");
 
+    // This block used to look for `kind === "peer-wake"` and read
+    // `content.warning` — and it passed, for months, on a message no recipient
+    // could ever read. Both fields belonged to a hand-rolled envelope that
+    // `MessageEnvelopeSchema` rejects, so `readEnvelope` returned null and the
+    // peer's inbox never listed it. The test asserted the implementation it was
+    // written beside rather than the requirement, and so it held the defect in
+    // place: waking worked by half, key injection only, explanation missing.
+    //
+    // What matters is not the shape the writer picked. It is that the recipient
+    // can read the message at all, and that a forced stop is visible IN THE
+    // TEXT the peer will see — a safety instruction hidden in a field nobody
+    // parses is worse than none, because the sender believes it was given.
     const msgs = await inboxMessages(shared, "wk-1");
-    const wake = msgs.find((m) => m.kind === "peer-wake");
+    const wake = msgs.find((m) => typeof m.content === "string" && m.content.includes("resumed"));
     expect(wake).toBeDefined();
-    expect(wake.content.stoppedCleanly).toBe(false);
-    // A forced stop must say so — the anchor may be mid-write.
-    expect(wake.content.warning).toContain("FORCED");
+    expect(shared.MessageEnvelopeSchema.safeParse(wake).success).toBe(true);
+    expect(wake.kind).toBe("ask");
+    expect(String(wake.content)).toContain("FORCED");
+    expect(String(wake.content)).toContain("anchor");
 
     driver.reset();
   });

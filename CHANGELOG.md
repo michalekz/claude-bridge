@@ -6,6 +6,47 @@ All notable changes to this project are documented here. Format follows [Keep a 
 
 _Nothing yet._
 
+## [0.10.21] — 2026-08-06
+
+### The wake message had the same defect, and it had it alone for longer
+
+`wake.ts` built its envelope by hand and wrote it with a raw `atomicWriteJson`,
+disagreeing with `MessageEnvelopeSchema` in the same five ways v0.10.20 fixed in
+`peer-compact.ts`. `readEnvelope` `safeParse`s and returns null, so the peer's
+inbox never listed it.
+
+Waking therefore only ever worked by half: the key injection made the peer take
+a turn, while the message saying WHY it had been woken was silently absent —
+including the warning that its previous stop was forced and its anchor may be
+mid-write. That warning is a safety instruction, and the sender believed it had
+been given.
+
+Two hand-rolled inbox writers, both wrong in the same five ways, is not two
+accidents. Nothing writes into a peer's inbox except `writeEnvelope`, which
+`parse`s and so fails at the writer rather than vanishing at the reader.
+
+The payload is now text rather than a structured object, because the recipient
+renders it as text — fields only a parser would reach were part of how this went
+unnoticed for months.
+
+A test had been asserting the broken shape as the contract. It looked for
+`kind === "peer-wake"` and read `content.warning`, and passed all along on a
+message no recipient could read. Rewritten rather than deleted, with the reason
+in the file: it asserted the implementation it was written beside instead of the
+requirement, and so held the defect in place.
+
+### A window carries the short name, the record carries the full one
+
+`peer_spawn` passed `displayName` straight through as the tmux window label, so
+`mic-tester` got a window called `mic-tester` — the team prefix repeated on
+every tab, inside a session already called `mic`.
+
+The strip happens at the one call site that names a window, not in the driver.
+A driver cannot tell a prefix that came from the convention from a name a caller
+chose deliberately, and would shorten both; the team is known at the call site
+and nowhere below it.
+
+
 ## [0.10.20] — 2026-08-06
 
 ### `peer_compact` had never once completed

@@ -201,6 +201,8 @@ export async function handleTeamLayout(
         accountProfile: p.accountProfile ?? record?.accountProfile ?? null,
         extraAllowEnv: p.extraAllowEnv,
         extraEnv: p.extraEnv,
+        // So the window gets the short label while the record keeps the full name.
+        team: spec.team,
       },
       requestedBy: req.requestedBy,
     };

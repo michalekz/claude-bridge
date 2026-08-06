@@ -1,6 +1,5 @@
 import { randomBytes } from "node:crypto";
-import { join } from "node:path";
-import { atomicWriteJson, bridgeRoot } from "@claude-bridge/shared";
+import { syntheticSenderId, writeEnvelope } from "@claude-bridge/shared";
 import { publishLifecycleEvent } from "../event-subscribers.ts";
 import { writeEvent } from "../events.ts";
 import type { RequestEnvelope } from "../rpc.ts";
@@ -64,40 +63,62 @@ export interface WakeOutcome {
   error?: string;
 }
 
-function inboxPendingDir(peerId: string): string {
-  return join(bridgeRoot(), "inbox", peerId, "pending");
-}
-
 function generateMsgId(): string {
   const ms = Date.now().toString(36);
   const rand = randomBytes(4).toString("hex");
   return `${ms}-${rand}`;
 }
 
+/**
+ * The wake message, in the one envelope shape the recipient can read.
+ *
+ * This built its own object and wrote it with a raw `atomicWriteJson`, exactly
+ * as `peer-compact.ts` did, and disagreed with `MessageEnvelopeSchema` the same
+ * five ways: `from`/`to` as `{sessionId, name}`, `ts` instead of `sentAt`,
+ * an object `content`, and a `kind` outside the enum.
+ *
+ * `readEnvelope` `safeParse`s and returns null, so the recipient never saw it.
+ * Waking therefore only ever worked by half: the key injection made the peer
+ * take a turn, and the message explaining WHY it had been woken was silently
+ * absent — including the warning that its previous stop was forced and its
+ * anchor may be mid-write. That warning is a safety instruction, not a note.
+ *
+ * Two hand-rolled writers, both wrong, is not a coincidence — it is a missing
+ * rule. Nothing writes into an inbox except `writeEnvelope`, which `parse`s and
+ * so fails at the writer rather than vanishing at the reader.
+ *
+ * The payload is a string because the recipient renders it as text. Structured
+ * fields that only a parser would find were part of how this went unnoticed.
+ */
 async function writeWakeMsg(opts: WakePeerOptions, threadId: string): Promise<string> {
   const msgId = generateMsgId();
   const dirty = opts.stoppedCleanly === false;
-  const envelope = {
+  const lines = [
+    "You were resumed from a stopped state. Re-onboard from your anchor before",
+    "doing anything else, then report to whoever woke you.",
+    "",
+    `Reason: ${opts.reason}`,
+  ];
+  if (dirty) {
+    lines.push(
+      "",
+      "⚠ Your previous stop was FORCED — you did not complete the stop-ack cycle,",
+      "so your anchor and memory may be incomplete or mid-write. Verify them",
+      "before trusting them.",
+    );
+  } else if (opts.stoppedCleanly === true) {
+    lines.push("", "Your previous stop completed its ack cycle, so your anchor should be whole.");
+  }
+  await writeEnvelope({
     id: msgId,
-    ts: new Date().toISOString(),
-    from: { sessionId: "control-plane-daemon", name: "control-plane-daemon" },
-    to: { sessionId: opts.sessionId, name: opts.sessionId },
-    kind: "peer-wake",
+    from: syntheticSenderId("control-plane-daemon"),
+    fromName: "control-plane-daemon",
+    to: opts.sessionId,
+    kind: "ask",
+    sentAt: new Date().toISOString(),
     threadId,
-    content: {
-      instruction:
-        "You were resumed from a stopped state. Re-onboard from your anchor before doing anything else, then report to whoever woke you.",
-      reason: opts.reason,
-      stoppedCleanly: opts.stoppedCleanly ?? null,
-      ...(dirty
-        ? {
-            warning:
-              "Your previous stop was FORCED — you did not complete the stop-ack cycle, so your anchor and memory may be incomplete or mid-write. Verify them before trusting them.",
-          }
-        : {}),
-    },
-  };
-  await atomicWriteJson(join(inboxPendingDir(opts.sessionId), `${msgId}.json`), envelope);
+    content: lines.join("\n"),
+  });
   return msgId;
 }
 

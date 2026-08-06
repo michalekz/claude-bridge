@@ -70,10 +70,41 @@ export const PeerSpawnArgsSchema = z
       .record(z.string())
       .default({})
       .describe("Fully-formed env overrides (bypass whitelist for these names)"),
+    team: z
+      .string()
+      .optional()
+      .describe(
+        "Team this peer belongs to. Also decides the tmux window label: a displayName " +
+          "of `mic-tester` in team `mic` labels the window `tester`.",
+      ),
   })
   .strict();
 
 export type PeerSpawnArgs = z.infer<typeof PeerSpawnArgsSchema>;
+
+/**
+ * The tmux window label for a peer.
+ *
+ * The window carries the SHORT form and the record carries the full name —
+ * that is the naming convention, not a shortening for looks. `mic-tester` in
+ * team `mic` is window `tester`, and `velitel` typed inside `mic` resolves back
+ * to it.
+ *
+ * Stripping is done here, at the one call site that names a window, rather than
+ * in the driver. A blanket strip in the driver would also shorten a name a
+ * caller chose deliberately, and the driver has no way to tell the two apart.
+ *
+ * Without a team, or with a name that does not carry the team prefix, the name
+ * is used whole — a fleet that does not follow the convention keeps what it
+ * asked for.
+ */
+export function windowLabelFor(displayName: string, team?: string): string {
+  if (!team) return displayName;
+  const prefix = `${team}-`;
+  if (!displayName.startsWith(prefix)) return displayName;
+  const short = displayName.slice(prefix.length);
+  return short.length > 0 ? short : displayName;
+}
 
 export async function handlePeerSpawn(
   req: RequestEnvelope,
@@ -172,7 +203,7 @@ export async function handlePeerSpawn(
       ...(args.inSession ? { inSession: args.inSession } : {}),
       // Name the window after the peer. tmux otherwise names it after the
       // command, so every window read `claude`.
-      windowName: args.displayName,
+      windowName: windowLabelFor(args.displayName, args.team),
       cwd: args.cwd,
       command: args.command,
       args: spawnArgs,
