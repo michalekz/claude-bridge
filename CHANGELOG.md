@@ -6,6 +6,56 @@ All notable changes to this project are documented here. Format follows [Keep a 
 
 _Nothing yet._
 
+## [0.10.20] — 2026-08-06
+
+### `peer_compact` had never once completed
+
+The daemon built its anchor request by hand and wrote it with a raw
+`atomicWriteJson`. That object disagreed with `MessageEnvelopeSchema` in five
+places at once:
+
+```
+from     {sessionId, name}          expected a string
+to       {sessionId, name}          expected a string
+sentAt   absent                     the field was called `ts`
+content  {instruction: "..."}       expected a string
+kind     "compact-anchor-request"   not in the enum
+```
+
+The recipient reads its inbox through `readEnvelope`, which `safeParse`s and
+returns null on failure, so `listPending` simply did not include the file. The
+write succeeded, the watcher fired, the push pump ran, and nothing was
+delivered — with no error at either end. Every run since v0.10.0-rc ended in
+`anchor_timeout`, which reads as "the peer is not answering", and that is how
+three people read it across two days: a deaf peer, an open TUI dialog, a
+dropped `--channels` flag. Each was measured and disproved. Nobody looked at the
+envelope, because nothing pointed at it.
+
+The daemon now writes through `writeEnvelope`, which is the fix and the guard
+at once: it `parse`s rather than `safeParse`s, so a malformed envelope throws at
+the writer instead of vanishing at the reader. The writer knows what it meant;
+the reader only knows that something did not fit.
+
+A contract test holds the gap task #65 warned about — shared and the MCP server
+are contract-tested against each other, but the daemon writing directly into an
+inbox was not covered by either.
+
+### The anchor timeout was set for work nobody had watched
+
+With delivery fixed the peer still missed the window. First honest measurement:
+request at 06:39:37, ack at 06:41:39 — **122 seconds**, on a peer that started
+immediately. The default was 30.
+
+That number was never tested against the real task, because no run had ever got
+far enough to reach it. A peer is not pressing a button: it reads the request,
+writes a compact anchor meant to survive the loss of its own context, and only
+then touches the ack. Minutes, not seconds. Default raised to 300 s.
+
+Verified end-to-end on a live adopted peer at 88% context:
+`peer_compact_anchor_requested` → `peer_compact_inject` → `peer_compacted`,
+with `/compact` visible in the pane.
+
+
 ## [0.10.19] — 2026-08-05
 
 ### Half a naming convention is worse than none

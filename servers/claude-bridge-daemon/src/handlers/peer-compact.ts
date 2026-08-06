@@ -1,7 +1,7 @@
 import { randomBytes } from "node:crypto";
 import { access, mkdir, rename, unlink } from "node:fs/promises";
 import { join } from "node:path";
-import { atomicWriteJson, bridgeRoot, controlDir } from "@claude-bridge/shared";
+import { controlDir, syntheticSenderId, writeEnvelope } from "@claude-bridge/shared";
 import { z } from "zod";
 import { publishLifecycleEvent } from "../event-subscribers.ts";
 import { writeEvent } from "../events.ts";
@@ -14,10 +14,10 @@ import { ambiguousPeerMessage, resolvePeerRef } from "./peer-ref.ts";
  * peer_compact — orchestrated `/compact` inject into a live peer.
  *
  * §5.3 sequence:
- *   1. Write a bridge inbox message to the peer with
- *      `kind: "compact-anchor-request"` — the operator playbook tells
- *      peers to react by writing their compact anchor and then
- *      touching `~/.claude-bridge/control/compact-ack/<sessionId>.json`.
+ *   1. Write a bridge inbox message to the peer through the canonical
+ *      envelope writer — the operator playbook tells peers to react by
+ *      writing their compact anchor and then touching
+ *      `~/.claude-bridge/control/compact-ack/<sessionId>.json`.
  *   2. Poll for the ack file within `anchorTimeoutMs` (default 30 s).
  *      No ack → refuse; the peer wasn't ready and injecting /compact
  *      without a durable anchor would lose context.
@@ -31,7 +31,22 @@ import { ambiguousPeerMessage, resolvePeerRef } from "./peer-ref.ts";
  * of the flip is the owner's.
  */
 
-const DEFAULT_ANCHOR_TIMEOUT_MS = 30_000;
+/**
+ * How long a peer gets to produce its anchor.
+ *
+ * Was 30 s, and that number was never once tested against the real task,
+ * because the anchor request never arrived (see `writeAnchorRequestMsg`) and
+ * every run failed long before the peer could have answered. With delivery
+ * fixed, the first honest measurement on 2026-08-06: request at 06:39:37, ack
+ * at 06:41:39 — **122 seconds**, on a peer that started work immediately.
+ *
+ * The peer is not pressing a button. It reads the request, writes a compact
+ * anchor — a document meant to survive the loss of its context — and only then
+ * touches the ack. Minutes, not seconds. A timeout under that does not protect
+ * anything; it just reports `anchor_timeout` for work that was going fine, and
+ * the operator reads it as "the peer is not answering".
+ */
+const DEFAULT_ANCHOR_TIMEOUT_MS = 300_000;
 const DEFAULT_ACK_POLL_MS = 500;
 const COMPACT_ACK_FILENAME_EXTENSION = ".json";
 
@@ -54,10 +69,6 @@ function compactAckDir(): string {
 
 function compactAckPath(sessionId: string): string {
   return join(compactAckDir(), `${sessionId}${COMPACT_ACK_FILENAME_EXTENSION}`);
-}
-
-function inboxPendingDir(peerId: string): string {
-  return join(bridgeRoot(), "inbox", peerId, "pending");
 }
 
 function generateMsgId(): string {
@@ -96,22 +107,47 @@ async function consumeAckFile(sessionId: string): Promise<void> {
   }
 }
 
+/**
+ * The anchor request, in the one envelope shape the recipient can read.
+ *
+ * This used to build its own object and write it with a raw `atomicWriteJson`,
+ * and that object disagreed with `MessageEnvelopeSchema` in five places at
+ * once: `from` and `to` were `{sessionId, name}` rather than strings, the
+ * timestamp was `ts` rather than `sentAt`, `content` was an object, and `kind`
+ * was `compact-anchor-request`, which is not in the enum.
+ *
+ * The recipient reads its inbox through `readEnvelope`, which `safeParse`s and
+ * returns null on failure. So the file landed in `pending/`, the watcher fired,
+ * the push pump ran — and `listPending` did not include it. No push, no
+ * piggyback, no delivery, no error anywhere. `peer_compact` therefore never
+ * completed once since it shipped in v0.10.0-rc: every run ended in
+ * `anchor_timeout`, and the timeout was read as "the peer is not answering"
+ * for two days, through three wrong hypotheses (deaf peer, open TUI dialog,
+ * dropped `--channels` flag).
+ *
+ * `writeEnvelope` is the fix and also the guard: it `parse`s rather than
+ * `safeParse`s, so a malformed envelope throws at the WRITER instead of
+ * vanishing at the reader. The write site knows what it meant; the read site
+ * only knows something did not fit.
+ *
+ * `external:` marks the daemon as what it is — a sender that is not a peer.
+ */
 async function writeAnchorRequestMsg(peerId: string, threadId: string): Promise<string> {
   const msgId = generateMsgId();
-  const envelope = {
+  await writeEnvelope({
     id: msgId,
-    ts: new Date().toISOString(),
-    from: { sessionId: "control-plane-daemon", name: "control-plane-daemon" },
-    to: { sessionId: peerId, name: peerId },
-    kind: "compact-anchor-request",
+    from: syntheticSenderId("control-plane-daemon"),
+    fromName: "control-plane-daemon",
+    to: peerId,
+    kind: "ask",
+    sentAt: new Date().toISOString(),
     threadId,
-    content: {
-      instruction:
-        "Write your compact anchor file and touch ~/.claude-bridge/control/compact-ack/<sessionId>.json when ready.",
-    },
-  };
-  const path = join(inboxPendingDir(peerId), `${msgId}.json`);
-  await atomicWriteJson(path, envelope);
+    content:
+      "Compact anchor requested by the control plane. Write your compact anchor, " +
+      "then touch ~/.claude-bridge/control/compact-ack/<sessionId>.json — the daemon " +
+      "injects `/compact` only after that file appears, so that nothing is compacted " +
+      "without a durable anchor behind it.",
+  });
   return msgId;
 }
 

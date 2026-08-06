@@ -4287,7 +4287,7 @@ async function resolvePeer(idOrName, root = bridgeRoot(), now = Date.now()) {
 // package.json
 var package_default = {
   name: "claude-bridge-daemon",
-  version: "0.10.19",
+  version: "0.10.20",
   private: true,
   description: "Control-plane daemon for the claude-bridge plugin: peer lifecycle, telemetry, audit. Distributed as opt-in artefact \u2014 see ADR-008.",
   type: "module",
@@ -4600,7 +4600,7 @@ function ambiguousPeerMessage(ref, candidates) {
 }
 
 // src/handlers/peer-compact.ts
-var DEFAULT_ANCHOR_TIMEOUT_MS = 3e4;
+var DEFAULT_ANCHOR_TIMEOUT_MS = 3e5;
 var DEFAULT_ACK_POLL_MS = 500;
 var COMPACT_ACK_FILENAME_EXTENSION = ".json";
 var PeerCompactArgsSchema = external_exports.object({
@@ -4616,9 +4616,6 @@ function compactAckDir() {
 }
 function compactAckPath(sessionId) {
   return (0, import_node_path7.join)(compactAckDir(), `${sessionId}${COMPACT_ACK_FILENAME_EXTENSION}`);
-}
-function inboxPendingDir3(peerId) {
-  return (0, import_node_path7.join)(bridgeRoot(), "inbox", peerId, "pending");
 }
 function generateMsgId2() {
   const ms = Date.now().toString(36);
@@ -4653,19 +4650,16 @@ async function consumeAckFile(sessionId) {
 }
 async function writeAnchorRequestMsg(peerId, threadId) {
   const msgId = generateMsgId2();
-  const envelope = {
+  await writeEnvelope({
     id: msgId,
-    ts: (/* @__PURE__ */ new Date()).toISOString(),
-    from: { sessionId: "control-plane-daemon", name: "control-plane-daemon" },
-    to: { sessionId: peerId, name: peerId },
-    kind: "compact-anchor-request",
+    from: syntheticSenderId("control-plane-daemon"),
+    fromName: "control-plane-daemon",
+    to: peerId,
+    kind: "ask",
+    sentAt: (/* @__PURE__ */ new Date()).toISOString(),
     threadId,
-    content: {
-      instruction: "Write your compact anchor file and touch ~/.claude-bridge/control/compact-ack/<sessionId>.json when ready."
-    }
-  };
-  const path = (0, import_node_path7.join)(inboxPendingDir3(peerId), `${msgId}.json`);
-  await atomicWriteJson(path, envelope);
+    content: "Compact anchor requested by the control plane. Write your compact anchor, then touch ~/.claude-bridge/control/compact-ack/<sessionId>.json \u2014 the daemon injects `/compact` only after that file appears, so that nothing is compacted without a durable anchor behind it."
+  });
   return msgId;
 }
 function callerTeamOf(req, ctx) {
@@ -6086,7 +6080,7 @@ var import_node_crypto5 = require("node:crypto");
 var import_node_path10 = require("node:path");
 var DEFAULT_WAKE_DELAY_MS = 8e3;
 var DEFAULT_WAKE_PROMPT = "[daemon] Wake \u2014 you were resumed from a stopped state. Re-onboard from your anchor, read your inbox (peer_inbox_read) and report to whoever woke you.";
-function inboxPendingDir4(peerId) {
+function inboxPendingDir3(peerId) {
   return (0, import_node_path10.join)(bridgeRoot(), "inbox", peerId, "pending");
 }
 function generateMsgId3() {
@@ -6113,7 +6107,7 @@ async function writeWakeMsg(opts, threadId) {
       } : {}
     }
   };
-  await atomicWriteJson((0, import_node_path10.join)(inboxPendingDir4(opts.sessionId), `${msgId}.json`), envelope);
+  await atomicWriteJson((0, import_node_path10.join)(inboxPendingDir3(opts.sessionId), `${msgId}.json`), envelope);
   return msgId;
 }
 async function wakePeer(req, ctx, opts) {
@@ -7057,7 +7051,7 @@ function stopAckDir() {
 function stopAckPath(sessionId) {
   return (0, import_node_path13.join)(stopAckDir(), `${sessionId}${STOP_ACK_FILENAME_EXTENSION}`);
 }
-function inboxPendingDir5(peerId) {
+function inboxPendingDir4(peerId) {
   return (0, import_node_path13.join)(bridgeRoot(), "inbox", peerId, "pending");
 }
 function generateMsgId4() {
@@ -7105,7 +7099,7 @@ async function writeStopRequestMsg(peerId, threadId, reason) {
       reason
     }
   };
-  const path = (0, import_node_path13.join)(inboxPendingDir5(peerId), `${msgId}.json`);
+  const path = (0, import_node_path13.join)(inboxPendingDir4(peerId), `${msgId}.json`);
   await atomicWriteJson(path, envelope);
   return msgId;
 }
