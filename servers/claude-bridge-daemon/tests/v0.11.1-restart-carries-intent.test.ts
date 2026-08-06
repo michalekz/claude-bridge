@@ -252,6 +252,54 @@ describe("a restart copies an environment, it never claims to have sampled one",
     expect(doc.peers["a"]?.observed.harvestedAt).toBe("2026-08-06T18:30:00.000Z");
   });
 
+  it("REVOCATION: a label no operator chose is cleared so derivation can work", async () => {
+    // Fixing the computation did NOT fix the fleet. v0.11.0 had already stored
+    // the fully qualified name as the label, and v0.11.1 made an explicit label
+    // outrank the derived one — correct in general, and it meant the stored
+    // garbage kept winning. Measured on the etl canary at 17:24: windows still
+    // `etl-dev`. Correcting the writer does nothing about what was written.
+    homeHolder.current = `/tmp/cbd-lblrev-${process.hrtime.bigint()}`;
+    vi.resetModules();
+    const { state } = await importAll();
+    const doc = state.emptyState("0.11.2-test");
+    const obs = (name: string) => ({
+      name,
+      hostDriver: "tmux" as const,
+      tmuxTarget: "@1",
+      pid: 1,
+      status: "live" as const,
+      model: null,
+      startedAt: "2026-08-06T17:00:00.000Z",
+      lastUpdatedAt: "2026-08-06T17:00:00.000Z",
+    });
+    // The artifact: label === FQN on a peer that has a team prefix.
+    doc.peers["a"] = {
+      sessionId: "a",
+      desired: { team: "etl", label: "etl-dev" },
+      observed: obs("etl-dev"),
+    };
+    // A real choice — must survive.
+    doc.peers["b"] = {
+      sessionId: "b",
+      desired: { team: "mic", label: "QA" },
+      observed: obs("mic-tester"),
+    };
+    // No team: the short form does not exist, so the label is not an artifact.
+    doc.peers["c"] = {
+      sessionId: "c",
+      desired: { label: "legacy-box" },
+      observed: obs("legacy-box"),
+    };
+
+    expect(state.revokeDerivedLabels(doc)).toBe(1);
+    expect(doc.peers["a"]?.desired.label).toBeUndefined();
+    expect(doc.peers["b"]?.desired.label).toBe("QA");
+    expect(doc.peers["c"]?.desired.label).toBe("legacy-box");
+    // Second pass is a no-op — otherwise a later deliberate `label = FQN` would
+    // be erased on the next boot.
+    expect(state.revokeDerivedLabels(doc)).toBe(0);
+  });
+
   it("it stays unknown across SEVERAL restarts, not just the first", async () => {
     // The failure mode is a stamp appearing later, so once is not enough.
     homeHolder.current = `/tmp/cbd-hv3-${process.hrtime.bigint()}`;

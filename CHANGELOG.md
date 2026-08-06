@@ -6,6 +6,38 @@ All notable changes to this project are documented here. Format follows [Keep a 
 
 _Nothing yet._
 
+## [0.11.2] — 2026-08-06
+
+### Fixing the writer did nothing about what it had already written
+
+v0.11.1 corrected the label computation and made an explicit `label` outrank the
+derived one. Both changes are right, and together they left the fleet exactly as
+broken as before: v0.11.0 had already stored the fully qualified name AS the
+label, so the stored garbage now outranked the correct derivation.
+
+Measured on the etl canary at 17:24, after deploying the fix — windows still
+`etl-dev`, `etl-velitel`. The fix would have been reported as working by anyone
+who checked the code instead of the windows.
+
+Correcting the code that writes a value and correcting the values already
+written are two jobs. It is easy to believe the first is both, and the belief
+survives right up until someone looks.
+
+`revokeDerivedLabels` clears them once, on an exact signature: a label identical
+to the fully qualified name of a peer that HAS a team prefix is what the broken
+path produced and what the correct path never would. A deliberately chosen short
+name, a team-less peer, a name that does not carry its team prefix — all
+untouched.
+
+### One-time repairs are now a list
+
+Two of them arrived within two hours, and there will be more. `repairsApplied`
+records them by id. These are not `stateVersion` migrations: the shape does not
+change, only whether a value written by an older daemon can be believed. Version
+numbers answer "can I read this"; repair ids answer "should I trust this".
+
+Tests 221 daemon, 402 MCP.
+
 ## [0.11.1] — 2026-08-06
 
 Two defects found in the v0.11.0 fleet roll, minutes after it finished, by

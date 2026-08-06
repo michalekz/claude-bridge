@@ -209,11 +209,25 @@ export interface StateDoc {
   /**
    * Marks that the one-time revocation of pre-v0.11.1 harvest stamps has run.
    *
-   * Not a `stateVersion` bump: the shape does not change, only the trust we
-   * place in one field. See `revokeUntrustedHarvestStamps`.
+   * Superseded by `repairsApplied`; still read so a registry written by
+   * v0.11.1 does not run that pass a second time.
    */
   harvestProvenanceRevokedAt?: string;
+  /**
+   * One-time data repairs already applied, by id.
+   *
+   * A list rather than a field per repair, because the second one arrived
+   * within two hours of the first and there will be more. These are not
+   * `stateVersion` migrations: the SHAPE is unchanged, what changes is whether
+   * a value written by an older daemon can be believed. Version numbers answer
+   * "can I read this"; these answer "should I trust this".
+   */
+  repairsApplied?: string[];
 }
+
+/** Ids of the one-time repairs. Never renamed — a rename re-runs the repair. */
+export const REPAIR_HARVEST_PROVENANCE = "revoke-harvest-stamps-pre-0.11.1";
+export const REPAIR_DERIVED_LABELS = "revoke-derived-labels-pre-0.11.2";
 
 export class StateVersionMismatch extends Error {
   constructor(
@@ -257,7 +271,7 @@ export function emptyState(daemonVersion: string): StateDoc {
  * fresh" reasoning the field was added to prevent.
  */
 export function revokeUntrustedHarvestStamps(doc: StateDoc): number {
-  if (doc.harvestProvenanceRevokedAt !== undefined) return 0;
+  if (hasRepair(doc, REPAIR_HARVEST_PROVENANCE)) return 0;
   let cleared = 0;
   for (const rec of Object.values(doc.peers)) {
     if (rec.observed.harvestedAt === undefined) continue;
@@ -267,8 +281,56 @@ export function revokeUntrustedHarvestStamps(doc: StateDoc): number {
     rec.observed.harvestedAt = undefined;
     cleared++;
   }
+  markRepair(doc, REPAIR_HARVEST_PROVENANCE);
   doc.harvestProvenanceRevokedAt = new Date().toISOString();
   if (cleared > 0) log.warn("harvest_stamps_revoked", { cleared, reason: "written_before_0_11_1" });
+  return cleared;
+}
+
+function hasRepair(doc: StateDoc, id: string): boolean {
+  if (doc.repairsApplied?.includes(id)) return true;
+  // v0.11.1 recorded the harvest pass in its own field, before the list existed.
+  return id === REPAIR_HARVEST_PROVENANCE && doc.harvestProvenanceRevokedAt !== undefined;
+}
+
+function markRepair(doc: StateDoc, id: string): void {
+  doc.repairsApplied = [...(doc.repairsApplied ?? []), id];
+}
+
+/**
+ * Clear `desired.label` values that no operator ever chose. Once.
+ *
+ * v0.11.0's `peer_restart` did not pass a team to `peer_spawn`, so every
+ * relaunched peer stored the FULLY QUALIFIED name as its label — `mic-tester`
+ * where the convention says `tester`. v0.11.1 fixed the computation and made an
+ * explicit label win over the derived one, which is right in general and made
+ * this case worse in particular: the stored garbage now outranked the correct
+ * derivation, so the fix changed nothing on the fleet. Measured on the etl
+ * canary at 17:24 — windows still `etl-dev`, `etl-velitel`.
+ *
+ * Correcting the code that writes a value does nothing about the values already
+ * written. The two are separate jobs and it is easy to believe the first is
+ * both.
+ *
+ * The signature is exact: a label identical to the fully qualified name of a
+ * peer that HAS a team prefix is precisely what the broken path produced, and
+ * precisely what the correct path never would. Anything else — a genuinely
+ * chosen short name, a team-less peer, a name that does not carry its team
+ * prefix — is left untouched.
+ */
+export function revokeDerivedLabels(doc: StateDoc): number {
+  if (hasRepair(doc, REPAIR_DERIVED_LABELS)) return 0;
+  let cleared = 0;
+  for (const rec of Object.values(doc.peers)) {
+    const { label, team } = rec.desired;
+    if (label === undefined || team === undefined) continue;
+    if (label !== rec.observed.name) continue;
+    if (!label.startsWith(`${team}-`)) continue;
+    rec.desired.label = undefined;
+    cleared++;
+  }
+  markRepair(doc, REPAIR_DERIVED_LABELS);
+  if (cleared > 0) log.warn("derived_labels_revoked", { cleared, reason: "written_before_0_11_2" });
   return cleared;
 }
 
@@ -437,6 +499,7 @@ export async function loadState(daemonVersion: string): Promise<StateDoc> {
       // to invent stamps, which leaves nothing to revoke. Marking it done keeps
       // the pass one-time rather than something that runs on every boot.
       revokeUntrustedHarvestStamps(fresh);
+      revokeDerivedLabels(fresh);
       return fresh;
     }
     const doc: StateDoc = {
@@ -449,8 +512,10 @@ export async function loadState(daemonVersion: string): Promise<StateDoc> {
       ...(parsed.harvestProvenanceRevokedAt !== undefined
         ? { harvestProvenanceRevokedAt: parsed.harvestProvenanceRevokedAt }
         : {}),
+      ...(parsed.repairsApplied !== undefined ? { repairsApplied: parsed.repairsApplied } : {}),
     };
     revokeUntrustedHarvestStamps(doc);
+    revokeDerivedLabels(doc);
     return doc;
   } catch (e) {
     if (e instanceof StateVersionMismatch) throw e;

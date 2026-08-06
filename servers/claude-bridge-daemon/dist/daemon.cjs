@@ -4287,7 +4287,7 @@ async function resolvePeer(idOrName, root = bridgeRoot(), now = Date.now()) {
 // package.json
 var package_default = {
   name: "claude-bridge-daemon",
-  version: "0.11.1",
+  version: "0.11.2",
   private: true,
   description: "Control-plane daemon for the claude-bridge plugin: peer lifecycle, telemetry, audit. Distributed as opt-in artefact \u2014 see ADR-008.",
   type: "module",
@@ -4810,6 +4810,8 @@ var SPAWN_ESSENTIAL_CLAUDE_VARS = /* @__PURE__ */ new Set([
 // src/state.ts
 var log4 = makeLogger("daemon.state");
 var STATE_VERSION = 2;
+var REPAIR_HARVEST_PROVENANCE = "revoke-harvest-stamps-pre-0.11.1";
+var REPAIR_DERIVED_LABELS = "revoke-derived-labels-pre-0.11.2";
 var StateVersionMismatch = class extends Error {
   constructor(onDisk, supported) {
     super(
@@ -4829,15 +4831,38 @@ function emptyState(daemonVersion) {
   };
 }
 function revokeUntrustedHarvestStamps(doc) {
-  if (doc.harvestProvenanceRevokedAt !== void 0) return 0;
+  if (hasRepair(doc, REPAIR_HARVEST_PROVENANCE)) return 0;
   let cleared = 0;
   for (const rec of Object.values(doc.peers)) {
     if (rec.observed.harvestedAt === void 0) continue;
     rec.observed.harvestedAt = void 0;
     cleared++;
   }
+  markRepair(doc, REPAIR_HARVEST_PROVENANCE);
   doc.harvestProvenanceRevokedAt = (/* @__PURE__ */ new Date()).toISOString();
   if (cleared > 0) log4.warn("harvest_stamps_revoked", { cleared, reason: "written_before_0_11_1" });
+  return cleared;
+}
+function hasRepair(doc, id) {
+  if (doc.repairsApplied?.includes(id)) return true;
+  return id === REPAIR_HARVEST_PROVENANCE && doc.harvestProvenanceRevokedAt !== void 0;
+}
+function markRepair(doc, id) {
+  doc.repairsApplied = [...doc.repairsApplied ?? [], id];
+}
+function revokeDerivedLabels(doc) {
+  if (hasRepair(doc, REPAIR_DERIVED_LABELS)) return 0;
+  let cleared = 0;
+  for (const rec of Object.values(doc.peers)) {
+    const { label, team } = rec.desired;
+    if (label === void 0 || team === void 0) continue;
+    if (label !== rec.observed.name) continue;
+    if (!label.startsWith(`${team}-`)) continue;
+    rec.desired.label = void 0;
+    cleared++;
+  }
+  markRepair(doc, REPAIR_DERIVED_LABELS);
+  if (cleared > 0) log4.warn("derived_labels_revoked", { cleared, reason: "written_before_0_11_2" });
   return cleared;
 }
 function repairHarvestedEnv(peers) {
@@ -4922,6 +4947,7 @@ async function loadState(daemonVersion) {
         peers: repairHarvestedEnv(peers)
       };
       revokeUntrustedHarvestStamps(fresh);
+      revokeDerivedLabels(fresh);
       return fresh;
     }
     const doc = {
@@ -4931,9 +4957,11 @@ async function loadState(daemonVersion) {
       peers: repairHarvestedEnv(parsed.peers ?? {}),
       // Carried forward, or the one-time pass would run on every start and
       // wipe stamps a v0.11.1 daemon had legitimately written.
-      ...parsed.harvestProvenanceRevokedAt !== void 0 ? { harvestProvenanceRevokedAt: parsed.harvestProvenanceRevokedAt } : {}
+      ...parsed.harvestProvenanceRevokedAt !== void 0 ? { harvestProvenanceRevokedAt: parsed.harvestProvenanceRevokedAt } : {},
+      ...parsed.repairsApplied !== void 0 ? { repairsApplied: parsed.repairsApplied } : {}
     };
     revokeUntrustedHarvestStamps(doc);
+    revokeDerivedLabels(doc);
     return doc;
   } catch (e) {
     if (e instanceof StateVersionMismatch) throw e;
