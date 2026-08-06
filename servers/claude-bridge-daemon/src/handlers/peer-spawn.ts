@@ -77,6 +77,30 @@ export const PeerSpawnArgsSchema = z
         "Team this peer belongs to. Also decides the tmux window label: a displayName " +
           "of `mic-tester` in team `mic` labels the window `tester`.",
       ),
+    label: z
+      .string()
+      .min(1)
+      .optional()
+      .describe(
+        "Explicit window label, overriding the one derived from displayName + team. " +
+          "This is how an operator's `control_config set label=…` survives a restart.",
+      ),
+    /**
+     * When `envBase` was sampled — or `null` for "carried, and we do not know".
+     *
+     * Three states, and the difference matters:
+     *   absent  — this is a fresh harvest, stamp it with now
+     *   string  — carried from a record that knew when it was sampled, keep that
+     *   null    — carried from a record that did not know; keep not knowing
+     *
+     * v0.11.0 had only the first behaviour, so every `peer_restart` stamped
+     * `harvestedAt` with the restart time over values that had been sampled days
+     * earlier. Measured on 2026-08-06: all 22 rolled peers claimed a harvest at
+     * 17:06–17:09 for an environment taken at adoption on 08-05. That is the
+     * defect this whole release exists to prevent, committed by the field
+     * written to prevent it.
+     */
+    envHarvestedAt: z.string().nullable().optional(),
   })
   .strict();
 
@@ -176,7 +200,7 @@ export async function handlePeerSpawn(
         // that paints a window. Until v0.11.0 there was no field for it, so
         // `windowLabelFor` was called at each site and the ones that forgot
         // painted the FQN.
-        label: windowLabelFor(args.displayName, args.team),
+        label: args.label ?? windowLabelFor(args.displayName, args.team),
         // Recorded so peer_restart can put the peer back where it belongs, and
         // launch it the way it was launched, instead of guessing (2026-08-04).
         // `args.args` is the caller's list — NOT spawnArgs, which already has
@@ -201,7 +225,18 @@ export async function handlePeerSpawn(
         // pane-scoped vars have to go — they describe a pane that will not be
         // the same one next time.
         ...(args.envBase
-          ? { spawnEnv: harvestEnv(args.envBase), harvestedAt: new Date().toISOString() }
+          ? {
+              spawnEnv: harvestEnv(args.envBase),
+              // Only stamp what we actually sampled. `envHarvestedAt` absent
+              // means a fresh harvest; present (string or null) means the caller
+              // carried these values and already knows their provenance — or
+              // knows that it does not.
+              ...(args.envHarvestedAt === undefined
+                ? { harvestedAt: new Date().toISOString() }
+                : args.envHarvestedAt !== null
+                  ? { harvestedAt: args.envHarvestedAt }
+                  : {}),
+            }
           : {}),
         model: args.model ?? null,
         startedAt: new Date().toISOString(),
@@ -216,7 +251,9 @@ export async function handlePeerSpawn(
       ...(args.inSession ? { inSession: args.inSession } : {}),
       // Name the window after the peer. tmux otherwise names it after the
       // command, so every window read `claude`.
-      windowName: windowLabelFor(args.displayName, args.team),
+      // The same value the record stores, not a second derivation of it.
+      // Computing it twice is how the record and the window get to disagree.
+      windowName: args.label ?? windowLabelFor(args.displayName, args.team),
       cwd: args.cwd,
       command: args.command,
       args: spawnArgs,

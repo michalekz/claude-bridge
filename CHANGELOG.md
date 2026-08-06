@@ -6,6 +6,73 @@ All notable changes to this project are documented here. Format follows [Keep a 
 
 _Nothing yet._
 
+## [0.11.1] — 2026-08-06
+
+Two defects found in the v0.11.0 fleet roll, minutes after it finished, by
+looking at what the roll had actually produced rather than at whether it had
+reported success. It reported success. Both defects are in `peer_restart`,
+building its spawn request from an incomplete reading of the record.
+
+### The windows renamed themselves back
+
+All 22 rolled peers came back as `ai-kb-dev` rather than `kb-dev`. `peer_spawn`
+labels a window from `windowLabelFor(displayName, team)`, and `peer_restart`
+never passed a team — so the label fix shipped the day before held only until
+the first restart.
+
+That fix covered `team_layout` and direct spawns and left the restart path
+alone, where it sat unnoticed because nothing had restarted through it since. A
+fix applied at some call sites is a fix the untouched site will undo, and the
+untouched site here was the one a fleet roll uses.
+
+An operator's declared `label` now also wins over the derived one, and the
+window name comes from the same value the record stores rather than a second
+derivation of it — computing it twice is how the two get to disagree.
+
+### A restart stamped a provenance it had not earned
+
+Every one of those 22 records then claimed `harvestedAt` = the restart time, for
+an environment sampled at adoption the previous day. `peer_spawn` stamped
+whenever it was handed an `envBase`, and a restart hands it values copied out of
+the record. The carry-forward guard only fired when a previous stamp existed —
+and records migrated out of v1 deliberately had none.
+
+So the release built to stop measurements masquerading as intent invented a
+provenance, using the field written to prevent exactly that, within hours of
+shipping it.
+
+The rule is now stated at the field and enforced at the boundary: **a stamp is
+written only by a fresh harvest from something live. Passing stored values from
+one record to the next is a copy, and a copy never earns a stamp.** Empty stays
+empty across any number of restarts, because "we do not know when this was read"
+does not become knowledge by being carried further. `peer_spawn` takes an
+explicit `envHarvestedAt` with three distinguishable states — absent (fresh
+harvest, stamp it), a string (carried, provenance known), `null` (carried,
+provenance unknown).
+
+### Every stamp written before this release is revoked, once
+
+No earlier daemon could tell a harvest from a copy, so no stamp one wrote says
+anything about when those values were read — only about when they were last
+passed around. A one-time pass clears them all and records that it ran.
+
+The revocation is by writer capability, not by timestamp window. Clearing
+"stamps written between 17:06 and 17:09" would have fixed this fleet and left
+the principle unstated. Empty is the honest value: a wrong timestamp is worse
+than none, because it invites the "this looks fresh" reasoning the field exists
+to prevent.
+
+### On the tests
+
+The first draft of the regression tests asserted against a helper that rebuilt
+the spawn arguments the way the handler does. It would have passed against the
+broken handler, because the hole was in the handler. Rewritten to drive the real
+`peer_restart` and inspect what reaches the driver — a test written beside the
+code checks what the code does; only a test written where the caller stands
+checks what it should do.
+
+Tests 220 daemon (from 212), 402 MCP.
+
 ## [0.11.0] — 2026-08-06
 
 ### A peer record now says whether it is a plan or a photograph

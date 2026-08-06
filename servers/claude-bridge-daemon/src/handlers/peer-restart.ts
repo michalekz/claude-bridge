@@ -331,9 +331,31 @@ export async function handlePeerRestart(
       command: process.env["CLAUDE_BRIDGE_TEST_COMMAND"] ?? command,
       args: commandArgs,
       ...(inSession ? { inSession } : {}),
+      // The team, and the label derived from it.
+      //
+      // Omitted until v0.11.1, and that was not cosmetic: `peer_spawn` names
+      // the tmux window from `windowLabelFor(displayName, team)`, so without a
+      // team every relaunched window came back wearing the fully qualified
+      // name. The v0.10.21 label fix covered `team_layout` and direct spawns
+      // and left this path alone, where it sat unnoticed because nothing had
+      // restarted through it since — until the v0.11.0 roll renamed 22 windows
+      // back in one pass.
+      ...(record.desired.team !== undefined ? { team: record.desired.team } : {}),
+      // An operator's declared label wins over the derived one, or
+      // `control_config set label=…` would survive in the record and never
+      // reach the window it names.
+      ...(record.desired.label !== undefined ? { label: record.desired.label } : {}),
       // The peer's own environment. Without it the relaunch inherits the
       // daemon's PATH and comes up unable to find node.
-      ...(record.observed.spawnEnv ? { envBase: record.observed.spawnEnv } : {}),
+      ...(record.observed.spawnEnv
+        ? {
+            envBase: record.observed.spawnEnv,
+            // Always passed, so the spawn never mistakes a copy for a sample.
+            // `null` says "carried, provenance unknown" — which is the honest
+            // answer for every record migrated out of v1.
+            envHarvestedAt: record.observed.harvestedAt ?? null,
+          }
+        : {}),
       // Only resume something that CAN be resumed.
       //
       // This was an unconditional `true`. For a peer spawned under a stable

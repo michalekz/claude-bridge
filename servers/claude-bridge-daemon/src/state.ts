@@ -175,12 +175,26 @@ export interface PeerObserved {
    */
   spawnEnv?: Record<string, string>;
   /**
-   * When `spawnEnv` was sampled.
+   * When `spawnEnv` was sampled from a live source.
+   *
+   * THE RULE, and it has exactly one exception, which is none:
+   *
+   *   A stamp is written ONLY by a fresh harvest from something live — a
+   *   running process, a pane, `/proc`. Handing stored values from one record
+   *   to the next is a COPY, and a copy never earns a stamp. An empty stamp
+   *   stays empty across any number of restarts, because "we do not know when
+   *   this was read" does not become knowledge by being carried further.
    *
    * Missing provenance is why the poisoning of 2026-08-04 took two readings
    * eight minutes apart to see at all: the record looked equally authoritative
    * before and after it went wrong. A harvested value without a timestamp
    * cannot be judged stale by anyone.
+   *
+   * The rule is spelled out because v0.11.0 broke it within hours of shipping
+   * the field. `peer_spawn` stamped on every `envBase` it received, and
+   * `peer_restart` passes one straight out of the record — so the v0.11.0 fleet
+   * roll wrote "harvested at 17:06 today" onto 22 environments last sampled at
+   * adoption the previous day. See `envHarvestedAt` in PeerSpawnArgsSchema.
    */
   harvestedAt?: string;
   startedAt: string;
@@ -192,6 +206,13 @@ export interface StateDoc {
   daemonVersion: string;
   daemonStartedAt: string;
   peers: Record<string, PeerRecord>;
+  /**
+   * Marks that the one-time revocation of pre-v0.11.1 harvest stamps has run.
+   *
+   * Not a `stateVersion` bump: the shape does not change, only the trust we
+   * place in one field. See `revokeUntrustedHarvestStamps`.
+   */
+  harvestProvenanceRevokedAt?: string;
 }
 
 export class StateVersionMismatch extends Error {
@@ -213,6 +234,42 @@ export function emptyState(daemonVersion: string): StateDoc {
     daemonStartedAt: new Date().toISOString(),
     peers: {},
   };
+}
+
+/**
+ * Clear every `harvestedAt` written before v0.11.1. Once.
+ *
+ * No daemon before v0.11.1 could tell a harvest from a copy — `peer_spawn`
+ * stamped whenever it was handed an environment, and `peer_restart` hands it
+ * one straight out of the record. So a stamp written by an older daemon carries
+ * no information about when those values were actually read; it records when
+ * they were last passed around. Measured on the live fleet 2026-08-06: 22 peers
+ * claiming a harvest at 17:06–17:09, for environments sampled at adoption the
+ * day before.
+ *
+ * The revocation is by DAEMON CAPABILITY, not by timestamp window. Clearing
+ * "stamps written between 17:06 and 17:09" would fix this fleet and leave the
+ * principle unstated; clearing everything an untrustworthy writer produced is
+ * the actual rule, and it holds for anyone else's registry too.
+ *
+ * Empty is the honest value. We do not know when those environments were read,
+ * and a wrong timestamp is worse than none — it invites exactly the "this looks
+ * fresh" reasoning the field was added to prevent.
+ */
+export function revokeUntrustedHarvestStamps(doc: StateDoc): number {
+  if (doc.harvestProvenanceRevokedAt !== undefined) return 0;
+  let cleared = 0;
+  for (const rec of Object.values(doc.peers)) {
+    if (rec.observed.harvestedAt === undefined) continue;
+    // `undefined` rather than `delete`: JSON.stringify omits the key either
+    // way, so the persisted record is identical, and every reader already
+    // tests for undefined.
+    rec.observed.harvestedAt = undefined;
+    cleared++;
+  }
+  doc.harvestProvenanceRevokedAt = new Date().toISOString();
+  if (cleared > 0) log.warn("harvest_stamps_revoked", { cleared, reason: "written_before_0_11_1" });
+  return cleared;
 }
 
 /**
@@ -369,19 +426,31 @@ export async function loadState(daemonVersion: string): Promise<StateDoc> {
         parsed.peers as unknown as Record<string, LegacyPeerRecord>,
       );
       log.warn("state_migrated", { from: onDisk, to: STATE_VERSION, peers: migrated, backup });
-      return {
+      const fresh: StateDoc = {
         stateVersion: STATE_VERSION,
         daemonVersion,
         daemonStartedAt: new Date().toISOString(),
         peers: repairHarvestedEnv(peers),
       };
+      // A v1 document predates the harvest/copy distinction by definition, so
+      // nothing it carried can be trusted — but the migration already declines
+      // to invent stamps, which leaves nothing to revoke. Marking it done keeps
+      // the pass one-time rather than something that runs on every boot.
+      revokeUntrustedHarvestStamps(fresh);
+      return fresh;
     }
     const doc: StateDoc = {
       stateVersion: STATE_VERSION,
       daemonVersion,
       daemonStartedAt: new Date().toISOString(),
       peers: repairHarvestedEnv(parsed.peers ?? {}),
+      // Carried forward, or the one-time pass would run on every start and
+      // wipe stamps a v0.11.1 daemon had legitimately written.
+      ...(parsed.harvestProvenanceRevokedAt !== undefined
+        ? { harvestProvenanceRevokedAt: parsed.harvestProvenanceRevokedAt }
+        : {}),
     };
+    revokeUntrustedHarvestStamps(doc);
     return doc;
   } catch (e) {
     if (e instanceof StateVersionMismatch) throw e;

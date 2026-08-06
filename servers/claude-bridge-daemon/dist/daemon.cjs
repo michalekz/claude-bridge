@@ -4287,7 +4287,7 @@ async function resolvePeer(idOrName, root = bridgeRoot(), now = Date.now()) {
 // package.json
 var package_default = {
   name: "claude-bridge-daemon",
-  version: "0.11.0",
+  version: "0.11.1",
   private: true,
   description: "Control-plane daemon for the claude-bridge plugin: peer lifecycle, telemetry, audit. Distributed as opt-in artefact \u2014 see ADR-008.",
   type: "module",
@@ -4828,6 +4828,18 @@ function emptyState(daemonVersion) {
     peers: {}
   };
 }
+function revokeUntrustedHarvestStamps(doc) {
+  if (doc.harvestProvenanceRevokedAt !== void 0) return 0;
+  let cleared = 0;
+  for (const rec of Object.values(doc.peers)) {
+    if (rec.observed.harvestedAt === void 0) continue;
+    rec.observed.harvestedAt = void 0;
+    cleared++;
+  }
+  doc.harvestProvenanceRevokedAt = (/* @__PURE__ */ new Date()).toISOString();
+  if (cleared > 0) log4.warn("harvest_stamps_revoked", { cleared, reason: "written_before_0_11_1" });
+  return cleared;
+}
 function repairHarvestedEnv(peers) {
   for (const record of Object.values(peers)) {
     const env = record.observed.spawnEnv;
@@ -4903,19 +4915,25 @@ async function loadState(daemonVersion) {
         parsed.peers
       );
       log4.warn("state_migrated", { from: onDisk, to: STATE_VERSION, peers: migrated, backup });
-      return {
+      const fresh = {
         stateVersion: STATE_VERSION,
         daemonVersion,
         daemonStartedAt: (/* @__PURE__ */ new Date()).toISOString(),
         peers: repairHarvestedEnv(peers)
       };
+      revokeUntrustedHarvestStamps(fresh);
+      return fresh;
     }
     const doc = {
       stateVersion: STATE_VERSION,
       daemonVersion,
       daemonStartedAt: (/* @__PURE__ */ new Date()).toISOString(),
-      peers: repairHarvestedEnv(parsed.peers ?? {})
+      peers: repairHarvestedEnv(parsed.peers ?? {}),
+      // Carried forward, or the one-time pass would run on every start and
+      // wipe stamps a v0.11.1 daemon had legitimately written.
+      ...parsed.harvestProvenanceRevokedAt !== void 0 ? { harvestProvenanceRevokedAt: parsed.harvestProvenanceRevokedAt } : {}
     };
+    revokeUntrustedHarvestStamps(doc);
     return doc;
   } catch (e) {
     if (e instanceof StateVersionMismatch) throw e;
@@ -5459,7 +5477,26 @@ var PeerSpawnArgsSchema = external_exports.object({
   extraEnv: external_exports.record(external_exports.string()).default({}).describe("Fully-formed env overrides (bypass whitelist for these names)"),
   team: external_exports.string().optional().describe(
     "Team this peer belongs to. Also decides the tmux window label: a displayName of `mic-tester` in team `mic` labels the window `tester`."
-  )
+  ),
+  label: external_exports.string().min(1).optional().describe(
+    "Explicit window label, overriding the one derived from displayName + team. This is how an operator's `control_config set label=\u2026` survives a restart."
+  ),
+  /**
+   * When `envBase` was sampled — or `null` for "carried, and we do not know".
+   *
+   * Three states, and the difference matters:
+   *   absent  — this is a fresh harvest, stamp it with now
+   *   string  — carried from a record that knew when it was sampled, keep that
+   *   null    — carried from a record that did not know; keep not knowing
+   *
+   * v0.11.0 had only the first behaviour, so every `peer_restart` stamped
+   * `harvestedAt` with the restart time over values that had been sampled days
+   * earlier. Measured on 2026-08-06: all 22 rolled peers claimed a harvest at
+   * 17:06–17:09 for an environment taken at adoption on 08-05. That is the
+   * defect this whole release exists to prevent, committed by the field
+   * written to prevent it.
+   */
+  envHarvestedAt: external_exports.string().nullable().optional()
 }).strict();
 function windowLabelFor(displayName, team) {
   if (!team) return displayName;
@@ -5522,7 +5559,7 @@ async function handlePeerSpawn(req, ctx) {
         // that paints a window. Until v0.11.0 there was no field for it, so
         // `windowLabelFor` was called at each site and the ones that forgot
         // painted the FQN.
-        label: windowLabelFor(args.displayName, args.team),
+        label: args.label ?? windowLabelFor(args.displayName, args.team),
         // Recorded so peer_restart can put the peer back where it belongs, and
         // launch it the way it was launched, instead of guessing (2026-08-04).
         // `args.args` is the caller's list — NOT spawnArgs, which already has
@@ -5546,7 +5583,14 @@ async function handlePeerSpawn(req, ctx) {
         // with, but this is the copy that PERSISTS across restarts, so the
         // pane-scoped vars have to go — they describe a pane that will not be
         // the same one next time.
-        ...args.envBase ? { spawnEnv: harvestEnv(args.envBase), harvestedAt: (/* @__PURE__ */ new Date()).toISOString() } : {},
+        ...args.envBase ? {
+          spawnEnv: harvestEnv(args.envBase),
+          // Only stamp what we actually sampled. `envHarvestedAt` absent
+          // means a fresh harvest; present (string or null) means the caller
+          // carried these values and already knows their provenance — or
+          // knows that it does not.
+          ...args.envHarvestedAt === void 0 ? { harvestedAt: (/* @__PURE__ */ new Date()).toISOString() } : args.envHarvestedAt !== null ? { harvestedAt: args.envHarvestedAt } : {}
+        } : {},
         model: args.model ?? null,
         startedAt: (/* @__PURE__ */ new Date()).toISOString(),
         lastUpdatedAt: (/* @__PURE__ */ new Date()).toISOString()
@@ -5559,7 +5603,9 @@ async function handlePeerSpawn(req, ctx) {
       ...args.inSession ? { inSession: args.inSession } : {},
       // Name the window after the peer. tmux otherwise names it after the
       // command, so every window read `claude`.
-      windowName: windowLabelFor(args.displayName, args.team),
+      // The same value the record stores, not a second derivation of it.
+      // Computing it twice is how the record and the window get to disagree.
+      windowName: args.label ?? windowLabelFor(args.displayName, args.team),
       cwd: args.cwd,
       command: args.command,
       args: spawnArgs,
@@ -5980,9 +6026,29 @@ async function handlePeerRestart(req, ctx) {
       command: process.env["CLAUDE_BRIDGE_TEST_COMMAND"] ?? command,
       args: commandArgs,
       ...inSession ? { inSession } : {},
+      // The team, and the label derived from it.
+      //
+      // Omitted until v0.11.1, and that was not cosmetic: `peer_spawn` names
+      // the tmux window from `windowLabelFor(displayName, team)`, so without a
+      // team every relaunched window came back wearing the fully qualified
+      // name. The v0.10.21 label fix covered `team_layout` and direct spawns
+      // and left this path alone, where it sat unnoticed because nothing had
+      // restarted through it since — until the v0.11.0 roll renamed 22 windows
+      // back in one pass.
+      ...record.desired.team !== void 0 ? { team: record.desired.team } : {},
+      // An operator's declared label wins over the derived one, or
+      // `control_config set label=…` would survive in the record and never
+      // reach the window it names.
+      ...record.desired.label !== void 0 ? { label: record.desired.label } : {},
       // The peer's own environment. Without it the relaunch inherits the
       // daemon's PATH and comes up unable to find node.
-      ...record.observed.spawnEnv ? { envBase: record.observed.spawnEnv } : {},
+      ...record.observed.spawnEnv ? {
+        envBase: record.observed.spawnEnv,
+        // Always passed, so the spawn never mistakes a copy for a sample.
+        // `null` says "carried, provenance unknown" — which is the honest
+        // answer for every record migrated out of v1.
+        envHarvestedAt: record.observed.harvestedAt ?? null
+      } : {},
       // Only resume something that CAN be resumed.
       //
       // This was an unconditional `true`. For a peer spawned under a stable
