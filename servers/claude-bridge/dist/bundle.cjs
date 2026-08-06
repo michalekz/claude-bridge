@@ -18243,7 +18243,7 @@ var StdioServerTransport = class {
 // package.json
 var package_default = {
   name: "claude-bridge",
-  version: "0.10.21",
+  version: "0.11.0",
   private: true,
   description: "MCP server for cross-Claude-Code-chat orchestration over local session JSONL files",
   type: "module",
@@ -21982,6 +21982,33 @@ function err(code, message, details) {
   };
 }
 var SETUP_POINTER3 = "Daemon not detected. Install with `node ~/.claude/claude-bridge-daemon.cjs install --systemd` (Linux) \u2014 see docs/architecture.md ADR-008.";
+var ControlConfigArgs = external_exports.object({
+  peer: external_exports.string().min(1).optional(),
+  team: external_exports.string().min(1).optional(),
+  set: external_exports.object({
+    label: external_exports.string().min(1).max(64).optional(),
+    windowIndex: external_exports.number().int().min(0).max(999).optional(),
+    model: external_exports.string().min(1).nullable().optional(),
+    accountProfile: external_exports.string().min(1).nullable().optional(),
+    team: external_exports.string().min(1).optional()
+  }).strict().optional(),
+  dryRun: external_exports.boolean().optional(),
+  reason: external_exports.string().optional(),
+  wait: external_exports.boolean().optional(),
+  timeoutMs: external_exports.number().int().positive().max(6e4).optional()
+}).strict();
+async function controlConfigTool(ctx, args) {
+  const daemonArgs = {};
+  if (args.peer !== void 0) daemonArgs["peer"] = args.peer;
+  if (args.team !== void 0) daemonArgs["team"] = args.team;
+  if (args.set !== void 0) daemonArgs["set"] = args.set;
+  if (args.dryRun !== void 0) daemonArgs["dryRun"] = args.dryRun;
+  if (args.reason !== void 0) daemonArgs["reason"] = args.reason;
+  return submitDaemonRequest(ctx, "control_config", daemonArgs, {
+    wait: args.wait ?? true,
+    timeoutMs: args.timeoutMs ?? 5e3
+  });
+}
 var ControlStatusArgs = external_exports.object({}).strict();
 async function controlStatusTool() {
   const presence = await probeDaemon();
@@ -24075,6 +24102,48 @@ var TOOLS = [
       const parsed = PeerSetNotificationArgs.safeParse(args);
       if (!parsed.success) return err2("invalid_args", "Schema validation failed", parsed.error);
       return peerSetNotificationTool(ctx, parsed.data);
+    }
+  },
+  {
+    name: "control_config",
+    description: "Read and DECLARE peer intent \u2014 the single configuration tool for the control plane (v0.11.0). No args: every peer's declared values plus any drift. `peer`: one peer (session id, full name, or short name inside your team). `team`: that team's peers. `set`: declare values \u2014 allowed keys are label, windowIndex, model, accountProfile, team. `dryRun:true` shows the change and writes nothing. IMPORTANT: this writes the DESIRED half of the record only; it changes nothing in the world. windowIndex is recorded and drift is reported, but no window is moved in v0.11.0 \u2014 asserting intent lands in v0.11.1 behind an explicit opt-in. Drift entries carry BOTH the declared and the measured value and BOTH ways out: `assert` (make the world match) and `adopt` (accept reality as the new intent). Destructive lifecycle operations are deliberately NOT here \u2014 see peer_stop / peer_restart / team_stop. The same function is reachable from a shell: `claude-bridge-daemon config --help`.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        peer: {
+          type: "string",
+          description: "Session id, full name, or short name in the caller's team"
+        },
+        team: { type: "string", description: "Read every peer of this team (read-only)" },
+        set: {
+          type: "object",
+          description: "Values to declare. Omit to read.",
+          properties: {
+            label: {
+              type: "string",
+              description: "Short display name \u2014 tmux window title and projections"
+            },
+            windowIndex: {
+              type: "number",
+              description: "Requested window position. Recorded only in v0.11.0."
+            },
+            model: { type: ["string", "null"], description: "Model the peer SHOULD run" },
+            accountProfile: { type: ["string", "null"], description: "Billing identity" },
+            team: { type: "string" }
+          },
+          additionalProperties: false
+        },
+        dryRun: { type: "boolean", description: "Preview the change without writing" },
+        reason: { type: "string", description: "Recorded in events.jsonl alongside the change" },
+        wait: { type: "boolean" },
+        timeoutMs: { type: "number" }
+      },
+      additionalProperties: false
+    },
+    handler: async (args, ctx) => {
+      const parsed = ControlConfigArgs.safeParse(args);
+      if (!parsed.success) return err2("invalid_args", "Schema validation failed", parsed.error);
+      return controlConfigTool(ctx, parsed.data);
     }
   },
   {

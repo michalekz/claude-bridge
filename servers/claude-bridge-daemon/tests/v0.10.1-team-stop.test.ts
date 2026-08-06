@@ -85,7 +85,7 @@ describe("v0.10.1 team_stop", () => {
       ),
       { state: doc, hostDriver: driver, daemonVersion: "0.10.1-rc.0" },
     );
-    expect(doc.peers["ts-peer-1"]?.status).toBe("live");
+    expect(doc.peers["ts-peer-1"]?.observed.status).toBe("live");
 
     // Pre-write the ack file — simulates peer having flushed anchor + memory.
     const ackDir = join(shared.controlDir(), "stop-ack");
@@ -128,9 +128,9 @@ describe("v0.10.1 team_stop", () => {
     // Peer kept in state, status flipped, stoppedCleanly:true.
     const rec = doc.peers["ts-peer-1"];
     expect(rec).toBeDefined();
-    expect(rec?.status).toBe("stopped");
-    expect(rec?.stoppedCleanly).toBe(true);
-    expect(rec?.tmuxTarget).toBe("ts_one");
+    expect(rec?.observed.status).toBe("stopped");
+    expect(rec?.observed.stoppedCleanly).toBe(true);
+    expect(rec?.observed.tmuxTarget).toBe("ts_one");
     // Host session must be gone.
     expect(await driver.hasSession("ts_one")).toBe(false);
 
@@ -180,7 +180,7 @@ describe("v0.10.1 team_stop", () => {
     expect(data.stoppedCleanly).toEqual([]);
     expect(data.skipped).toEqual(["ts-peer-2"]);
     // Peer still alive on host + in state as "live" (untouched).
-    expect(doc.peers["ts-peer-2"]?.status).toBe("live");
+    expect(doc.peers["ts-peer-2"]?.observed.status).toBe("live");
     expect(await driver.hasSession("ts_two")).toBe(true);
 
     driver.reset();
@@ -195,15 +195,19 @@ describe("v0.10.1 team_stop", () => {
     // a peer that died between the last daemon rehydrate and now.
     doc.peers["ts-peer-3"] = {
       sessionId: "ts-peer-3",
-      name: "ts:three",
-      hostDriver: "mock",
-      tmuxTarget: "ts_three",
-      pid: 4242,
-      status: "live",
-      model: null,
-      accountProfile: null,
-      startedAt: "2026-08-02T15:00:00.000Z",
-      lastUpdatedAt: "2026-08-02T15:00:00.000Z",
+      desired: {
+        accountProfile: null,
+      },
+      observed: {
+        name: "ts:three",
+        hostDriver: "mock",
+        tmuxTarget: "ts_three",
+        pid: 4242,
+        status: "live",
+        model: null,
+        startedAt: "2026-08-02T15:00:00.000Z",
+        lastUpdatedAt: "2026-08-02T15:00:00.000Z",
+      },
     };
 
     const inline = {
@@ -228,8 +232,8 @@ describe("v0.10.1 team_stop", () => {
     expect(data.stoppedDead).toEqual(["ts-peer-3"]);
     expect(data.stoppedCleanly).toEqual([]);
     const rec = doc.peers["ts-peer-3"];
-    expect(rec?.status).toBe("stopped");
-    expect(rec?.stoppedCleanly).toBeNull();
+    expect(rec?.observed.status).toBe("stopped");
+    expect(rec?.observed.stoppedCleanly).toBeNull();
 
     driver.reset();
   });

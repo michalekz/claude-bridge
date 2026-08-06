@@ -126,8 +126,8 @@ describe.skipIf(!TMUX)("v0.10.1 smoke — team lifecycle on real tmux", () => {
     expect(up.outcome).toBe("ok");
     expect(tmuxHas(canonical)).toBe(true);
     // The T1 contract: state holds the canonical key, not the raw one.
-    expect(doc.peers[sessionId]?.tmuxTarget).toBe(canonical);
-    expect(doc.peers[sessionId]?.status).toBe("live");
+    expect(doc.peers[sessionId]?.observed.tmuxTarget).toBe(canonical);
+    expect(doc.peers[sessionId]?.observed.status).toBe("live");
 
     // ---- 2. controlled stop, peer acks -----------------------------------
     const ackDir = join(shared.controlDir(), "stop-ack");
@@ -151,8 +151,8 @@ describe.skipIf(!TMUX)("v0.10.1 smoke — team lifecycle on real tmux", () => {
     expect((stop.data as { stoppedCleanly: string[] }).stoppedCleanly).toEqual([sessionId]);
     // tmux is the judge, not our own bookkeeping.
     expect(tmuxHas(canonical)).toBe(false);
-    expect(doc.peers[sessionId]?.status).toBe("stopped");
-    expect(doc.peers[sessionId]?.stoppedCleanly).toBe(true);
+    expect(doc.peers[sessionId]?.observed.status).toBe("stopped");
+    expect(doc.peers[sessionId]?.observed.stoppedCleanly).toBe(true);
 
     // ---- 3. resume the same session id, and wake it ----------------------
     const back = await handlers.dispatch(
@@ -171,7 +171,7 @@ describe.skipIf(!TMUX)("v0.10.1 smoke — team lifecycle on real tmux", () => {
     // in the pane, sendKeys would have thrown and this list would be empty.
     expect(data.wokenOk).toEqual([sessionId]);
     expect(tmuxHas(canonical)).toBe(true);
-    expect(doc.peers[sessionId]?.status).toBe("live");
+    expect(doc.peers[sessionId]?.observed.status).toBe("live");
 
     // The wake text is really in the pane, read straight from tmux.
     const pane = execFileSync("tmux", ["capture-pane", "-p", "-t", canonical], {
@@ -181,7 +181,7 @@ describe.skipIf(!TMUX)("v0.10.1 smoke — team lifecycle on real tmux", () => {
 
     // ---- 4. adopt it back after wiping daemon state ----------------------
     // Models the motivating case: peers alive on the host, daemon knows none.
-    const hostPid = doc.peers[sessionId]?.pid ?? null;
+    const hostPid = doc.peers[sessionId]?.observed.pid ?? null;
     doc.peers = {};
     const adopt = await handlers.dispatch(
       makeRequest(
@@ -193,8 +193,8 @@ describe.skipIf(!TMUX)("v0.10.1 smoke — team lifecycle on real tmux", () => {
     );
     expect(adopt.outcome).toBe("ok");
     expect((adopt.data as { adopted: string[] }).adopted).toEqual([sessionId]);
-    expect(doc.peers[sessionId]?.adopted).toBe(true);
-    expect(doc.peers[sessionId]?.team).toBe("smoke");
+    expect(doc.peers[sessionId]?.observed.adopted).toBe(true);
+    expect(doc.peers[sessionId]?.desired.team).toBe("smoke");
     expect(hostPid).not.toBeNull();
 
     // ---- cleanup ---------------------------------------------------------

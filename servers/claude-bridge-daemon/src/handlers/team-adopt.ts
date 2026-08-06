@@ -8,6 +8,7 @@ import type { RequestEnvelope, ResultEnvelope } from "../rpc.ts";
 import { errResult, okResult } from "../rpc.ts";
 import type { PeerHostDriver, PeerRecord } from "../state.ts";
 import type { HandlerContext } from "./context.ts";
+import { windowLabelFor } from "./peer-spawn.ts";
 import { applyStateChange } from "./state-writer.ts";
 
 /**
@@ -441,11 +442,11 @@ export async function handleTeamAdopt(
   const fresh: AdoptionCandidate[] = [];
   for (const c of candidates) {
     const existing = ctx.state.peers[c.sessionId];
-    if (existing && existing.status !== "stopped") {
+    if (existing && existing.observed.status !== "stopped") {
       skips.push({
         sessionKey: c.sessionKey,
         reason: "already_adopted",
-        details: `sessionId ${c.sessionId} already in state as '${existing.status}'`,
+        details: `sessionId ${c.sessionId} already in state as '${existing.observed.status}'`,
       });
       continue;
     }
@@ -503,26 +504,36 @@ export async function handleTeamAdopt(
     await applyStateChange(ctx.state, (draft) => {
       draft.peers[c.sessionId] = {
         sessionId: c.sessionId,
-        name: c.label ?? c.sessionKey,
-        hostDriver: hostDriverName,
-        tmuxTarget: c.sessionKey,
-        pid: c.pid,
-        status: "live",
-        team: args.team,
-        // Flags that the daemon did not start this process: `startedAt` is
-        // when we adopted it, not when it actually booted.
-        adopted: true,
-        // Carried from /proc so an adopted peer is restartable. Without these
-        // the record is a name with no way to relaunch what it names.
-        ...(c.command ? { command: c.command } : {}),
-        ...(c.spawnArgs ? { spawnArgs: c.spawnArgs } : {}),
-        ...(c.cwd ? { cwd: c.cwd } : {}),
-        ...(c.homeSession ? { homeSession: c.homeSession } : {}),
-        ...(c.spawnEnv ? { spawnEnv: c.spawnEnv } : {}),
-        model: c.model ?? null,
-        accountProfile: null,
-        startedAt: now,
-        lastUpdatedAt: now,
+        desired: {
+          team: args.team,
+          label: windowLabelFor(c.label ?? c.sessionKey, args.team),
+          // Carried from /proc so an adopted peer is restartable. Without these
+          // the record is a name with no way to relaunch what it names.
+          ...(c.command ? { command: c.command } : {}),
+          ...(c.spawnArgs ? { spawnArgs: c.spawnArgs } : {}),
+          ...(c.cwd ? { cwd: c.cwd } : {}),
+          ...(c.homeSession ? { homeSession: c.homeSession } : {}),
+          model: c.model ?? null,
+          accountProfile: null,
+        },
+        observed: {
+          name: c.label ?? c.sessionKey,
+          hostDriver: hostDriverName,
+          tmuxTarget: c.sessionKey,
+          pid: c.pid,
+          status: "live",
+          // Flags that the daemon did not start this process: `startedAt` is
+          // when we adopted it, not when it actually booted.
+          adopted: true,
+          // Read out of a live process at adoption time — the definition of a
+          // harvested value, and the one that poisoned the fleet on 08-04. It
+          // gets a timestamp here so a later reader can judge its age instead
+          // of trusting it forever.
+          ...(c.spawnEnv ? { spawnEnv: c.spawnEnv, harvestedAt: now } : {}),
+          model: c.model ?? null,
+          startedAt: now,
+          lastUpdatedAt: now,
+        },
       } satisfies PeerRecord;
     });
     await writeEvent({

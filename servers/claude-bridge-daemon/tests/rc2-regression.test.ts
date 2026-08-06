@@ -69,9 +69,9 @@ describe("v0.10.0-rc.2 regression — T1 sessionKey + T2 stop reconcile", () => 
       // Returned sessionKey is canonical.
       expect(spawnData.sessionKey).toBe("rc-test_alice");
       // state.peers.tmuxTarget stores the canonical form (not raw).
-      expect(doc.peers["peer-x"]?.tmuxTarget).toBe("rc-test_alice");
+      expect(doc.peers["peer-x"]?.observed.tmuxTarget).toBe("rc-test_alice");
       // Human-facing name field keeps the raw string.
-      expect(doc.peers["peer-x"]?.name).toBe("rc-test:alice");
+      expect(doc.peers["peer-x"]?.observed.name).toBe("rc-test:alice");
 
       // team_status uses tmuxTarget → hostAlive must be true (regression:
       // rc.1 reported hostAlive:false because it looked up raw name).

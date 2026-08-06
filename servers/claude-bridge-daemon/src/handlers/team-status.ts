@@ -59,19 +59,19 @@ export async function handleTeamStatus(
   }
 
   const peers = Object.values(ctx.state.peers).map((record) => {
-    const key = record.tmuxTarget ?? record.name;
+    const key = record.observed.tmuxTarget ?? record.observed.name;
     const host = hostByKey.get(key);
     return {
       sessionId: record.sessionId,
-      name: record.name,
-      hostDriver: record.hostDriver,
-      tmuxTarget: record.tmuxTarget,
-      status: record.status,
-      model: record.model,
-      accountProfile: record.accountProfile,
-      pid: record.pid,
-      startedAt: record.startedAt,
-      lastUpdatedAt: record.lastUpdatedAt,
+      name: record.observed.name,
+      hostDriver: record.observed.hostDriver,
+      tmuxTarget: record.observed.tmuxTarget,
+      status: record.observed.status,
+      model: record.observed.model,
+      accountProfile: record.desired.accountProfile,
+      pid: record.observed.pid,
+      startedAt: record.observed.startedAt,
+      lastUpdatedAt: record.observed.lastUpdatedAt,
       hostAlive: host !== undefined,
       hostPid: host?.pid ?? null,
     };

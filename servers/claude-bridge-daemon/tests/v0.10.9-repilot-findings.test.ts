@@ -48,20 +48,24 @@ describe("D — a restart asks for the peer's home BEFORE destroying it", () => 
     const doc = state.emptyState("0.10.9-test");
     doc.peers["p"] = {
       sessionId: "p",
-      name: "w1",
-      hostDriver: "mock",
-      tmuxTarget: "@652",
-      pid: 500,
-      status: "live",
-      team: "obetni",
-      adopted: true,
-      command: "/bin/sh",
-      spawnArgs: ["-c", "sleep 30"],
-      cwd: "/tmp",
-      model: null,
-      accountProfile: null,
-      startedAt: "2026-08-04T10:00:00.000Z",
-      lastUpdatedAt: "2026-08-04T10:00:00.000Z",
+      desired: {
+        team: "obetni",
+        command: "/bin/sh",
+        spawnArgs: ["-c", "sleep 30"],
+        cwd: "/tmp",
+        accountProfile: null,
+      },
+      observed: {
+        name: "w1",
+        hostDriver: "mock",
+        tmuxTarget: "@652",
+        pid: 500,
+        status: "live",
+        adopted: true,
+        model: null,
+        startedAt: "2026-08-04T10:00:00.000Z",
+        lastUpdatedAt: "2026-08-04T10:00:00.000Z",
+      },
     };
 
     const driver = new mock.MockDriver();
@@ -112,22 +116,26 @@ describe("D — a restart asks for the peer's home BEFORE destroying it", () => 
     const doc = state.emptyState("0.10.9-test");
     doc.peers["p"] = {
       sessionId: "p",
-      name: "w1",
-      hostDriver: "mock",
-      tmuxTarget: "@728",
-      pid: 500,
-      status: "live",
-      team: "obetni",
-      adopted: true,
-      command: "/bin/sh",
-      spawnArgs: ["-c", "sleep 30"],
-      cwd: "/tmp",
-      // Known since the peer was created, so it survives the window.
-      homeSession: "obetni",
-      model: null,
-      accountProfile: null,
-      startedAt: "2026-08-04T10:00:00.000Z",
-      lastUpdatedAt: "2026-08-04T10:00:00.000Z",
+      desired: {
+        team: "obetni",
+        command: "/bin/sh",
+        spawnArgs: ["-c", "sleep 30"],
+        cwd: "/tmp",
+        // Known since the peer was created, so it survives the window.
+        homeSession: "obetni",
+        accountProfile: null,
+      },
+      observed: {
+        name: "w1",
+        hostDriver: "mock",
+        tmuxTarget: "@728",
+        pid: 500,
+        status: "live",
+        adopted: true,
+        model: null,
+        startedAt: "2026-08-04T10:00:00.000Z",
+        lastUpdatedAt: "2026-08-04T10:00:00.000Z",
+      },
     };
     const driver = new mock.MockDriver();
     // The window is ALREADY gone — the peer crashed before its turn in a roll.
@@ -167,20 +175,24 @@ describe("H — a restart keeps the peer's provenance", () => {
     const doc = state.emptyState("0.10.9-test");
     doc.peers["p"] = {
       sessionId: "p",
-      name: "w1",
-      hostDriver: "mock",
-      tmuxTarget: "w1",
-      pid: 500,
-      status: "live",
-      team: "obetni",
-      adopted: true,
-      command: "/bin/sh",
-      spawnArgs: ["-c", "sleep 30"],
-      cwd: "/tmp",
-      model: null,
-      accountProfile: null,
-      startedAt: "2026-08-04T10:00:00.000Z",
-      lastUpdatedAt: "2026-08-04T10:00:00.000Z",
+      desired: {
+        team: "obetni",
+        command: "/bin/sh",
+        spawnArgs: ["-c", "sleep 30"],
+        cwd: "/tmp",
+        accountProfile: null,
+      },
+      observed: {
+        name: "w1",
+        hostDriver: "mock",
+        tmuxTarget: "w1",
+        pid: 500,
+        status: "live",
+        adopted: true,
+        model: null,
+        startedAt: "2026-08-04T10:00:00.000Z",
+        lastUpdatedAt: "2026-08-04T10:00:00.000Z",
+      },
     };
     const driver = new mock.MockDriver();
 
@@ -195,8 +207,8 @@ describe("H — a restart keeps the peer's provenance", () => {
     // peer_spawn writes a fresh record. Without carrying these forward, a fleet
     // roll would have stripped the team stamp off every peer it touched and
     // left team-scoped operations with nothing to match on.
-    expect(doc.peers["p"]?.team).toBe("obetni");
-    expect(doc.peers["p"]?.adopted).toBe(true);
+    expect(doc.peers["p"]?.desired.team).toBe("obetni");
+    expect(doc.peers["p"]?.observed.adopted).toBe(true);
     driver.reset();
   });
 });
@@ -281,19 +293,23 @@ describe("G — a peer that dies right after starting is not a success", () => {
     const doc = state.emptyState("0.10.9-test");
     doc.peers["p"] = {
       sessionId: "p",
-      name: "dies",
-      hostDriver: "mock",
-      tmuxTarget: "dies",
-      pid: 500,
-      status: "live",
-      // Exits the instant it starts — the shape of a failed resume.
-      command: "/bin/sh",
-      spawnArgs: ["-c", "exit 0"],
-      cwd: "/tmp",
-      model: null,
-      accountProfile: null,
-      startedAt: "2026-08-04T10:00:00.000Z",
-      lastUpdatedAt: "2026-08-04T10:00:00.000Z",
+      desired: {
+        // Exits the instant it starts — the shape of a failed resume.
+        command: "/bin/sh",
+        spawnArgs: ["-c", "exit 0"],
+        cwd: "/tmp",
+        accountProfile: null,
+      },
+      observed: {
+        name: "dies",
+        hostDriver: "mock",
+        tmuxTarget: "dies",
+        pid: 500,
+        status: "live",
+        model: null,
+        startedAt: "2026-08-04T10:00:00.000Z",
+        lastUpdatedAt: "2026-08-04T10:00:00.000Z",
+      },
     };
     const driver = new mock.MockDriver();
 
@@ -324,17 +340,21 @@ describe("I — team_status sees window-keyed peers", () => {
     const doc = state.emptyState("0.10.9-test");
     doc.peers["p"] = {
       sessionId: "p",
-      name: "w2",
-      hostDriver: "mock",
-      tmuxTarget: "@650",
-      pid: 501,
-      status: "live",
-      team: "obetni",
-      adopted: true,
-      model: null,
-      accountProfile: null,
-      startedAt: "2026-08-04T10:00:00.000Z",
-      lastUpdatedAt: "2026-08-04T10:00:00.000Z",
+      desired: {
+        team: "obetni",
+        accountProfile: null,
+      },
+      observed: {
+        name: "w2",
+        hostDriver: "mock",
+        tmuxTarget: "@650",
+        pid: 501,
+        status: "live",
+        adopted: true,
+        model: null,
+        startedAt: "2026-08-04T10:00:00.000Z",
+        lastUpdatedAt: "2026-08-04T10:00:00.000Z",
+      },
     };
     const driver = new mock.MockDriver();
     driver.listSessions = async () => [];

@@ -155,7 +155,7 @@ async function writeAnchorRequestMsg(peerId: string, threadId: string): Promise<
 
 /** The team of whoever sent this request — the search domain for short names. */
 function callerTeamOf(req: RequestEnvelope, ctx: HandlerContext): string | null {
-  return ctx.state.peers[req.requestedBy.sessionId]?.team ?? null;
+  return ctx.state.peers[req.requestedBy.sessionId]?.desired.team ?? null;
 }
 
 export async function handlePeerCompact(
@@ -196,7 +196,7 @@ export async function handlePeerCompact(
       sessionId,
     });
   }
-  const sessionKey = record.tmuxTarget ?? record.name;
+  const sessionKey = record.observed.tmuxTarget ?? record.observed.name;
   const sendKeys = ctx.hostDriver.sendKeys?.bind(ctx.hostDriver);
   if (!sendKeys) {
     return errResult(

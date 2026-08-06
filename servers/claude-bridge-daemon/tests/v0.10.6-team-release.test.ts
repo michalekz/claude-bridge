@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { makePeer } from "./peer-fixture.ts";
 
 const homeHolder = vi.hoisted(() => ({ current: "" }));
 
@@ -37,23 +38,23 @@ function makeRequest(tool: string, args: Record<string, unknown>, id = "req-rel"
 }
 
 function record(sessionId: string, name: string, team?: string) {
-  return {
+  return makePeer(
     sessionId,
-    name,
-    hostDriver: "mock" as const,
-    tmuxTarget: "@42",
-    pid: 4242,
-    status: "live" as const,
-    ...(team ? { team } : {}),
-    adopted: true,
-    command: "/nvm/bin/claude",
-    spawnArgs: [],
-    cwd: "/opt/project",
-    model: null,
-    accountProfile: null,
-    startedAt: "2026-08-04T10:00:00.000Z",
-    lastUpdatedAt: "2026-08-04T10:00:00.000Z",
-  };
+    {
+      ...(team ? { team } : {}),
+      command: "/nvm/bin/claude",
+      spawnArgs: [],
+      cwd: "/opt/project",
+    },
+    {
+      name,
+      tmuxTarget: "@42",
+      pid: 4242,
+      adopted: true,
+      startedAt: "2026-08-04T10:00:00.000Z",
+      lastUpdatedAt: "2026-08-04T10:00:00.000Z",
+    },
+  );
 }
 
 describe("team_release drops the record and leaves the process running", () => {

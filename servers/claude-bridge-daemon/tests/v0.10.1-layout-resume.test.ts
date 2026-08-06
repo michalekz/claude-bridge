@@ -127,7 +127,7 @@ describe("v0.10.1 team_layout resume-from-stopped", () => {
       "rt-a",
       "rt-b",
     ]);
-    expect(doc.peers["rt-a"]?.status).toBe("stopped");
+    expect(doc.peers["rt-a"]?.observed.status).toBe("stopped");
     expect(await driver.hasSession("rt_alice")).toBe(false);
 
     // 3. Bring it back with the SAME spec — this is what used to silently no-op.
@@ -146,10 +146,10 @@ describe("v0.10.1 team_layout resume-from-stopped", () => {
     expect(data.wokenOk.sort()).toEqual(["rt-a", "rt-b"]);
 
     // Same sessionIds, live again, host sessions back.
-    expect(doc.peers["rt-a"]?.status).toBe("live");
-    expect(doc.peers["rt-b"]?.status).toBe("live");
+    expect(doc.peers["rt-a"]?.observed.status).toBe("live");
+    expect(doc.peers["rt-b"]?.observed.status).toBe("live");
     expect(doc.peers["rt-a"]?.sessionId).toBe("rt-a");
-    expect(doc.peers["rt-a"]?.team).toBe("rt");
+    expect(doc.peers["rt-a"]?.desired.team).toBe("rt");
     expect(await driver.hasSession("rt_alice")).toBe(true);
     expect(await driver.hasSession("rt_bob")).toBe(true);
 
@@ -166,16 +166,20 @@ describe("v0.10.1 team_layout resume-from-stopped", () => {
     // A tombstone left behind by a previous team_stop.
     doc.peers["rs-1"] = {
       sessionId: "rs-1",
-      name: "rs:one",
-      hostDriver: "mock",
-      tmuxTarget: "rs_one",
-      pid: null,
-      status: "stopped",
-      stoppedCleanly: true,
-      model: "claude-opus-4-7",
-      accountProfile: null,
-      startedAt: "2026-08-03T05:00:00.000Z",
-      lastUpdatedAt: "2026-08-03T05:30:00.000Z",
+      desired: {
+        accountProfile: null,
+      },
+      observed: {
+        name: "rs:one",
+        hostDriver: "mock",
+        tmuxTarget: "rs_one",
+        pid: null,
+        status: "stopped",
+        stoppedCleanly: true,
+        model: "claude-opus-4-7",
+        startedAt: "2026-08-03T05:00:00.000Z",
+        lastUpdatedAt: "2026-08-03T05:30:00.000Z",
+      },
     };
 
     const spawnArgs: string[][] = [];
@@ -223,16 +227,20 @@ describe("v0.10.1 team_layout resume-from-stopped", () => {
     // stoppedCleanly:false — the peer never finished its ack cycle.
     doc.peers["wk-1"] = {
       sessionId: "wk-1",
-      name: "wk:one",
-      hostDriver: "mock",
-      tmuxTarget: "wk_one",
-      pid: null,
-      status: "stopped",
-      stoppedCleanly: false,
-      model: null,
-      accountProfile: null,
-      startedAt: "2026-08-03T05:00:00.000Z",
-      lastUpdatedAt: "2026-08-03T05:30:00.000Z",
+      desired: {
+        accountProfile: null,
+      },
+      observed: {
+        name: "wk:one",
+        hostDriver: "mock",
+        tmuxTarget: "wk_one",
+        pid: null,
+        status: "stopped",
+        stoppedCleanly: false,
+        model: null,
+        startedAt: "2026-08-03T05:00:00.000Z",
+        lastUpdatedAt: "2026-08-03T05:30:00.000Z",
+      },
     };
 
     await handlers.dispatch(
@@ -290,16 +298,20 @@ describe("v0.10.1 team_layout resume-from-stopped", () => {
 
     doc.peers["nw-1"] = {
       sessionId: "nw-1",
-      name: "nw:one",
-      hostDriver: "mock",
-      tmuxTarget: "nw_one",
-      pid: null,
-      status: "stopped",
-      stoppedCleanly: true,
-      model: null,
-      accountProfile: null,
-      startedAt: "2026-08-03T05:00:00.000Z",
-      lastUpdatedAt: "2026-08-03T05:30:00.000Z",
+      desired: {
+        accountProfile: null,
+      },
+      observed: {
+        name: "nw:one",
+        hostDriver: "mock",
+        tmuxTarget: "nw_one",
+        pid: null,
+        status: "stopped",
+        stoppedCleanly: true,
+        model: null,
+        startedAt: "2026-08-03T05:00:00.000Z",
+        lastUpdatedAt: "2026-08-03T05:30:00.000Z",
+      },
     };
 
     const res = await handlers.dispatch(
@@ -329,16 +341,20 @@ describe("v0.10.1 team_layout resume-from-stopped", () => {
     // peer_stop is the wrong instrument because there is no host session.
     doc.peers["gone-1"] = {
       sessionId: "gone-1",
-      name: "gone:one",
-      hostDriver: "mock",
-      tmuxTarget: "gone_one",
-      pid: null,
-      status: "stopped",
-      stoppedCleanly: true,
-      model: null,
-      accountProfile: null,
-      startedAt: "2026-08-01T05:00:00.000Z",
-      lastUpdatedAt: "2026-08-01T05:30:00.000Z",
+      desired: {
+        accountProfile: null,
+      },
+      observed: {
+        name: "gone:one",
+        hostDriver: "mock",
+        tmuxTarget: "gone_one",
+        pid: null,
+        status: "stopped",
+        stoppedCleanly: true,
+        model: null,
+        startedAt: "2026-08-01T05:00:00.000Z",
+        lastUpdatedAt: "2026-08-01T05:30:00.000Z",
+      },
     };
 
     const res = await handlers.dispatch(
@@ -358,7 +374,7 @@ describe("v0.10.1 team_layout resume-from-stopped", () => {
     expect(res.outcome).toBe("ok");
     expect((res.data as { forgotten: string[] }).forgotten).toEqual(["gone-1"]);
     expect(doc.peers["gone-1"]).toBeUndefined();
-    expect(doc.peers["pr-1"]?.status).toBe("live");
+    expect(doc.peers["pr-1"]?.observed.status).toBe("live");
     driver.reset();
   });
 });

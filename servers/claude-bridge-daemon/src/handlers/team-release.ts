@@ -45,7 +45,7 @@ export type TeamReleaseArgs = z.infer<typeof TeamReleaseArgsSchema>;
 interface ReleasePlanEntry {
   sessionId: string;
   name: string;
-  status: PeerRecord["status"];
+  status: PeerRecord["observed"]["status"];
   team: string | null;
   pid: number | null;
   tmuxTarget: string | null;
@@ -55,18 +55,18 @@ interface ReleasePlanEntry {
 function describe(rec: PeerRecord): ReleasePlanEntry {
   return {
     sessionId: rec.sessionId,
-    name: rec.name,
-    status: rec.status,
-    team: rec.team ?? null,
-    pid: rec.pid,
-    tmuxTarget: rec.tmuxTarget,
-    adopted: rec.adopted ?? false,
+    name: rec.observed.name,
+    status: rec.observed.status,
+    team: rec.desired.team ?? null,
+    pid: rec.observed.pid,
+    tmuxTarget: rec.observed.tmuxTarget,
+    adopted: rec.observed.adopted ?? false,
   };
 }
 
 /** The team of whoever sent this request — the search domain for short names. */
 function callerTeamOf(req: RequestEnvelope, ctx: HandlerContext): string | null {
-  return ctx.state.peers[req.requestedBy.sessionId]?.team ?? null;
+  return ctx.state.peers[req.requestedBy.sessionId]?.desired.team ?? null;
 }
 
 export async function handleTeamRelease(
@@ -87,7 +87,7 @@ export async function handleTeamRelease(
 
   if (args.team !== undefined) {
     for (const rec of Object.values(ctx.state.peers)) {
-      if (rec.team === args.team) found.push(rec);
+      if (rec.desired.team === args.team) found.push(rec);
     }
     if (ambiguous.length > 0) {
       // Refuse the whole call. Releasing the wrong `velitel` hands a peer that
@@ -109,7 +109,9 @@ export async function handleTeamRelease(
         `No peers recorded under team '${args.team}'`,
         {
           team: args.team,
-          knownTeams: [...new Set(Object.values(ctx.state.peers).map((p) => p.team ?? "(none)"))],
+          knownTeams: [
+            ...new Set(Object.values(ctx.state.peers).map((p) => p.desired.team ?? "(none)")),
+          ],
         },
       );
     }
@@ -172,12 +174,12 @@ export async function handleTeamRelease(
       requestId: req.id,
       details: {
         sessionId: rec.sessionId,
-        name: rec.name,
-        team: rec.team ?? null,
-        pid: rec.pid,
-        tmuxTarget: rec.tmuxTarget,
-        adopted: rec.adopted ?? false,
-        statusAtRelease: rec.status,
+        name: rec.observed.name,
+        team: rec.desired.team ?? null,
+        pid: rec.observed.pid,
+        tmuxTarget: rec.observed.tmuxTarget,
+        adopted: rec.observed.adopted ?? false,
+        statusAtRelease: rec.observed.status,
         reason: args.reason ?? null,
         // The audit trail has to record that the process outlived the record,
         // or a later reader will assume a release was a stop.

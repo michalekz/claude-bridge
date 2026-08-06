@@ -74,16 +74,20 @@ describe("v0.10.1 acceptance — no overlapping dispatch under the live poll loo
       env: {},
     });
     doc.peers[sessionId] = {
-      sessionId,
-      name: "overlap_peer",
-      hostDriver: "mock",
-      tmuxTarget: "overlap_peer",
-      pid: 1234,
-      status: "live",
-      model: null,
-      accountProfile: null,
-      startedAt: "2026-08-03T20:00:00.000Z",
-      lastUpdatedAt: "2026-08-03T20:00:00.000Z",
+      sessionId: sessionId,
+      desired: {
+        accountProfile: null,
+      },
+      observed: {
+        name: "overlap_peer",
+        hostDriver: "mock",
+        tmuxTarget: "overlap_peer",
+        pid: 1234,
+        status: "live",
+        model: null,
+        startedAt: "2026-08-03T20:00:00.000Z",
+        lastUpdatedAt: "2026-08-03T20:00:00.000Z",
+      },
     };
     await saveState(doc);
 
@@ -131,7 +135,7 @@ describe("v0.10.1 acceptance — no overlapping dispatch under the live poll loo
       f.endsWith(".json"),
     );
     expect(results).toHaveLength(1);
-    expect(doc.peers[sessionId]?.status).toBe("live");
+    expect(doc.peers[sessionId]?.observed.status).toBe("live");
     expect(await driver.hasSession("overlap_peer")).toBe(true);
 
     driver.reset();

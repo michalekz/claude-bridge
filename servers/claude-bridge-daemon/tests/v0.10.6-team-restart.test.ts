@@ -1,4 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import type { PeerDesired } from "../src/state.ts";
+import { makePeer } from "./peer-fixture.ts";
 
 const homeHolder = vi.hoisted(() => ({ current: "" }));
 
@@ -38,24 +40,24 @@ function makeRequest(tool: string, args: Record<string, unknown>, id = "req-tr")
   };
 }
 
-function record(sessionId: string, name: string, over: Record<string, unknown> = {}) {
-  return {
+function record(sessionId: string, name: string, over: Partial<PeerDesired> = {}) {
+  return makePeer(
     sessionId,
-    name,
-    hostDriver: "mock" as const,
-    tmuxTarget: name,
-    pid: 100,
-    status: "live" as const,
-    team: "hmh",
-    command: "/bin/sh",
-    spawnArgs: ["-c", "sleep 30"],
-    cwd: "/tmp",
-    model: null,
-    accountProfile: null,
-    startedAt: "2026-08-04T10:00:00.000Z",
-    lastUpdatedAt: "2026-08-04T10:00:00.000Z",
-    ...over,
-  };
+    {
+      team: "hmh",
+      command: "/bin/sh",
+      spawnArgs: ["-c", "sleep 30"],
+      cwd: "/tmp",
+      ...over,
+    },
+    {
+      name,
+      tmuxTarget: name,
+      pid: 100,
+      startedAt: "2026-08-04T10:00:00.000Z",
+      lastUpdatedAt: "2026-08-04T10:00:00.000Z",
+    },
+  );
 }
 
 describe("team_restart rolls a team, and stops when something is wrong", () => {
@@ -88,7 +90,7 @@ describe("team_restart rolls a team, and stops when something is wrong", () => {
     expect(plan.order.map((o) => o.name)).toEqual(["a", "b"]);
     // Visible BEFORE anything stops — that they exist is the precondition.
     expect(plan.order.every((o) => o.command === "/bin/sh")).toBe(true);
-    expect(doc.peers["a"]?.pid).toBe(100);
+    expect(doc.peers["a"]?.observed.pid).toBe(100);
   });
 
   it("THE REFUSAL: a peer with no recorded command stops the whole run up front", async () => {
@@ -101,7 +103,7 @@ describe("team_restart rolls a team, and stops when something is wrong", () => {
     expect(res.outcome).toBe("error");
     expect(res.error?.code).toBe("launch_params_missing");
     // Discovered up front, not halfway through: peer `a` was never touched.
-    expect(doc.peers["a"]?.pid).toBe(100);
+    expect(doc.peers["a"]?.observed.pid).toBe(100);
   });
 
   it("velitel goes last", async () => {
@@ -120,7 +122,7 @@ describe("team_restart rolls a team, and stops when something is wrong", () => {
     );
     expect(res.outcome).toBe("error");
     expect(res.error?.code).toBe("peer_not_found");
-    expect(doc.peers["a"]?.pid).toBe(100);
+    expect(doc.peers["a"]?.observed.pid).toBe(100);
   });
 
   it("restarts peers in order and reports the new pids", async () => {

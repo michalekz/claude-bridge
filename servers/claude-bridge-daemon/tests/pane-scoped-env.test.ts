@@ -138,13 +138,13 @@ describe("state written before the fix is repaired on load", () => {
 
     // Before the fix these came back verbatim and were replayed into the new
     // pane by every subsequent `peer_restart`, forever.
-    expect(record?.spawnEnv?.["TMUX_PANE"]).toBeUndefined();
-    expect(record?.spawnEnv?.["TMUX"]).toBeUndefined();
-    expect(record?.spawnEnv?.["TERM"]).toBeUndefined();
+    expect(record?.observed.spawnEnv?.["TMUX_PANE"]).toBeUndefined();
+    expect(record?.observed.spawnEnv?.["TMUX"]).toBeUndefined();
+    expect(record?.observed.spawnEnv?.["TERM"]).toBeUndefined();
     // The repair is surgical: PATH is the variable the outage was about, and
     // dropping it here would re-break the fleet a different way.
-    expect(record?.spawnEnv?.["PATH"]).toContain("/.nvm/");
-    expect(record?.spawnEnv?.["HOME"]).toBe("/home/x");
+    expect(record?.observed.spawnEnv?.["PATH"]).toContain("/.nvm/");
+    expect(record?.observed.spawnEnv?.["HOME"]).toBe("/home/x");
   });
 
   it("a record with nothing to repair is left alone", async () => {
@@ -180,7 +180,7 @@ describe("state written before the fix is repaired on load", () => {
     );
 
     const doc = await loadState("0.10.16");
-    expect(doc.peers["22222222-2222-4222-8222-222222222222"]?.spawnEnv).toEqual(clean);
+    expect(doc.peers["22222222-2222-4222-8222-222222222222"]?.observed.spawnEnv).toEqual(clean);
   });
 });
 

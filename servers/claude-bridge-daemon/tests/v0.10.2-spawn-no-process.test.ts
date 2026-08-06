@@ -110,10 +110,10 @@ describe("a spawn that starts nothing must not report success", () => {
 
     expect(res.outcome).toBe("ok");
     const rec = ctx.state.peers["healthy-0804"];
-    expect(rec?.status).toBe("live");
-    expect(rec?.pid).toBeGreaterThan(0);
+    expect(rec?.observed.status).toBe("live");
+    expect(rec?.observed.pid).toBeGreaterThan(0);
     // The field that lets peer_restart put it back in the right place.
-    expect(rec?.cwd).toBe("/tmp");
+    expect(rec?.desired.cwd).toBe("/tmp");
     await driver.kill("healthy-0804");
   });
 
@@ -139,7 +139,7 @@ describe("a spawn that starts nothing must not report success", () => {
         }),
         ctx,
       );
-      expect(ctx.state.peers["moving-0804"]?.cwd).toBe(peerCwd);
+      expect(ctx.state.peers["moving-0804"]?.desired.cwd).toBe(peerCwd);
 
       process.env["CLAUDE_BRIDGE_TEST_COMMAND"] = "/bin/sh";
       await dispatch(makeRequest("peer_restart", { peer: "moving-0804" }, "req-restart"), ctx);
@@ -231,8 +231,8 @@ describe("a restart relaunches the peer the way it was launched", () => {
       }),
       ctx,
     );
-    expect(ctx.state.peers["nvm-shaped-0804"]?.command).toBe(ABSOLUTE);
-    expect(ctx.state.peers["nvm-shaped-0804"]?.spawnArgs).toEqual(["-c", "sleep 30"]);
+    expect(ctx.state.peers["nvm-shaped-0804"]?.desired.command).toBe(ABSOLUTE);
+    expect(ctx.state.peers["nvm-shaped-0804"]?.desired.spawnArgs).toEqual(["-c", "sleep 30"]);
 
     const res = await dispatch(
       makeRequest("peer_restart", { peer: "nvm-shaped-0804" }, "req-relaunch"),
@@ -320,16 +320,20 @@ describe("a restart relaunches the peer the way it was launched", () => {
     // A peer as v0.10.2 would have written it: cwd present, command absent.
     ctx.state.peers["legacy-record-0804"] = {
       sessionId: "legacy-record-0804",
-      name: "legacy-record-0804",
-      hostDriver: "mock",
-      tmuxTarget: "legacy-record-0804",
-      pid: 1,
-      status: "live",
-      cwd: "/tmp",
-      model: null,
-      accountProfile: null,
-      startedAt: "2026-08-04T10:00:00.000Z",
-      lastUpdatedAt: "2026-08-04T10:00:00.000Z",
+      desired: {
+        cwd: "/tmp",
+        accountProfile: null,
+      },
+      observed: {
+        name: "legacy-record-0804",
+        hostDriver: "mock",
+        tmuxTarget: "legacy-record-0804",
+        pid: 1,
+        status: "live",
+        model: null,
+        startedAt: "2026-08-04T10:00:00.000Z",
+        lastUpdatedAt: "2026-08-04T10:00:00.000Z",
+      },
     };
 
     process.env["CLAUDE_BRIDGE_TEST_COMMAND"] = "/bin/sh";

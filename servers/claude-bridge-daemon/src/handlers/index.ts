@@ -2,6 +2,7 @@ import { writeEvent } from "../events.ts";
 import { errResult } from "../rpc.ts";
 import type { RequestEnvelope, ResultEnvelope } from "../rpc.ts";
 import type { HandlerContext } from "./context.ts";
+import { handleControlConfig } from "./control-config.ts";
 import { handleControlStatus } from "./control-status.ts";
 import { handlePeerCompact } from "./peer-compact.ts";
 import { handlePeerRestart } from "./peer-restart.ts";
@@ -33,6 +34,7 @@ const HANDLERS: Record<string, Handler> = {
   team_reconcile: handleTeamReconcile,
   team_restart: handleTeamRestart,
   control_status: handleControlStatus,
+  control_config: handleControlConfig,
 };
 
 export async function dispatch(req: RequestEnvelope, ctx: HandlerContext): Promise<ResultEnvelope> {

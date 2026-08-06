@@ -1,6 +1,7 @@
 import { readFile, stat } from "node:fs/promises";
 import { heartbeatPath, makeLogger } from "@claude-bridge/shared";
 import packageJson from "../package.json" with { type: "json" };
+import { runConfig } from "./config-cli.ts";
 import { runDaemon } from "./daemon.ts";
 import { installSystemd, uninstallSystemd } from "./install.ts";
 import { readLock } from "./lock.ts";
@@ -19,6 +20,7 @@ Commands:
   status             Print daemon lock + heartbeat freshness
   send               Deliver one message into a peer's inbox from outside the
                      fleet (see \`send --help\`)
+  config             Read or declare peer intent (see \`config --help\`)
   version            Print the daemon version
   help               Print this message
 `;
@@ -81,6 +83,10 @@ async function main(argv: string[]): Promise<void> {
       if (outcome.stdout) process.stdout.write(outcome.stdout);
       if (outcome.stderr) process.stderr.write(outcome.stderr);
       process.exitCode = outcome.code;
+      return;
+    }
+    case "config": {
+      process.exitCode = await runConfig(argv.slice(1));
       return;
     }
     case "version": {

@@ -148,12 +148,12 @@ describe("v0.10.1 team_adopt", () => {
     expect((res.data as { adopted: string[] }).adopted).toHaveLength(2);
 
     const rec = doc.peers["aaaaaaaa-1111-4111-8111-aaaaaaaaaaaa"];
-    expect(rec?.status).toBe("live");
-    expect(rec?.team).toBe("hmh");
-    expect(rec?.adopted).toBe(true);
-    expect(rec?.tmuxTarget).toBe("hmh_alice");
-    expect(rec?.pid).toBe(101);
-    expect(rec?.hostDriver).toBe("mock");
+    expect(rec?.observed.status).toBe("live");
+    expect(rec?.desired.team).toBe("hmh");
+    expect(rec?.observed.adopted).toBe(true);
+    expect(rec?.observed.tmuxTarget).toBe("hmh_alice");
+    expect(rec?.observed.pid).toBe(101);
+    expect(rec?.observed.hostDriver).toBe("mock");
   });
 
   it("two Claude processes in one pane are reported ambiguous, never guessed", async () => {
@@ -194,15 +194,19 @@ describe("v0.10.1 team_adopt", () => {
     const known = "aaaaaaaa-1111-4111-8111-aaaaaaaaaaaa";
     doc.peers[known] = {
       sessionId: known,
-      name: "spawned-by-daemon",
-      hostDriver: "mock",
-      tmuxTarget: "hmh_alice",
-      pid: 999,
-      status: "live",
-      model: "claude-opus-4-7",
-      accountProfile: null,
-      startedAt: "2026-08-03T10:00:00.000Z",
-      lastUpdatedAt: "2026-08-03T10:00:00.000Z",
+      desired: {
+        accountProfile: null,
+      },
+      observed: {
+        name: "spawned-by-daemon",
+        hostDriver: "mock",
+        tmuxTarget: "hmh_alice",
+        pid: 999,
+        status: "live",
+        model: "claude-opus-4-7",
+        startedAt: "2026-08-03T10:00:00.000Z",
+        lastUpdatedAt: "2026-08-03T10:00:00.000Z",
+      },
     };
 
     const res = await handlers.dispatch(
@@ -216,9 +220,9 @@ describe("v0.10.1 team_adopt", () => {
     expect(data.adopted).toEqual(["bbbbbbbb-2222-4222-8222-bbbbbbbbbbbb"]);
     expect(data.skipped.some((s) => s.reason === "already_adopted")).toBe(true);
     // Provenance of the spawned record survives untouched.
-    expect(doc.peers[known]?.name).toBe("spawned-by-daemon");
-    expect(doc.peers[known]?.model).toBe("claude-opus-4-7");
-    expect(doc.peers[known]?.adopted).toBeUndefined();
+    expect(doc.peers[known]?.observed.name).toBe("spawned-by-daemon");
+    expect(doc.peers[known]?.observed.model).toBe("claude-opus-4-7");
+    expect(doc.peers[known]?.observed.adopted).toBeUndefined();
   });
 
   it("a session with no Claude process inside is skipped, not invented", async () => {
@@ -261,7 +265,9 @@ describe("v0.10.1 team_adopt", () => {
     expect((res.data as { adopted: string[] }).adopted).toEqual([
       "eeeeeeee-5555-4555-8555-eeeeeeeeeeee",
     ]);
-    expect(doc.peers["eeeeeeee-5555-4555-8555-eeeeeeeeeeee"]?.tmuxTarget).toBe("hmh_carol");
+    expect(doc.peers["eeeeeeee-5555-4555-8555-eeeeeeeeeeee"]?.observed.tmuxTarget).toBe(
+      "hmh_carol",
+    );
   });
 
   it("manual mode without a mapping is rejected", async () => {
@@ -299,10 +305,10 @@ describe("v0.10.1 team_adopt", () => {
     expect(records.length).toBeGreaterThan(0);
     for (const rec of records) {
       // The absolute path the process was actually started with — not "claude".
-      expect(rec.command).toBe("/home/u/.nvm/versions/node/v24/bin/claude");
-      expect(rec.cwd).toBe("/opt/project");
+      expect(rec.desired.command).toBe("/home/u/.nvm/versions/node/v24/bin/claude");
+      expect(rec.desired.cwd).toBe("/opt/project");
       // `--resume` is re-appended by peer_spawn; storing it would double it.
-      expect(rec.spawnArgs).not.toContain("--resume");
+      expect(rec.desired.spawnArgs).not.toContain("--resume");
     }
   });
 

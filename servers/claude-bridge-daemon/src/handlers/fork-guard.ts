@@ -31,13 +31,13 @@ export async function forkGuard(
   opts: ForkGuardOptions,
 ): Promise<ForkGuardHit | null> {
   const record = state.peers[opts.sessionId];
-  if (record && (record.status === "live" || record.status === "starting")) {
+  if (record && (record.observed.status === "live" || record.observed.status === "starting")) {
     return {
       reason: "state_live",
       details: {
         sessionId: opts.sessionId,
-        recordedStatus: record.status,
-        tmuxTarget: record.tmuxTarget,
+        recordedStatus: record.observed.status,
+        tmuxTarget: record.observed.tmuxTarget,
       },
     };
   }

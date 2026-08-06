@@ -40,20 +40,24 @@ describe("daemon state", () => {
     const doc = await loadState("0.10.0-alpha.0");
     doc.peers["peer-a"] = {
       sessionId: "peer-a",
-      name: "alice",
-      hostDriver: "tmux",
-      tmuxTarget: "hmh:alice",
-      pid: 12345,
-      status: "live",
-      model: "sonnet-5",
-      accountProfile: null,
-      startedAt: "2026-07-23T11:00:00.000Z",
-      lastUpdatedAt: "2026-07-23T11:00:00.000Z",
+      desired: {
+        accountProfile: null,
+      },
+      observed: {
+        name: "alice",
+        hostDriver: "tmux",
+        tmuxTarget: "hmh:alice",
+        pid: 12345,
+        status: "live",
+        model: "sonnet-5",
+        startedAt: "2026-07-23T11:00:00.000Z",
+        lastUpdatedAt: "2026-07-23T11:00:00.000Z",
+      },
     };
     await saveState(doc);
     const reloaded = await loadState("0.10.0-alpha.0");
-    expect(reloaded.peers["peer-a"]?.name).toBe("alice");
-    expect(reloaded.peers["peer-a"]?.hostDriver).toBe("tmux");
+    expect(reloaded.peers["peer-a"]?.observed.name).toBe("alice");
+    expect(reloaded.peers["peer-a"]?.observed.hostDriver).toBe("tmux");
   });
 
   it("refuses to load newer stateVersion (no silent downgrade)", async () => {

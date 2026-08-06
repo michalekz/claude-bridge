@@ -34,6 +34,7 @@ import { makeLogger } from "../util/logger.ts";
 import { bridgeRoot, encodeProjectDir } from "../util/paths.ts";
 import type { ServerContext } from "./context.ts";
 import {
+  ControlConfigArgs,
   ControlStatusArgs,
   PeerCompactArgs,
   PeerRestartArgs,
@@ -46,6 +47,7 @@ import {
   TeamRestartArgs,
   TeamStatusArgs,
   TeamStopArgs,
+  controlConfigTool,
   controlStatusTool,
   peerCompactTool,
   peerRestartTool,
@@ -2545,6 +2547,49 @@ export const TOOLS: ToolSpec[] = [
       const parsed = PeerSetNotificationArgs.safeParse(args);
       if (!parsed.success) return err("invalid_args", "Schema validation failed", parsed.error);
       return peerSetNotificationTool(ctx, parsed.data);
+    },
+  },
+  {
+    name: "control_config",
+    description:
+      "Read and DECLARE peer intent — the single configuration tool for the control plane (v0.11.0). No args: every peer's declared values plus any drift. `peer`: one peer (session id, full name, or short name inside your team). `team`: that team's peers. `set`: declare values — allowed keys are label, windowIndex, model, accountProfile, team. `dryRun:true` shows the change and writes nothing. IMPORTANT: this writes the DESIRED half of the record only; it changes nothing in the world. windowIndex is recorded and drift is reported, but no window is moved in v0.11.0 — asserting intent lands in v0.11.1 behind an explicit opt-in. Drift entries carry BOTH the declared and the measured value and BOTH ways out: `assert` (make the world match) and `adopt` (accept reality as the new intent). Destructive lifecycle operations are deliberately NOT here — see peer_stop / peer_restart / team_stop. The same function is reachable from a shell: `claude-bridge-daemon config --help`.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        peer: {
+          type: "string",
+          description: "Session id, full name, or short name in the caller's team",
+        },
+        team: { type: "string", description: "Read every peer of this team (read-only)" },
+        set: {
+          type: "object",
+          description: "Values to declare. Omit to read.",
+          properties: {
+            label: {
+              type: "string",
+              description: "Short display name — tmux window title and projections",
+            },
+            windowIndex: {
+              type: "number",
+              description: "Requested window position. Recorded only in v0.11.0.",
+            },
+            model: { type: ["string", "null"], description: "Model the peer SHOULD run" },
+            accountProfile: { type: ["string", "null"], description: "Billing identity" },
+            team: { type: "string" },
+          },
+          additionalProperties: false,
+        },
+        dryRun: { type: "boolean", description: "Preview the change without writing" },
+        reason: { type: "string", description: "Recorded in events.jsonl alongside the change" },
+        wait: { type: "boolean" },
+        timeoutMs: { type: "number" },
+      },
+      additionalProperties: false,
+    },
+    handler: async (args, ctx) => {
+      const parsed = ControlConfigArgs.safeParse(args);
+      if (!parsed.success) return err("invalid_args", "Schema validation failed", parsed.error);
+      return controlConfigTool(ctx, parsed.data);
     },
   },
   {

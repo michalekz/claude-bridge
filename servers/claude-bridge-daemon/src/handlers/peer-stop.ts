@@ -51,7 +51,7 @@ export type PeerStopArgs = z.infer<typeof PeerStopArgsSchema>;
 
 /** The team of whoever sent this request — the search domain for short names. */
 function callerTeamOf(req: RequestEnvelope, ctx: HandlerContext): string | null {
-  return ctx.state.peers[req.requestedBy.sessionId]?.team ?? null;
+  return ctx.state.peers[req.requestedBy.sessionId]?.desired.team ?? null;
 }
 
 export async function handlePeerStop(
@@ -105,13 +105,13 @@ export async function handlePeerStop(
     // Race: peer disappeared between findPeer and now. Treat as success.
     return okResult(req.id, req.tool, { sessionId, alreadyGone: true });
   }
-  const sessionKey = record.tmuxTarget ?? record.name;
+  const sessionKey = record.observed.tmuxTarget ?? record.observed.name;
 
   await applyStateChange(ctx.state, (draft) => {
     const rec = draft.peers[sessionId];
     if (rec) {
-      rec.status = "stopping";
-      rec.lastUpdatedAt = new Date().toISOString();
+      rec.observed.status = "stopping";
+      rec.observed.lastUpdatedAt = new Date().toISOString();
     }
   });
 
@@ -149,10 +149,10 @@ export async function handlePeerStop(
     if (keepInState) {
       const rec = draft.peers[sessionId];
       if (rec) {
-        rec.status = "stopped";
-        rec.stoppedCleanly = stoppedCleanly ?? null;
-        rec.pid = null;
-        rec.lastUpdatedAt = new Date().toISOString();
+        rec.observed.status = "stopped";
+        rec.observed.stoppedCleanly = stoppedCleanly ?? null;
+        rec.observed.pid = null;
+        rec.observed.lastUpdatedAt = new Date().toISOString();
       }
     } else {
       delete draft.peers[sessionId];

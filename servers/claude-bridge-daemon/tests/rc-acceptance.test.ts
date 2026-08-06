@@ -44,15 +44,19 @@ describe("rc acceptance", () => {
       // Pre-existing extra peer that's NOT in the team spec.
       doc.peers["extra-1"] = {
         sessionId: "extra-1",
-        name: "extra:one",
-        hostDriver: "mock",
-        tmuxTarget: "extra:one",
-        pid: 1111,
-        status: "live",
-        model: null,
-        accountProfile: null,
-        startedAt: "2026-07-23T12:00:00.000Z",
-        lastUpdatedAt: "2026-07-23T12:00:00.000Z",
+        desired: {
+          accountProfile: null,
+        },
+        observed: {
+          name: "extra:one",
+          hostDriver: "mock",
+          tmuxTarget: "extra:one",
+          pid: 1111,
+          status: "live",
+          model: null,
+          startedAt: "2026-07-23T12:00:00.000Z",
+          lastUpdatedAt: "2026-07-23T12:00:00.000Z",
+        },
       };
       // Pretend it's alive at the host level too (so peer_stop's driver
       // path finds something to kill).
@@ -113,7 +117,7 @@ describe("rc acceptance", () => {
       expect(applyData.stoppedOk).toEqual([]);
       expect(applyData.keptExtras).toEqual(["extra-1"]);
       expect(doc.peers["extra-1"]).toBeDefined();
-      expect(doc.peers["peer-a"]?.status).toBe("live");
+      expect(doc.peers["peer-a"]?.observed.status).toBe("live");
 
       // Second: reconcile with prune — extra-1 should be gone.
       const pruneRes = await handlers.dispatch(

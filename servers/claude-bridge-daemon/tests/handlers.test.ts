@@ -126,15 +126,19 @@ describe("handlers", () => {
       const { driver } = await newDriver();
       state.peers["peer-a"] = {
         sessionId: "peer-a",
-        name: "test:alice",
-        hostDriver: "mock",
-        tmuxTarget: "test:alice",
-        pid: 12345,
-        status: "live",
-        model: null,
-        accountProfile: null,
-        startedAt: "2026-07-23T12:00:00.000Z",
-        lastUpdatedAt: "2026-07-23T12:00:00.000Z",
+        desired: {
+          accountProfile: null,
+        },
+        observed: {
+          name: "test:alice",
+          hostDriver: "mock",
+          tmuxTarget: "test:alice",
+          pid: 12345,
+          status: "live",
+          model: null,
+          startedAt: "2026-07-23T12:00:00.000Z",
+          lastUpdatedAt: "2026-07-23T12:00:00.000Z",
+        },
       };
       const res = await dispatch(
         makeRequest("peer_spawn", {
@@ -231,7 +235,7 @@ describe("handlers", () => {
         { state, hostDriver: driver, daemonVersion: "0.10.0-beta.0" },
       );
       expect(spawnRes.outcome).toBe("ok");
-      expect(state.peers["peer-b"]?.status).toBe("live");
+      expect(state.peers["peer-b"]?.observed.status).toBe("live");
 
       const statusRes = await dispatch(
         makeRequest("team_status", { verbose: true }, "req-status"),

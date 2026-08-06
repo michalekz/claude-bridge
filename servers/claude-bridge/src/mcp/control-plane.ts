@@ -161,6 +161,57 @@ const SETUP_POINTER =
   "Daemon not detected. Install with `node ~/.claude/claude-bridge-daemon.cjs install --systemd` (Linux) — see docs/architecture.md ADR-008.";
 
 // ============================================================================
+// control_config — read and declare peer intent (v0.11.0)
+// ============================================================================
+
+/**
+ * The thin half of the layering: schema, then hand it to the daemon.
+ *
+ * All of the behaviour — the whitelist, the drift report, the events — lives in
+ * the daemon so that the CLI and the MCP tool cannot drift apart. A second
+ * implementation here would be a second definition of what "declared" means,
+ * which is the shape of task #65 and not a mistake worth repeating on purpose.
+ */
+export const ControlConfigArgs = z
+  .object({
+    peer: z.string().min(1).optional(),
+    team: z.string().min(1).optional(),
+    set: z
+      .object({
+        label: z.string().min(1).max(64).optional(),
+        windowIndex: z.number().int().min(0).max(999).optional(),
+        model: z.string().min(1).nullable().optional(),
+        accountProfile: z.string().min(1).nullable().optional(),
+        team: z.string().min(1).optional(),
+      })
+      .strict()
+      .optional(),
+    dryRun: z.boolean().optional(),
+    reason: z.string().optional(),
+    wait: z.boolean().optional(),
+    timeoutMs: z.number().int().positive().max(60_000).optional(),
+  })
+  .strict();
+
+export async function controlConfigTool(
+  ctx: ServerContext,
+  args: z.infer<typeof ControlConfigArgs>,
+): Promise<ToolResult> {
+  const daemonArgs: Record<string, unknown> = {};
+  if (args.peer !== undefined) daemonArgs["peer"] = args.peer;
+  if (args.team !== undefined) daemonArgs["team"] = args.team;
+  if (args.set !== undefined) daemonArgs["set"] = args.set;
+  if (args.dryRun !== undefined) daemonArgs["dryRun"] = args.dryRun;
+  if (args.reason !== undefined) daemonArgs["reason"] = args.reason;
+  // Reads and desired-writes are both immediate — no host operation, no ack
+  // window — so waiting for the answer is what a caller expects.
+  return submitDaemonRequest(ctx, "control_config", daemonArgs, {
+    wait: args.wait ?? true,
+    timeoutMs: args.timeoutMs ?? 5_000,
+  });
+}
+
+// ============================================================================
 // control_status — daemon health + peer summary from state.json
 // ============================================================================
 

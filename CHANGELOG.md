@@ -6,6 +6,108 @@ All notable changes to this project are documented here. Format follows [Keep a 
 
 _Nothing yet._
 
+## [0.11.0] — 2026-08-06
+
+### A peer record now says whether it is a plan or a photograph
+
+Every incident of 2026-08-05 was one defect wearing five hats: a value that had
+been MEASURED, later replayed as a value that had been INTENDED. `spawnEnv` was
+harvested from a live pane, frozen, and handed to every later relaunch as though
+someone had asked for it. `homeSession` drifted at rename. Window names had no
+field separating the identity from what is painted on the tab.
+
+A flat record cannot express that difference, so it was carried in people's
+heads, and people forget. `PeerRecord` is now `{ sessionId, desired, observed }`:
+
+- **desired** — what an operator declared. Only the config path writes it. This
+  is what a restart replays.
+- **observed** — what the daemon measured. Never replayed as intent, and it
+  carries `harvestedAt` when it was sampled from somewhere that can go stale.
+
+`sessionId` belongs to neither: it is true whether or not anyone is looking.
+Adding a field now requires deciding which kind it is, because the type will not
+compile otherwise. That is the whole point — the rule is enforced by the
+compiler rather than by memory.
+
+`model` lands in both halves, deliberately. It is the one field that genuinely
+serves both roles, and picking a side would have silently changed restart
+behaviour for the entire fleet. `peer_restart` reads `desired.model` first and
+falls back to `observed.model`, so a stated intent wins and a peer whose model
+was switched at runtime is still not downgraded.
+
+### A version bump would have discarded the fleet
+
+`loadState` handled `stateVersion` older than the daemon by returning
+`emptyState()`. It had never fired, so the cost stayed invisible: raising the
+version today would have thrown away 23 adopted peers, and the daemon would have
+come up looking healthy and empty.
+
+There is now a real migration, it writes a timestamped backup of the original
+before touching anything, and an unknown older version refuses to start rather
+than wiping state. An operator can restore a backup; nobody can recover a
+registry that was silently emptied at boot.
+
+Verified against the live fleet before release: 23/23 peers, 391 field
+comparisons, no value lost and none invented. `harvestedAt` is deliberately left
+undefined on migrated records — we do not know when those values were sampled,
+and stamping them with the migration time would manufacture exactly the kind of
+provenance this release exists to prevent.
+
+A stamp that disagrees with its content no longer crashes the daemon either.
+A document labelled v2 holding v1 records made the load-time repair dereference
+`observed` on undefined, taking the daemon down for the whole fleet at startup —
+the one moment nobody can intervene. The content is checked instead of trusted.
+
+### control_config — one tool for declaring intent
+
+Zdeněk, 2026-08-05: *"ať nevymýšlí N dalších nástrojů do MCP, máme jich dost."*
+The constraint is the design. A control plane grows one setter per knob if you
+let it, each with its own validation and its own idea of what a dry run means.
+
+`control_config` reads and writes the declared half of a record over a whitelist
+(`label`, `windowIndex`, `model`, `accountProfile`, `team`), records every change
+in `events.jsonl` with what it changed FROM, and supports `dryRun` on every call
+rather than only the dangerous ones. It cannot write `observed` — an operator
+must not be able to declare a peer alive. Destructive lifecycle operations stay
+in `peer_stop` / `peer_restart` / `team_stop`; a tool that can both rename a
+window and kill a fleet is one whose dry-run flag has to be right every time.
+
+The behaviour lives in the daemon. The MCP tool is a schema and a forward, and
+`claude-bridge-daemon config …` is the same function from a shell — for cron,
+for scripts, and for a human whose Claude Code will not start. The CLI submits
+an RPC request rather than editing `state.json`, because the daemon is that
+file's single writer and a second one would race it on every call.
+
+### `label`, and a windowIndex that is recorded rather than enforced
+
+`desired.label` holds the short display name; `observed.name` remains the fully
+qualified identity that routing and name-based resume depend on. Until v0.10.20
+there was no such field, so `windowLabelFor` was called at each site that
+painted a window and the sites that forgot painted the FQN.
+
+`desired.windowIndex` is **stored, and drift is reported. No window is moved.**
+Asserting it would make reconcile a writer against a surface a human also edits,
+and a control plane that silently undoes a deliberate drag is the same defect
+inverted — intent passed off as observation. The assertion lands in v0.11.1
+behind an explicit opt-in.
+
+Every drift entry carries both values and both ways out: `assert` (make the world
+match the registry) and `adopt` (accept reality as the new intent). Naming only
+the first tells an operator who moved a window on purpose that they were wrong,
+and often reality is the newer information. `team_reconcile` now measures where
+windows actually sit, and reports `windowIndexDrift` separately from the drift
+that gates a fleet roll — folding a cosmetic disagreement into that count would
+train an operator to ignore both.
+
+### Deferred to v0.11.1, deliberately
+
+The vscode/cursor projection adapter, the assertion half of `windowIndex`, the
+verified `/model` switch, `homeSession` deprecation, and folding the three
+`peer_set_*` guards onto one write path. Each touches the world or crosses a
+package boundary; none belongs in the same release as a schema migration under
+23 live peers. One risky change per release — when two ship together and
+something breaks, you do not know which.
+
 ## [0.10.21] — 2026-08-06
 
 ### The wake message had the same defect, and it had it alone for longer

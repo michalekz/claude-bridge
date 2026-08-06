@@ -167,8 +167,8 @@ async function stopSinglePeer(
   if (!record) {
     return { sessionId: peer.sessionId, displayName: peer.displayName, outcome: "dead" };
   }
-  const sessionKey = record.tmuxTarget ?? record.name;
-  const alive = record.tmuxTarget ? await ctx.hostDriver.hasSession(sessionKey) : false;
+  const sessionKey = record.observed.tmuxTarget ?? record.observed.name;
+  const alive = record.observed.tmuxTarget ? await ctx.hostDriver.hasSession(sessionKey) : false;
   if (!alive) {
     const stopReq = {
       schemaVersion: req.schemaVersion,

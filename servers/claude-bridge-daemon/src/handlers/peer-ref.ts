@@ -46,11 +46,11 @@ export interface PeerRefCandidate {
  * in full. Same as a host with no domain suffix to strip.
  */
 export function shortFormOf(record: PeerRecord): string | null {
-  const team = record.team;
+  const team = record.desired.team;
   if (!team) return null;
   const prefix = `${team}-`;
-  if (!record.name.startsWith(prefix)) return null;
-  const short = record.name.slice(prefix.length);
+  if (!record.observed.name.startsWith(prefix)) return null;
+  const short = record.observed.name.slice(prefix.length);
   return short.length > 0 ? short : null;
 }
 
@@ -77,7 +77,7 @@ export function resolvePeerRef(
   const byId = peers[ref];
   if (byId) return { kind: "found", sessionId: ref, record: byId };
 
-  const exact = Object.entries(peers).filter(([, rec]) => rec.name === ref);
+  const exact = Object.entries(peers).filter(([, rec]) => rec.observed.name === ref);
   if (exact.length === 1) {
     const [sessionId, record] = exact[0] as [string, PeerRecord];
     return { kind: "found", sessionId, record };
@@ -94,7 +94,7 @@ export function resolvePeerRef(
   }
 
   if (callerTeam) {
-    const own = short.filter(([, rec]) => rec.team === callerTeam);
+    const own = short.filter(([, rec]) => rec.desired.team === callerTeam);
     if (own.length === 1) {
       const [sessionId, record] = own[0] as [string, PeerRecord];
       return { kind: "found", sessionId, record };
@@ -108,9 +108,9 @@ function ambiguous(matches: Array<[string, PeerRecord]>): PeerRefResolution {
     kind: "ambiguous",
     candidates: matches.map(([sessionId, rec]) => ({
       sessionId,
-      name: rec.name,
-      tmuxTarget: rec.tmuxTarget,
-      status: rec.status,
+      name: rec.observed.name,
+      tmuxTarget: rec.observed.tmuxTarget,
+      status: rec.observed.status,
     })),
   };
 }

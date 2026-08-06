@@ -144,7 +144,7 @@ export async function handleTeamLayout(
    */
   const stoppedIds = new Set(
     Object.entries(ctx.state.peers)
-      .filter(([, rec]) => rec.status === "stopped")
+      .filter(([, rec]) => rec.observed.status === "stopped")
       .map(([id]) => id),
   );
   const runningIds = new Set([...stateIds].filter((id) => !stoppedIds.has(id)));
@@ -197,8 +197,8 @@ export async function handleTeamLayout(
         resume: forceResume || p.resume,
         // Fall back to what the peer was last running with, so a stop→start
         // round trip does not silently downgrade the model.
-        model: p.model ?? record?.model ?? null,
-        accountProfile: p.accountProfile ?? record?.accountProfile ?? null,
+        model: p.model ?? record?.desired.model ?? record?.observed.model ?? null,
+        accountProfile: p.accountProfile ?? record?.desired.accountProfile ?? null,
         extraAllowEnv: p.extraAllowEnv,
         extraEnv: p.extraEnv,
         // So the window gets the short label while the record keeps the full name.
@@ -213,7 +213,7 @@ export async function handleTeamLayout(
   const stampTeam = async (sessionId: string) => {
     await applyStateChange(ctx.state, (draft) => {
       const rec = draft.peers[sessionId];
-      if (rec) rec.team = spec.team;
+      if (rec) rec.desired.team = spec.team;
     });
   };
 
@@ -236,7 +236,7 @@ export async function handleTeamLayout(
     // Capture the tombstone's stop quality BEFORE peer_spawn overwrites the
     // record — a forced stop means the peer never flushed its anchor, and the
     // wake message has to say so.
-    const stoppedCleanly = ctx.state.peers[p.sessionId]?.stoppedCleanly ?? null;
+    const stoppedCleanly = ctx.state.peers[p.sessionId]?.observed.stoppedCleanly ?? null;
     const res = await spawnOne(p, true, "resume");
     if (res.outcome !== "ok") {
       resumedFailed.push({ sessionId: p.sessionId, err: res.error?.message ?? "unknown" });

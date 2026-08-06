@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { ambiguousPeerMessage, resolvePeerRef, shortFormOf } from "../src/handlers/peer-ref.ts";
 import type { PeerRecord } from "../src/state.ts";
+import { makePeer } from "./peer-fixture.ts";
 
 /**
  * Every lifecycle handler resolved a peer name with
@@ -24,19 +25,17 @@ import type { PeerRecord } from "../src/state.ts";
  */
 
 function peer(sessionId: string, name: string, tmuxTarget: string, team?: string): PeerRecord {
-  return {
+  return makePeer(
     sessionId,
-    name,
-    hostDriver: "tmux",
-    tmuxTarget,
-    ...(team ? { team } : {}),
-    pid: null,
-    status: "live",
-    model: null,
-    accountProfile: null,
-    startedAt: "2026-08-05T05:49:00.000Z",
-    lastUpdatedAt: "2026-08-05T05:49:00.000Z",
-  } as PeerRecord;
+    { ...(team ? { team } : {}) },
+    {
+      name,
+      hostDriver: "tmux",
+      tmuxTarget,
+      startedAt: "2026-08-05T05:49:00.000Z",
+      lastUpdatedAt: "2026-08-05T05:49:00.000Z",
+    },
+  );
 }
 
 // The fleet as it actually stood when this was found.
@@ -99,7 +98,7 @@ describe("a duplicated peer name is refused, not guessed", () => {
     const r = resolvePeerRef(FLEET, "6508975c-82bc-48ac-ba43-f41145ad6ab3");
     expect(r.kind).toBe("found");
     if (r.kind !== "found") return;
-    expect(r.record.tmuxTarget).toBe("@1085");
+    expect(r.record.observed.tmuxTarget).toBe("@1085");
   });
 
   it("a unique name still resolves", () => {
@@ -125,7 +124,7 @@ describe("a duplicated peer name is refused, not guessed", () => {
     const r = resolvePeerRef(odd, "shared-key");
     expect(r.kind).toBe("found");
     if (r.kind !== "found") return;
-    expect(r.record.tmuxTarget).toBe("@1");
+    expect(r.record.observed.tmuxTarget).toBe("@1");
   });
 });
 
@@ -155,7 +154,7 @@ describe("short names resolve like a hostname in a search domain", () => {
     const r = resolvePeerRef(NAMED, "plt-velitel");
     expect(r.kind).toBe("found");
     if (r.kind !== "found") return;
-    expect(r.record.tmuxTarget).toBe("@1076");
+    expect(r.record.observed.tmuxTarget).toBe("@1076");
   });
 
   it("THE POINT: a short name resolves inside the caller's own team", () => {
@@ -163,13 +162,13 @@ describe("short names resolve like a hostname in a search domain", () => {
     const r = resolvePeerRef(NAMED, "velitel", "mic");
     expect(r.kind).toBe("found");
     if (r.kind !== "found") return;
-    expect(r.record.name).toBe("mic-velitel");
+    expect(r.record.observed.name).toBe("mic-velitel");
   });
 
   it("the same short name from a different team resolves to that team's peer", () => {
     const r = resolvePeerRef(NAMED, "velitel", "etl");
     if (r.kind !== "found") throw new Error("expected found");
-    expect(r.record.name).toBe("etl-velitel");
+    expect(r.record.observed.name).toBe("etl-velitel");
   });
 
   it("a short name with no search domain and several matches is refused", () => {
@@ -189,7 +188,7 @@ describe("short names resolve like a hostname in a search domain", () => {
   it("a globally unique short name works from anywhere, no domain needed", () => {
     const r = resolvePeerRef(NAMED, "tester", "ai");
     if (r.kind !== "found") throw new Error("expected found");
-    expect(r.record.name).toBe("mic-tester");
+    expect(r.record.observed.name).toBe("mic-tester");
   });
 
   it("a name without its team prefix simply has no short form", () => {

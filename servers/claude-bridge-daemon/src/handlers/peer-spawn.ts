@@ -170,30 +170,43 @@ export async function handlePeerSpawn(
   await applyStateChange(ctx.state, (draft) => {
     draft.peers[args.sessionId] = {
       sessionId: args.sessionId,
-      name: args.displayName,
-      hostDriver: hostDriverName as PeerHostDriver,
-      tmuxTarget: sessionKey,
-      pid: null,
-      status: "starting",
-      // Recorded so peer_restart can put the peer back where it belongs, and
-      // launch it the way it was launched, instead of guessing (2026-08-04).
-      // `args.args` is the caller's list — NOT spawnArgs, which already has
-      // --resume/--model appended and would double them on the next restart.
-      cwd: args.cwd,
-      command: args.command,
-      spawnArgs: args.args,
-      // Where this peer belongs, so a later restart does not have to ask a
-      // window that may no longer exist.
-      ...(args.inSession ? { homeSession: args.inSession } : {}),
-      // `harvestEnv`, not `sanitizeEnv`: `env` above is what this peer starts
-      // with, but this is the copy that PERSISTS across restarts, so the
-      // pane-scoped vars have to go — they describe a pane that will not be
-      // the same one next time.
-      ...(args.envBase ? { spawnEnv: harvestEnv(args.envBase) } : {}),
-      model: args.model ?? null,
-      accountProfile: args.accountProfile ?? null,
-      startedAt: new Date().toISOString(),
-      lastUpdatedAt: new Date().toISOString(),
+      desired: {
+        ...(args.team ? { team: args.team } : {}),
+        // The short form, stored once rather than recomputed by every caller
+        // that paints a window. Until v0.11.0 there was no field for it, so
+        // `windowLabelFor` was called at each site and the ones that forgot
+        // painted the FQN.
+        label: windowLabelFor(args.displayName, args.team),
+        // Recorded so peer_restart can put the peer back where it belongs, and
+        // launch it the way it was launched, instead of guessing (2026-08-04).
+        // `args.args` is the caller's list — NOT spawnArgs, which already has
+        // --resume/--model appended and would double them on the next restart.
+        cwd: args.cwd,
+        command: args.command,
+        spawnArgs: args.args,
+        // Where this peer belongs, so a later restart does not have to ask a
+        // window that may no longer exist.
+        ...(args.inSession ? { homeSession: args.inSession } : {}),
+        model: args.model ?? null,
+        accountProfile: args.accountProfile ?? null,
+      },
+      observed: {
+        name: args.displayName,
+        hostDriver: hostDriverName as PeerHostDriver,
+        tmuxTarget: sessionKey,
+        pid: null,
+        status: "starting",
+        // `harvestEnv`, not `sanitizeEnv`: `env` above is what this peer starts
+        // with, but this is the copy that PERSISTS across restarts, so the
+        // pane-scoped vars have to go — they describe a pane that will not be
+        // the same one next time.
+        ...(args.envBase
+          ? { spawnEnv: harvestEnv(args.envBase), harvestedAt: new Date().toISOString() }
+          : {}),
+        model: args.model ?? null,
+        startedAt: new Date().toISOString(),
+        lastUpdatedAt: new Date().toISOString(),
+      },
     } satisfies PeerRecord;
   });
 
@@ -259,10 +272,10 @@ export async function handlePeerSpawn(
     await applyStateChange(ctx.state, (draft) => {
       const rec = draft.peers[args.sessionId];
       if (!rec) return;
-      rec.pid = record.pid;
-      rec.status = "live";
-      rec.tmuxTarget = canonicalKey;
-      rec.lastUpdatedAt = new Date().toISOString();
+      rec.observed.pid = record.pid;
+      rec.observed.status = "live";
+      rec.observed.tmuxTarget = canonicalKey;
+      rec.observed.lastUpdatedAt = new Date().toISOString();
     });
     await writeEvent({
       event: "peer_started",

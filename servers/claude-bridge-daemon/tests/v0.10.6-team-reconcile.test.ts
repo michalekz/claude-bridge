@@ -2,6 +2,7 @@ import { mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { makePeer } from "./peer-fixture.ts";
 
 const homeHolder = vi.hoisted(() => ({ current: "" }));
 
@@ -38,19 +39,17 @@ function makeRequest(tool: string, args: Record<string, unknown>, id = "req-rec"
 }
 
 function record(sessionId: string, name: string, pid: number | null, target: string | null) {
-  return {
+  return makePeer(
     sessionId,
-    name,
-    hostDriver: "mock" as const,
-    tmuxTarget: target,
-    pid,
-    status: "live" as const,
-    team: "hmh",
-    model: null,
-    accountProfile: null,
-    startedAt: "2026-08-04T10:00:00.000Z",
-    lastUpdatedAt: "2026-08-04T10:00:00.000Z",
-  };
+    { team: "hmh" },
+    {
+      name,
+      tmuxTarget: target,
+      pid,
+      startedAt: "2026-08-04T10:00:00.000Z",
+      lastUpdatedAt: "2026-08-04T10:00:00.000Z",
+    },
+  );
 }
 
 describe("team_reconcile reports the gap between state and reality", () => {
@@ -206,7 +205,7 @@ describe("team_reconcile reports the gap between state and reality", () => {
   it("a deliberately stopped peer is state, not drift", async () => {
     const { handlers, doc, ctx } = await fixture();
     const rec = record("a", "plt-a", null, "@1");
-    doc.peers["a"] = { ...rec, status: "stopped" };
+    doc.peers["a"] = { ...rec, observed: { ...rec.observed, status: "stopped" } };
 
     const res = await handlers.dispatch(makeRequest("team_reconcile", {}), ctx);
     expect((res.data as { driftCount: number }).driftCount).toBe(0);
@@ -218,7 +217,7 @@ describe("team_reconcile reports the gap between state and reality", () => {
 
     await handlers.dispatch(makeRequest("team_reconcile", {}), ctx);
     // Still claims to be live — reconcile diagnoses, it does not repair.
-    expect(doc.peers["a"]?.status).toBe("live");
+    expect(doc.peers["a"]?.observed.status).toBe("live");
   });
 
   it("markDead sets 'unknown', never 'stopped', and never removes", async () => {
@@ -228,7 +227,7 @@ describe("team_reconcile reports the gap between state and reality", () => {
     const res = await handlers.dispatch(makeRequest("team_reconcile", { markDead: true }), ctx);
     // Nobody asked this peer to stop; it simply is not there. Calling that a
     // clean stop would be inventing the reason.
-    expect(doc.peers["a"]?.status).toBe("unknown");
+    expect(doc.peers["a"]?.observed.status).toBe("unknown");
     expect(doc.peers["a"]).toBeDefined();
     expect((res.data as { marked: string[] }).marked).toEqual(["a"]);
     expect((res.data as { readOnly: boolean }).readOnly).toBe(false);

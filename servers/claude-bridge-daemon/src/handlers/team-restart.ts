@@ -76,7 +76,7 @@ interface RestartOutcome {
 
 /** Velitel last — the coordinator goes down after the peers it coordinates. */
 function orderPeers(records: PeerRecord[]): PeerRecord[] {
-  const isVelitel = (r: PeerRecord) => (r.name ?? "").includes("velitel");
+  const isVelitel = (r: PeerRecord) => (r.observed.name ?? "").includes("velitel");
   return [...records.filter((r) => !isVelitel(r)), ...records.filter(isVelitel)];
 }
 
@@ -84,7 +84,7 @@ const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
 /** The team of whoever sent this request — the search domain for short names. */
 function callerTeamOf(req: RequestEnvelope, ctx: HandlerContext): string | null {
-  return ctx.state.peers[req.requestedBy.sessionId]?.team ?? null;
+  return ctx.state.peers[req.requestedBy.sessionId]?.desired.team ?? null;
 }
 
 export async function handleTeamRestart(
@@ -103,7 +103,7 @@ export async function handleTeamRestart(
   const notFound: string[] = [];
   const ambiguous: Array<{ ref: string; candidates: PeerRefCandidate[] }> = [];
   if (args.team !== undefined) {
-    selected = Object.values(ctx.state.peers).filter((r) => r.team === args.team);
+    selected = Object.values(ctx.state.peers).filter((r) => r.desired.team === args.team);
     if (selected.length === 0) {
       return errResult(req.id, req.tool, "team_not_found", `No peers under team '${args.team}'`, {
         team: args.team,
@@ -152,7 +152,7 @@ export async function handleTeamRestart(
 
   // Refuse up front, not halfway through. A peer with no recorded command
   // relaunches as a bare `claude`, which under nvm resolves to nothing.
-  const unrestartable = ordered.filter((r) => !r.command);
+  const unrestartable = ordered.filter((r) => !r.desired.command);
   if (unrestartable.length > 0) {
     await writeEvent({
       event: "team_restart_refused",
@@ -167,7 +167,7 @@ export async function handleTeamRestart(
       "launch_params_missing",
       `${unrestartable.length} of ${ordered.length} peers have no recorded command and would relaunch as a bare 'claude'. Nothing was restarted.`,
       {
-        peers: unrestartable.map((r) => ({ sessionId: r.sessionId, name: r.name })),
+        peers: unrestartable.map((r) => ({ sessionId: r.sessionId, name: r.observed.name })),
         hint: "Records written before v0.10.3 lack launch parameters. Re-spawn those peers, or adopt them again with a daemon that reads /proc.",
       },
     );
@@ -180,11 +180,11 @@ export async function handleTeamRestart(
     continueOnError: args.continueOnError,
     order: ordered.map((r) => ({
       sessionId: r.sessionId,
-      name: r.name,
-      tmuxTarget: r.tmuxTarget,
-      pid: r.pid,
-      command: r.command ?? null,
-      cwd: r.cwd ?? null,
+      name: r.observed.name,
+      tmuxTarget: r.observed.tmuxTarget,
+      pid: r.observed.pid,
+      command: r.desired.command ?? null,
+      cwd: r.desired.cwd ?? null,
     })),
   };
 
@@ -205,15 +205,15 @@ export async function handleTeamRestart(
     if (stoppedEarly) {
       results.push({
         sessionId: rec.sessionId,
-        name: rec.name,
+        name: rec.observed.name,
         outcome: "skipped",
-        pidBefore: rec.pid,
+        pidBefore: rec.observed.pid,
         pidAfter: null,
       });
       continue;
     }
 
-    const pidBefore = rec.pid;
+    const pidBefore = rec.observed.pid;
     const sub = {
       schemaVersion: req.schemaVersion,
       id: `${req.id}:restart:${i}`,
@@ -227,7 +227,7 @@ export async function handleTeamRestart(
     if (res.outcome === "error") {
       results.push({
         sessionId: rec.sessionId,
-        name: rec.name,
+        name: rec.observed.name,
         outcome: "failed",
         pidBefore,
         pidAfter: null,
@@ -239,10 +239,10 @@ export async function handleTeamRestart(
 
     results.push({
       sessionId: rec.sessionId,
-      name: rec.name,
+      name: rec.observed.name,
       outcome: "restarted",
       pidBefore,
-      pidAfter: ctx.state.peers[rec.sessionId]?.pid ?? null,
+      pidAfter: ctx.state.peers[rec.sessionId]?.observed.pid ?? null,
     });
 
     // Let it come up before taking the next one down. Skipped after the last

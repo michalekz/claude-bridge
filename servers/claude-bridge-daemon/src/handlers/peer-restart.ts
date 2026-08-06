@@ -144,15 +144,15 @@ async function markNotRunning(ctx: HandlerContext, sessionId: string): Promise<v
   await applyStateChange(ctx.state, (draft) => {
     const rec = draft.peers[sessionId];
     if (!rec) return;
-    rec.status = "unknown";
-    rec.pid = null;
-    rec.lastUpdatedAt = new Date().toISOString();
+    rec.observed.status = "unknown";
+    rec.observed.pid = null;
+    rec.observed.lastUpdatedAt = new Date().toISOString();
   });
 }
 
 /** The team of whoever sent this request — the search domain for short names. */
 function callerTeamOf(req: RequestEnvelope, ctx: HandlerContext): string | null {
-  return ctx.state.peers[req.requestedBy.sessionId]?.team ?? null;
+  return ctx.state.peers[req.requestedBy.sessionId]?.desired.team ?? null;
 }
 
 export async function handlePeerRestart(
@@ -199,14 +199,14 @@ export async function handlePeerRestart(
   // The record knows its home. Asking the host is only a fallback for records
   // written before homeSession existed — and it fails exactly when it matters
   // most, because a peer whose window already died has no window to ask.
-  let inSession: string | null = record.homeSession ?? null;
+  let inSession: string | null = record.desired.homeSession ?? null;
   if (
     inSession === null &&
-    record.tmuxTarget &&
-    parseHostTarget(record.tmuxTarget).kind === "window"
+    record.observed.tmuxTarget &&
+    parseHostTarget(record.observed.tmuxTarget).kind === "window"
   ) {
     const windows = ctx.hostDriver.listWindows ? await ctx.hostDriver.listWindows() : [];
-    inSession = windows.find((w) => w.target === record.tmuxTarget)?.session ?? null;
+    inSession = windows.find((w) => w.target === record.observed.tmuxTarget)?.session ?? null;
     if (inSession === null) {
       await writeEvent({
         event: "peer_restart_window_home_unknown",
@@ -215,7 +215,7 @@ export async function handlePeerRestart(
         requestId: req.id,
         details: {
           sessionId: record.sessionId,
-          tmuxTarget: record.tmuxTarget,
+          tmuxTarget: record.observed.tmuxTarget,
           hint: "The window is not on the host, so its parent session cannot be read. The peer will be relaunched as a session of its own.",
         },
       });
@@ -227,11 +227,27 @@ export async function handlePeerRestart(
   // `team` and `adopted` from every peer it touched — and a fleet roll would
   // have left every team-scoped operation with nothing to match on
   // (plt-designer, v0.10.7 re-pilot, finding H).
-  const provenance = {
-    ...(record.team !== undefined ? { team: record.team } : {}),
-    ...(record.adopted !== undefined ? { adopted: record.adopted } : {}),
+  const provenanceDesired = {
+    ...(record.desired.team !== undefined ? { team: record.desired.team } : {}),
+    ...(record.desired.label !== undefined ? { label: record.desired.label } : {}),
+    ...(record.desired.windowIndex !== undefined
+      ? { windowIndex: record.desired.windowIndex }
+      : {}),
     ...(inSession ? { homeSession: inSession } : {}),
-    ...(record.spawnEnv ? { spawnEnv: record.spawnEnv } : {}),
+  };
+  const provenanceObserved = {
+    ...(record.observed.adopted !== undefined ? { adopted: record.observed.adopted } : {}),
+    ...(record.observed.spawnEnv ? { spawnEnv: record.observed.spawnEnv } : {}),
+    // Carry the ORIGINAL sampling time, not the restart's.
+    //
+    // `peer_spawn` stamps `harvestedAt` when it is handed an `envBase`, which
+    // is right for a first spawn and wrong here: the values being passed in
+    // were sampled once, long ago, and a restart only copies them. Letting the
+    // spawn re-stamp would date a stale environment to now — inventing a
+    // provenance, which is the precise move this release exists to stop.
+    ...(record.observed.harvestedAt !== undefined
+      ? { harvestedAt: record.observed.harvestedAt }
+      : {}),
   };
 
   const stopArgs = {
@@ -270,7 +286,7 @@ export async function handlePeerRestart(
   // reported success, because the driver asserted `alive` instead of
   // measuring it. Both halves are fixed; this is the one that stops the
   // process from dying in the first place.
-  const cwd = record.cwd ?? process.cwd();
+  const cwd = record.desired.cwd ?? process.cwd();
 
   // And launch it the way it was launched. `command` was a hardcoded "claude"
   // until 2026-08-04 — the identical omission to `cwd`, one field over, in the
@@ -278,12 +294,13 @@ export async function handlePeerRestart(
   // `claude`, so every restart on this fleet respawned a command that did not
   // exist. Found by the pilot of the cwd fix, because the driver now measures
   // `alive` and the failure was finally audible.
-  const command = record.command ?? "claude";
-  const commandArgs = record.spawnArgs ?? [];
+  const command = record.desired.command ?? "claude";
+  const commandArgs = record.desired.spawnArgs ?? [];
 
-  const missing = [record.cwd ? null : "cwd", record.command ? null : "command"].filter(
-    (f): f is string => f !== null,
-  );
+  const missing = [
+    record.desired.cwd ? null : "cwd",
+    record.desired.command ? null : "command",
+  ].filter((f): f is string => f !== null);
   if (missing.length > 0) {
     await writeEvent({
       event: "peer_restart_launch_params_unknown",
@@ -307,7 +324,7 @@ export async function handlePeerRestart(
     tool: "peer_spawn",
     args: {
       sessionId: record.sessionId,
-      displayName: record.name,
+      displayName: record.observed.name,
       cwd,
       // The test override stays ahead of the record so the acceptance suite can
       // relaunch something cheaper than a real Claude Code.
@@ -316,7 +333,7 @@ export async function handlePeerRestart(
       ...(inSession ? { inSession } : {}),
       // The peer's own environment. Without it the relaunch inherits the
       // daemon's PATH and comes up unable to find node.
-      ...(record.spawnEnv ? { envBase: record.spawnEnv } : {}),
+      ...(record.observed.spawnEnv ? { envBase: record.observed.spawnEnv } : {}),
       // Only resume something that CAN be resumed.
       //
       // This was an unconditional `true`. For a peer spawned under a stable
@@ -328,8 +345,13 @@ export async function handlePeerRestart(
       // Found by plt-designer in the v0.10.6 pilot; the restart reported `ok`
       // over it, which is this release's own defect wearing a new hat.
       resume: isResumableSessionId(record.sessionId),
-      model: args.model ?? record.model ?? null,
-      accountProfile: args.accountProfile ?? record.accountProfile ?? null,
+      // Intent first, measurement only as a fallback. A peer whose model was
+      // switched at runtime has no `desired.model` recording that choice, and
+      // relaunching it on the older declared model would be a silent downgrade
+      // — so the observation still gets a turn, but never ahead of a stated
+      // intent. Ordering is the whole answer here; picking one side is not.
+      model: args.model ?? record.desired.model ?? record.observed.model ?? null,
+      accountProfile: args.accountProfile ?? record.desired.accountProfile ?? null,
       extraAllowEnv: [],
       extraEnv: {},
     },
@@ -351,9 +373,15 @@ export async function handlePeerRestart(
     await applyStateChange(ctx.state, (draft) => {
       draft.peers[record.sessionId] = {
         ...record,
-        status: "unknown",
-        pid: null,
-        lastUpdatedAt: new Date().toISOString(),
+        // Intent is untouched — the operator still wants this peer, which is
+        // exactly why the record survives a failed relaunch. Only the
+        // measurement changes, and it changes to "we do not know".
+        observed: {
+          ...record.observed,
+          status: "unknown",
+          pid: null,
+          lastUpdatedAt: new Date().toISOString(),
+        },
       };
     });
     await writeEvent({
@@ -376,10 +404,19 @@ export async function handlePeerRestart(
     );
   }
 
-  if (Object.keys(provenance).length > 0) {
+  const hasProvenance =
+    Object.keys(provenanceDesired).length > 0 || Object.keys(provenanceObserved).length > 0;
+  if (hasProvenance) {
     await applyStateChange(ctx.state, (draft) => {
       const rec = draft.peers[record.sessionId];
-      if (rec) Object.assign(rec, provenance);
+      if (!rec) return;
+      // Each half onto its own half. A single flat `Object.assign` used to be
+      // enough and now silently would not be: it would hang `team` off the top
+      // of the record where nothing reads it, and every team-scoped operation
+      // would find nothing to match — the same finding H this block exists for,
+      // reintroduced by the very refactor meant to prevent that class.
+      Object.assign(rec.desired, provenanceDesired);
+      Object.assign(rec.observed, provenanceObserved);
     });
   }
 

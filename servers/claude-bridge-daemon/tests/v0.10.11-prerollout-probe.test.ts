@@ -94,20 +94,24 @@ describe("L — a failed restart keeps the record", () => {
     const doc = state.emptyState("0.10.11-test");
     doc.peers["p"] = {
       sessionId: "p",
-      name: "p",
-      hostDriver: "mock",
-      tmuxTarget: "p",
-      pid: 500,
-      status: "live",
-      team: "obetni2",
-      adopted: true,
-      command: "/nonexistent/claude",
-      spawnArgs: [],
-      cwd: "/tmp",
-      model: null,
-      accountProfile: null,
-      startedAt: "2026-08-04T10:00:00.000Z",
-      lastUpdatedAt: "2026-08-04T10:00:00.000Z",
+      desired: {
+        team: "obetni2",
+        command: "/nonexistent/claude",
+        spawnArgs: [],
+        cwd: "/tmp",
+        accountProfile: null,
+      },
+      observed: {
+        name: "p",
+        hostDriver: "mock",
+        tmuxTarget: "p",
+        pid: 500,
+        status: "live",
+        adopted: true,
+        model: null,
+        startedAt: "2026-08-04T10:00:00.000Z",
+        lastUpdatedAt: "2026-08-04T10:00:00.000Z",
+      },
     };
     const driver = new mock.MockDriver();
 
@@ -124,10 +128,10 @@ describe("L — a failed restart keeps the record", () => {
     // answered `team_not_found, knownTeams: []` and there was nothing to retry.
     const kept = doc.peers["p"];
     expect(kept).toBeDefined();
-    expect(kept?.team).toBe("obetni2");
+    expect(kept?.desired.team).toBe("obetni2");
     // Kept, but not pretending: nothing is running behind it.
-    expect(kept?.status).toBe("unknown");
-    expect(kept?.pid).toBeNull();
+    expect(kept?.observed.status).toBe("unknown");
+    expect(kept?.observed.pid).toBeNull();
     driver.reset();
   });
 });
@@ -195,21 +199,25 @@ describe("M — a record that outlives a failed restart does not claim to be liv
     const doc = state.emptyState("0.10.12-test");
     doc.peers["p"] = {
       sessionId: "p",
-      name: "w2",
-      hostDriver: "mock",
-      tmuxTarget: "w2",
-      pid: 500,
-      status: "live",
-      team: "obetni",
-      adopted: true,
-      // Starts, then exits at once — the shape of a failed resume.
-      command: "/bin/sh",
-      spawnArgs: ["-c", "exit 0"],
-      cwd: "/tmp",
-      model: null,
-      accountProfile: null,
-      startedAt: "2026-08-04T10:00:00.000Z",
-      lastUpdatedAt: "2026-08-04T10:00:00.000Z",
+      desired: {
+        team: "obetni",
+        // Starts, then exits at once — the shape of a failed resume.
+        command: "/bin/sh",
+        spawnArgs: ["-c", "exit 0"],
+        cwd: "/tmp",
+        accountProfile: null,
+      },
+      observed: {
+        name: "w2",
+        hostDriver: "mock",
+        tmuxTarget: "w2",
+        pid: 500,
+        status: "live",
+        adopted: true,
+        model: null,
+        startedAt: "2026-08-04T10:00:00.000Z",
+        lastUpdatedAt: "2026-08-04T10:00:00.000Z",
+      },
     };
     const driver = new mock.MockDriver();
 
@@ -225,10 +233,10 @@ describe("M — a record that outlives a failed restart does not claim to be liv
     const rec = doc.peers["p"];
     // Kept — that half already worked.
     expect(rec).toBeDefined();
-    expect(rec?.team).toBe("obetni");
+    expect(rec?.desired.team).toBe("obetni");
     // And no longer asserting a running peer behind a dead pid.
-    expect(rec?.status).toBe("unknown");
-    expect(rec?.pid).toBeNull();
+    expect(rec?.observed.status).toBe("unknown");
+    expect(rec?.observed.pid).toBeNull();
     driver.reset();
   });
 });
@@ -258,20 +266,24 @@ describe("P — a relaunch uses the peer's own environment, not the daemon's", (
     const doc = state.emptyState("0.10.13-test");
     doc.peers["p"] = {
       sessionId: "p",
-      name: "p",
-      hostDriver: "mock",
-      tmuxTarget: "p",
-      pid: 500,
-      status: "live",
-      command: "/bin/sh",
-      spawnArgs: ["-c", "sleep 30"],
-      cwd: "/tmp",
-      // Captured from the peer at adoption. Contains nvm; the daemon's does not.
-      spawnEnv: { PATH: `${NVM}:/usr/bin`, HOME: "/home/u" },
-      model: null,
-      accountProfile: null,
-      startedAt: "2026-08-04T10:00:00.000Z",
-      lastUpdatedAt: "2026-08-04T10:00:00.000Z",
+      desired: {
+        command: "/bin/sh",
+        spawnArgs: ["-c", "sleep 30"],
+        cwd: "/tmp",
+        accountProfile: null,
+      },
+      observed: {
+        name: "p",
+        hostDriver: "mock",
+        tmuxTarget: "p",
+        pid: 500,
+        status: "live",
+        // Captured from the peer at adoption. Contains nvm; the daemon's does not.
+        spawnEnv: { PATH: `${NVM}:/usr/bin`, HOME: "/home/u" },
+        model: null,
+        startedAt: "2026-08-04T10:00:00.000Z",
+        lastUpdatedAt: "2026-08-04T10:00:00.000Z",
+      },
     };
     const driver = new mock.MockDriver();
     const seen: Array<Record<string, string>> = [];
@@ -299,24 +311,28 @@ describe("P — a relaunch uses the peer's own environment, not the daemon's", (
     const doc = state.emptyState("0.10.13-test");
     doc.peers["p"] = {
       sessionId: "p",
-      name: "p",
-      hostDriver: "mock",
-      tmuxTarget: "p",
-      pid: 500,
-      status: "live",
-      command: "/bin/sh",
-      spawnArgs: ["-c", "sleep 30"],
-      cwd: "/tmp",
-      // A contaminated peer. Its PATH is welcome; its key is not.
-      spawnEnv: {
-        PATH: `${NVM}:/usr/bin`,
-        ANTHROPIC_API_KEY: "sk-ant-should-never-travel",
-        CLAUDE_CODE_ENTRYPOINT: "cli",
+      desired: {
+        command: "/bin/sh",
+        spawnArgs: ["-c", "sleep 30"],
+        cwd: "/tmp",
+        accountProfile: null,
       },
-      model: null,
-      accountProfile: null,
-      startedAt: "2026-08-04T10:00:00.000Z",
-      lastUpdatedAt: "2026-08-04T10:00:00.000Z",
+      observed: {
+        name: "p",
+        hostDriver: "mock",
+        tmuxTarget: "p",
+        pid: 500,
+        status: "live",
+        // A contaminated peer. Its PATH is welcome; its key is not.
+        spawnEnv: {
+          PATH: `${NVM}:/usr/bin`,
+          ANTHROPIC_API_KEY: "sk-ant-should-never-travel",
+          CLAUDE_CODE_ENTRYPOINT: "cli",
+        },
+        model: null,
+        startedAt: "2026-08-04T10:00:00.000Z",
+        lastUpdatedAt: "2026-08-04T10:00:00.000Z",
+      },
     };
     const driver = new mock.MockDriver();
     const seen: Array<Record<string, string>> = [];
@@ -454,14 +470,14 @@ describe("N — a peer is adopted under its own name", () => {
     const { doc } = await adoptOnce();
     const rec = Object.values(doc.peers)[0];
     // Before this, twenty-one peers would all have been adopted as `claude`.
-    expect(rec?.name).toBe("hmh-velitel");
+    expect(rec?.observed.name).toBe("hmh-velitel");
     // And with it, the ordering that puts the coordinator last still works.
-    expect(rec?.name.includes("velitel")).toBe(true);
+    expect(rec?.observed.name.includes("velitel")).toBe(true);
   });
 
   it("an unregistered peer still falls back to the window label", async () => {
     // No status file — nothing better to go on, so the label is what there is.
     const { doc } = await adoptOnce();
-    expect(Object.values(doc.peers)[0]?.name).toBe("claude");
+    expect(Object.values(doc.peers)[0]?.observed.name).toBe("claude");
   });
 });

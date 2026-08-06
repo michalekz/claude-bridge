@@ -119,8 +119,17 @@ export async function handleTeamReconcile(
   for (const s of sessions)
     if (!hostTargets.has(s.sessionKey)) hostTargets.set(s.sessionKey, s.pid);
 
+  // Where each window actually sits, so `desired.windowIndex` has something to
+  // be compared against. Recording the measurement is what makes the drift
+  // report possible at all — without it the field would be declarable and
+  // permanently, silently in agreement with nothing.
+  const hostWindowIndex = new Map<string, number>();
+  for (const w of windows) {
+    if (typeof w.window === "number") hostWindowIndex.set(w.target, w.window);
+  }
+
   const records = Object.values(ctx.state.peers).filter(
-    (r) => args.team === undefined || r.team === args.team,
+    (r) => args.team === undefined || r.desired.team === args.team,
   );
 
   const drift: DriftEntry[] = [];
@@ -128,46 +137,51 @@ export async function handleTeamReconcile(
   const accountedPids = new Set<number>();
 
   for (const rec of records) {
-    if (rec.pid !== null) accountedPids.add(rec.pid);
+    if (rec.observed.pid !== null) accountedPids.add(rec.observed.pid);
     // A record that has been deliberately stopped is not drift — it is state.
-    if (rec.status === "stopped") {
+    if (rec.observed.status === "stopped") {
       healthy.push(rec.sessionId);
       continue;
     }
 
     const base = {
       sessionId: rec.sessionId,
-      name: rec.name,
-      team: rec.team ?? null,
-      recordedPid: rec.pid,
-      tmuxTarget: rec.tmuxTarget,
+      name: rec.observed.name,
+      team: rec.desired.team ?? null,
+      recordedPid: rec.observed.pid,
+      tmuxTarget: rec.observed.tmuxTarget,
     };
 
-    const alive = rec.pid !== null && pidAlive(rec.pid, procRoot);
+    const alive = rec.observed.pid !== null && pidAlive(rec.observed.pid, procRoot);
     if (!alive) {
       drift.push({
         ...base,
         kind: "dead",
         actualPid: null,
         detail:
-          rec.pid === null
-            ? `record is '${rec.status}' with no pid at all`
-            : `record is '${rec.status}' but pid ${rec.pid} is not running`,
+          rec.observed.pid === null
+            ? `record is '${rec.observed.status}' with no pid at all`
+            : `record is '${rec.observed.status}' but pid ${rec.observed.pid} is not running`,
       });
       continue;
     }
 
-    if (rec.tmuxTarget !== null && hostTargets.size > 0 && !hostTargets.has(rec.tmuxTarget)) {
+    if (
+      rec.observed.tmuxTarget !== null &&
+      hostTargets.size > 0 &&
+      !hostTargets.has(rec.observed.tmuxTarget)
+    ) {
       drift.push({
         ...base,
         kind: "host_missing",
-        actualPid: rec.pid,
-        detail: `pid ${rec.pid} is alive but host target '${rec.tmuxTarget}' no longer exists`,
+        actualPid: rec.observed.pid,
+        detail: `pid ${rec.observed.pid} is alive but host target '${rec.observed.tmuxTarget}' no longer exists`,
       });
       continue;
     }
 
-    const targetPid = rec.tmuxTarget !== null ? (hostTargets.get(rec.tmuxTarget) ?? null) : null;
+    const targetPid =
+      rec.observed.tmuxTarget !== null ? (hostTargets.get(rec.observed.tmuxTarget) ?? null) : null;
     // A pane pid is often a SHELL, with the peer as its child. Comparing it
     // directly against the record's pid called every shell-wrapped peer
     // `pid_changed` — two false drifts on the live fleet, on the only peers
@@ -175,15 +189,22 @@ export async function handleTeamReconcile(
     // descends the ancestry; reconcile has to as well, or it accuses the host
     // of holding a stranger whenever a launcher script sits in between.
     const targetOwnsRecord =
-      targetPid !== null && rec.pid !== null && (await ownsProcess(inspector, targetPid, rec.pid));
-    if (targetPid !== null && rec.pid !== null && targetPid !== rec.pid && !targetOwnsRecord) {
+      targetPid !== null &&
+      rec.observed.pid !== null &&
+      (await ownsProcess(inspector, targetPid, rec.observed.pid));
+    if (
+      targetPid !== null &&
+      rec.observed.pid !== null &&
+      targetPid !== rec.observed.pid &&
+      !targetOwnsRecord
+    ) {
       // The record and the host disagree about WHO is there. Every lifecycle
       // call on this record would reach the wrong peer.
       drift.push({
         ...base,
         kind: "pid_changed",
         actualPid: targetPid,
-        detail: `host target '${rec.tmuxTarget}' holds pid ${targetPid}, record says ${rec.pid}`,
+        detail: `host target '${rec.observed.tmuxTarget}' holds pid ${targetPid}, record says ${rec.observed.pid}`,
       });
       continue;
     }
@@ -220,14 +241,46 @@ export async function handleTeamReconcile(
           // `unknown`, not `stopped`: nobody asked this peer to stop, it simply
           // is not there. Claiming a clean stop would be inventing the reason.
           if (rec) {
-            rec.status = "unknown";
-            rec.lastUpdatedAt = new Date().toISOString();
+            rec.observed.status = "unknown";
+            rec.observed.lastUpdatedAt = new Date().toISOString();
           }
         }
       });
       marked.push(...(deadIds as string[]));
     }
   }
+
+  // Record where the windows actually are.
+  //
+  // This writes even when `readOnly` — and that is not a contradiction.
+  // `readOnly` means no drift is CORRECTED: no window moved, no peer stopped,
+  // no record marked dead. Writing `observed.windowIndex` corrects nothing; it
+  // is the measurement itself, and a measurement pass that declines to record
+  // what it measured leaves `desired.windowIndex` comparable to nothing forever.
+  const measured: string[] = [];
+  await applyStateChange(ctx.state, (draft) => {
+    for (const rec of Object.values(draft.peers)) {
+      if (rec.observed.tmuxTarget === null) continue;
+      const idx = hostWindowIndex.get(rec.observed.tmuxTarget);
+      if (idx === undefined || rec.observed.windowIndex === idx) continue;
+      rec.observed.windowIndex = idx;
+      measured.push(rec.sessionId);
+    }
+  });
+
+  const windowDrift = Object.values(ctx.state.peers)
+    .filter(
+      (r) =>
+        r.desired.windowIndex !== undefined &&
+        r.observed.windowIndex !== undefined &&
+        r.desired.windowIndex !== r.observed.windowIndex,
+    )
+    .map((r) => ({
+      sessionId: r.sessionId,
+      name: r.observed.name,
+      desired: r.desired.windowIndex,
+      observed: r.observed.windowIndex,
+    }));
 
   const byKind = drift.reduce<Record<string, number>>((acc, d) => {
     acc[d.kind] = (acc[d.kind] ?? 0) + 1;
@@ -244,6 +297,13 @@ export async function handleTeamReconcile(
     byKind,
     drift,
     marked,
+    // Reported separately from `drift`, on purpose. The entries above mean
+    // "the control plane's belief about this peer is wrong"; a window sitting
+    // at a different index means only that somebody moved it. Folding a
+    // cosmetic disagreement into the same count that gates a fleet roll would
+    // train an operator to ignore both.
+    windowIndexDrift: windowDrift,
+    windowIndexMeasured: measured.length,
     readOnly: !args.markDead,
   };
 
