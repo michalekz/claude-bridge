@@ -12,6 +12,7 @@ var import_promises18 = require("node:fs/promises");
 // ../../packages/shared/src/atomic-write.ts
 var import_node_crypto = require("node:crypto");
 var import_promises = require("node:fs/promises");
+var import_node_os = require("node:os");
 var import_node_path = require("node:path");
 var DEFAULT_RETRIES = 5;
 var DEFAULT_RETRY_DELAY_MS = 50;
@@ -27,7 +28,17 @@ function tempPath(targetPath) {
   const suffix = (0, import_node_crypto.randomBytes)(8).toString("hex");
   return (0, import_node_path.join)(dir, `.${suffix}.tmp`);
 }
+function assertTestWritesStayInTemp(targetPath) {
+  if (!process.env["VITEST"]) return;
+  const tmp = (0, import_node_os.tmpdir)();
+  const resolved = (0, import_node_path.resolve)(targetPath);
+  if (resolved.startsWith(`${tmp}/`) || resolved === tmp) return;
+  throw new Error(
+    `atomicWrite refused: tests may only write under ${tmp}, and this call targets ${resolved}. A test reaching outside the temp root is writing to the real machine \u2014 most likely a missing homedir mock. See the 2026-08-07 registry loss.`
+  );
+}
 async function atomicWrite(targetPath, content, options = {}) {
+  assertTestWritesStayInTemp(targetPath);
   const retries = options.retries ?? DEFAULT_RETRIES;
   const baseDelay = options.retryDelayMs ?? DEFAULT_RETRY_DELAY_MS;
   const encoding = options.encoding ?? "utf-8";
@@ -99,10 +110,10 @@ function makeLogger(component) {
 }
 
 // ../../packages/shared/src/paths.ts
-var import_node_os = require("node:os");
+var import_node_os2 = require("node:os");
 var import_node_path2 = require("node:path");
 function bridgeRoot() {
-  return (0, import_node_path2.join)((0, import_node_os.homedir)(), ".claude-bridge");
+  return (0, import_node_path2.join)((0, import_node_os2.homedir)(), ".claude-bridge");
 }
 
 // ../../packages/shared/src/control-paths.ts
@@ -4287,7 +4298,7 @@ async function resolvePeer(idOrName, root = bridgeRoot(), now = Date.now()) {
 // package.json
 var package_default = {
   name: "claude-bridge-daemon",
-  version: "0.11.3",
+  version: "0.11.4",
   private: true,
   description: "Control-plane daemon for the claude-bridge plugin: peer lifecycle, telemetry, audit. Distributed as opt-in artefact \u2014 see ADR-008.",
   type: "module",
@@ -5602,7 +5613,7 @@ async function handlePeerCompact(req, ctx) {
 // src/handlers/peer-restart.ts
 var import_node_fs2 = require("node:fs");
 var import_promises10 = require("node:fs/promises");
-var import_node_os2 = require("node:os");
+var import_node_os3 = require("node:os");
 var import_node_path8 = require("node:path");
 
 // src/hosts/driver.ts
@@ -6076,7 +6087,7 @@ async function verifyRestartedIdentity(expected, pid, opts = {}) {
   if (pid === null || !isResumableSessionId(expected)) return { mismatch: false, actual: null };
   const attempts = opts.attempts ?? 8;
   const delayMs = opts.delayMs ?? 500;
-  const home = opts.homeDir ?? (0, import_node_os2.homedir)();
+  const home = opts.homeDir ?? (0, import_node_os3.homedir)();
   const path = (0, import_node_path8.join)(home, ".claude", "sessions", `${pid}.json`);
   for (let i = 0; i < attempts; i++) {
     try {
@@ -6375,7 +6386,7 @@ async function handlePeerRestart(req, ctx) {
 // src/hosts/process-inspector.ts
 var import_node_fs3 = require("node:fs");
 var import_promises11 = require("node:fs/promises");
-var import_node_os3 = require("node:os");
+var import_node_os4 = require("node:os");
 var import_node_path9 = require("node:path");
 var DEFAULT_MAX_DEPTH = 8;
 var UUID_RE2 = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i;
@@ -6399,7 +6410,7 @@ var LinuxProcessInspector = class {
   sessionsDir;
   constructor(opts = {}) {
     this.procRoot = opts.procRoot ?? "/proc";
-    this.sessionsDir = opts.sessionsDir ?? (0, import_node_path9.join)((0, import_node_os3.homedir)(), ".claude", "sessions");
+    this.sessionsDir = opts.sessionsDir ?? (0, import_node_path9.join)((0, import_node_os4.homedir)(), ".claude", "sessions");
   }
   async listClaudePeers() {
     let entries;
@@ -8764,12 +8775,12 @@ async function runDaemon(opts) {
 // src/install.ts
 var import_node_child_process2 = require("node:child_process");
 var import_promises16 = require("node:fs/promises");
-var import_node_os4 = require("node:os");
+var import_node_os5 = require("node:os");
 var import_node_path14 = require("node:path");
 var log10 = makeLogger("daemon.install");
 var UNIT_NAME = "claude-bridge-daemon.service";
 function systemdUserDir() {
-  return (0, import_node_path14.join)((0, import_node_os4.homedir)(), ".config", "systemd", "user");
+  return (0, import_node_path14.join)((0, import_node_os5.homedir)(), ".config", "systemd", "user");
 }
 function unitPath() {
   return (0, import_node_path14.join)(systemdUserDir(), UNIT_NAME);
@@ -8806,7 +8817,7 @@ function findNodeBin() {
   return process.execPath;
 }
 function deployedDaemonPath() {
-  return (0, import_node_path14.join)((0, import_node_os4.homedir)(), ".claude-bridge", "bin", "claude-bridge-daemon.cjs");
+  return (0, import_node_path14.join)((0, import_node_os5.homedir)(), ".claude-bridge", "bin", "claude-bridge-daemon.cjs");
 }
 function deployMetaPath() {
   return (0, import_node_path14.join)((0, import_node_path14.dirname)(deployedDaemonPath()), "deployed-from.json");

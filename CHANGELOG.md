@@ -6,6 +6,52 @@ All notable changes to this project are documented here. Format follows [Keep a 
 
 _Nothing yet._
 
+## [0.11.4] — 2026-08-07
+
+### A test suite may not write outside a temp directory
+
+At 06:37 a new test file went in without the `vi.mock("node:os")` homedir
+isolation the other 34 files in that suite carry. `handleControlConfig`
+persists through `applyStateChange` → `saveState` → `stateFilePath()`, which
+resolves under `homedir()`. Five runs of the suite overwrote the live
+control-plane registry, replacing 23 real peers with a fixture holding one
+imaginary one.
+
+Nothing failed. Every test stayed green. The fleet kept working, because
+processes and tmux sessions do not depend on the registry — the loss surfaced
+only because someone read a peer count afterwards.
+
+The per-file mock is the right thing to write and it had been written correctly
+34 times. That is exactly why it could not be the safeguard: a convention held
+in memory fails the first time somebody is quick, and this failure was silent
+and landed on the operator's machine. So the rule moved into `atomicWrite`,
+where forgetting is not an option — under `VITEST`, a write outside `tmpdir()`
+throws, and the message names the path and the likely cause.
+
+Six cases prove the guard fires, because a guard nobody has watched fire is a
+guard nobody should trust. One of them asserts that `VITEST` is set at all: a
+safety test that passes vacuously is worse than none.
+
+### The recovery window that closed quietly
+
+Worth recording next to the fix. The tests destroyed the registry on DISK
+between 06:37 and 06:44, while the running daemon still held all 23 peers in
+MEMORY. Any daemon-side write would have restored them. At 06:45:10 a routine
+restart — deploying the previous release — loaded the one-peer disk state and
+discarded the memory.
+
+For eight minutes the loss was reversible by a process nobody thought to ask.
+After an incident, establish who still holds the truth before touching anything
+that is running.
+
+Recovery itself went through the tools rather than around them: `team_adopt`
+rebuilt every team from reality, `team_release` dropped the fixture without
+signalling its process, and the result was verified field by field against the
+live tmux server — 23 records, 23 windows, matching ids, pids, teams and
+labels, reconcile clean.
+
+Tests 245 daemon (from 239), 402 MCP.
+
 ## [0.11.3] — 2026-08-07
 
 Day one of the soak week. Everything here came out of writing the edge-test

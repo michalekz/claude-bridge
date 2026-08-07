@@ -1,6 +1,7 @@
 import { randomBytes } from "node:crypto";
 import { mkdir, rename, unlink, writeFile } from "node:fs/promises";
-import { dirname, join } from "node:path";
+import { tmpdir } from "node:os";
+import { dirname, join, resolve } from "node:path";
 
 /**
  * Atomic file write using temp + rename.
@@ -35,11 +36,42 @@ function tempPath(targetPath: string): string {
   return join(dir, `.${suffix}.tmp`);
 }
 
+/**
+ * Under a test runner, refuse to write anywhere but a temp directory.
+ *
+ * On 2026-08-07 a new test file was written without the `vi.mock("node:os")`
+ * homedir isolation every other file in that suite carries. `handleControlConfig`
+ * persists through `applyStateChange` → `saveState` → `stateFilePath()`, which
+ * resolves under `homedir()` — so five runs of the suite overwrote the live
+ * 23-peer control-plane registry with a fixture holding one imaginary peer. The
+ * fleet never noticed, because processes and tmux sessions do not depend on the
+ * registry; the control plane simply lost every record it had.
+ *
+ * The per-file mock is the correct thing to write and was written 34 other
+ * times. That is exactly why it cannot be the safeguard: a convention held by
+ * memory fails the first time someone is quick, and the failure is silent and
+ * lands in production. A test suite has no business writing outside a temp
+ * directory, so that is now a rule rather than a habit.
+ *
+ * `VITEST` is set by the runner itself, so this costs nothing in production and
+ * cannot be forgotten.
+ */
+function assertTestWritesStayInTemp(targetPath: string): void {
+  if (!process.env["VITEST"]) return;
+  const tmp = tmpdir();
+  const resolved = resolve(targetPath);
+  if (resolved.startsWith(`${tmp}/`) || resolved === tmp) return;
+  throw new Error(
+    `atomicWrite refused: tests may only write under ${tmp}, and this call targets ${resolved}. A test reaching outside the temp root is writing to the real machine — most likely a missing homedir mock. See the 2026-08-07 registry loss.`,
+  );
+}
+
 export async function atomicWrite(
   targetPath: string,
   content: string | Uint8Array,
   options: AtomicWriteOptions = {},
 ): Promise<void> {
+  assertTestWritesStayInTemp(targetPath);
   const retries = options.retries ?? DEFAULT_RETRIES;
   const baseDelay = options.retryDelayMs ?? DEFAULT_RETRY_DELAY_MS;
   const encoding = options.encoding ?? "utf-8";

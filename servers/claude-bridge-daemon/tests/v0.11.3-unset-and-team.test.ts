@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   ControlConfigArgsSchema,
   handleControlConfig,
@@ -6,6 +6,29 @@ import {
 } from "../src/handlers/control-config.ts";
 import { emptyState } from "../src/state.ts";
 import { makePeer } from "./peer-fixture.ts";
+
+/**
+ * ⚠ THIS BLOCK IS NOT BOILERPLATE. Without it this file destroys the operator's
+ * live control plane.
+ *
+ * `handleControlConfig` persists through `applyStateChange` → `saveState` →
+ * `stateFilePath()`, which resolves under `homedir()`. Unmocked, that is the
+ * REAL `~/.claude-bridge/control/state.json`. This file shipped without the
+ * mock on 2026-08-07 and five test runs overwrote the live 23-peer registry
+ * with a fixture containing one imaginary peer. The fleet itself never
+ * noticed — processes and tmux sessions are independent of the registry — but
+ * the control plane lost every record it had.
+ *
+ * A structural guard now refuses writes outside a temp home (see
+ * `tests/setup-isolate-home.ts`); this mock stays because the guard should
+ * never be the thing that catches it.
+ */
+const homeHolder = vi.hoisted(() => ({ current: "" }));
+
+vi.mock("node:os", async () => {
+  const actual = await vi.importActual<typeof import("node:os")>("node:os");
+  return { ...actual, homedir: () => homeHolder.current };
+});
 
 /**
  * Two decisions from the edge-test matrix, both filed as "behaviour undefined"
@@ -47,6 +70,10 @@ function peersOf(ctx: unknown) {
 }
 
 describe("A6 — team is not a declarable value", () => {
+  beforeEach(() => {
+    homeHolder.current = `/tmp/cbd-cfg2-${process.hrtime.bigint()}`;
+  });
+
   it("setting `team` is refused by the schema", async () => {
     const ctx = ctxWith(makePeer("id-1", { team: "mic" }, { name: "mic-tester" }));
     const res = await handleControlConfig(
