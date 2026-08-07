@@ -32,6 +32,17 @@ After installation, each chat gets a set of new MCP tools opening five categorie
 
 **Monitor context window** *(v0.7.0+)*. `peer_context_status` reads autocompact-relevant statistics for self or any peer — tokens used, % of context window consumed, risk bucket (low/medium/high), model id. Data comes from the most recent assistant event's token counts (`cache_read + cache_creation + input + output`, formula corrected in v0.7.4) — matches `/context` Total exactly. `peer_set_context_guard` lets a peer set its own warn/critical thresholds (default 85% / 95%). `peer_set_notification` toggles idle-beep notifications. `model_info` returns canonical Claude model metadata (context window, max output, pricing, capabilities, lifecycle status) — no JSONL scan, just an in-process table sourced from Anthropic platform docs.
 
+**Run a fleet** *(v0.10.0+, Linux/tmux)*. An optional background daemon turns the plugin from a message bus into a control plane. `peer_spawn` / `peer_stop` / `peer_restart` manage a peer's lifecycle in a supervised tmux session; `team_status`, `team_reconcile`, `team_restart`, `team_adopt` and `team_release` operate on whole teams; `control_status` reports daemon health and `control_config` reads and declares per-peer intent. `peer_compact` orchestrates a `/compact` on another agent without losing its context. The daemon is opt-in and the plugin works fully without it — see [SETUP-DAEMON.md](docs/SETUP-DAEMON.md).
+
+Four properties of the control plane are worth knowing before you rely on it, because they are design decisions rather than incidental behaviour:
+
+- **A compact is never injected without a durable anchor.** The daemon asks the peer to write one and waits for its acknowledgement. That acknowledgement is also what proves the peer was idle — an agent only reads its inbox between turns — so a busy peer simply does not answer and nothing is injected.
+- **Uncertainty is never grounds for destruction.** When a tool cannot establish whether something is running, it says so and leaves it alone rather than cleaning up on a guess. "I could not find out" and "it is dead" are different answers and lead to different actions.
+- **Declared intent is stored separately from measured reality.** A peer record has a `desired` half and an `observed` half, and nothing replays a measurement as though it had been a request. Drift between them is reported with both values and both ways to resolve it.
+- **Long operations block the queue.** The daemon handles one request at a time, so a compact can delay everything else by minutes — including read-only calls. This is a known limitation, not a design choice.
+
+⚠ **Read the known limitations before running a fleet.** They list what does not work well yet, with measurements: the queue behaviour above, the state of `peer_compact`'s evidence base, and a spawn failure seen once and never reproduced.
+
 ### Bundled role playbooks *(v0.7.0+)*
 
 For agents in specific orchestration roles, two practitioner-grounded skill playbooks ship with the plugin:
@@ -198,6 +209,7 @@ The plugin runs **locally, on one machine**. Inbox traffic goes through the loca
 - **[Installation and configuration](docs/INSTALL.md)** — installation via marketplace, channels setup (two independent gates), CLI vs VS Code Extension comparison, cross-platform shell snippets, troubleshooting.
 - **[Channels troubleshooting](docs/CHANNELS-TROUBLESHOOTING.md)** — deep reference when real-time push doesn't work. Three-gate model, OS-specific gotchas (Linux/macOS vs Windows), error-symptom catalog, filesystem-trace diagnostic procedure.
 - **[Detailed usage guide](docs/USAGE.md)** — every tool with arguments, examples, output formats, and workflow recipes.
+- **[Known limitations](docs/KNOWN-LIMITATIONS.md)** — what does not work well yet, measured rather than guessed. Read this before running a fleet.
 - **[Naming conventions](docs/NAMING-CONVENTION.md)** — how MCP tools (snake_case) and bundled skills (`claude-bridge-role-*`) are named.
 - **[Changelog](CHANGELOG.md)** — release history.
 - **[Security and privacy](SECURITY.md)** — what the plugin reads, what it writes, vulnerability disclosure.

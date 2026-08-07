@@ -1,0 +1,169 @@
+# Known limitations
+
+What this plugin does not do well yet, written down before you find out.
+
+A limitation you read about here costs you an hour. The same limitation
+discovered at 2am, undocumented, costs you your trust in the tool — and you
+would be right to withdraw it. So this page is deliberately unflattering.
+
+Everything below is measured on a live 23-peer fleet, not inferred. Where a
+number appears, it was observed; where a cause is unknown, it says so.
+
+---
+
+## The control plane serialises every request
+
+**What happens.** The daemon processes one request at a time. A long-running
+operation blocks every other request — including read-only ones like
+`control_status` — until it finishes.
+
+**Measured** (2026-08-07): a `peer_compact` that waited 60 seconds for an anchor
+held the queue for the whole minute. A `control_config` read submitted during
+that window was picked up 2 ms after the compact ended. Its own work took 2 ms.
+It had waited 60 seconds.
+
+**How long operations can be:** `peer_compact` up to 300 s, `team_stop` up to
+120 s per peer.
+
+**What you will see.** Your call times out. The request usually completes
+correctly afterwards.
+
+**Worse: the timeout answer says `ok: true`.** The `ok` describes whether the
+request was successfully *submitted*, not whether it *succeeded* — and there is
+nothing in the response telling you it is still running or how to collect the
+result. Read `timedOut: true` before you read `ok`.
+
+**Worse still: `claude-bridge-daemon status` reports health throughout.** It
+reads a heartbeat file, not the queue. During a total blockage it answers in
+60 ms and says everything is fine. *A heartbeat proves the process is alive. It
+does not prove the process is serving.* If you are debugging a timeout, this
+tool will send you looking for the fault in your own code.
+
+**Until it is fixed:** if you orchestrate several agents, announce long
+operations to the others first. On a shared machine, a series of compacts will
+give everyone else timeouts on requests that are in fact succeeding.
+
+**Status:** open. The fix separates read-only handlers from the serial loop,
+makes the timeout response honest, and teaches `daemon status` to report the
+queue.
+
+---
+
+## `peer_compact` has been exercised very little
+
+`peer_compact` asks a peer to write a durable anchor, waits for its
+acknowledgement, and only then injects `/compact`.
+
+It did not work at all between v0.10.0-rc and v0.11.0 — the message it sent
+could not be read by the recipient, so every run ended in `anchor_timeout` and
+was read as "the peer is not answering". Fixed in v0.11.0; a second defect
+(a stale acknowledgement being accepted as the answer to a new request) was
+fixed in v0.11.3.
+
+**As of v0.11.5 the number of complete, unassisted cycles observed is small —
+single digits.** Treat it as working but young. In particular:
+
+- A peer writing a real anchor takes **minutes**, not seconds. Measured: 122 s
+  on a peer with substantial context. The default timeout is 300 s for that
+  reason; shortening it will produce `anchor_timeout` on work that is going
+  fine.
+- The acknowledgement is what proves the peer was idle — a peer only reads its
+  inbox between turns. A busy peer simply does not answer in time and nothing is
+  injected. That is the correct outcome, not a failure to handle the case.
+
+---
+
+## A spawn failure was observed once and never reproduced
+
+On 2026-08-07 a `peer_spawn` reported `spawn_produced_no_process` 45 ms after
+starting. Seven subsequent attempts under deliberately varied conditions — the
+same working directory, a never-trusted directory, a missing directory, a
+trivial command instead of Claude Code — all succeeded. **The cause is
+unknown.**
+
+Part of the reason it could not be investigated is now fixed: the tool used to
+destroy the session on any unclear answer, which removed the pane holding the
+explanation. Since v0.11.5 an unverifiable spawn returns `spawn_unverified`,
+leaves the session standing, and tells you which pane to inspect.
+
+If you hit this, capture the pane before doing anything else.
+
+---
+
+## `peer_spawn` does not put a peer in a team unless you say so
+
+`team` is an optional argument. Omit it and the peer is created successfully —
+and stays outside every team-scoped operation. `team_status`, `team_reconcile`
+and `team_restart` will not see it.
+
+Nothing warns you. The spawn looks like a success because it *is* a success;
+it is just a success with a consequence nobody mentions.
+
+**Status:** open. Either pass `team` explicitly, or adopt the peer afterwards
+with `team_adopt`.
+
+---
+
+## Declared window positions are recorded, not enforced
+
+`control_config` accepts `windowIndex` and `team_reconcile` reports when the
+declared position and the real one disagree. **Nothing moves the window.**
+
+This is deliberate. A control plane that silently rearranges a terminal a human
+also edits would be making an intent out of an observation — and the human who
+dragged that window would have no way to find out why it moved back. Asserting
+the layout will arrive behind an explicit opt-in.
+
+Every drift report carries both values and both ways out: `assert` (make the
+world match the declaration) and `adopt` (accept reality as the new
+declaration).
+
+Note that restarting a peer destroys and recreates its window, so it moves to
+the end of the session. Window ORDER therefore drifts on every fleet roll.
+
+---
+
+## The registry and the fleet are independent
+
+`state.json` is the daemon's record of which peers exist. The peers themselves
+are tmux sessions and processes, and they do not depend on that record.
+
+This is mostly a good property — losing the registry does not stop any agent
+working — but it has a sharp edge: **the control plane can be completely wrong
+without anything appearing to be broken.** A registry that lost every entry
+still leaves 23 agents happily working, and you find out when you run
+`team_status` and see one peer.
+
+`team_reconcile` compares the two and is cheap. Run it after anything unusual.
+`team_adopt` rebuilds the registry from what is actually running, which is the
+correct recovery when the two have diverged.
+
+---
+
+## Platform support is uneven
+
+- **Linux + tmux** — what the fleet runs on, and where everything above was
+  measured.
+- **Windows** — the MCP server works; the control-plane daemon has no host
+  driver, so peer lifecycle tools are unavailable. Last verified end to end at
+  v0.9.3.
+- **macOS** — expected to work like Linux, not currently exercised.
+
+---
+
+## Two definitions of the message schema
+
+The MCP server and the daemon each carry their own copy of the envelope schema
+and of several path helpers. A contract test holds them together, but they are
+genuinely two definitions. If you fork this, change both.
+
+**Status:** open (task #65).
+
+---
+
+## Where the honest record lives
+
+`~/.claude-bridge/control/events.jsonl` records every request, its outcome and
+its duration. It has repeatedly turned out to be more reliable than the tool
+output — including for the maintainers. When a report and this file disagree,
+believe the file.
