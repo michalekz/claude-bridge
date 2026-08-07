@@ -18243,7 +18243,7 @@ var StdioServerTransport = class {
 // package.json
 var package_default = {
   name: "claude-bridge",
-  version: "0.11.2",
+  version: "0.11.3",
   private: true,
   description: "MCP server for cross-Claude-Code-chat orchestration over local session JSONL files",
   type: "module",
@@ -21989,9 +21989,9 @@ var ControlConfigArgs = external_exports.object({
     label: external_exports.string().min(1).max(64).optional(),
     windowIndex: external_exports.number().int().min(0).max(999).optional(),
     model: external_exports.string().min(1).nullable().optional(),
-    accountProfile: external_exports.string().min(1).nullable().optional(),
-    team: external_exports.string().min(1).optional()
+    accountProfile: external_exports.string().min(1).nullable().optional()
   }).strict().optional(),
+  unset: external_exports.array(external_exports.enum(["label", "windowIndex", "model", "accountProfile"])).optional(),
   dryRun: external_exports.boolean().optional(),
   reason: external_exports.string().optional(),
   wait: external_exports.boolean().optional(),
@@ -22002,6 +22002,7 @@ async function controlConfigTool(ctx, args) {
   if (args.peer !== void 0) daemonArgs["peer"] = args.peer;
   if (args.team !== void 0) daemonArgs["team"] = args.team;
   if (args.set !== void 0) daemonArgs["set"] = args.set;
+  if (args.unset !== void 0) daemonArgs["unset"] = args.unset;
   if (args.dryRun !== void 0) daemonArgs["dryRun"] = args.dryRun;
   if (args.reason !== void 0) daemonArgs["reason"] = args.reason;
   return submitDaemonRequest(ctx, "control_config", daemonArgs, {
@@ -24106,7 +24107,7 @@ var TOOLS = [
   },
   {
     name: "control_config",
-    description: "Read and DECLARE peer intent \u2014 the single configuration tool for the control plane (v0.11.0). No args: every peer's declared values plus any drift. `peer`: one peer (session id, full name, or short name inside your team). `team`: that team's peers. `set`: declare values \u2014 allowed keys are label, windowIndex, model, accountProfile, team. `dryRun:true` shows the change and writes nothing. IMPORTANT: this writes the DESIRED half of the record only; it changes nothing in the world. windowIndex is recorded and drift is reported, but no window is moved in v0.11.0 \u2014 asserting intent lands in v0.11.1 behind an explicit opt-in. Drift entries carry BOTH the declared and the measured value and BOTH ways out: `assert` (make the world match) and `adopt` (accept reality as the new intent). Destructive lifecycle operations are deliberately NOT here \u2014 see peer_stop / peer_restart / team_stop. The same function is reachable from a shell: `claude-bridge-daemon config --help`.",
+    description: "Read and DECLARE peer intent \u2014 the single configuration tool for the control plane (v0.11.0). No args: every peer's declared values plus any drift. `peer`: one peer (session id, full name, or short name inside your team). `team`: that team's peers. `set`: declare values \u2014 allowed keys are label, windowIndex, model, accountProfile. `unset: [\"windowIndex\"]` withdraws a declaration entirely, which is different from setting it empty. `team` is deliberately NOT settable: moving a peer between teams is lifecycle work (window, home session, label) and belongs to team_adopt/team_release. `dryRun:true` shows the change and writes nothing. IMPORTANT: this writes the DESIRED half of the record only; it changes nothing in the world. windowIndex is recorded and drift is reported, but no window is moved in v0.11.0 \u2014 asserting intent lands in v0.11.1 behind an explicit opt-in. Drift entries carry BOTH the declared and the measured value and BOTH ways out: `assert` (make the world match) and `adopt` (accept reality as the new intent). Destructive lifecycle operations are deliberately NOT here \u2014 see peer_stop / peer_restart / team_stop. The same function is reachable from a shell: `claude-bridge-daemon config --help`.",
     inputSchema: {
       type: "object",
       properties: {
@@ -24128,10 +24129,14 @@ var TOOLS = [
               description: "Requested window position. Recorded only in v0.11.0."
             },
             model: { type: ["string", "null"], description: "Model the peer SHOULD run" },
-            accountProfile: { type: ["string", "null"], description: "Billing identity" },
-            team: { type: "string" }
+            accountProfile: { type: ["string", "null"], description: "Billing identity" }
           },
           additionalProperties: false
+        },
+        unset: {
+          type: "array",
+          items: { type: "string", enum: ["label", "windowIndex", "model", "accountProfile"] },
+          description: "Withdraw a declaration, returning the key to 'nobody has said'. NOT the same as setting it empty: an undeclared windowIndex reports no drift wherever the window sits, a declared one that disagrees does."
         },
         dryRun: { type: "boolean", description: "Preview the change without writing" },
         reason: { type: "string", description: "Recorded in events.jsonl alongside the change" },

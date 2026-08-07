@@ -40,7 +40,7 @@ import { applyStateChange } from "./state-writer.ts";
  * captured from a live process at adopt time and editing them by hand is how a
  * peer becomes unrestartable. They stay readable and are not settable here.
  *
- * ⚠ DO NOT ADD THE GUARD KEYS HERE BEFORE v0.11.1.
+ * ⚠ DO NOT ADD THE GUARD KEYS HERE BEFORE THE WRITE PATHS ARE UNIFIED.
  *
  * `contextGuard`, `notification` and `rateLimitGuard` look like they belong —
  * they are per-peer configuration and the spec lists them for this tool. They
@@ -51,12 +51,15 @@ import { applyStateChange } from "./state-writer.ts";
  * writers backed by two different stores — which is the founding defect of this
  * entire campaign, reintroduced by the release meant to end it.
  *
- * v0.11.1 folds those three onto a single core function; the keys arrive with
- * it, not before. (Condition attached to the v0.11.0 commit approval,
- * 2026-08-06 — and written here rather than in a meeting note precisely so that
+ * The unification was planned for v0.11.1 and did not land there — that release
+ * was spent on two defects found in the v0.11.0 roll. The keys arrive WITH the
+ * unification, whichever release carries it, and not one release earlier. The
+ * condition is on the work, not on a version number, precisely so that a
+ * slipped number cannot be read as permission. (Attached to the v0.11.0 commit
+ * approval, 2026-08-06 — written here rather than in a meeting note so that
  * whoever reaches for the obvious completion in a month reads the reason.)
  */
-const PEER_SETTABLE = ["label", "windowIndex", "model", "accountProfile", "team"] as const;
+const PEER_SETTABLE = ["label", "windowIndex", "model", "accountProfile"] as const;
 
 const PeerSetSchema = z
   .object({
@@ -66,7 +69,25 @@ const PeerSetSchema = z
     windowIndex: z.number().int().min(0).max(999).optional(),
     model: z.string().min(1).nullable().optional(),
     accountProfile: z.string().min(1).nullable().optional(),
-    team: z.string().min(1).optional(),
+    /**
+     * `team` is NOT here, and its absence is the decision.
+     *
+     * It looks like a field and behaves like an operation. Declaring a new team
+     * would leave the record inconsistent in three places at once, none of
+     * which this tool can fix:
+     *
+     *   - `homeSession` still names the OLD team, so the next restart puts the
+     *     peer back in the old tmux session
+     *   - the tmux window does not move
+     *   - the derived label stops matching — `mic-tester` in team `plt` has no
+     *     prefix to strip, so it falls back to the fully qualified name, which
+     *     is the exact regression v0.11.2 spent a release cleaning up
+     *
+     * Moving a peer between teams is lifecycle work (window, home session,
+     * label), and lifecycle work belongs to `team_adopt` / `team_release` or a
+     * future `peer_move`. Ratified with ai-designer 2026-08-06 as part of the
+     * edge-test matrix (case A6, previously "behaviour undefined").
+     */
   })
   .strict();
 
@@ -78,6 +99,18 @@ export const ControlConfigArgsSchema = z
     team: z.string().min(1).optional(),
     /** Omit to read. Present to declare. */
     set: PeerSetSchema.optional(),
+    /**
+     * Withdraw a declaration, returning the key to "nobody has said".
+     *
+     * A separate list rather than `set: {windowIndex: null}`, because those are
+     * two different statements and the drift report depends on telling them
+     * apart: an UNDECLARED windowIndex reports no drift no matter where the
+     * window sits, while a declared one that disagrees with reality does.
+     * Overloading null would fold "no opinion" into "an opinion whose value is
+     * empty" — the same conflation, one level up, that this release exists to
+     * undo (#80).
+     */
+    unset: z.array(z.enum(PEER_SETTABLE)).nonempty().optional(),
     /**
      * Preview without writing.
      *
@@ -91,9 +124,15 @@ export const ControlConfigArgsSchema = z
   .refine((a) => !(a.peer !== undefined && a.team !== undefined), {
     message: "pass `peer` or `team`, not both",
   })
-  .refine((a) => !(a.set !== undefined && a.peer === undefined), {
-    message: "`set` requires `peer` — declaring intent for a whole team at once is not supported",
-  });
+  .refine((a) => !((a.set !== undefined || a.unset !== undefined) && a.peer === undefined), {
+    message:
+      "`set`/`unset` require `peer` — declaring intent for a whole team at once is not supported",
+  })
+  .refine(
+    (a) =>
+      !(a.set !== undefined && a.unset !== undefined && a.unset.some((k) => k in (a.set ?? {}))),
+    { message: "the same key cannot be both set and unset in one call" },
+  );
 
 export type ControlConfigArgs = z.infer<typeof ControlConfigArgsSchema>;
 
@@ -238,14 +277,36 @@ export async function handleControlConfig(
   }
   const record = resolved.record;
 
-  if (args.set === undefined) {
+  // ⚠ THERE IS NO LIVENESS CHECK HERE, AND THERE MUST NOT BE ONE.
+  //
+  // A peer whose window has died, whose process is gone, whose status reads
+  // `unknown` — its record still accepts a declaration, and that is the whole
+  // point of separating intent from measurement. What an operator wants a peer
+  // to be does not stop being true because the peer is not currently running;
+  // it is precisely what the next restart will replay.
+  //
+  // Written down because "config on a dead peer should fail" reads as an
+  // obvious safety check to anyone who has not thought about the split, and
+  // adding it would quietly re-couple the two halves this release exists to
+  // separate. Ratified with ai-designer 2026-08-06 (edge case A11).
+  //
+  // Refusing IS right for anything that touches the world — see `peer_restart`,
+  // `peer_compact`, `team_stop`. This tool touches only the registry.
+
+  if (args.set === undefined && args.unset === undefined) {
     return okResult(req.id, req.tool, { settableKeys: PEER_SETTABLE, peer: viewOf(record) });
   }
 
   // A write always reports what it changed FROM. An operator reading only the
   // new value cannot tell a no-op from a correction.
   const changes: Array<{ key: string; from: unknown; to: unknown }> = [];
-  for (const [key, to] of Object.entries(args.set)) {
+  for (const key of args.unset ?? []) {
+    const from = (record.desired as Record<string, unknown>)[key];
+    // Withdrawing something nobody declared is a no-op, not an error.
+    if (from === undefined) continue;
+    changes.push({ key, from, to: null });
+  }
+  for (const [key, to] of Object.entries(args.set ?? {})) {
     if (to === undefined) continue;
     const from = (record.desired as Record<string, unknown>)[key];
     if (JSON.stringify(from) === JSON.stringify(to)) continue;
@@ -282,7 +343,13 @@ export async function handleControlConfig(
     // Only `desired`. The measured half belongs to whatever measured it, and a
     // config tool that could write `observed` would let an operator declare a
     // peer to be alive.
-    Object.assign(rec.desired, args.set);
+    if (args.set) Object.assign(rec.desired, args.set);
+    for (const key of args.unset ?? []) {
+      // `delete`, not `= undefined`: the difference between "declared empty"
+      // and "not declared" is the whole point, and only one of them survives
+      // an `in` check.
+      delete (rec.desired as Record<string, unknown>)[key];
+    }
     rec.observed.lastUpdatedAt = new Date().toISOString();
   });
 

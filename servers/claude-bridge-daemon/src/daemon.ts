@@ -1,6 +1,7 @@
 import { guardReentrancy, isPowerOfTwo, makeLogger } from "@claude-bridge/shared";
 import { writeDaemonEvent, writeEvent } from "./events.ts";
 import { dispatch } from "./handlers/index.ts";
+import { sweepAllAcksAtStartup } from "./handlers/peer-compact.ts";
 import { startHeartbeat, stopHeartbeat } from "./heartbeat.ts";
 import { type SessionHostDriver, defaultHostDriver } from "./hosts/index.ts";
 import { LockAcquireError, acquireLock, releaseLock } from "./lock.ts";
@@ -41,11 +42,15 @@ export async function runDaemon(opts: RunOptions): Promise<void> {
   const state = await loadState(opts.daemonVersion);
   await saveState(state);
   const hostDriver = opts.hostDriver ?? defaultHostDriver();
+  // An ack left by a daemon that died mid-compact would otherwise wait here
+  // for the next request on that peer and be taken as its answer.
+  const sweptAcks = await sweepAllAcksAtStartup();
   await writeDaemonEvent("daemon_started", {
     daemonVersion: opts.daemonVersion,
     pid: process.pid,
     stateVersion: state.stateVersion,
     peerCount: Object.keys(state.peers).length,
+    sweptCompactAcks: sweptAcks,
   });
   await startHeartbeat();
 

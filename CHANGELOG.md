@@ -6,6 +6,84 @@ All notable changes to this project are documented here. Format follows [Keep a 
 
 _Nothing yet._
 
+## [0.11.3] — 2026-08-07
+
+Day one of the soak week. Everything here came out of writing the edge-test
+matrix rather than out of running it — describing what a case SHOULD do is a
+cheap way to notice that nobody had decided.
+
+### An ack from a previous request was accepted as this one's answer
+
+`pollForAck` tested one thing: does the file exist. Not when it was written,
+not what it was for.
+
+Measured on the live fleet 2026-08-06 — a run at 06:39 timed out at 06:41, the
+peer finished its anchor at 06:41:39 and touched the ack anyway, and the next
+run at 06:43 found that file and injected `/compact` in the same second. It read
+as a success. Nobody had confirmed the anchor belonged to that request. A tool
+whose entire purpose is to refuse a compact without a fresh anchor was accepting
+a stale one.
+
+The case had been filed in the matrix as "behaviour unknown". It was a defect.
+
+Two mechanisms, closing different holes:
+
+- **the sweep** — any ack already on disk is moved aside BEFORE the request is
+  written, so everything appearing afterwards is fresh by construction. Stronger
+  than comparing timestamps, because an empty directory needs no reasoning about
+  clocks. The daemon also sweeps every leftover at startup, for the ack a
+  crashed predecessor left behind.
+- **the verdict** — catches what the sweep cannot: an ack that is recent but
+  answers a different `threadId`, which is what two concurrent compacts on one
+  peer produce. A bare `touch` is still accepted on freshness alone; the
+  playbook has always said to touch the file, and refusing that would break the
+  documented path to close a hole the sweep already closed.
+
+`anchor_timeout` now says WHICH of the three happened — no ack, an ack that
+predates the request, an ack for another thread. They lead to different next
+steps, and for two days the tool reported only "the peer is not answering"
+while the others were happening.
+
+### The invariant that explains why there is no idle check
+
+Written into the tool, verbatim: **the ack is itself the proof of idle.** A peer
+only reaches its inbox between turns, so a peer that acked was by construction
+not mid-generation. `peer_compact` therefore never injects into a running turn
+without having to observe anything — which matters, because "idle" is not
+reliably observable from outside. A busy peer simply does not answer and the run
+ends in `anchor_timeout` with nothing injected. That is the correct outcome, not
+an unhandled case.
+
+### `team` is no longer settable
+
+It looks like a field and behaves like an operation. Declaring a new team leaves
+the record inconsistent in three places this tool cannot fix: `homeSession`
+still names the old team so the next restart puts the peer back in the old tmux
+session, the window does not move, and the derived label stops matching — which
+is the exact regression v0.11.2 spent a release cleaning up. Moving a peer
+between teams is lifecycle work and belongs with `team_adopt` / `team_release`.
+
+### `unset` — withdrawing a declaration, which is not the same as emptying one
+
+`control_config` could declare a value and never take it back. That mattered
+more than it sounds: an UNDECLARED `windowIndex` reports no drift wherever the
+window sits, while a declared one that disagrees with reality does. So "nobody
+has said" and "somebody said nothing" are different states, and `set: {k: null}`
+cannot express the first.
+
+`unset: ["windowIndex"]` removes the key. Overloading `null` would have folded
+the two together — the same conflation, one level up, that this release series
+exists to undo.
+
+### And a note about a version number
+
+The guard-key prohibition in `control_config` cited v0.11.1 as the release that
+would unify the three setter write paths. v0.11.1 came and went on other work.
+The note now binds the condition to the WORK rather than to a number, so a
+slipped version cannot be read as permission.
+
+Tests 239 daemon (from 221), 402 MCP.
+
 ## [0.11.2] — 2026-08-06
 
 ### Fixing the writer did nothing about what it had already written

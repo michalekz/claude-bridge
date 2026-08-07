@@ -4287,7 +4287,7 @@ async function resolvePeer(idOrName, root = bridgeRoot(), now = Date.now()) {
 // package.json
 var package_default = {
   name: "claude-bridge-daemon",
-  version: "0.11.2",
+  version: "0.11.3",
   private: true,
   description: "Control-plane daemon for the claude-bridge plugin: peer lifecycle, telemetry, audit. Distributed as opt-in artefact \u2014 see ADR-008.",
   type: "module",
@@ -4418,6 +4418,9 @@ Usage:
   config <peer>                       Show one peer (id, full name, or short name)
   config --team <team>                Show every peer of a team
   config <peer> --set <k>=<v> [...]   Declare values
+  config <peer> --unset <k> [...]     Withdraw a declaration (NOT the same as
+                                      setting it empty \u2014 an undeclared value
+                                      reports no drift at all)
   config <peer> --set <k>=<v> --dry-run
                                       Show what would change, write nothing
 
@@ -4432,13 +4435,17 @@ Examples:
 `;
 var NUMERIC_KEYS = /* @__PURE__ */ new Set(["windowIndex"]);
 function parseConfigArgs(argv) {
-  const out = { set: {}, dryRun: false };
+  const out = { set: {}, unset: [], dryRun: false };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === "--dry-run") {
       out.dryRun = true;
     } else if (a === "--team") {
       out.team = argv[++i];
+    } else if (a === "--unset") {
+      const key = argv[++i];
+      if (!key || key.startsWith("--")) throw new Error("--unset expects a key name");
+      out.unset.push(key);
     } else if (a === "--reason") {
       out.reason = argv[++i];
     } else if (a === "--set") {
@@ -4509,6 +4516,7 @@ ${CONFIG_HELP}`);
   if (parsed.team !== void 0) args["team"] = parsed.team;
   if (parsed.reason !== void 0) args["reason"] = parsed.reason;
   if (Object.keys(parsed.set).length > 0) args["set"] = parsed.set;
+  if (parsed.unset.length > 0) args["unset"] = parsed.unset;
   const id = generateRequestId();
   await atomicWriteJson(requestPath(id), {
     schemaVersion: 1,
@@ -4985,15 +4993,33 @@ async function applyStateChange(state, mutate) {
 }
 
 // src/handlers/control-config.ts
-var PEER_SETTABLE = ["label", "windowIndex", "model", "accountProfile", "team"];
+var PEER_SETTABLE = ["label", "windowIndex", "model", "accountProfile"];
 var PeerSetSchema = external_exports.object({
   label: external_exports.string().min(1).max(64).optional(),
   // A window position is an index, not an opinion. Negative is meaningless
   // and a huge value is a typo, not a request.
   windowIndex: external_exports.number().int().min(0).max(999).optional(),
   model: external_exports.string().min(1).nullable().optional(),
-  accountProfile: external_exports.string().min(1).nullable().optional(),
-  team: external_exports.string().min(1).optional()
+  accountProfile: external_exports.string().min(1).nullable().optional()
+  /**
+   * `team` is NOT here, and its absence is the decision.
+   *
+   * It looks like a field and behaves like an operation. Declaring a new team
+   * would leave the record inconsistent in three places at once, none of
+   * which this tool can fix:
+   *
+   *   - `homeSession` still names the OLD team, so the next restart puts the
+   *     peer back in the old tmux session
+   *   - the tmux window does not move
+   *   - the derived label stops matching — `mic-tester` in team `plt` has no
+   *     prefix to strip, so it falls back to the fully qualified name, which
+   *     is the exact regression v0.11.2 spent a release cleaning up
+   *
+   * Moving a peer between teams is lifecycle work (window, home session,
+   * label), and lifecycle work belongs to `team_adopt` / `team_release` or a
+   * future `peer_move`. Ratified with ai-designer 2026-08-06 as part of the
+   * edge-test matrix (case A6, previously "behaviour undefined").
+   */
 }).strict();
 var ControlConfigArgsSchema = external_exports.object({
   /** Peer to read or write. Resolved by id, full name, or short name in the caller's team. */
@@ -5002,6 +5028,18 @@ var ControlConfigArgsSchema = external_exports.object({
   team: external_exports.string().min(1).optional(),
   /** Omit to read. Present to declare. */
   set: PeerSetSchema.optional(),
+  /**
+   * Withdraw a declaration, returning the key to "nobody has said".
+   *
+   * A separate list rather than `set: {windowIndex: null}`, because those are
+   * two different statements and the drift report depends on telling them
+   * apart: an UNDECLARED windowIndex reports no drift no matter where the
+   * window sits, while a declared one that disagrees with reality does.
+   * Overloading null would fold "no opinion" into "an opinion whose value is
+   * empty" — the same conflation, one level up, that this release exists to
+   * undo (#80).
+   */
+  unset: external_exports.array(external_exports.enum(PEER_SETTABLE)).nonempty().optional(),
   /**
    * Preview without writing.
    *
@@ -5012,9 +5050,12 @@ var ControlConfigArgsSchema = external_exports.object({
   reason: external_exports.string().optional()
 }).strict().refine((a) => !(a.peer !== void 0 && a.team !== void 0), {
   message: "pass `peer` or `team`, not both"
-}).refine((a) => !(a.set !== void 0 && a.peer === void 0), {
-  message: "`set` requires `peer` \u2014 declaring intent for a whole team at once is not supported"
-});
+}).refine((a) => !((a.set !== void 0 || a.unset !== void 0) && a.peer === void 0), {
+  message: "`set`/`unset` require `peer` \u2014 declaring intent for a whole team at once is not supported"
+}).refine(
+  (a) => !(a.set !== void 0 && a.unset !== void 0 && a.unset.some((k) => k in (a.set ?? {}))),
+  { message: "the same key cannot be both set and unset in one call" }
+);
 function viewOf(record) {
   const drift = [];
   const dIdx = record.desired.windowIndex;
@@ -5108,11 +5149,16 @@ async function handleControlConfig(req, ctx) {
     });
   }
   const record = resolved.record;
-  if (args.set === void 0) {
+  if (args.set === void 0 && args.unset === void 0) {
     return okResult(req.id, req.tool, { settableKeys: PEER_SETTABLE, peer: viewOf(record) });
   }
   const changes = [];
-  for (const [key, to] of Object.entries(args.set)) {
+  for (const key of args.unset ?? []) {
+    const from = record.desired[key];
+    if (from === void 0) continue;
+    changes.push({ key, from, to: null });
+  }
+  for (const [key, to] of Object.entries(args.set ?? {})) {
     if (to === void 0) continue;
     const from = record.desired[key];
     if (JSON.stringify(from) === JSON.stringify(to)) continue;
@@ -5143,7 +5189,10 @@ async function handleControlConfig(req, ctx) {
   await applyStateChange(ctx.state, (draft) => {
     const rec = draft.peers[record.sessionId];
     if (!rec) return;
-    Object.assign(rec.desired, args.set);
+    if (args.set) Object.assign(rec.desired, args.set);
+    for (const key of args.unset ?? []) {
+      delete rec.desired[key];
+    }
     rec.observed.lastUpdatedAt = (/* @__PURE__ */ new Date()).toISOString();
   });
   await writeEvent({
@@ -5270,13 +5319,85 @@ async function fileExists(path) {
     return false;
   }
 }
-async function pollForAck(sessionId, deadline, pollMs) {
+async function sweepStaleAck(sessionId, reason) {
+  const src = compactAckPath(sessionId);
+  if (!await fileExists(src)) return null;
+  const done = (0, import_node_path7.join)(compactAckDir(), "done");
+  await (0, import_promises9.mkdir)(done, { recursive: true });
+  const dest = (0, import_node_path7.join)(done, `${sessionId}-${reason}-${Date.now()}.json`);
+  try {
+    await (0, import_promises9.rename)(src, dest);
+  } catch {
+    await (0, import_promises9.unlink)(src).catch(() => void 0);
+  }
+  return dest;
+}
+async function sweepAllAcksAtStartup() {
+  const dir = compactAckDir();
+  let names;
+  try {
+    names = await (0, import_promises9.readdir)(dir);
+  } catch {
+    return 0;
+  }
+  const done = (0, import_node_path7.join)(dir, "done");
+  await (0, import_promises9.mkdir)(done, { recursive: true });
+  let swept = 0;
+  for (const name of names) {
+    if (!name.endsWith(COMPACT_ACK_FILENAME_EXTENSION)) continue;
+    try {
+      await (0, import_promises9.rename)((0, import_node_path7.join)(dir, name), (0, import_node_path7.join)(done, `${name.slice(0, -5)}-startup-${Date.now()}.json`));
+      swept++;
+    } catch {
+    }
+  }
+  return swept;
+}
+async function verifyAck(path, requestedAtMs, threadId) {
+  let stat4;
+  try {
+    stat4 = await (0, import_promises9.lstat)(path);
+  } catch {
+    return { accepted: false, reason: "none" };
+  }
+  if (stat4.mtimeMs < requestedAtMs - 1e3) {
+    return {
+      accepted: false,
+      reason: "too_old",
+      writtenAt: new Date(stat4.mtimeMs).toISOString()
+    };
+  }
+  let ackThreadId = null;
+  try {
+    const parsed = JSON.parse(await (0, import_promises9.readFile)(path, "utf-8"));
+    if (typeof parsed.threadId === "string") ackThreadId = parsed.threadId;
+  } catch {
+  }
+  if (ackThreadId !== null && ackThreadId !== threadId) {
+    return {
+      accepted: false,
+      reason: "wrong_thread",
+      ackThreadId,
+      writtenAt: new Date(stat4.mtimeMs).toISOString()
+    };
+  }
+  return {
+    accepted: true,
+    reason: "fresh",
+    ackThreadId,
+    writtenAt: new Date(stat4.mtimeMs).toISOString()
+  };
+}
+async function pollForAck(sessionId, deadline, pollMs, requestedAtMs, threadId) {
   const path = compactAckPath(sessionId);
+  let last = { accepted: false, reason: "none" };
   while (Date.now() < deadline) {
-    if (await fileExists(path)) return true;
+    last = await verifyAck(path, requestedAtMs, threadId);
+    if (last.accepted) return last;
     await new Promise((r) => setTimeout(r, pollMs));
   }
-  return fileExists(path);
+  const final = await verifyAck(path, requestedAtMs, threadId);
+  return final.accepted ? final : final.reason === "none" ? last : final;
 }
 async function consumeAckFile(sessionId) {
   const src = compactAckPath(sessionId);
@@ -5298,7 +5419,19 @@ async function writeAnchorRequestMsg(peerId, threadId) {
     kind: "ask",
     sentAt: (/* @__PURE__ */ new Date()).toISOString(),
     threadId,
-    content: "Compact anchor requested by the control plane. Write your compact anchor, then touch ~/.claude-bridge/control/compact-ack/<sessionId>.json \u2014 the daemon injects `/compact` only after that file appears, so that nothing is compacted without a durable anchor behind it."
+    content: [
+      "Compact anchor requested by the control plane. Write your compact anchor, then",
+      "write ~/.claude-bridge/control/compact-ack/<sessionId>.json containing:",
+      "",
+      `    {"threadId": "${threadId}", "anchor": "<where you put it>"}`,
+      "",
+      "The daemon injects `/compact` only after that file appears, so nothing is",
+      "compacted without a durable anchor behind it.",
+      "",
+      "The `threadId` matters: an ack that answers a DIFFERENT request is refused.",
+      "An empty `touch` still works \u2014 it is accepted on freshness alone \u2014 but two",
+      "compacts racing on one peer can only be told apart by the thread."
+    ].join("\n")
   });
   return msgId;
 }
@@ -5355,8 +5488,24 @@ async function handlePeerCompact(req, ctx) {
   const ackPollMs = args.ackPollMs ?? DEFAULT_ACK_POLL_MS;
   const threadId = `compact:${sessionId}:${Date.now().toString(36)}`;
   await (0, import_promises9.mkdir)(compactAckDir(), { recursive: true });
+  const requestedAtMs = Date.now();
   let anchorMsgId = null;
+  let sweptStale = null;
   if (!args.skipAnchorRequest) {
+    sweptStale = await sweepStaleAck(sessionId, "stale");
+    if (sweptStale) {
+      await writeEvent({
+        event: "peer_compact_stale_ack_swept",
+        level: "warn",
+        by: { sessionId: req.requestedBy.sessionId, name: req.requestedBy.name },
+        requestId: req.id,
+        details: {
+          sessionId,
+          movedTo: sweptStale,
+          note: "An ack was already on disk before this request. It answered something else \u2014 v0.11.2 and earlier would have injected /compact over it."
+        }
+      });
+    }
     try {
       anchorMsgId = await writeAnchorRequestMsg(sessionId, threadId);
     } catch (e) {
@@ -5378,21 +5527,41 @@ async function handlePeerCompact(req, ctx) {
     });
   }
   const deadline = Date.now() + anchorTimeoutMs;
-  const acked = await pollForAck(sessionId, deadline, ackPollMs);
-  if (!acked) {
+  const ackFloorMs = args.skipAnchorRequest ? requestedAtMs - anchorTimeoutMs : requestedAtMs;
+  const verdict = await pollForAck(sessionId, deadline, ackPollMs, ackFloorMs, threadId);
+  if (!verdict.accepted) {
     await writeEvent({
       event: "peer_compact_anchor_timeout",
       level: "warn",
       by: { sessionId: req.requestedBy.sessionId, name: req.requestedBy.name },
       requestId: req.id,
-      details: { sessionId, sessionKey, threadId, timeoutMs: anchorTimeoutMs }
+      details: {
+        sessionId,
+        sessionKey,
+        threadId,
+        timeoutMs: anchorTimeoutMs,
+        // WHY there was no usable ack, not just that there wasn't one. "An ack
+        // was there and it was not yours" and "nobody answered" call for
+        // different next steps, and for two days the tool reported only the
+        // second while the first was happening.
+        ackVerdict: verdict.reason,
+        ackWrittenAt: verdict.writtenAt ?? null,
+        ackThreadId: verdict.ackThreadId ?? null
+      }
     });
+    const why = verdict.reason === "too_old" ? `an ack exists but predates this request (written ${verdict.writtenAt}) \u2014 it answers something else` : verdict.reason === "wrong_thread" ? `an ack exists but belongs to thread '${verdict.ackThreadId}', not '${threadId}' \u2014 another compact is running on this peer` : `no ack appeared within ${anchorTimeoutMs}ms`;
     return errResult(
       req.id,
       req.tool,
       "anchor_timeout",
-      `Peer '${sessionId}' did not ack anchor within ${anchorTimeoutMs}ms`,
-      { sessionId, threadId }
+      `Peer '${sessionId}' was not compacted: ${why}. Nothing was injected.`,
+      {
+        sessionId,
+        threadId,
+        ackVerdict: verdict.reason,
+        ackWrittenAt: verdict.writtenAt ?? null,
+        ackThreadId: verdict.ackThreadId ?? null
+      }
     );
   }
   await writeEvent({
@@ -8492,11 +8661,13 @@ async function runDaemon(opts) {
   const state = await loadState(opts.daemonVersion);
   await saveState(state);
   const hostDriver = opts.hostDriver ?? defaultHostDriver();
+  const sweptAcks = await sweepAllAcksAtStartup();
   await writeDaemonEvent("daemon_started", {
     daemonVersion: opts.daemonVersion,
     pid: process.pid,
     stateVersion: state.stateVersion,
-    peerCount: Object.keys(state.peers).length
+    peerCount: Object.keys(state.peers).length,
+    sweptCompactAcks: sweptAcks
   });
   await startHeartbeat();
   let stopping = false;

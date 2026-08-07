@@ -24,6 +24,9 @@ Usage:
   config <peer>                       Show one peer (id, full name, or short name)
   config --team <team>                Show every peer of a team
   config <peer> --set <k>=<v> [...]   Declare values
+  config <peer> --unset <k> [...]     Withdraw a declaration (NOT the same as
+                                      setting it empty — an undeclared value
+                                      reports no drift at all)
   config <peer> --set <k>=<v> --dry-run
                                       Show what would change, write nothing
 
@@ -41,6 +44,7 @@ interface ParsedArgs {
   peer?: string;
   team?: string;
   set: Record<string, unknown>;
+  unset: string[];
   dryRun: boolean;
   reason?: string;
 }
@@ -48,13 +52,17 @@ interface ParsedArgs {
 const NUMERIC_KEYS = new Set(["windowIndex"]);
 
 export function parseConfigArgs(argv: string[]): ParsedArgs {
-  const out: ParsedArgs = { set: {}, dryRun: false };
+  const out: ParsedArgs = { set: {}, unset: [], dryRun: false };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === "--dry-run") {
       out.dryRun = true;
     } else if (a === "--team") {
       out.team = argv[++i];
+    } else if (a === "--unset") {
+      const key = argv[++i];
+      if (!key || key.startsWith("--")) throw new Error("--unset expects a key name");
+      out.unset.push(key);
     } else if (a === "--reason") {
       out.reason = argv[++i];
     } else if (a === "--set") {
@@ -131,6 +139,7 @@ export async function runConfig(argv: string[]): Promise<number> {
   if (parsed.team !== undefined) args["team"] = parsed.team;
   if (parsed.reason !== undefined) args["reason"] = parsed.reason;
   if (Object.keys(parsed.set).length > 0) args["set"] = parsed.set;
+  if (parsed.unset.length > 0) args["unset"] = parsed.unset;
 
   const id = generateRequestId();
   await atomicWriteJson(requestPath(id), {

@@ -2552,7 +2552,7 @@ export const TOOLS: ToolSpec[] = [
   {
     name: "control_config",
     description:
-      "Read and DECLARE peer intent — the single configuration tool for the control plane (v0.11.0). No args: every peer's declared values plus any drift. `peer`: one peer (session id, full name, or short name inside your team). `team`: that team's peers. `set`: declare values — allowed keys are label, windowIndex, model, accountProfile, team. `dryRun:true` shows the change and writes nothing. IMPORTANT: this writes the DESIRED half of the record only; it changes nothing in the world. windowIndex is recorded and drift is reported, but no window is moved in v0.11.0 — asserting intent lands in v0.11.1 behind an explicit opt-in. Drift entries carry BOTH the declared and the measured value and BOTH ways out: `assert` (make the world match) and `adopt` (accept reality as the new intent). Destructive lifecycle operations are deliberately NOT here — see peer_stop / peer_restart / team_stop. The same function is reachable from a shell: `claude-bridge-daemon config --help`.",
+      "Read and DECLARE peer intent — the single configuration tool for the control plane (v0.11.0). No args: every peer's declared values plus any drift. `peer`: one peer (session id, full name, or short name inside your team). `team`: that team's peers. `set`: declare values — allowed keys are label, windowIndex, model, accountProfile. `unset: [\"windowIndex\"]` withdraws a declaration entirely, which is different from setting it empty. `team` is deliberately NOT settable: moving a peer between teams is lifecycle work (window, home session, label) and belongs to team_adopt/team_release. `dryRun:true` shows the change and writes nothing. IMPORTANT: this writes the DESIRED half of the record only; it changes nothing in the world. windowIndex is recorded and drift is reported, but no window is moved in v0.11.0 — asserting intent lands in v0.11.1 behind an explicit opt-in. Drift entries carry BOTH the declared and the measured value and BOTH ways out: `assert` (make the world match) and `adopt` (accept reality as the new intent). Destructive lifecycle operations are deliberately NOT here — see peer_stop / peer_restart / team_stop. The same function is reachable from a shell: `claude-bridge-daemon config --help`.",
     inputSchema: {
       type: "object",
       properties: {
@@ -2575,9 +2575,14 @@ export const TOOLS: ToolSpec[] = [
             },
             model: { type: ["string", "null"], description: "Model the peer SHOULD run" },
             accountProfile: { type: ["string", "null"], description: "Billing identity" },
-            team: { type: "string" },
           },
           additionalProperties: false,
+        },
+        unset: {
+          type: "array",
+          items: { type: "string", enum: ["label", "windowIndex", "model", "accountProfile"] },
+          description:
+            "Withdraw a declaration, returning the key to 'nobody has said'. NOT the same as setting it empty: an undeclared windowIndex reports no drift wherever the window sits, a declared one that disagrees does.",
         },
         dryRun: { type: "boolean", description: "Preview the change without writing" },
         reason: { type: "string", description: "Recorded in events.jsonl alongside the change" },

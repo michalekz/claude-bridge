@@ -182,10 +182,10 @@ export const ControlConfigArgs = z
         windowIndex: z.number().int().min(0).max(999).optional(),
         model: z.string().min(1).nullable().optional(),
         accountProfile: z.string().min(1).nullable().optional(),
-        team: z.string().min(1).optional(),
       })
       .strict()
       .optional(),
+    unset: z.array(z.enum(["label", "windowIndex", "model", "accountProfile"])).optional(),
     dryRun: z.boolean().optional(),
     reason: z.string().optional(),
     wait: z.boolean().optional(),
@@ -201,6 +201,7 @@ export async function controlConfigTool(
   if (args.peer !== undefined) daemonArgs["peer"] = args.peer;
   if (args.team !== undefined) daemonArgs["team"] = args.team;
   if (args.set !== undefined) daemonArgs["set"] = args.set;
+  if (args.unset !== undefined) daemonArgs["unset"] = args.unset;
   if (args.dryRun !== undefined) daemonArgs["dryRun"] = args.dryRun;
   if (args.reason !== undefined) daemonArgs["reason"] = args.reason;
   // Reads and desired-writes are both immediate — no host operation, no ack

@@ -1,5 +1,5 @@
 import { randomBytes } from "node:crypto";
-import { access, mkdir, rename, unlink } from "node:fs/promises";
+import { access, lstat, mkdir, readFile, readdir, rename, unlink } from "node:fs/promises";
 import { join } from "node:path";
 import { controlDir, syntheticSenderId, writeEnvelope } from "@claude-bridge/shared";
 import { z } from "zod";
@@ -29,6 +29,18 @@ import { ambiguousPeerMessage, resolvePeerRef } from "./peer-ref.ts";
  * The AUTO watchdog stays gated behind `config.compactWatchdog.enabled`
  * (default false) — this handler is only invoked directly. Ownership
  * of the flip is the owner's.
+ *
+ * THE INVARIANT — why there is no "is the peer idle?" check:
+ *
+ *   THE ACK IS ITSELF THE PROOF OF IDLE. A peer only reaches its inbox between
+ *   turns, so a peer that acked was, by construction, not mid-generation. The
+ *   tool therefore never injects `/compact` into a running turn without having
+ *   to observe anything — and that matters, because "idle" is not reliably
+ *   observable from outside.
+ *
+ * A peer that is busy simply does not answer in time and the run ends in
+ * `anchor_timeout` with nothing injected. That is the correct outcome, not a
+ * failure to handle the case (edge case B4, ratified 2026-08-06).
  */
 
 /**
@@ -86,13 +98,150 @@ async function fileExists(path: string): Promise<boolean> {
   }
 }
 
-async function pollForAck(sessionId: string, deadline: number, pollMs: number): Promise<boolean> {
+/**
+ * Move any ack already lying around for this peer out of the way. Once, before
+ * we start waiting.
+ *
+ * This is the load-bearing half of the stale-ack fix, and it is stronger than
+ * any comparison: with the directory swept, every ack that appears afterwards
+ * is fresh BY CONSTRUCTION. Comparing timestamps still leaves you reasoning
+ * about clocks; an empty directory does not.
+ *
+ * The defect it closes, measured 2026-08-06 on the live fleet: a run at 06:39
+ * timed out at 06:41, the peer finished writing its anchor at 06:41:39 and
+ * touched the ack anyway, and the NEXT run at 06:43 found that file and
+ * injected `/compact` in the same second. Nobody checked that the anchor
+ * belonged to that request. A tool whose only purpose is to refuse a compact
+ * without a fresh anchor accepted a stale one.
+ */
+async function sweepStaleAck(sessionId: string, reason: string): Promise<string | null> {
+  const src = compactAckPath(sessionId);
+  if (!(await fileExists(src))) return null;
+  const done = join(compactAckDir(), "done");
+  await mkdir(done, { recursive: true });
+  const dest = join(done, `${sessionId}-${reason}-${Date.now()}.json`);
+  try {
+    await rename(src, dest);
+  } catch {
+    await unlink(src).catch(() => undefined);
+  }
+  return dest;
+}
+
+/**
+ * Clear every ack left over from a previous daemon. Called once at startup.
+ *
+ * A daemon that died mid-compact leaves an ack nobody will ever consume, and
+ * the next request for that peer would have found it waiting. The per-request
+ * sweep already covers that, so this is defence in depth — but it is also the
+ * only thing that cleans up after `skipAnchorRequest`, whose whole job is to
+ * act on an ack the daemon did not ask for.
+ */
+export async function sweepAllAcksAtStartup(): Promise<number> {
+  const dir = compactAckDir();
+  let names: string[];
+  try {
+    names = await readdir(dir);
+  } catch {
+    return 0;
+  }
+  const done = join(dir, "done");
+  await mkdir(done, { recursive: true });
+  let swept = 0;
+  for (const name of names) {
+    if (!name.endsWith(COMPACT_ACK_FILENAME_EXTENSION)) continue;
+    try {
+      await rename(join(dir, name), join(done, `${name.slice(0, -5)}-startup-${Date.now()}.json`));
+      swept++;
+    } catch {
+      // A directory, or something we do not own. Leave it.
+    }
+  }
+  return swept;
+}
+
+export interface AckVerdict {
+  accepted: boolean;
+  reason: "fresh" | "none" | "too_old" | "wrong_thread";
+  ackThreadId?: string | null;
+  writtenAt?: string | null;
+}
+
+/**
+ * Is this ack the answer to THIS request?
+ *
+ * Two independent checks, because they fail differently. The timestamp catches
+ * an ack that predates the request — a leftover. The `threadId` catches an ack
+ * that is recent but answers a DIFFERENT request, which is what two concurrent
+ * compacts on one peer would produce.
+ *
+ * An ack without a `threadId` is accepted on freshness alone and logged: the
+ * operator playbook has always said "touch the file", a human following it
+ * writes nothing inside, and refusing that would break the documented path to
+ * close a hole the sweep has already closed.
+ */
+export async function verifyAck(
+  path: string,
+  requestedAtMs: number,
+  threadId: string,
+): Promise<AckVerdict> {
+  let stat: Awaited<ReturnType<typeof lstat>>;
+  try {
+    stat = await lstat(path);
+  } catch {
+    return { accepted: false, reason: "none" };
+  }
+  // One second of slack: the peer may touch the file in the same second the
+  // request was written, and a filesystem timestamp is not a precision clock.
+  if (stat.mtimeMs < requestedAtMs - 1_000) {
+    return {
+      accepted: false,
+      reason: "too_old",
+      writtenAt: new Date(stat.mtimeMs).toISOString(),
+    };
+  }
+  let ackThreadId: string | null = null;
+  try {
+    const parsed = JSON.parse(await readFile(path, "utf-8")) as { threadId?: unknown };
+    if (typeof parsed.threadId === "string") ackThreadId = parsed.threadId;
+  } catch {
+    // Not JSON, or empty — a `touch`ed file. Freshness is the only check left.
+  }
+  if (ackThreadId !== null && ackThreadId !== threadId) {
+    return {
+      accepted: false,
+      reason: "wrong_thread",
+      ackThreadId,
+      writtenAt: new Date(stat.mtimeMs).toISOString(),
+    };
+  }
+  return {
+    accepted: true,
+    reason: "fresh",
+    ackThreadId,
+    writtenAt: new Date(stat.mtimeMs).toISOString(),
+  };
+}
+
+async function pollForAck(
+  sessionId: string,
+  deadline: number,
+  pollMs: number,
+  requestedAtMs: number,
+  threadId: string,
+): Promise<AckVerdict> {
   const path = compactAckPath(sessionId);
+  let last: AckVerdict = { accepted: false, reason: "none" };
   while (Date.now() < deadline) {
-    if (await fileExists(path)) return true;
+    last = await verifyAck(path, requestedAtMs, threadId);
+    if (last.accepted) return last;
+    // A rejected ack is not a reason to stop waiting — the right one may still
+    // arrive. It IS a reason to remember why the last one failed, so the
+    // timeout can say "an ack was there and it was not yours".
     await new Promise((r) => setTimeout(r, pollMs));
   }
-  return fileExists(path);
+  const final = await verifyAck(path, requestedAtMs, threadId);
+  return final.accepted ? final : final.reason === "none" ? last : final;
 }
 
 async function consumeAckFile(sessionId: string): Promise<void> {
@@ -142,11 +291,19 @@ async function writeAnchorRequestMsg(peerId: string, threadId: string): Promise<
     kind: "ask",
     sentAt: new Date().toISOString(),
     threadId,
-    content:
-      "Compact anchor requested by the control plane. Write your compact anchor, " +
-      "then touch ~/.claude-bridge/control/compact-ack/<sessionId>.json — the daemon " +
-      "injects `/compact` only after that file appears, so that nothing is compacted " +
-      "without a durable anchor behind it.",
+    content: [
+      "Compact anchor requested by the control plane. Write your compact anchor, then",
+      "write ~/.claude-bridge/control/compact-ack/<sessionId>.json containing:",
+      "",
+      `    {"threadId": "${threadId}", "anchor": "<where you put it>"}`,
+      "",
+      "The daemon injects `/compact` only after that file appears, so nothing is",
+      "compacted without a durable anchor behind it.",
+      "",
+      "The `threadId` matters: an ack that answers a DIFFERENT request is refused.",
+      "An empty `touch` still works — it is accepted on freshness alone — but two",
+      "compacts racing on one peer can only be told apart by the thread.",
+    ].join("\n"),
   });
   return msgId;
 }
@@ -214,8 +371,29 @@ export async function handlePeerCompact(
 
   await mkdir(compactAckDir(), { recursive: true });
 
+  // The clock the ack is judged against. Taken BEFORE the request is written,
+  // so an ack the peer produces the instant it reads the message still counts.
+  const requestedAtMs = Date.now();
+
   let anchorMsgId: string | null = null;
+  let sweptStale: string | null = null;
   if (!args.skipAnchorRequest) {
+    // Clear the ground first. Everything after this point is an answer to THIS
+    // request, without anyone having to reason about it.
+    sweptStale = await sweepStaleAck(sessionId, "stale");
+    if (sweptStale) {
+      await writeEvent({
+        event: "peer_compact_stale_ack_swept",
+        level: "warn",
+        by: { sessionId: req.requestedBy.sessionId, name: req.requestedBy.name },
+        requestId: req.id,
+        details: {
+          sessionId,
+          movedTo: sweptStale,
+          note: "An ack was already on disk before this request. It answered something else — v0.11.2 and earlier would have injected /compact over it.",
+        },
+      });
+    }
     try {
       anchorMsgId = await writeAnchorRequestMsg(sessionId, threadId);
     } catch (e) {
@@ -238,21 +416,52 @@ export async function handlePeerCompact(
   }
 
   const deadline = Date.now() + anchorTimeoutMs;
-  const acked = await pollForAck(sessionId, deadline, ackPollMs);
-  if (!acked) {
+  // `skipAnchorRequest` exists to act on an ack somebody arranged out of band,
+  // so its ack legitimately predates this request — but only just. Anything
+  // older than the anchor window is the stale-ack defect wearing the one hat
+  // that makes it look intentional.
+  const ackFloorMs = args.skipAnchorRequest ? requestedAtMs - anchorTimeoutMs : requestedAtMs;
+  const verdict = await pollForAck(sessionId, deadline, ackPollMs, ackFloorMs, threadId);
+  if (!verdict.accepted) {
     await writeEvent({
       event: "peer_compact_anchor_timeout",
       level: "warn",
       by: { sessionId: req.requestedBy.sessionId, name: req.requestedBy.name },
       requestId: req.id,
-      details: { sessionId, sessionKey, threadId, timeoutMs: anchorTimeoutMs },
+      details: {
+        sessionId,
+        sessionKey,
+        threadId,
+        timeoutMs: anchorTimeoutMs,
+        // WHY there was no usable ack, not just that there wasn't one. "An ack
+        // was there and it was not yours" and "nobody answered" call for
+        // different next steps, and for two days the tool reported only the
+        // second while the first was happening.
+        ackVerdict: verdict.reason,
+        ackWrittenAt: verdict.writtenAt ?? null,
+        ackThreadId: verdict.ackThreadId ?? null,
+      },
     });
+    // Three different situations used to arrive as one sentence, and for two
+    // days everyone read that sentence as "the peer is deaf".
+    const why =
+      verdict.reason === "too_old"
+        ? `an ack exists but predates this request (written ${verdict.writtenAt}) — it answers something else`
+        : verdict.reason === "wrong_thread"
+          ? `an ack exists but belongs to thread '${verdict.ackThreadId}', not '${threadId}' — another compact is running on this peer`
+          : `no ack appeared within ${anchorTimeoutMs}ms`;
     return errResult(
       req.id,
       req.tool,
       "anchor_timeout",
-      `Peer '${sessionId}' did not ack anchor within ${anchorTimeoutMs}ms`,
-      { sessionId, threadId },
+      `Peer '${sessionId}' was not compacted: ${why}. Nothing was injected.`,
+      {
+        sessionId,
+        threadId,
+        ackVerdict: verdict.reason,
+        ackWrittenAt: verdict.writtenAt ?? null,
+        ackThreadId: verdict.ackThreadId ?? null,
+      },
     );
   }
 
