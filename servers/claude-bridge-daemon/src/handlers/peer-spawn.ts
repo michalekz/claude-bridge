@@ -273,6 +273,59 @@ export async function handlePeerSpawn(
     // `outcome: ok` with `pid: null` as the sole hint. That is a phantom
     // live peer — `team_layout` sees it as running and never resurrects it,
     // and every operator report about it is a lie told with confidence.
+    // NOT KNOWING is not the same as KNOWING IT DIED, and only one of them
+    // justifies destroying anything.
+    //
+    // Until v0.11.5 both arrived here as `alive: false`, and this branch
+    // answered by deleting the record and killing the session. So a tmux query
+    // that timed out under load — or failed for any reason other than the
+    // target being absent — took a peer that may well have been running, and
+    // took the pane with it. The pane is where the explanation lives, which is
+    // why the failure of 2026-08-07 07:05:59 could not be reproduced by anyone
+    // afterwards: the tool tidies away exactly what an investigator needs.
+    //
+    // On uncertainty: keep the record, keep the session, say so, and let
+    // `team_reconcile` — which can measure repeatedly and at leisure — decide.
+    // The same rule the drift report follows for `windowIndex`: when you are
+    // not sure, mark it and hand it to the layer that can look again.
+    if (record.probe?.kind === "unavailable") {
+      await applyStateChange(ctx.state, (draft) => {
+        const rec = draft.peers[args.sessionId];
+        if (!rec) return;
+        rec.observed.status = "unknown";
+        rec.observed.lastUpdatedAt = new Date().toISOString();
+      });
+      await writeEvent({
+        event: "peer_spawn_unverified",
+        level: "warn",
+        by: { sessionId: req.requestedBy.sessionId, name: req.requestedBy.name },
+        requestId: req.id,
+        details: {
+          sessionId: args.sessionId,
+          sessionKey: canonicalKey,
+          reason: "pane_pid_unavailable",
+          hostSaid: record.probe.raw,
+          attempts: record.probe.attempts,
+          cwd: args.cwd,
+          command: args.command,
+        },
+      });
+      return errResult(
+        req.id,
+        req.tool,
+        "spawn_unverified",
+        `The session was created, but whether anything is running in it could not be determined after ${record.probe.attempts} attempts. ` +
+          `Nothing was destroyed: inspect the pane with \`tmux capture-pane -p -t ${canonicalKey}\`, then either \`team_reconcile\` or \`peer_stop\`. ` +
+          `The host said: ${record.probe.raw}`,
+        {
+          sessionId: args.sessionId,
+          sessionKey: canonicalKey,
+          probe: record.probe,
+          cwd: args.cwd,
+          command: args.command,
+        },
+      );
+    }
     if (!record.alive || record.pid === null) {
       // Leave nothing half-registered, and take the empty tmux session with
       // us if one somehow survived.
@@ -297,7 +350,7 @@ export async function handlePeerSpawn(
         req.id,
         req.tool,
         "spawn_produced_no_process",
-        "Host reported the session was created but nothing is running in it — the command most likely exited immediately (wrong cwd, bad arguments, or missing binary).",
+        `The session was created and the host reports no such target — the command exited immediately. Host said: ${record.probe?.kind === "no-such-target" ? record.probe.raw : "(driver reported not-alive without detail)"}`,
         {
           sessionId: args.sessionId,
           sessionKey: canonicalKey,

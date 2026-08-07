@@ -6,6 +6,61 @@ All notable changes to this project are documented here. Format follows [Keep a 
 
 _Nothing yet._
 
+## [0.11.5] — 2026-08-07
+
+### Not knowing is not the same as knowing it died
+
+`peer_spawn` destroyed a session on the strength of an answer that could not
+tell four different things apart. `readSessionPid` was `catch { return null }`:
+an absent target, a five-second timeout, tmux failing to run, and unparseable
+output all produced `null`, and `null` meant "the command exited immediately".
+The handler answered by deleting the record and killing the session.
+
+So a transient hiccup killed a peer that may have been running perfectly — and
+took the pane with it. The pane is where the explanation lives. That is why the
+failure reported at 07:05:59 could not be reproduced afterwards: seven attempts,
+seven successes. **The tool tidies away exactly what an investigator needs.**
+
+The probe now answers with three outcomes, not two:
+
+- `pid` — something is running, here is its id
+- `no-such-target` — the host states the session is not there. A fact.
+- `unavailable` — we could not find out. Ignorance, and it used to be reported
+  as the fact above.
+
+The distinction is drawn from tmux's own TEXT rather than its exit status,
+because tmux exits 1 for everything: a missing session and a broken socket are
+indistinguishable by status alone. Every outcome carries the raw output — a
+category tells you which box the failure fell into, only the raw text tells you
+what happened.
+
+Unknown cases fall towards `unavailable` deliberately: **mistaking a dead pane
+for an unreachable one costs a retry; mistaking an unreachable one for a dead
+pane costs a live peer.** When a default has to be chosen, choose the side where
+being wrong is cheaper.
+
+On `unavailable` nothing is destroyed. The record stays with `status: "unknown"`,
+the session stays standing, and the error names the pane to inspect and hands
+back what the host actually said. `team_reconcile` — which can measure again,
+repeatedly and at leisure — decides.
+
+Two cases guard the other edge, because a fix that overshoots is just a
+different defect: `no-such-target` is still torn down, and a driver that reports
+no probe at all still fails closed. Absent evidence is not evidence of
+unavailability.
+
+### The invariant
+
+> **When you are not sure, do not destroy. Mark it, and hand it to the layer
+> that can look again.**
+
+It arrived independently in two domains within 24 hours — `windowIndex` (declare,
+measure, do not assert) and now `peer_spawn` (cannot tell if it is running →
+leave it standing). Two independent arrivals is what turns a decision about two
+tools into a rule.
+
+Tests 250 daemon (from 245), 402 MCP.
+
 ## [0.11.4] — 2026-08-07
 
 ### A test suite may not write outside a temp directory

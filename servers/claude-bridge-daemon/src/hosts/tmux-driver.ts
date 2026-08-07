@@ -6,6 +6,7 @@ import { promisify } from "node:util";
 import { controlDir, makeLogger } from "@claude-bridge/shared";
 import {
   type HostWindowRecord,
+  type PaneProbe,
   type SessionHostDriver,
   type SessionHostRecord,
   type SessionHostSpawnOptions,
@@ -425,15 +426,30 @@ export class TmuxDriver implements SessionHostDriver {
     // The new window's id IS its address, so the record must carry that rather
     // than the key the caller asked for.
     const effectiveKey = createdWindowId ?? canonicalKey;
-    const pid = await this.readSessionPid(effectiveKey);
-    if (pid === null) {
-      log.error("tmux_spawn_no_pane_pid", {
+    const probe = await this.probePanePid(effectiveKey);
+    if (probe.kind === "no-such-target") {
+      log.error("tmux_spawn_target_gone", {
         sessionKey: opts.sessionKey,
         canonicalKey: effectiveKey,
-        hint: "new-session returned 0 but no pane pid — the command most likely exited immediately",
+        raw: probe.raw,
+        note: "tmux says the target does not exist — the command exited immediately",
+      });
+    } else if (probe.kind === "unavailable") {
+      // NOT the same as "it died", and the caller must not treat it as such.
+      log.error("tmux_spawn_pid_unavailable", {
+        sessionKey: opts.sessionKey,
+        canonicalKey: effectiveKey,
+        raw: probe.raw,
+        attempts: probe.attempts,
+        note: "could not determine whether anything is running — the session is left standing for inspection",
       });
     }
-    return { sessionKey: effectiveKey, alive: pid !== null, pid };
+    return {
+      sessionKey: effectiveKey,
+      alive: probe.kind === "pid",
+      pid: probe.kind === "pid" ? probe.pid : null,
+      probe,
+    };
   }
 
   async kill(sessionKey: string, opts: { force?: boolean } = {}): Promise<void> {
@@ -632,18 +648,50 @@ export class TmuxDriver implements SessionHostDriver {
     return execFileAsync(this.tmuxBin, args, { ...EXEC_DEFAULTS, timeout });
   }
 
-  private async readSessionPid(sessionKey: string): Promise<number | null> {
-    try {
-      const { stdout } = await execFileAsync(
-        this.tmuxBin,
-        ["display-message", "-p", "-t", sessionKey, "#{pane_pid}"],
-        { ...EXEC_DEFAULTS, timeout: QUERY_TIMEOUT_MS },
-      );
-      const parsed = Number.parseInt(stdout.trim(), 10);
-      return Number.isNaN(parsed) ? null : parsed;
-    } catch {
-      return null;
+  /**
+   * tmux's own vocabulary for "that target is not there".
+   *
+   * Matched on the message rather than the exit code because tmux exits 1 for
+   * everything — a missing session and a broken socket are indistinguishable
+   * by status alone. Anything that does not match is treated as IGNORANCE, not
+   * as absence, which is the safe direction: mistaking a dead pane for an
+   * unreachable one costs a retry, mistaking an unreachable one for a dead
+   * pane costs a live peer.
+   */
+  private static readonly NO_SUCH_TARGET = /can't find|no such|not found|no current/i;
+
+  private async probePanePid(sessionKey: string, attempts = 3): Promise<PaneProbe> {
+    let last = "";
+    for (let attempt = 1; attempt <= attempts; attempt++) {
+      try {
+        const { stdout } = await execFileAsync(
+          this.tmuxBin,
+          ["display-message", "-p", "-t", sessionKey, "#{pane_pid}"],
+          { ...EXEC_DEFAULTS, timeout: QUERY_TIMEOUT_MS },
+        );
+        const raw = stdout.trim();
+        const parsed = Number.parseInt(raw, 10);
+        if (!Number.isNaN(parsed)) return { kind: "pid", pid: parsed, raw };
+        // Answered, but with something that is not a pid. Not absence either.
+        last = `unparseable pane_pid: ${JSON.stringify(raw)}`;
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        const stderr = (e as { stderr?: string }).stderr ?? "";
+        last = `${msg}${stderr ? ` | stderr: ${stderr.trim()}` : ""}`;
+        // A target tmux says is absent will still be absent on the next try.
+        if (TmuxDriver.NO_SUCH_TARGET.test(last)) return { kind: "no-such-target", raw: last };
+      }
+      // Only transient causes reach here, so a short pause is worth it. The
+      // spawn path is the one that matters: it decides a new peer's fate on
+      // this answer, and used to decide it on a single attempt.
+      if (attempt < attempts) await new Promise((r) => setTimeout(r, 200));
     }
+    return { kind: "unavailable", raw: last, attempts };
+  }
+
+  private async readSessionPid(sessionKey: string): Promise<number | null> {
+    const probe = await this.probePanePid(sessionKey);
+    return probe.kind === "pid" ? probe.pid : null;
   }
 
   private async verifyKilled(sessionKey: string, budgetMs: number): Promise<boolean> {

@@ -39,10 +39,43 @@ export interface SessionHostSpawnOptions {
   env: Record<string, string>;
 }
 
+/**
+ * What asking the host "is anything running in there?" actually told us.
+ *
+ * Three answers, not two, and the third is the one that used to be missing:
+ *
+ *   pid             — something is running, here is its process id
+ *   no-such-target  — the host says that session/pane does not exist. The
+ *                     command really did exit; this is a FACT.
+ *   unavailable     — we could not find out. The query timed out, the binary
+ *                     failed to run, the output did not parse. This is
+ *                     IGNORANCE, and it used to be reported as the fact above.
+ *
+ * Collapsing the last two into `null` meant a five-second timeout under load
+ * and a genuinely dead process produced the same verdict — and `peer_spawn`
+ * answered both by killing the session. So a transient hiccup destroyed a live
+ * peer AND the evidence, which is why the failure of 2026-08-07 07:05:59 could
+ * not be reproduced afterwards: the tool tidies away exactly what an
+ * investigator needs.
+ *
+ * `raw` carries what the host actually said. A category tells you which box the
+ * failure fell into; only the raw text tells you what happened.
+ */
+export type PaneProbe =
+  | { kind: "pid"; pid: number; raw: string }
+  | { kind: "no-such-target"; raw: string }
+  | { kind: "unavailable"; raw: string; attempts: number };
+
 export interface SessionHostRecord {
   sessionKey: string;
   alive: boolean;
   pid: number | null;
+  /**
+   * How `alive` was established. Optional so drivers that cannot probe (mock)
+   * stay valid; callers that act destructively on `alive === false` MUST read
+   * it and refuse to act on `unavailable`.
+   */
+  probe?: PaneProbe;
 }
 
 /**

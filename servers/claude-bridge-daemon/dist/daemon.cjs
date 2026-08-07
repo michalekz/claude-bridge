@@ -4298,7 +4298,7 @@ async function resolvePeer(idOrName, root = bridgeRoot(), now = Date.now()) {
 // package.json
 var package_default = {
   name: "claude-bridge-daemon",
-  version: "0.11.4",
+  version: "0.11.5",
   private: true,
   description: "Control-plane daemon for the claude-bridge plugin: peer lifecycle, telemetry, audit. Distributed as opt-in artefact \u2014 see ADR-008.",
   type: "module",
@@ -5820,6 +5820,42 @@ async function handlePeerSpawn(req, ctx) {
       env
     });
     const canonicalKey = record.sessionKey;
+    if (record.probe?.kind === "unavailable") {
+      await applyStateChange(ctx.state, (draft) => {
+        const rec = draft.peers[args.sessionId];
+        if (!rec) return;
+        rec.observed.status = "unknown";
+        rec.observed.lastUpdatedAt = (/* @__PURE__ */ new Date()).toISOString();
+      });
+      await writeEvent({
+        event: "peer_spawn_unverified",
+        level: "warn",
+        by: { sessionId: req.requestedBy.sessionId, name: req.requestedBy.name },
+        requestId: req.id,
+        details: {
+          sessionId: args.sessionId,
+          sessionKey: canonicalKey,
+          reason: "pane_pid_unavailable",
+          hostSaid: record.probe.raw,
+          attempts: record.probe.attempts,
+          cwd: args.cwd,
+          command: args.command
+        }
+      });
+      return errResult(
+        req.id,
+        req.tool,
+        "spawn_unverified",
+        `The session was created, but whether anything is running in it could not be determined after ${record.probe.attempts} attempts. Nothing was destroyed: inspect the pane with \`tmux capture-pane -p -t ${canonicalKey}\`, then either \`team_reconcile\` or \`peer_stop\`. The host said: ${record.probe.raw}`,
+        {
+          sessionId: args.sessionId,
+          sessionKey: canonicalKey,
+          probe: record.probe,
+          cwd: args.cwd,
+          command: args.command
+        }
+      );
+    }
     if (!record.alive || record.pid === null) {
       await applyStateChange(ctx.state, (draft) => {
         delete draft.peers[args.sessionId];
@@ -5842,7 +5878,7 @@ async function handlePeerSpawn(req, ctx) {
         req.id,
         req.tool,
         "spawn_produced_no_process",
-        "Host reported the session was created but nothing is running in it \u2014 the command most likely exited immediately (wrong cwd, bad arguments, or missing binary).",
+        `The session was created and the host reports no such target \u2014 the command exited immediately. Host said: ${record.probe?.kind === "no-such-target" ? record.probe.raw : "(driver reported not-alive without detail)"}`,
         {
           sessionId: args.sessionId,
           sessionKey: canonicalKey,
@@ -8258,7 +8294,7 @@ function paneContains(captured, keys) {
   const probe = needle.length > 40 ? needle.slice(-40) : needle;
   return haystack.includes(probe);
 }
-var TmuxDriver = class {
+var TmuxDriver = class _TmuxDriver {
   name = "tmux";
   tmuxBin;
   verifyTimeoutMs;
@@ -8445,15 +8481,29 @@ var TmuxDriver = class {
       });
     }
     const effectiveKey = createdWindowId ?? canonicalKey;
-    const pid = await this.readSessionPid(effectiveKey);
-    if (pid === null) {
-      log7.error("tmux_spawn_no_pane_pid", {
+    const probe = await this.probePanePid(effectiveKey);
+    if (probe.kind === "no-such-target") {
+      log7.error("tmux_spawn_target_gone", {
         sessionKey: opts.sessionKey,
         canonicalKey: effectiveKey,
-        hint: "new-session returned 0 but no pane pid \u2014 the command most likely exited immediately"
+        raw: probe.raw,
+        note: "tmux says the target does not exist \u2014 the command exited immediately"
+      });
+    } else if (probe.kind === "unavailable") {
+      log7.error("tmux_spawn_pid_unavailable", {
+        sessionKey: opts.sessionKey,
+        canonicalKey: effectiveKey,
+        raw: probe.raw,
+        attempts: probe.attempts,
+        note: "could not determine whether anything is running \u2014 the session is left standing for inspection"
       });
     }
-    return { sessionKey: effectiveKey, alive: pid !== null, pid };
+    return {
+      sessionKey: effectiveKey,
+      alive: probe.kind === "pid",
+      pid: probe.kind === "pid" ? probe.pid : null,
+      probe
+    };
   }
   async kill(sessionKey, opts = {}) {
     const t = parseHostTarget(sessionKey);
@@ -8618,18 +8668,43 @@ var TmuxDriver = class {
   tmux(args, timeout) {
     return execFileAsync(this.tmuxBin, args, { ...EXEC_DEFAULTS, timeout });
   }
-  async readSessionPid(sessionKey) {
-    try {
-      const { stdout } = await execFileAsync(
-        this.tmuxBin,
-        ["display-message", "-p", "-t", sessionKey, "#{pane_pid}"],
-        { ...EXEC_DEFAULTS, timeout: QUERY_TIMEOUT_MS }
-      );
-      const parsed = Number.parseInt(stdout.trim(), 10);
-      return Number.isNaN(parsed) ? null : parsed;
-    } catch {
-      return null;
+  /**
+   * tmux's own vocabulary for "that target is not there".
+   *
+   * Matched on the message rather than the exit code because tmux exits 1 for
+   * everything — a missing session and a broken socket are indistinguishable
+   * by status alone. Anything that does not match is treated as IGNORANCE, not
+   * as absence, which is the safe direction: mistaking a dead pane for an
+   * unreachable one costs a retry, mistaking an unreachable one for a dead
+   * pane costs a live peer.
+   */
+  static NO_SUCH_TARGET = /can't find|no such|not found|no current/i;
+  async probePanePid(sessionKey, attempts = 3) {
+    let last = "";
+    for (let attempt = 1; attempt <= attempts; attempt++) {
+      try {
+        const { stdout } = await execFileAsync(
+          this.tmuxBin,
+          ["display-message", "-p", "-t", sessionKey, "#{pane_pid}"],
+          { ...EXEC_DEFAULTS, timeout: QUERY_TIMEOUT_MS }
+        );
+        const raw = stdout.trim();
+        const parsed = Number.parseInt(raw, 10);
+        if (!Number.isNaN(parsed)) return { kind: "pid", pid: parsed, raw };
+        last = `unparseable pane_pid: ${JSON.stringify(raw)}`;
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        const stderr = e.stderr ?? "";
+        last = `${msg}${stderr ? ` | stderr: ${stderr.trim()}` : ""}`;
+        if (_TmuxDriver.NO_SUCH_TARGET.test(last)) return { kind: "no-such-target", raw: last };
+      }
+      if (attempt < attempts) await new Promise((r) => setTimeout(r, 200));
     }
+    return { kind: "unavailable", raw: last, attempts };
+  }
+  async readSessionPid(sessionKey) {
+    const probe = await this.probePanePid(sessionKey);
+    return probe.kind === "pid" ? probe.pid : null;
   }
   async verifyKilled(sessionKey, budgetMs) {
     const deadline = Date.now() + budgetMs;
