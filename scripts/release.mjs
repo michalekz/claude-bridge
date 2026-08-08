@@ -34,6 +34,7 @@
  *       Point a catalog entry at a tag. Run on main.
  */
 
+import { execSync } from "node:child_process";
 import { readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -44,166 +45,215 @@ const PLUGIN_MANIFEST = ".claude-plugin/plugin.json";
 const CATALOG = ".claude-plugin/marketplace.json";
 /** Every package.json whose version must equal the plugin manifest's. */
 const PACKAGES = [
-  "servers/claude-bridge/package.json",
-  "servers/claude-bridge-daemon/package.json",
-  "packages/shared/package.json",
+	"servers/claude-bridge/package.json",
+	"servers/claude-bridge-daemon/package.json",
+	"packages/shared/package.json",
 ];
 
 /** Catalog entry name per release channel. Must be unique within a marketplace. */
 const CHANNEL_PLUGIN_NAME = {
-  stable: "claude-bridge",
-  dev: "claude-bridge-dev",
+	stable: "claude-bridge",
+	dev: "claude-bridge-dev",
 };
 
 function readJson(rel) {
-  return JSON.parse(readFileSync(join(ROOT, rel), "utf-8"));
+	return JSON.parse(readFileSync(join(ROOT, rel), "utf-8"));
 }
 
 function writeJson(rel, obj) {
-  writeFileSync(join(ROOT, rel), `${JSON.stringify(obj, null, 2)}\n`, "utf-8");
+	writeFileSync(join(ROOT, rel), `${JSON.stringify(obj, null, 2)}\n`, "utf-8");
 }
 
 function fail(msg) {
-  console.error(`✗ ${msg}`);
-  process.exitCode = 1;
+	console.error(`✗ ${msg}`);
+	process.exitCode = 1;
 }
 
 function parseArgs(argv) {
-  const out = {};
-  for (let i = 0; i < argv.length; i++) {
-    const a = argv[i];
-    if (!a.startsWith("--")) continue;
-    const key = a.slice(2);
-    const next = argv[i + 1];
-    if (next === undefined || next.startsWith("--")) {
-      out[key] = true;
-    } else {
-      out[key] = next;
-      i++;
-    }
-  }
-  return out;
+	const out = {};
+	for (let i = 0; i < argv.length; i++) {
+		const a = argv[i];
+		if (!a.startsWith("--")) continue;
+		const key = a.slice(2);
+		const next = argv[i + 1];
+		if (next === undefined || next.startsWith("--")) {
+			out[key] = true;
+		} else {
+			out[key] = next;
+			i++;
+		}
+	}
+	return out;
 }
 
 // ---------------------------------------------------------------- check
 
 function cmdCheck() {
-  const plugin = readJson(PLUGIN_MANIFEST);
-  const version = plugin.version;
-  let ok = true;
+	const plugin = readJson(PLUGIN_MANIFEST);
+	const version = plugin.version;
+	let ok = true;
 
-  if (!version) {
-    fail(`${PLUGIN_MANIFEST} has no version`);
-    return;
-  }
-  const validNames = Object.values(CHANNEL_PLUGIN_NAME);
-  if (!validNames.includes(plugin.name)) {
-    fail(`${PLUGIN_MANIFEST} name '${plugin.name}' is not one of ${validNames.join(" / ")}`);
-    ok = false;
-  }
+	if (!version) {
+		fail(`${PLUGIN_MANIFEST} has no version`);
+		return;
+	}
+	const validNames = Object.values(CHANNEL_PLUGIN_NAME);
+	if (!validNames.includes(plugin.name)) {
+		fail(
+			`${PLUGIN_MANIFEST} name '${plugin.name}' is not one of ${validNames.join(" / ")}`,
+		);
+		ok = false;
+	}
 
-  for (const rel of PACKAGES) {
-    const pkg = readJson(rel);
-    if (pkg.version !== version) {
-      fail(`${rel} version ${pkg.version} != ${PLUGIN_MANIFEST} ${version}`);
-      ok = false;
-    }
-  }
+	for (const rel of PACKAGES) {
+		const pkg = readJson(rel);
+		if (pkg.version !== version) {
+			fail(`${rel} version ${pkg.version} != ${PLUGIN_MANIFEST} ${version}`);
+			ok = false;
+		}
+	}
 
-  // The catalog only exists on the release branch; skip when it does not list
-  // this plugin (e.g. a topic branch that never carries the catalog).
-  let catalog = null;
-  try {
-    catalog = readJson(CATALOG);
-  } catch {
-    // no catalog on this branch — nothing more to check
-  }
-  if (catalog) {
-    const names = new Set();
-    for (const entry of catalog.plugins ?? []) {
-      if (names.has(entry.name)) {
-        fail(`${CATALOG} lists '${entry.name}' twice — names must be unique per marketplace`);
-        ok = false;
-      }
-      names.add(entry.name);
-      if (!entry.source?.ref && !entry.source?.sha) {
-        fail(`${CATALOG} entry '${entry.name}' pins neither ref nor sha`);
-        ok = false;
-      }
-      if (entry.version && entry.source?.ref && entry.source.ref !== `v${entry.version}`) {
-        fail(
-          `${CATALOG} entry '${entry.name}': version ${entry.version} does not match ref ${entry.source.ref}`,
-        );
-        ok = false;
-      }
-    }
-  }
+	// The catalog only exists on the release branch; skip when it does not list
+	// this plugin (e.g. a topic branch that never carries the catalog).
+	let catalog = null;
+	try {
+		catalog = readJson(CATALOG);
+	} catch {
+		// no catalog on this branch — nothing more to check
+	}
+	if (catalog) {
+		const names = new Set();
+		for (const entry of catalog.plugins ?? []) {
+			if (names.has(entry.name)) {
+				fail(
+					`${CATALOG} lists '${entry.name}' twice — names must be unique per marketplace`,
+				);
+				ok = false;
+			}
+			names.add(entry.name);
+			if (!entry.source?.ref && !entry.source?.sha) {
+				fail(`${CATALOG} entry '${entry.name}' pins neither ref nor sha`);
+				ok = false;
+			}
+			if (
+				entry.version &&
+				entry.source?.ref &&
+				entry.source.ref !== `v${entry.version}`
+			) {
+				fail(
+					`${CATALOG} entry '${entry.name}': version ${entry.version} does not match ref ${entry.source.ref}`,
+				);
+				ok = false;
+			}
+			// AND the sha, which is the field Claude Code actually resolves.
+			//
+			// This check did not exist until 2026-08-08, and its absence cost three
+			// releases: the dev entry carried ref v0.11.17 with the sha of v0.11.14,
+			// so `claude plugin update` truthfully reported "already at the latest
+			// version (0.11.14)" while every other field said otherwise. Two
+			// hypotheses were refuted chasing it. One entry holds THREE copies of the
+			// same truth — version, ref, sha — and only two of them were compared.
+			//
+			// A ref we cannot resolve is not a failure: a shallow clone has no tags,
+			// and refusing to push over that would break the check for everyone who
+			// is not the release machine.
+			if (entry.source?.ref && entry.source?.sha) {
+				let resolved = null;
+				try {
+					resolved = execSync(`git rev-list -n1 ${entry.source.ref}`, {
+						stdio: ["ignore", "pipe", "ignore"],
+					})
+						.toString()
+						.trim();
+				} catch {
+					// ref not present locally — cannot say, so say nothing
+				}
+				if (resolved && resolved !== entry.source.sha) {
+					fail(
+						`${CATALOG} entry '${entry.name}': sha ${entry.source.sha.slice(0, 12)} is not ${entry.source.ref} (that tag is ${resolved.slice(0, 12)}) — Claude Code resolves by SHA, so this entry ships the wrong tree under the right name`,
+					);
+					ok = false;
+				}
+			}
+		}
+	}
 
-  if (ok) console.log(`✓ manifests agree on ${version} (plugin '${plugin.name}')`);
+	if (ok)
+		console.log(`✓ manifests agree on ${version} (plugin '${plugin.name}')`);
 }
 
 // ------------------------------------------------------------------ set
 
 function cmdSet(args) {
-  const version = args.version;
-  if (!version || version === true) {
-    fail("set requires --version <x.y.z>");
-    return;
-  }
-  const plugin = readJson(PLUGIN_MANIFEST);
-  const before = plugin.version;
-  plugin.version = version;
+	const version = args.version;
+	if (!version || version === true) {
+		fail("set requires --version <x.y.z>");
+		return;
+	}
+	const plugin = readJson(PLUGIN_MANIFEST);
+	const before = plugin.version;
+	plugin.version = version;
 
-  if (args.name && args.name !== true) {
-    const validNames = Object.values(CHANNEL_PLUGIN_NAME);
-    if (!validNames.includes(args.name)) {
-      fail(`--name must be one of ${validNames.join(" / ")}`);
-      return;
-    }
-    plugin.name = args.name;
-  }
-  writeJson(PLUGIN_MANIFEST, plugin);
-  console.log(`  ${PLUGIN_MANIFEST}: ${before} -> ${version} (name '${plugin.name}')`);
+	if (args.name && args.name !== true) {
+		const validNames = Object.values(CHANNEL_PLUGIN_NAME);
+		if (!validNames.includes(args.name)) {
+			fail(`--name must be one of ${validNames.join(" / ")}`);
+			return;
+		}
+		plugin.name = args.name;
+	}
+	writeJson(PLUGIN_MANIFEST, plugin);
+	console.log(
+		`  ${PLUGIN_MANIFEST}: ${before} -> ${version} (name '${plugin.name}')`,
+	);
 
-  for (const rel of PACKAGES) {
-    const pkg = readJson(rel);
-    const was = pkg.version;
-    pkg.version = version;
-    writeJson(rel, pkg);
-    console.log(`  ${rel}: ${was} -> ${version}`);
-  }
-  console.log("✓ manifests written — src/mcp/server.ts follows package.json at build time");
+	for (const rel of PACKAGES) {
+		const pkg = readJson(rel);
+		const was = pkg.version;
+		pkg.version = version;
+		writeJson(rel, pkg);
+		console.log(`  ${rel}: ${was} -> ${version}`);
+	}
+	console.log(
+		"✓ manifests written — src/mcp/server.ts follows package.json at build time",
+	);
 }
 
 // -------------------------------------------------------------- catalog
 
 function cmdCatalog(args) {
-  const channel = args.channel;
-  if (!channel || !(channel in CHANNEL_PLUGIN_NAME)) {
-    fail(`catalog requires --channel ${Object.keys(CHANNEL_PLUGIN_NAME).join("|")}`);
-    return;
-  }
-  const wantedName = CHANNEL_PLUGIN_NAME[channel];
-  const catalog = readJson(CATALOG);
-  const entry = (catalog.plugins ?? []).find((p) => p.name === wantedName);
-  if (!entry) {
-    fail(`${CATALOG} has no entry named '${wantedName}' — add it before pointing it at a tag`);
-    return;
-  }
-  if (args.version && args.version !== true) {
-    entry.version = args.version;
-  }
-  if (args.ref && args.ref !== true) {
-    entry.source.ref = args.ref;
-  }
-  if (args.sha && args.sha !== true) {
-    entry.source.sha = args.sha;
-  }
-  writeJson(CATALOG, catalog);
-  console.log(
-    `✓ ${channel}: '${wantedName}' -> version ${entry.version}, ref ${entry.source.ref}` +
-      (entry.source.sha ? `, sha ${String(entry.source.sha).slice(0, 12)}` : ""),
-  );
+	const channel = args.channel;
+	if (!channel || !(channel in CHANNEL_PLUGIN_NAME)) {
+		fail(
+			`catalog requires --channel ${Object.keys(CHANNEL_PLUGIN_NAME).join("|")}`,
+		);
+		return;
+	}
+	const wantedName = CHANNEL_PLUGIN_NAME[channel];
+	const catalog = readJson(CATALOG);
+	const entry = (catalog.plugins ?? []).find((p) => p.name === wantedName);
+	if (!entry) {
+		fail(
+			`${CATALOG} has no entry named '${wantedName}' — add it before pointing it at a tag`,
+		);
+		return;
+	}
+	if (args.version && args.version !== true) {
+		entry.version = args.version;
+	}
+	if (args.ref && args.ref !== true) {
+		entry.source.ref = args.ref;
+	}
+	if (args.sha && args.sha !== true) {
+		entry.source.sha = args.sha;
+	}
+	writeJson(CATALOG, catalog);
+	console.log(
+		`✓ ${channel}: '${wantedName}' -> version ${entry.version}, ref ${entry.source.ref}` +
+			(entry.source.sha
+				? `, sha ${String(entry.source.sha).slice(0, 12)}`
+				: ""),
+	);
 }
 
 // ----------------------------------------------------------------- main
@@ -212,16 +262,18 @@ const [, , cmd, ...rest] = process.argv;
 const args = parseArgs(rest);
 
 switch (cmd) {
-  case "check":
-    cmdCheck();
-    break;
-  case "set":
-    cmdSet(args);
-    break;
-  case "catalog":
-    cmdCatalog(args);
-    break;
-  default:
-    console.error("usage: release.mjs check | set --version X [--name N] | catalog --channel C ...");
-    process.exitCode = 2;
+	case "check":
+		cmdCheck();
+		break;
+	case "set":
+		cmdSet(args);
+		break;
+	case "catalog":
+		cmdCatalog(args);
+		break;
+	default:
+		console.error(
+			"usage: release.mjs check | set --version X [--name N] | catalog --channel C ...",
+		);
+		process.exitCode = 2;
 }
