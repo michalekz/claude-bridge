@@ -146,9 +146,40 @@ proof that is the right trade.
 
 ---
 
+## Most messages never come through here
+
+Worth knowing before you try to test this layer: a message to an **idle peer
+with a live channel** is delivered over the channel socket and never touches
+send-keys. Sending a `peer_ask` and then looking for a line in
+`control/logs/sendkeys-*.log` finds nothing, and the natural conclusion — "the
+send layer is broken" — is wrong.
+
+Only two paths type into a pane:
+
+| Path | When |
+|------|------|
+| `peer_compact` | after the anchor ack, to inject `/compact` |
+| `wake` | to a peer that has just been resumed and has no live channel yet |
+
+To exercise the layer deliberately, drive `TmuxDriver.sendKeys` directly
+against a pane running Claude Code.
+
+---
+
 ## If the environment changes
 
-These numbers belong to a configuration. `allow-passthrough` and
-`extended-keys` are currently **off** on the fleet's tmux server; turning them
-on changes what appears in a captured pane. Any such change should be followed
-by one wake round trip to confirm step 4 still recognises delivery.
+These numbers belong to a configuration, so re-run the checks after changing it
+rather than assuming they carry.
+
+They have survived one such change already. On 2026-08-08 `allow-passthrough`
+and `extended-keys` were turned on (Anthropic's recommended tmux settings) and
+every measurement was repeated against a live Claude Code pane:
+
+| Measurement | before the flip | after |
+|---|---|---|
+| collapse boundary | 800 literal / 801 collapsed | unchanged |
+| characters killed per `C-u` | 184 | unchanged |
+| full clear→send→verify→Enter cycle, 377-char draft over 3 rows | 6 checks pass, draft recorded exactly | unchanged |
+
+`extended-keys` in particular did not disturb Enter: the payload was submitted
+and the agent acted on it.
