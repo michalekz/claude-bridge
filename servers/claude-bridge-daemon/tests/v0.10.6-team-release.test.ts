@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { canonicalHostTarget } from "../src/hosts/driver.ts";
 import { makePeer } from "./peer-fixture.ts";
 
 const homeHolder = vi.hoisted(() => ({ current: "" }));
@@ -48,7 +49,7 @@ function record(sessionId: string, name: string, team?: string) {
     },
     {
       name,
-      tmuxTarget: "@42",
+      tmuxTarget: canonicalHostTarget("@42"),
       pid: 4242,
       adopted: true,
       startedAt: "2026-08-04T10:00:00.000Z",

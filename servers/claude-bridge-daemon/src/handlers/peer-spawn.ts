@@ -5,6 +5,7 @@ import { z } from "zod";
 import { harvestEnv, sanitizeEnv } from "../env-whitelist.ts";
 import { publishLifecycleEvent } from "../event-subscribers.ts";
 import { writeEvent } from "../events.ts";
+import { canonicalHostTarget } from "../hosts/driver.ts";
 import type { RequestEnvelope, ResultEnvelope } from "../rpc.ts";
 import { errResult, okResult } from "../rpc.ts";
 import type { PeerHostDriver, PeerRecord } from "../state.ts";
@@ -34,10 +35,15 @@ import { applyStateChange } from "./state-writer.ts";
 
 export const PeerSpawnArgsSchema = z
   .object({
-    sessionId: z
+    handle: z
       .string()
       .min(1)
-      .describe("Peer sessionId (UUID for resume; stable name for a new spawn)"),
+      .describe(
+        "Registry key for this peer — the name the control plane will know it by. " +
+          "Renamed from `sessionId` in v0.11.21: a peer that has not booted has no " +
+          "session id, so this was never one. Pass a UUID only when resuming that " +
+          "exact transcript; otherwise any stable name.",
+      ),
     displayName: z
       .string()
       .min(1)
@@ -52,7 +58,7 @@ export const PeerSpawnArgsSchema = z
     /**
      * WHICH transcript to resume, when it is not the same string as the key.
      *
-     * `sessionId` above is a HANDLE — the registry key, chosen before the peer
+     * `handle` above is exactly that — the registry key, chosen before the peer
      * existed (see peer-identity.ts). Until v0.11.18 it was also handed to
      * `--resume`, and for a handle-keyed peer that is a string no transcript is
      * named after: `isResumableSessionId("tst-c")` is false, so `resume` came
@@ -194,9 +200,25 @@ export async function handlePeerSpawn(
   // pre-spawn hasSession() probe still matches any existing session that
   // would collide once we canonicalize on spawn.
   const sessionKey = args.displayName;
+  /**
+   * What goes into the RECORD — canonical from the FIRST write (R3, v0.11.21).
+   *
+   * The record used to be created holding the raw display name and corrected to
+   * the driver's canonical form only after a successful spawn. Between those
+   * two writes the registry held an address the host would not recognise, and
+   * permanently so if the spawn failed in between.
+   *
+   * Nothing on this fleet showed it — measured 2026-08-08, 0 of 26 records hold
+   * a non-canonical target — because it needs a display name carrying `:` or
+   * `.`. A latent trap is still a trap: `team_reconcile` matches this field
+   * against `listWindows()` output BY STRING, so the peer would have been
+   * reported as a pane that no longer exists while it was sitting there
+   * running.
+   */
+  const plannedTarget = canonicalHostTarget(sessionKey);
 
   const hit = await forkGuard(ctx.state, ctx.hostDriver, {
-    sessionId: args.sessionId,
+    handle: args.handle,
     sessionKey,
   });
   if (hit) {
@@ -205,14 +227,14 @@ export async function handlePeerSpawn(
       level: "warn",
       by: { sessionId: req.requestedBy.sessionId, name: req.requestedBy.name },
       requestId: req.id,
-      details: { sessionId: args.sessionId, sessionKey, ...hit.details, reason: hit.reason },
+      details: { sessionId: args.handle, sessionKey, ...hit.details, reason: hit.reason },
     });
     return errResult(
       req.id,
       req.tool,
       "session_already_live",
-      `Refusing to spawn — ${hit.reason === "state_live" ? "daemon state" : "host driver"} still holds sessionId '${args.sessionId}'`,
-      { sessionId: args.sessionId, ...hit.details },
+      `Refusing to spawn — ${hit.reason === "state_live" ? "daemon state" : "host driver"} still holds sessionId '${args.handle}'`,
+      { sessionId: args.handle, ...hit.details },
     );
   }
 
@@ -243,11 +265,11 @@ export async function handlePeerSpawn(
   // WHAT gets resumed — the identity, falling back to the handle.
   //
   // Every use below is about the transcript, so every one of them takes this
-  // and not `args.sessionId`: the file that must exist, the id printed in the
+  // and not `args.handle`: the file that must exist, the id printed in the
   // refusal, and the `--resume` argument itself. Missing one would leave the
   // check and the launch disagreeing about which session is being restored,
   // which is worse than either mistake alone.
-  const resumeTarget = args.resumeSessionId ?? args.sessionId;
+  const resumeTarget = args.resumeSessionId ?? args.handle;
   if (args.resume) {
     // Is there anything to resume? (N10, 2026-08-08)
     //
@@ -281,7 +303,7 @@ export async function handlePeerSpawn(
         by: { sessionId: req.requestedBy.sessionId, name: req.requestedBy.name },
         requestId: req.id,
         details: {
-          sessionId: args.sessionId,
+          sessionId: args.handle,
           resumeTarget,
           reason: "resume_transcript_missing",
           cwd: args.cwd,
@@ -297,7 +319,7 @@ export async function handlePeerSpawn(
           ? `There is no transcript for ${resumeTarget} under cwd '${args.cwd}' (looked for ${transcript}) — but one exists at ${elsewhere}. Claude Code finds transcripts by working directory, so this peer would start, fail to find its own history and exit. Spawn it in the directory its transcript belongs to.`
           : `There is no transcript for ${resumeTarget} anywhere under ~/.claude/projects (looked for ${transcript}). \`--resume\` would print "No conversation found" and exit immediately. Either the session id is wrong, or that session never held a conversation — a session file is written at boot, a transcript only once something is said.`,
         {
-          sessionId: args.sessionId,
+          sessionId: args.handle,
           resumeTarget,
           cwd: args.cwd,
           transcript,
@@ -312,10 +334,10 @@ export async function handlePeerSpawn(
   }
 
   const hostDriverName = ctx.hostDriver.name;
-  const existingRestartRequest = ctx.state.peers[args.sessionId]?.observed.restartRequest ?? null;
+  const existingRestartRequest = ctx.state.peers[args.handle]?.observed.restartRequest ?? null;
   await applyStateChange(ctx.state, (draft) => {
-    draft.peers[args.sessionId] = {
-      sessionId: args.sessionId,
+    draft.peers[args.handle] = {
+      handle: args.handle,
       desired: {
         ...(args.team ? { team: args.team } : {}),
         // The short form, stored once rather than recomputed by every caller
@@ -339,7 +361,7 @@ export async function handlePeerSpawn(
       observed: {
         name: args.displayName,
         hostDriver: hostDriverName as PeerHostDriver,
-        tmuxTarget: sessionKey,
+        tmuxTarget: plannedTarget,
         pid: null,
         status: "starting",
         // `harvestEnv`, not `sanitizeEnv`: `env` above is what this peer starts
@@ -465,7 +487,7 @@ export async function handlePeerSpawn(
           .archivePane?.(canonicalKey, `spawn produced a process that exited ${exitStatus ?? "?"}`)
           .catch(() => null)) ?? null;
       await applyStateChange(ctx.state, (draft) => {
-        delete draft.peers[args.sessionId];
+        delete draft.peers[args.handle];
       });
       if (archivePath) await ctx.hostDriver.kill(canonicalKey).catch(() => undefined);
       await writeEvent({
@@ -474,7 +496,7 @@ export async function handlePeerSpawn(
         by: { sessionId: req.requestedBy.sessionId, name: req.requestedBy.name },
         requestId: req.id,
         details: {
-          sessionId: args.sessionId,
+          sessionId: args.handle,
           sessionKey: canonicalKey,
           reason: "process_exited_after_spawn",
           exitStatus,
@@ -494,7 +516,7 @@ export async function handlePeerSpawn(
             : `The pane could NOT be archived, so it was left standing — read it with \`tmux capture-pane -p -t ${canonicalKey}\` before removing it.`
         }`,
         {
-          sessionId: args.sessionId,
+          sessionId: args.handle,
           sessionKey: canonicalKey,
           exitStatus,
           archivePath,
@@ -506,7 +528,7 @@ export async function handlePeerSpawn(
     }
     if (record.probe?.kind === "unavailable") {
       await applyStateChange(ctx.state, (draft) => {
-        const rec = draft.peers[args.sessionId];
+        const rec = draft.peers[args.handle];
         if (!rec) return;
         rec.observed.status = "unknown";
         rec.observed.lastUpdatedAt = new Date().toISOString();
@@ -517,7 +539,7 @@ export async function handlePeerSpawn(
         by: { sessionId: req.requestedBy.sessionId, name: req.requestedBy.name },
         requestId: req.id,
         details: {
-          sessionId: args.sessionId,
+          sessionId: args.handle,
           sessionKey: canonicalKey,
           reason: "pane_pid_unavailable",
           hostSaid: record.probe.raw,
@@ -534,7 +556,7 @@ export async function handlePeerSpawn(
           `Nothing was destroyed: inspect the pane with \`tmux capture-pane -p -t ${canonicalKey}\`, then either \`team_reconcile\` or \`peer_stop\`. ` +
           `The host said: ${record.probe.raw}`,
         {
-          sessionId: args.sessionId,
+          sessionId: args.handle,
           sessionKey: canonicalKey,
           probe: record.probe,
           cwd: args.cwd,
@@ -546,7 +568,7 @@ export async function handlePeerSpawn(
       // Leave nothing half-registered, and take the empty tmux session with
       // us if one somehow survived.
       await applyStateChange(ctx.state, (draft) => {
-        delete draft.peers[args.sessionId];
+        delete draft.peers[args.handle];
       });
       await ctx.hostDriver.kill(canonicalKey).catch(() => undefined);
       await writeEvent({
@@ -555,7 +577,7 @@ export async function handlePeerSpawn(
         by: { sessionId: req.requestedBy.sessionId, name: req.requestedBy.name },
         requestId: req.id,
         details: {
-          sessionId: args.sessionId,
+          sessionId: args.handle,
           sessionKey: canonicalKey,
           reason: "no_process_after_spawn",
           cwd: args.cwd,
@@ -568,7 +590,7 @@ export async function handlePeerSpawn(
         "spawn_produced_no_process",
         `The session was created and the host reports no such target — the command exited immediately. Host said: ${record.probe?.kind === "no-such-target" ? record.probe.raw : "(driver reported not-alive without detail)"}`,
         {
-          sessionId: args.sessionId,
+          sessionId: args.handle,
           sessionKey: canonicalKey,
           cwd: args.cwd,
           command: args.command,
@@ -577,7 +599,7 @@ export async function handlePeerSpawn(
     }
     // WHO did we just start? (v0.11.16, defect N4.)
     //
-    // `args.sessionId` is a HANDLE — a name the caller chose before this peer
+    // `args.handle` is a HANDLE — a name the caller chose before this peer
     // existed. It is not, and never was, the peer's identity. The identity is
     // minted by the process inside the pane, and until now the daemon never
     // learned it: the registry said `tst-c`, the bridge said `tst-c-3e`, both
@@ -606,7 +628,7 @@ export async function handlePeerSpawn(
     const measured = identity.kind === "measured" ? identity.measurement : null;
 
     await applyStateChange(ctx.state, (draft) => {
-      const rec = draft.peers[args.sessionId];
+      const rec = draft.peers[args.handle];
       if (!rec) return;
       rec.observed.pid = record.pid;
       rec.observed.status = "live";
@@ -623,7 +645,7 @@ export async function handlePeerSpawn(
       by: { sessionId: req.requestedBy.sessionId, name: req.requestedBy.name },
       requestId: req.id,
       details: {
-        handle: args.sessionId,
+        handle: args.handle,
         sessionKey: canonicalKey,
         pid: record.pid,
         measuredSessionId: measured?.sessionId ?? null,
@@ -644,7 +666,7 @@ export async function handlePeerSpawn(
       by: { sessionId: req.requestedBy.sessionId, name: req.requestedBy.name },
       requestId: req.id,
       details: {
-        sessionId: args.sessionId,
+        sessionId: args.handle,
         sessionKey: canonicalKey,
         rawSessionKey: sessionKey !== canonicalKey ? sessionKey : undefined,
         pid: record.pid,
@@ -660,7 +682,7 @@ export async function handlePeerSpawn(
     });
     await publishLifecycleEvent({
       event: "peer_started",
-      sessionId: args.sessionId,
+      handle: args.handle,
       sessionKey: canonicalKey,
       details: {
         pid: record.pid,
@@ -670,10 +692,17 @@ export async function handlePeerSpawn(
       },
     });
     return okResult(req.id, req.tool, {
-      // The handle the caller chose — still the registry key, still how you
-      // address this peer. `sessionId` keeps the name so this release is about
-      // behaviour rather than renaming; the rename to `handle` is its own item.
-      sessionId: args.sessionId,
+      // The handle the caller chose — the registry key, and how you address
+      // this peer. v0.11.16 left the name alone and said "the rename to
+      // `handle` is its own item"; R3 is that item, so the word now matches
+      // what the value has always been.
+      //
+      // `measuredSessionId` below keeps its longer name deliberately. It is a
+      // genuine session id and could be called `sessionId` now that the word is
+      // free — but a caller reading `sessionId` off this result would silently
+      // get a different value than before, which is the one kind of breakage a
+      // rename must not produce.
+      handle: args.handle,
       sessionKey: canonicalKey,
       pid: record.pid,
       hostDriver: hostDriverName,
@@ -692,7 +721,7 @@ export async function handlePeerSpawn(
     });
   } catch (e) {
     await applyStateChange(ctx.state, (draft) => {
-      delete draft.peers[args.sessionId];
+      delete draft.peers[args.handle];
     });
     const message = e instanceof Error ? e.message : String(e);
     await writeEvent({
@@ -700,10 +729,10 @@ export async function handlePeerSpawn(
       level: "error",
       by: { sessionId: req.requestedBy.sessionId, name: req.requestedBy.name },
       requestId: req.id,
-      details: { sessionId: args.sessionId, sessionKey, err: message },
+      details: { sessionId: args.handle, sessionKey, err: message },
     });
     return errResult(req.id, req.tool, "spawn_failed", message, {
-      sessionId: args.sessionId,
+      sessionId: args.handle,
       sessionKey,
     });
   }

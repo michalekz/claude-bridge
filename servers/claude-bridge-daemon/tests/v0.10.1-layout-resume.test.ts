@@ -1,6 +1,7 @@
 import { mkdir, readFile, readdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { canonicalHostTarget } from "../src/hosts/driver.ts";
 
 const homeHolder = vi.hoisted(() => ({ current: "" }));
 
@@ -36,9 +37,9 @@ function makeRequest(tool: string, args: Record<string, unknown>, id = "req-1") 
  * the extras as positional parameters and ignores them, which is how the real
  * `claude` binary behaves.
  */
-function peerSpec(sessionId: string, displayName: string) {
+function peerSpec(handle: string, displayName: string) {
   return {
-    sessionId,
+    handle,
     displayName,
     cwd: "/tmp",
     command: "/bin/sh",
@@ -131,8 +132,8 @@ describe("v0.10.1 team_layout resume-from-stopped", () => {
           inline: {
             team: "rt",
             peers: [
-              { sessionId: "rt-a", displayName: "rt:alice" },
-              { sessionId: "rt-b", displayName: "rt:bob" },
+              { handle: "rt-a", displayName: "rt:alice" },
+              { handle: "rt-b", displayName: "rt:bob" },
             ],
           },
           anchorTimeoutMs: 5_000,
@@ -167,7 +168,7 @@ describe("v0.10.1 team_layout resume-from-stopped", () => {
     // Same sessionIds, live again, host sessions back.
     expect(doc.peers["rt-a"]?.observed.status).toBe("live");
     expect(doc.peers["rt-b"]?.observed.status).toBe("live");
-    expect(doc.peers["rt-a"]?.sessionId).toBe("rt-a");
+    expect(doc.peers["rt-a"]?.handle).toBe("rt-a");
     expect(doc.peers["rt-a"]?.desired.team).toBe("rt");
     expect(await driver.hasSession("rt_alice")).toBe(true);
     expect(await driver.hasSession("rt_bob")).toBe(true);
@@ -184,14 +185,14 @@ describe("v0.10.1 team_layout resume-from-stopped", () => {
 
     // A tombstone left behind by a previous team_stop.
     doc.peers["rs-1"] = {
-      sessionId: "rs-1",
+      handle: "rs-1",
       desired: {
         accountProfile: null,
       },
       observed: {
         name: "rs:one",
         hostDriver: "mock",
-        tmuxTarget: "rs_one",
+        tmuxTarget: canonicalHostTarget("rs_one"),
         pid: null,
         status: "stopped",
         stoppedCleanly: true,
@@ -245,14 +246,14 @@ describe("v0.10.1 team_layout resume-from-stopped", () => {
 
     // stoppedCleanly:false — the peer never finished its ack cycle.
     doc.peers["wk-1"] = {
-      sessionId: "wk-1",
+      handle: "wk-1",
       desired: {
         accountProfile: null,
       },
       observed: {
         name: "wk:one",
         hostDriver: "mock",
-        tmuxTarget: "wk_one",
+        tmuxTarget: canonicalHostTarget("wk_one"),
         pid: null,
         status: "stopped",
         stoppedCleanly: false,
@@ -316,14 +317,14 @@ describe("v0.10.1 team_layout resume-from-stopped", () => {
     };
 
     doc.peers["nw-1"] = {
-      sessionId: "nw-1",
+      handle: "nw-1",
       desired: {
         accountProfile: null,
       },
       observed: {
         name: "nw:one",
         hostDriver: "mock",
-        tmuxTarget: "nw_one",
+        tmuxTarget: canonicalHostTarget("nw_one"),
         pid: null,
         status: "stopped",
         stoppedCleanly: true,
@@ -359,14 +360,14 @@ describe("v0.10.1 team_layout resume-from-stopped", () => {
     // Tombstone for a peer the spec no longer mentions — pure garbage, and
     // peer_stop is the wrong instrument because there is no host session.
     doc.peers["gone-1"] = {
-      sessionId: "gone-1",
+      handle: "gone-1",
       desired: {
         accountProfile: null,
       },
       observed: {
         name: "gone:one",
         hostDriver: "mock",
-        tmuxTarget: "gone_one",
+        tmuxTarget: canonicalHostTarget("gone_one"),
         pid: null,
         status: "stopped",
         stoppedCleanly: true,

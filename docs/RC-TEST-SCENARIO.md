@@ -22,7 +22,7 @@ Live demo of the control-plane daemon on a **test peer** that is completely sepa
 3. **`peer_spawn wait:true, timeoutMs:5000`** with a test peer:
    ```json
    {
-     "sessionId": "rc-test-alice",
+     "handle": "rc-test-alice",
      "displayName": "rc-test:alice",
      "cwd": "/tmp",
      "command": "/bin/sleep",
@@ -62,7 +62,7 @@ Live demo of the control-plane daemon on a **test peer** that is completely sepa
      "inline": {
        "team": "rc-test",
        "peers": [
-         { "sessionId": "rc-test-alice", "displayName": "rc-test:alice", "cwd": "/tmp",
+         { "handle": "rc-test-alice", "displayName": "rc-test:alice", "cwd": "/tmp",
            "command": "/bin/sleep", "args": ["300"], "resume": false }
        ]
      },
@@ -70,6 +70,22 @@ Live demo of the control-plane daemon on a **test peer** that is completely sepa
    }
    ```
    Expect `outcome:"ok", mode:"plan"`. `plannedSpawn:[], plannedStop:[], keptExtras:[]` (peer already matches spec, nothing to do).
+
+   **`apply:false` is the DEFAULT since v0.11.21** and is written out here only
+   because a test scenario should say what it means. Before that this tool was
+   the one bulk operation that executed unless told not to, while every sibling
+   previewed first — so a mistyped team name spawned peers.
+
+   **`handle`, not `sessionId` (v0.11.21, breaking, no alias).** The registry
+   key is chosen before the peer exists; only a booted peer can mint a session
+   id. Passing `sessionId` here now fails schema validation, which is the
+   intended outcome — the old name is what let the key be handed to `--resume`,
+   bringing a peer back empty under its own name and reporting success.
+
+8b. **`team_status team:"rc-test"` — expect a REFUSAL** (v0.11.21):
+   `outcome:"error"`, code `not_implemented`, message naming `team`. Until
+   v0.11.21 this argument was accepted, echoed back in the response, and
+   ignored — so an answer that looked filtered contained the whole fleet.
 9. **`peer_stop wait:true, timeoutMs:5000`**:
    ```json
    { "peer": "rc-test-alice", "reason": "rc-test-cleanup", "force": true, "wait": true, "timeoutMs": 5000 }

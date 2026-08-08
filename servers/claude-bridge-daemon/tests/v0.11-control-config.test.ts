@@ -23,7 +23,7 @@ vi.mock("node:os", async () => {
 
 function ctxWith(...peers: ReturnType<typeof makePeer>[]) {
   const state = emptyState("0.11.0-test");
-  for (const p of peers) state.peers[p.sessionId] = p;
+  for (const p of peers) state.peers[p.handle] = p;
   return {
     state,
     hostDriver: { name: "mock" },

@@ -21,7 +21,8 @@ export interface ForkGuardHit {
 }
 
 export interface ForkGuardOptions {
-  sessionId: string;
+  /** Registry key of the peer about to be spawned — renamed in R3 (v0.11.21). */
+  handle: string;
   sessionKey: string;
 }
 
@@ -30,7 +31,7 @@ export async function forkGuard(
   driver: SessionHostDriver,
   opts: ForkGuardOptions,
 ): Promise<ForkGuardHit | null> {
-  const record = state.peers[opts.sessionId];
+  const record = state.peers[opts.handle];
   // `restarting` blocks too (v0.11.18): a peer between "get ready" and its stop
   // is still running, and a spawn onto that handle would be a fork with the
   // paperwork in order. `peer_restart` does not block itself on this — by the
@@ -45,7 +46,7 @@ export async function forkGuard(
     return {
       reason: "state_live",
       details: {
-        sessionId: opts.sessionId,
+        handle: opts.handle,
         recordedStatus: record.observed.status,
         tmuxTarget: record.observed.tmuxTarget,
       },

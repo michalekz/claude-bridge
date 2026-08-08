@@ -7,14 +7,17 @@ import { controlDir, makeLogger } from "@claude-bridge/shared";
 import { writeEvent } from "../events.ts";
 import { pollUntil } from "../poll.ts";
 import {
+  type CanonicalTarget,
   type HostWindowRecord,
   type PaneProbe,
   type SessionHostDriver,
   type SessionHostRecord,
   type SessionHostSpawnOptions,
+  canonicalHostTarget,
   formatHostTarget,
   parseHostTarget,
   sanitizeSessionKey,
+  trustCanonicalTarget,
 } from "./driver.ts";
 
 /**
@@ -277,7 +280,8 @@ export class TmuxDriver implements SessionHostDriver {
         const window = Number.parseInt(idxStr, 10);
         if (Number.isNaN(window)) continue;
         // The ADDRESS is the window id; `session:index` is only a label.
-        const target = windowId;
+        // Trusted, not sanitised: tmux minted it, so tmux defines its form.
+        const target = trustCanonicalTarget(windowId);
         // A window can hold several panes; the peer is one process, so report
         // the window once, keyed on its first pane.
         if (seen.has(target)) continue;
@@ -342,7 +346,9 @@ export class TmuxDriver implements SessionHostDriver {
     // there, not as a session of its own (fix, 2026-08-04 pilot).
     const asWindow = opts.inSession !== undefined;
     const parentSession = opts.inSession ? sanitizeSessionKey(opts.inSession) : null;
-    const canonicalKey = asWindow ? opts.sessionKey : sanitizeSessionKey(opts.sessionKey);
+    // `canonicalHostTarget`, not the bare sanitizer: a caller may hand us a
+    // window id, and `@42` must survive intact (R3, v0.11.21).
+    const canonicalKey = canonicalHostTarget(opts.sessionKey);
     const args = asWindow
       ? [
           "new-window",
@@ -407,7 +413,7 @@ export class TmuxDriver implements SessionHostDriver {
     }
 
     const { env } = opts;
-    let createdWindowId: string | null = null;
+    let createdWindowId: CanonicalTarget | null = null;
     try {
       const { stdout } = await execFileAsync(this.tmuxBin, effectiveArgs, {
         ...EXEC_DEFAULTS,
@@ -418,7 +424,7 @@ export class TmuxDriver implements SessionHostDriver {
         timeout: MUTATE_TIMEOUT_MS,
       });
       // Both paths print the new window's id now.
-      if (asWindow) createdWindowId = stdout.trim() || null;
+      if (asWindow) createdWindowId = stdout.trim() ? trustCanonicalTarget(stdout.trim()) : null;
       void recreatedHome;
     } catch (e) {
       log.error("tmux_spawn_failed", {
@@ -616,7 +622,8 @@ export class TmuxDriver implements SessionHostDriver {
         const dead = deadStr === "1";
         const exitStatus = exitStr ? Number.parseInt(exitStr, 10) : Number.NaN;
         records.push({
-          sessionKey: name,
+          // What tmux calls it IS its address — see `trustCanonicalTarget`.
+          sessionKey: trustCanonicalTarget(name),
           alive: !dead,
           pid,
           ...(dead && pid !== null

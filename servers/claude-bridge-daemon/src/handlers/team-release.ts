@@ -54,7 +54,7 @@ interface ReleasePlanEntry {
 
 function describe(rec: PeerRecord): ReleasePlanEntry {
   return {
-    sessionId: rec.sessionId,
+    sessionId: rec.handle,
     name: rec.observed.name,
     status: rec.observed.status,
     team: rec.desired.team ?? null,
@@ -129,7 +129,7 @@ export async function handleTeamRelease(
       }
       // Releasing the same peer twice in one call is harmless, but reporting it
       // twice would overstate what happened.
-      if (!found.some((f) => f.sessionId === rec.sessionId)) found.push(rec);
+      if (!found.some((f) => f.handle === rec.handle)) found.push(rec);
     }
     if (found.length === 0) {
       return errResult(
@@ -164,7 +164,7 @@ export async function handleTeamRelease(
   }
 
   await applyStateChange(ctx.state, (draft) => {
-    for (const rec of found) delete draft.peers[rec.sessionId];
+    for (const rec of found) delete draft.peers[rec.handle];
   });
 
   for (const rec of found) {
@@ -173,7 +173,7 @@ export async function handleTeamRelease(
       by: { sessionId: req.requestedBy.sessionId, name: req.requestedBy.name },
       requestId: req.id,
       details: {
-        sessionId: rec.sessionId,
+        sessionId: rec.handle,
         name: rec.observed.name,
         team: rec.desired.team ?? null,
         pid: rec.observed.pid,
@@ -191,6 +191,6 @@ export async function handleTeamRelease(
   return okResult(req.id, req.tool, {
     ...plan,
     dryRun: false,
-    released: found.map((r) => r.sessionId),
+    released: found.map((r) => r.handle),
   });
 }

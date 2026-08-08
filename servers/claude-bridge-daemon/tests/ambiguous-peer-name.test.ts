@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { ambiguousPeerMessage, resolvePeerRef, shortFormOf } from "../src/handlers/peer-ref.ts";
+import { canonicalHostTarget } from "../src/hosts/driver.ts";
 import type { PeerRecord } from "../src/state.ts";
 import { makePeer } from "./peer-fixture.ts";
 
@@ -31,7 +32,7 @@ function peer(sessionId: string, name: string, tmuxTarget: string, team?: string
     {
       name,
       hostDriver: "tmux",
-      tmuxTarget,
+      tmuxTarget: canonicalHostTarget(tmuxTarget),
       startedAt: "2026-08-05T05:49:00.000Z",
       lastUpdatedAt: "2026-08-05T05:49:00.000Z",
     },
@@ -105,7 +106,7 @@ describe("a duplicated peer name is refused, not guessed", () => {
     const r = resolvePeerRef(FLEET, "tester");
     expect(r.kind).toBe("found");
     if (r.kind !== "found") return;
-    expect(r.sessionId).toBe("70a00bc8-e68c-4ae2-9c8a-e1a87092454d");
+    expect(r.handle).toBe("70a00bc8-e68c-4ae2-9c8a-e1a87092454d");
   });
 
   it("an unknown reference is not_found, not ambiguous", () => {

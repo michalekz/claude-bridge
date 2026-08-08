@@ -146,7 +146,7 @@ describe("C2 — WHAT gets resumed: the handle, or the measured identity (v0.11.
 
   function rec(over: Record<string, unknown>, desired: Record<string, unknown> = {}) {
     return {
-      sessionId: (over["key"] as string) ?? UUID,
+      handle: (over["key"] as string) ?? UUID,
       desired: { command: "/usr/bin/claude", ...desired },
       observed: {
         name: "peer",

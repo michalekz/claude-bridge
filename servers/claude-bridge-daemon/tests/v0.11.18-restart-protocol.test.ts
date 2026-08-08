@@ -48,7 +48,7 @@ const IDENTITY = "e8197b26-f873-40fb-afec-4e370b5c0997";
 
 function recordFor(over: Record<string, unknown> = {}) {
   return {
-    sessionId: HANDLE,
+    handle: HANDLE,
     desired: { team: "tst", cwd: "/tmp", command: "/usr/bin/claude", spawnArgs: ["--x"] },
     observed: {
       name: HANDLE,
@@ -145,7 +145,7 @@ function stubPrimitives(opts: { spawnOk?: boolean; measured?: string | null } = 
       wakePeer: async (_r: unknown, _c: unknown, o: Record<string, unknown>) => {
         wakes.push(o);
         orderOfEvents.push("wake");
-        return { sessionId: HANDLE, wakeMsgId: "m1", injected: true };
+        return { bridgeId: HANDLE, wakeMsgId: "m1", injected: true };
       },
     };
   });
@@ -166,7 +166,7 @@ describe("step a) — what gets resumed", () => {
     expect(spawnArgs[0]?.["resumeSessionId"]).toBe(IDENTITY);
     // The KEY is still the key. This release fixes what is resumed, and renames
     // nothing.
-    expect(spawnArgs[0]?.["sessionId"]).toBe(HANDLE);
+    expect(spawnArgs[0]?.["handle"]).toBe(HANDLE);
     expect((res.data as Record<string, unknown>)["resumeSource"]).toBe("measured-identity");
   }, 15_000);
 
@@ -174,7 +174,7 @@ describe("step a) — what gets resumed", () => {
     const { spawnArgs } = stubPrimitives();
     const { handlePeerRestart } = await import("../src/handlers/peer-restart.ts");
     const rec = recordFor({ sessionId: IDENTITY });
-    rec.sessionId = IDENTITY;
+    rec.handle = IDENTITY;
     const state = {
       stateVersion: 1,
       daemonVersion: "0.11.18",
@@ -544,7 +544,7 @@ describe("step g) — the peer is told what happened", () => {
         wakePeer: async (_r: unknown, _c: unknown, o: Record<string, unknown>) => {
           wakes.push(o);
           orderOfEvents.push("wake");
-          return { sessionId: HANDLE, wakeMsgId: "m1", injected: true };
+          return { bridgeId: HANDLE, wakeMsgId: "m1", injected: true };
         },
       };
     });
@@ -589,7 +589,7 @@ describe("step g) — the peer is told what happened", () => {
         ...actual,
         wakePeer: async (_r: unknown, _c: unknown, o: Record<string, unknown>) => {
           wakes.push(o);
-          return { sessionId: HANDLE, wakeMsgId: "m1", injected: true };
+          return { bridgeId: HANDLE, wakeMsgId: "m1", injected: true };
         },
       };
     });
@@ -615,7 +615,7 @@ describe("step g) — the peer is told what happened", () => {
       // biome-ignore lint/suspicious/noExplicitAny: hand-built minimal context
     } as any;
     await wakePeer(req, ctx, {
-      sessionId: HANDLE,
+      bridgeId: HANDLE,
       sessionKey: "tst:3",
       reason: "roll",
       stoppedCleanly: false,
@@ -731,7 +731,7 @@ describe("v0.11.19 — the same defect in the tool that makes handle-keyed peers
     // A tombstone, as `peer_stop keepInState` leaves one: no pid, no status,
     // and the identity still measured.
     const state = stateWith({
-      sessionId: HANDLE,
+      bridgeId: HANDLE,
       desired: { team: "tst", cwd: "/tmp", command: "/usr/bin/claude", spawnArgs: [] },
       observed: {
         name: HANDLE,
@@ -767,7 +767,7 @@ describe("v0.11.19 — the same defect in the tool that makes handle-keyed peers
             team: "tst",
             peers: [
               {
-                sessionId: HANDLE,
+                handle: HANDLE,
                 displayName: HANDLE,
                 cwd: "/tmp",
                 command: "/usr/bin/claude",
@@ -788,7 +788,7 @@ describe("v0.11.19 — the same defect in the tool that makes handle-keyed peers
     // named after. The peer wedges in the Resume picker under a new identity.
     expect(spawnArgs[0]?.["resumeSessionId"]).toBe(IDENTITY);
     // The handle is still the key. Only what gets resumed changed.
-    expect(spawnArgs[0]?.["sessionId"]).toBe(HANDLE);
+    expect(spawnArgs[0]?.["handle"]).toBe(HANDLE);
   }, 15_000);
 
   it("an unmeasured record resumes nothing extra — no guessing", async () => {
@@ -801,7 +801,7 @@ describe("v0.11.19 — the same defect in the tool that makes handle-keyed peers
     }));
     const { handleTeamLayout } = await import("../src/handlers/team-layout.ts");
     const state = stateWith({
-      sessionId: HANDLE,
+      bridgeId: HANDLE,
       desired: { team: "tst", cwd: "/tmp", command: "/usr/bin/claude", spawnArgs: [] },
       observed: {
         name: HANDLE,
@@ -836,7 +836,7 @@ describe("v0.11.19 — the same defect in the tool that makes handle-keyed peers
             team: "tst",
             peers: [
               {
-                sessionId: HANDLE,
+                handle: HANDLE,
                 displayName: HANDLE,
                 cwd: "/tmp",
                 command: "/usr/bin/claude",

@@ -2,6 +2,7 @@ import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { z } from "zod";
 import { writeEvent } from "../events.ts";
+import { type CanonicalTarget, trustCanonicalTarget } from "../hosts/driver.ts";
 import { defaultProcessInspector } from "../hosts/process-inspector.ts";
 import type { RequestEnvelope, ResultEnvelope } from "../rpc.ts";
 import { errResult, okResult } from "../rpc.ts";
@@ -155,7 +156,10 @@ export async function handleTeamReconcile(
   const windows = ctx.hostDriver.listWindows ? await ctx.hostDriver.listWindows() : [];
   const sessions = await ctx.hostDriver.listSessions();
 
-  const hostTargets = new Map<string, number | null>();
+  // Keyed by CanonicalTarget so a raw name cannot be used as a lookup: this
+  // map is the address comparison R3 exists for, and a miss here is reported
+  // to an operator as `host_missing` on a peer that is running.
+  const hostTargets = new Map<CanonicalTarget, number | null>();
   for (const w of windows) hostTargets.set(w.target, w.pid);
   for (const s of sessions)
     if (!hostTargets.has(s.sessionKey)) hostTargets.set(s.sessionKey, s.pid);
@@ -176,12 +180,17 @@ export async function handleTeamReconcile(
   const windowsPerSession = new Map<string, number>();
   for (const w of windows)
     windowsPerSession.set(w.session, (windowsPerSession.get(w.session) ?? 0) + 1);
-  const deadPanes = new Map<string, { exitStatus: number | null; label: string; target: string }>();
+  const deadPanes = new Map<
+    CanonicalTarget,
+    { exitStatus: number | null; label: string; target: CanonicalTarget }
+  >();
   for (const w of windows) {
     if (w.dead) {
       const entry = { exitStatus: w.exitStatus, label: w.windowName || w.label, target: w.target };
       deadPanes.set(w.target, entry);
-      if (windowsPerSession.get(w.session) === 1) deadPanes.set(w.session, entry);
+      // The session NAME as tmux reports it — an address the host owns.
+      if (windowsPerSession.get(w.session) === 1)
+        deadPanes.set(trustCanonicalTarget(w.session), entry);
     }
   }
 
@@ -189,7 +198,7 @@ export async function handleTeamReconcile(
   // be compared against. Recording the measurement is what makes the drift
   // report possible at all — without it the field would be declarable and
   // permanently, silently in agreement with nothing.
-  const hostWindowIndex = new Map<string, number>();
+  const hostWindowIndex = new Map<CanonicalTarget, number>();
   for (const w of windows) {
     if (typeof w.window === "number") hostWindowIndex.set(w.target, w.window);
   }
@@ -206,12 +215,12 @@ export async function handleTeamReconcile(
     if (rec.observed.pid !== null) accountedPids.add(rec.observed.pid);
     // A record that has been deliberately stopped is not drift — it is state.
     if (rec.observed.status === "stopped") {
-      healthy.push(rec.sessionId);
+      healthy.push(rec.handle);
       continue;
     }
 
     const base = {
-      sessionId: rec.sessionId,
+      sessionId: rec.handle,
       name: rec.observed.name,
       team: rec.desired.team ?? null,
       recordedPid: rec.observed.pid,
@@ -345,7 +354,7 @@ export async function handleTeamReconcile(
       continue;
     }
 
-    healthy.push(rec.sessionId);
+    healthy.push(rec.handle);
   }
 
   // Peers running on the host that the daemon knows nothing about. Reported
@@ -379,16 +388,16 @@ export async function handleTeamReconcile(
   const recordedTargets = new Set(
     Object.values(ctx.state.peers)
       .map((r) => r.observed.tmuxTarget)
-      .filter((t): t is string => t !== null),
+      .filter((t): t is CanonicalTarget => t !== null),
   );
   // `deadPanes` holds each pane under BOTH of its address forms, so gather the
   // aliases per pane and test all of them against the records. Reading the map
   // by one form only is what produced the first live run's contradiction: a
   // pane recorded by session name was reported as orphaned because the lookup
   // used its window id.
-  const aliasesByPane = new Map<string, Set<string>>();
+  const aliasesByPane = new Map<CanonicalTarget, Set<CanonicalTarget>>();
   for (const [alias, info] of deadPanes) {
-    const set = aliasesByPane.get(info.target) ?? new Set<string>();
+    const set = aliasesByPane.get(info.target) ?? new Set<CanonicalTarget>();
     set.add(alias);
     aliasesByPane.set(info.target, set);
   }
@@ -443,7 +452,7 @@ export async function handleTeamReconcile(
       const idx = hostWindowIndex.get(rec.observed.tmuxTarget);
       if (idx === undefined || rec.observed.windowIndex === idx) continue;
       rec.observed.windowIndex = idx;
-      measured.push(rec.sessionId);
+      measured.push(rec.handle);
     }
   });
 
@@ -479,7 +488,7 @@ export async function handleTeamReconcile(
     if (outcome.kind !== "measured") continue;
     const m = outcome.measurement;
     await applyStateChange(ctx.state, (draft) => {
-      const target = draft.peers[rec.sessionId];
+      const target = draft.peers[rec.handle];
       if (!target) return;
       target.observed.sessionId = m.sessionId;
       target.observed.identity = "measured";
@@ -487,7 +496,7 @@ export async function handleTeamReconcile(
       target.observed.identitySource = m.source;
       target.observed.lastUpdatedAt = new Date().toISOString();
     });
-    identified.push({ handle: rec.sessionId, sessionId: m.sessionId, source: m.source });
+    identified.push({ handle: rec.handle, sessionId: m.sessionId, source: m.source });
     // The transition unknown → measured has to be visible in the audit trail.
     // Without it, "temporary" and "never measured" look identical to anyone
     // reading events afterwards.
@@ -496,7 +505,7 @@ export async function handleTeamReconcile(
       by: { sessionId: req.requestedBy.sessionId, name: req.requestedBy.name },
       requestId: req.id,
       details: {
-        handle: rec.sessionId,
+        handle: rec.handle,
         sessionKey: rec.observed.tmuxTarget,
         pid: m.pid,
         measuredSessionId: m.sessionId,
@@ -515,7 +524,7 @@ export async function handleTeamReconcile(
         r.desired.windowIndex !== r.observed.windowIndex,
     )
     .map((r) => ({
-      sessionId: r.sessionId,
+      sessionId: r.handle,
       name: r.observed.name,
       desired: r.desired.windowIndex,
       observed: r.observed.windowIndex,
@@ -549,7 +558,7 @@ export async function handleTeamReconcile(
     // with the bridge. NOT dead, and must not be read as such.
     identityUnknown: Object.values(ctx.state.peers)
       .filter((r) => r.observed.identity === "unknown")
-      .map((r) => ({ handle: r.sessionId, name: r.observed.name, pid: r.observed.pid })),
+      .map((r) => ({ handle: r.handle, name: r.observed.name, pid: r.observed.pid })),
     readOnly: !args.markDead,
   };
 

@@ -15,7 +15,21 @@ import type { HandlerContext } from "./context.ts";
 
 export const TeamStatusArgsSchema = z
   .object({
-    team: z.string().optional(),
+    /**
+     * NOT IMPLEMENTED, and REFUSED rather than ignored (R3, v0.11.21).
+     *
+     * The schema accepted it, the response echoed it back, and `peers` held the
+     * whole fleet. A caller asking for team `ai` got `team: "ai"` next to all
+     * twenty-six peers — an answer that LOOKS filtered. The description
+     * admitted it, which does not help: a reader trusts the shape of the reply,
+     * not the paragraph about it.
+     *
+     * An argument that is accepted, echoed and ignored is worse than one that
+     * is refused. Kept in the schema (rather than dropped, or typed `never`)
+     * only so the refusal can say something an operator can act on — `Expected
+     * never, received string` is not that sentence.
+     */
+    team: z.string().min(1).optional(),
     verbose: z.boolean().default(false),
   })
   .strict();
@@ -33,6 +47,17 @@ export async function handleTeamStatus(
     });
   }
   const args = parsed.data;
+  if (args.team !== undefined) {
+    return errResult(
+      req.id,
+      req.tool,
+      "not_implemented",
+      "filtering by team is not implemented; omit `team` and read `peers[].team` instead. " +
+        "Until v0.11.21 this argument was accepted and silently ignored, so a filtered-looking " +
+        "answer contained the whole fleet.",
+      { requested: args.team },
+    );
+  }
 
   let hostSessions: Awaited<ReturnType<HandlerContext["hostDriver"]["listSessions"]>>;
   try {
@@ -65,7 +90,7 @@ export async function handleTeamStatus(
       // The HANDLE, not the peer's session identity (v0.11.16, defect N4). It
       // is how you address this peer and it is the registry key; whether it
       // also happens to BE the session id is answered by `identity` below.
-      sessionId: record.sessionId,
+      sessionId: record.handle,
       name: record.observed.name,
       hostDriver: record.observed.hostDriver,
       tmuxTarget: record.observed.tmuxTarget,
@@ -88,7 +113,9 @@ export async function handleTeamStatus(
   return okResult(req.id, req.tool, {
     daemonVersion: ctx.daemonVersion,
     hostDriver: ctx.hostDriver.name,
-    team: args.team ?? null,
+    // Always null now that the argument is refused. Kept so the response shape
+    // does not change under a caller that never passed it.
+    team: null,
     peerCount: peers.length,
     peers: args.verbose
       ? peers

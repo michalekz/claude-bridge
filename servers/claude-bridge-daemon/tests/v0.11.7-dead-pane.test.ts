@@ -207,7 +207,7 @@ describe("team_reconcile makes a corpse readable", () => {
   it("a record whose pane is STILL STANDING says so, with the exit status", async () => {
     const res = await reconcile([corpseWindow], {
       "peer-1": {
-        sessionId: "peer-1",
+        handle: "peer-1",
         desired: {},
         observed: {
           name: "peer-1",
@@ -234,7 +234,7 @@ describe("team_reconcile makes a corpse readable", () => {
   it("the same record with NO pane says the pane is gone", async () => {
     const res = await reconcile([], {
       "peer-2": {
-        sessionId: "peer-2",
+        handle: "peer-2",
         desired: {},
         observed: {
           name: "peer-2",
@@ -266,7 +266,7 @@ describe("team_reconcile makes a corpse readable", () => {
       [{ ...corpseWindow, target: "@9", session: "solo-session", windowName: "solo" }],
       {
         "peer-3": {
-          sessionId: "peer-3",
+          handle: "peer-3",
           desired: {},
           observed: {
             name: "peer-3",
@@ -359,14 +359,14 @@ describe("peer_spawn meets a process that already exited", () => {
     return { handlers, doc, driver, killed, archived };
   }
 
-  const request = (sessionId: string) => ({
+  const request = (handle: string) => ({
     schemaVersion: 1 as const,
-    id: `req-${sessionId}`,
+    id: `req-${handle}`,
     ts: "2026-08-08T09:00:00.000Z",
     tool: "peer_spawn",
     args: {
-      sessionId,
-      displayName: sessionId,
+      handle,
+      displayName: handle,
       cwd: "/tmp",
       command: "/bin/sh",
       args: ["-c", "exit 127"],

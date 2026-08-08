@@ -68,7 +68,12 @@ export type PaneProbe =
   | { kind: "unavailable"; raw: string; attempts: number };
 
 export interface SessionHostRecord {
-  sessionKey: string;
+  /**
+   * The address the driver ACTUALLY used — canonical by construction, which is
+   * why it carries the brand and the spawn option above does not. The option is
+   * what a caller asked for; this is what exists.
+   */
+  sessionKey: CanonicalTarget;
   alive: boolean;
   pid: number | null;
   /**
@@ -123,15 +128,71 @@ export function parseHostTarget(key: string): HostTarget {
   return { kind: "session", session: sanitizeSessionKey(key) };
 }
 
+/**
+ * An address that has been through `parseHostTarget`. A plain string with a
+ * brand, so it costs nothing at runtime and cannot be produced by accident.
+ *
+ * R3 (v0.11.21). The driver has canonicalised at every one of its public
+ * entry points since v0.11.6, which is why the audit item "canonicalise
+ * everywhere an address is an address" measured only 2 of 13 handler sites and
+ * looked like debt: it was counting the wrong side of the boundary. A handler
+ * PASSES an address; the driver RECEIVES it, and receiving is where the
+ * normalising belongs.
+ *
+ * What the driver cannot protect is the address nobody passes to it — the six
+ * places that compare a stored `tmuxTarget` against a host-reported one as
+ * strings. Those maps are filled from `listSessions`/`listWindows`, so a record
+ * holding a raw name finds no match, and `team_reconcile` reports a live peer
+ * as a pane that no longer exists.
+ *
+ * A brand turns "remember to canonicalise before storing" into a compile error,
+ * which is the only form of a rule that survives the next caller.
+ */
+export type CanonicalTarget = string & { readonly __canonicalHostTarget: unique symbol };
+
 /** The canonical string form of a target — what goes into `PeerRecord.tmuxTarget`. */
-export function formatHostTarget(t: HostTarget): string {
-  return t.kind === "window" ? t.windowId : t.session;
+export function formatHostTarget(t: HostTarget): CanonicalTarget {
+  return (t.kind === "window" ? t.windowId : t.session) as CanonicalTarget;
+}
+
+/** Parse and format in one step — the shape every caller actually wanted. */
+export function canonicalHostTarget(key: string): CanonicalTarget {
+  return formatHostTarget(parseHostTarget(key));
+}
+
+/**
+ * Accept an address the HOST reported, without re-parsing it.
+ *
+ * The distinction this function exists to hold: `canonicalHostTarget` DERIVES
+ * an address from a name we chose, and `trustCanonicalTarget` ACCEPTS one the
+ * host already owns. Running the sanitizer over the second kind does not
+ * normalise it — it renames it, into an address that may belong to something
+ * else or to nothing.
+ *
+ * The trap is narrow and real. tmux rewrites `:` and `.` itself at creation, so
+ * those never come back out; a SPACE does not, and `tmux new-session -s "my
+ * session"` yields a session that answers to `my session` and not to
+ * `my_session`. Every adopted peer's address arrives this way, so sanitising
+ * host output would have broken exactly the peers the daemon did not start.
+ *
+ * Callers: anything reading a session name or window id out of tmux, and state
+ * loaded from disk (written by a previous run from that same host output).
+ */
+export function trustCanonicalTarget(fromHost: string): CanonicalTarget {
+  return fromHost as CanonicalTarget;
 }
 
 /** A window record as adoption sees it — one entry per pane, not per session. */
 export interface HostWindowRecord {
-  /** tmux window id (`@42`) — the address. Stable across renumbering. */
-  target: string;
+  /**
+   * tmux window id (`@42`) — the address. Stable across renumbering.
+   *
+   * Branded (R3, v0.11.21) so that anything indexing host state by this value
+   * can only be looked up with an address of the same provenance. The map in
+   * `team_reconcile` is exactly that lookup, and a raw name reaching it reads
+   * as `host_missing` on a peer that is running.
+   */
+  target: CanonicalTarget;
   /** `session:index` — for humans reading a plan. NOT an address. */
   label: string;
   session: string;

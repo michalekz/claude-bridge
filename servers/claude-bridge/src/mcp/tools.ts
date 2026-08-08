@@ -2554,7 +2554,7 @@ export const TOOLS: ToolSpec[] = [
   {
     name: "control_config",
     description:
-      'Read and DECLARE peer intent — the single configuration tool for the control plane (v0.11.0). No args: every peer\'s declared values plus any drift. `peer`: one peer (session id, full name, or short name inside your team). `team`: that team\'s peers. `set`: declare values — allowed keys are label, role, windowIndex, model, accountProfile. `role: "velitel"` is the one the daemon acts on: that peer is ordered LAST in a team stop or restart, because a coordinator goes down after the peers it coordinates. Undeclared peers fall back to matching the name, and both tools report which source decided — a name match is a guess (`mic-velitel-zastupce` contains the word and is not the coordinator). `unset: ["windowIndex"]` withdraws a declaration entirely, which is different from setting it empty. `team` is deliberately NOT settable: moving a peer between teams is lifecycle work (window, home session, label) and belongs to team_adopt/team_release. `dryRun:true` shows the change and writes nothing. IMPORTANT: this writes the DESIRED half of the record only; it changes nothing in the world. windowIndex is recorded and drift is reported, but no window is moved in v0.11.0 — asserting intent lands in v0.11.1 behind an explicit opt-in. Drift entries carry BOTH the declared and the measured value and BOTH ways out: `assert` (make the world match) and `adopt` (accept reality as the new intent). Destructive lifecycle operations are deliberately NOT here — see peer_stop / peer_restart / team_stop. The same function is reachable from a shell: `claude-bridge-daemon config --help`.',
+      'Read and DECLARE peer intent — the single configuration tool for the control plane (v0.11.0). No args: every peer\'s declared values plus any drift. `peer`: one peer (session id, full name, or short name inside your team). `team`: that team\'s peers. `set`: declare values — allowed keys are label, role, windowIndex, model, accountProfile. `role: "velitel"` is the one the daemon acts on: that peer is ordered LAST in a team stop or restart, because a coordinator goes down after the peers it coordinates. Undeclared peers fall back to matching the name, and both tools report which source decided — a name match is a guess (`mic-velitel-zastupce` contains the word and is not the coordinator). `unset: ["windowIndex"]` withdraws a declaration entirely, which is different from setting it empty. `team` is deliberately NOT settable: moving a peer between teams is lifecycle work (window, home session, label) and belongs to team_adopt/team_release. `dryRun:true` shows the change and writes nothing. IMPORTANT: this writes the DESIRED half of the record only; it changes nothing in the world. windowIndex is recorded and drift is reported, but NO WINDOW IS MOVED: asserting intent is not implemented yet, and will require an explicit opt-in when it is. Drift entries carry BOTH the declared and the measured value and BOTH ways out: `assert` (make the world match) and `adopt` (accept reality as the new intent). Destructive lifecycle operations are deliberately NOT here — see peer_stop / peer_restart / team_stop. The same function is reachable from a shell: `claude-bridge-daemon config --help`.',
     inputSchema: {
       type: "object",
       properties: {
@@ -2694,9 +2694,13 @@ export const TOOLS: ToolSpec[] = [
     inputSchema: {
       type: "object",
       properties: {
-        sessionId: {
+        handle: {
           type: "string",
-          description: "Session UUID for --resume; a stable name for a fresh spawn.",
+          description:
+            "Registry key — the name the control plane will know this peer by. " +
+            "RENAMED from `sessionId` in v0.11.21 (breaking, no alias): a peer " +
+            "that has not booted has no session id. Pass a UUID only to resume " +
+            "that exact transcript; otherwise any stable name.",
         },
         displayName: {
           type: "string",
@@ -2751,7 +2755,7 @@ export const TOOLS: ToolSpec[] = [
           description: "Wait budget in ms (default 10000).",
         },
       },
-      required: ["sessionId", "displayName", "cwd", "command"],
+      required: ["handle", "displayName", "cwd", "command"],
       additionalProperties: false,
     },
     handler: async (args, ctx) => {
@@ -2810,13 +2814,16 @@ export const TOOLS: ToolSpec[] = [
   {
     name: "team_status",
     description:
-      "Read-only view over the daemon's state.peers + host driver liveness. Returns per peer: sessionId, name, status, hostAlive (true when the driver still holds the sessionKey). `verbose:true` adds tmuxTarget, pid, model, account profile, timestamps. Default `wait:true` — this is a read query, callers expect data not an ack. Telemetry fields (context %, rate limits) land in F2.",
+      "Read-only view over the daemon's state.peers + host driver liveness. Returns per peer: handle (the registry key — RENAMED from sessionId in v0.11.21), name, status, hostAlive (true when the driver still holds the sessionKey). `verbose:true` adds tmuxTarget, pid, model, account profile, timestamps. Default `wait:true` — this is a read query, callers expect data not an ack. Telemetry (context %, rate limits) is not part of this tool; read it with peer_context_status and rate_limit_status.",
     inputSchema: {
       type: "object",
       properties: {
         team: {
           type: "string",
-          description: "Optional team filter (unused in beta; reserved for F2 multi-team layout).",
+          description:
+            "NOT IMPLEMENTED — passing this is now REFUSED with `not_implemented`, not ignored. " +
+            "Until v0.11.21 it was accepted and echoed back while the response held the whole " +
+            "fleet, so a filtered-looking answer was not filtered. Omit it and read `peers[].team`.",
         },
         verbose: {
           type: "boolean",
@@ -2874,7 +2881,7 @@ export const TOOLS: ToolSpec[] = [
   {
     name: "team_layout",
     description:
-      "Declarative team reconcile against `~/.claude-bridge/control/teams/<team>.json` (or an inline spec). `apply:true` (default) spawns any peer in the spec that is not already in `state.peers`. `prune:true` also stops any peer in `state.peers` that is not in the spec — extras are KEPT by default (safe reconcile). Set `apply:false` to preview the diff without changing anything. Response includes spawnedOk / spawnedFailed / stoppedOk / stoppedFailed / keptExtras arrays. Team spec schema documented in docs/SETUP-DAEMON.md.",
+      "Declarative team reconcile against `~/.claude-bridge/control/teams/<team>.json` (or an inline spec). **BREAKING in v0.11.21: `apply` now defaults to FALSE — a bare call PREVIEWS the diff and changes nothing.** It was the only bulk tool that executed unless told not to, while team_restart/team_adopt/team_stop all preview first; a mistyped team name here spawns peers. Pass `apply:true` to spawn every peer in the spec that is not already in `state.peers` (and resume any that are stopped). `prune:true` also stops peers present in state but absent from the spec — extras are KEPT otherwise, and a pruned peer is ASKED first (pass `pruneForce:true` for the impolite path). Peers are named by `handle`, RENAMED from `sessionId` in v0.11.21: a peer named in a layout has not booted, so it cannot have a session id. Response includes spawnedOk / spawnedFailed / resumedOk / stoppedOk / stoppedFailed / keptExtras. Team spec schema documented in docs/SETUP-DAEMON.md.",
     inputSchema: {
       type: "object",
       properties: {
@@ -2908,7 +2915,7 @@ export const TOOLS: ToolSpec[] = [
   {
     name: "team_stop",
     description:
-      'Put a whole team to sleep, gracefully. NOT a mass kill: each peer first gets a `stop-request` in its inbox telling it to park its work, flush its anchor and memory, and touch `~/.claude-bridge/control/stop-ack/<sessionId>.json`. Only then is its session killed. A peer that does not ack within `anchorTimeoutMs` (default 120 s PER PEER) KEEPS RUNNING and is reported under `skipped` — pass `force:true` to kill it anyway (recorded as `stoppedCleanly:false`). Peers whose host session is already gone are cleaned up as `stoppedDead`. Order: members first, anyone marked `role:"velitel"` last. Stopped peers stay in `state.peers` with `status:"stopped"` so `team_layout apply` can resume the SAME session ids later. Use `dryRun:true` to see the order first. A real run can take minutes — the client timeout scales with the ack window automatically.',
+      'Put a whole team to sleep, gracefully. NOT a mass kill: each peer first gets a `stop-request` in its inbox telling it to park its work, flush its anchor and memory, and touch `~/.claude-bridge/control/stop-ack/<sessionId>.json`. Only then is its session killed. A peer that does not ack within `anchorTimeoutMs` (default 120 s PER PEER) KEEPS RUNNING and is reported under `skipped` — pass `force:true` to kill it anyway (recorded as `stoppedCleanly:false`). Peers whose host session is already gone are cleaned up as `stoppedDead`. Order: members first, anyone marked `role:"velitel"` last. Stopped peers stay in `state.peers` with `status:"stopped"` so `team_layout apply:true` can resume the SAME transcripts later. Peers are named by `handle` (RENAMED from `sessionId` in v0.11.21). Use `dryRun:true` to see the order first. A real run can take minutes — the client timeout scales with the ack window automatically.',
     inputSchema: {
       type: "object",
       properties: {
@@ -2933,7 +2940,7 @@ export const TOOLS: ToolSpec[] = [
         inline: {
           type: "object",
           description:
-            "Team spec inline instead of teams/<team>.json — { team, peers[{sessionId, displayName, role?}] }.",
+            "Team spec inline instead of teams/<team>.json — { team, peers[{handle, displayName, role?}] }. `handle` was `sessionId` before v0.11.21.",
         },
         wait: { type: "boolean", description: "Default true." },
         timeoutMs: { type: "number", minimum: 1, maximum: 900000 },
@@ -2971,7 +2978,7 @@ export const TOOLS: ToolSpec[] = [
         },
         mapping: {
           type: "object",
-          description: 'manual mode only: { "<hostSessionKey>": "<sessionId>" }.',
+          description: 'manual mode only: { "<hostSessionKey>": "<handle>" }.',
         },
         dryRun: {
           type: "boolean",

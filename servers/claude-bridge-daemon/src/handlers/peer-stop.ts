@@ -82,7 +82,7 @@ export const PeerStopArgsSchema = z
     /**
      * v0.10.1: keep the peer in state.peers with status:"stopped" instead
      * of deleting it. Used by team_stop so that team_layout apply can
-     * resume the same sessionId later. Default false = original delete
+     * resume the same handle later. Default false = original delete
      * semantics (backward-compatible with v0.10.0-rc.2 callers).
      */
     keepInState: z.boolean().default(false),
@@ -141,10 +141,10 @@ type CourtesyOutcome =
 async function runCourtesyPhase(
   req: RequestEnvelope,
   ctx: HandlerContext,
-  target: { sessionId: string; sessionKey: string; record: PeerRecord },
+  target: { handle: string; sessionKey: string; record: PeerRecord },
   args: PeerStopArgs,
 ): Promise<CourtesyOutcome> {
-  const { sessionId, sessionKey, record } = target;
+  const { handle, sessionKey, record } = target;
 
   // Nobody home: no request can be delivered and no ack can arrive. Killing is
   // then pure bookkeeping over a session that is already gone, and making the
@@ -175,7 +175,7 @@ async function runCourtesyPhase(
       by: { sessionId: req.requestedBy.sessionId, name: req.requestedBy.name },
       requestId: req.id,
       details: {
-        sessionId,
+        handle,
         sessionKey,
         threadId,
         originallyRequestedAt: pending.requestedAt,
@@ -192,16 +192,16 @@ async function runCourtesyPhase(
         level: "warn",
         by: { sessionId: req.requestedBy.sessionId, name: req.requestedBy.name },
         requestId: req.id,
-        details: { sessionId, movedTo: swept },
+        details: { handle, movedTo: swept },
       });
     }
     // Taken BEFORE the request is written, so an ack the peer produces the
     // instant it reads the message still counts.
     requestedAtMs = Date.now();
-    threadId = stopThreadId(sessionId, requestedAtMs);
+    threadId = stopThreadId(handle, requestedAtMs);
     const msgId = await requestStop(bridgeId, threadId, args.reason ?? null);
     await applyStateChange(ctx.state, (draft) => {
-      const rec = draft.peers[sessionId];
+      const rec = draft.peers[handle];
       if (rec) {
         rec.observed.status = "stopping";
         rec.observed.stopRequest = {
@@ -217,7 +217,7 @@ async function runCourtesyPhase(
       event: "peer_stop_requested",
       by: { sessionId: req.requestedBy.sessionId, name: req.requestedBy.name },
       requestId: req.id,
-      details: { sessionId, sessionKey, threadId, msgId, timeoutMs },
+      details: { handle, sessionKey, threadId, msgId, timeoutMs },
     });
   }
 
@@ -290,11 +290,11 @@ export async function handlePeerStop(
       { peer: args.peer },
     );
   }
-  const sessionId = found.sessionId;
-  const record = ctx.state.peers[sessionId];
+  const handle = found.handle;
+  const record = ctx.state.peers[handle];
   if (!record) {
     // Race: peer disappeared between findPeer and now. Treat as success.
-    return okResult(req.id, req.tool, { sessionId, alreadyGone: true });
+    return okResult(req.id, req.tool, { handle, alreadyGone: true });
   }
   const sessionKey = record.observed.tmuxTarget ?? record.observed.name;
   const forceFlag = args.force === true;
@@ -310,7 +310,7 @@ export async function handlePeerStop(
   //             pending and a retry resumes the same request.
   let courtesy: CourtesyOutcome = { kind: "skipped" };
   if (!forceFlag && !args.skipCourtesy) {
-    courtesy = await runCourtesyPhase(req, ctx, { sessionId, sessionKey, record }, args);
+    courtesy = await runCourtesyPhase(req, ctx, { handle, sessionKey, record }, args);
     if (courtesy.kind === "no-ack") {
       // The honest verdict, and the whole reason the graceful path is worth
       // having: a stop that did not happen must not read like one that did.
@@ -320,7 +320,7 @@ export async function handlePeerStop(
         by: { sessionId: req.requestedBy.sessionId, name: req.requestedBy.name },
         requestId: req.id,
         details: {
-          sessionId,
+          handle,
           sessionKey,
           threadId: courtesy.threadId,
           timeoutMs: courtesy.timeoutMs,
@@ -343,9 +343,9 @@ export async function handlePeerStop(
         req.id,
         req.tool,
         "stop_ack_timeout",
-        `Peer '${sessionId}' is STILL RUNNING and nothing was killed: ${why}. The request stands — call peer_stop again to keep waiting on the same thread (a late ack still counts), or peer_stop with force:true to end the session now and lose whatever the peer had not written down.`,
+        `Peer '${handle}' is STILL RUNNING and nothing was killed: ${why}. The request stands — call peer_stop again to keep waiting on the same thread (a late ack still counts), or peer_stop with force:true to end the session now and lose whatever the peer had not written down.`,
         {
-          sessionId,
+          handle,
           sessionKey,
           stopped: false,
           processLeftRunning: true,
@@ -359,7 +359,7 @@ export async function handlePeerStop(
   }
 
   await applyStateChange(ctx.state, (draft) => {
-    const rec = draft.peers[sessionId];
+    const rec = draft.peers[handle];
     if (rec) {
       rec.observed.status = "stopping";
       rec.observed.lastUpdatedAt = new Date().toISOString();
@@ -379,18 +379,18 @@ export async function handlePeerStop(
         level: "error",
         by: { sessionId: req.requestedBy.sessionId, name: req.requestedBy.name },
         requestId: req.id,
-        details: { sessionId, sessionKey, err: msg },
+        details: { handle, sessionKey, err: msg },
       });
-      return errResult(req.id, req.tool, "supervisor_respawn", msg, { sessionId, sessionKey });
+      return errResult(req.id, req.tool, "supervisor_respawn", msg, { handle, sessionKey });
     }
     await writeEvent({
       event: "peer_stop_failed",
       level: "error",
       by: { sessionId: req.requestedBy.sessionId, name: req.requestedBy.name },
       requestId: req.id,
-      details: { sessionId, sessionKey, err: msg },
+      details: { handle, sessionKey, err: msg },
     });
-    return errResult(req.id, req.tool, "host_kill_failed", msg, { sessionId, sessionKey });
+    return errResult(req.id, req.tool, "host_kill_failed", msg, { handle, sessionKey });
   }
 
   const keepInState = args.keepInState;
@@ -407,7 +407,7 @@ export async function handlePeerStop(
     : (measuredCleanly ?? undefined);
   await applyStateChange(ctx.state, (draft) => {
     if (keepInState) {
-      const rec = draft.peers[sessionId];
+      const rec = draft.peers[handle];
       if (rec) {
         rec.observed.status = "stopped";
         rec.observed.stoppedCleanly = stoppedCleanly ?? null;
@@ -423,7 +423,7 @@ export async function handlePeerStop(
         rec.observed.lastUpdatedAt = new Date().toISOString();
       }
     } else {
-      delete draft.peers[sessionId];
+      delete draft.peers[handle];
     }
   });
   // HOW it was stopped, in one word, so a reader of the audit log never has to
@@ -437,7 +437,7 @@ export async function handlePeerStop(
   const ackWaitedMs = courtesy.kind === "acked" ? courtesy.waitedMs : null;
   const threadId = courtesy.kind === "acked" ? courtesy.threadId : null;
   const details = {
-    sessionId,
+    handle,
     sessionKey,
     reason: args.reason ?? null,
     force: forceFlag,
@@ -455,12 +455,12 @@ export async function handlePeerStop(
   });
   await publishLifecycleEvent({
     event: "peer_stopped",
-    sessionId,
+    handle,
     sessionKey,
     details: { reason: args.reason ?? null, force: forceFlag, keepInState, stoppedCleanly, mode },
   });
   return okResult(req.id, req.tool, {
-    sessionId,
+    handle,
     sessionKey,
     stopped: true,
     mode,

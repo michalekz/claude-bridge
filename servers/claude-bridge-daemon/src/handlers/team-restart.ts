@@ -151,7 +151,7 @@ export async function handleTeamRestart(
         notFound.push(key);
         continue;
       }
-      if (!selected.some((s) => s.sessionId === rec.sessionId)) selected.push(rec);
+      if (!selected.some((s) => s.handle === rec.handle)) selected.push(rec);
     }
     if (ambiguous.length > 0) {
       // Same rule as notFound below: refuse the whole run. Guessing which
@@ -189,7 +189,7 @@ export async function handleTeamRestart(
       level: "warn",
       by: { sessionId: req.requestedBy.sessionId, name: req.requestedBy.name },
       requestId: req.id,
-      details: { missingLaunchParams: unrestartable.map((r) => r.sessionId) },
+      details: { missingLaunchParams: unrestartable.map((r) => r.handle) },
     });
     return errResult(
       req.id,
@@ -197,7 +197,7 @@ export async function handleTeamRestart(
       "launch_params_missing",
       `${unrestartable.length} of ${ordered.length} peers have no recorded command and would relaunch as a bare 'claude'. Nothing was restarted.`,
       {
-        peers: unrestartable.map((r) => ({ sessionId: r.sessionId, name: r.observed.name })),
+        peers: unrestartable.map((r) => ({ sessionId: r.handle, name: r.observed.name })),
         hint: "Records written before v0.10.3 lack launch parameters. Re-spawn those peers, or adopt them again with a daemon that reads /proc.",
       },
     );
@@ -212,7 +212,7 @@ export async function handleTeamRestart(
     force: args.force,
     continueOnError: args.continueOnError,
     order: ordered.map((r) => ({
-      sessionId: r.sessionId,
+      sessionId: r.handle,
       name: r.observed.name,
       tmuxTarget: r.observed.tmuxTarget,
       pid: r.observed.pid,
@@ -241,7 +241,7 @@ export async function handleTeamRestart(
   for (const [i, rec] of ordered.entries()) {
     if (stoppedEarly) {
       results.push({
-        sessionId: rec.sessionId,
+        sessionId: rec.handle,
         name: rec.observed.name,
         outcome: "skipped",
         pidBefore: rec.observed.pid,
@@ -256,14 +256,14 @@ export async function handleTeamRestart(
       id: `${req.id}:restart:${i}`,
       ts: req.ts,
       tool: "peer_restart",
-      args: { peer: rec.sessionId, reason: args.reason ?? "team_restart", force: args.force },
+      args: { peer: rec.handle, reason: args.reason ?? "team_restart", force: args.force },
       requestedBy: req.requestedBy,
     };
     const res = await handlePeerRestart(sub, ctx);
 
     if (res.outcome === "error") {
       results.push({
-        sessionId: rec.sessionId,
+        sessionId: rec.handle,
         name: rec.observed.name,
         outcome: "failed",
         pidBefore,
@@ -275,11 +275,11 @@ export async function handleTeamRestart(
     }
 
     results.push({
-      sessionId: rec.sessionId,
+      sessionId: rec.handle,
       name: rec.observed.name,
       outcome: "restarted",
       pidBefore,
-      pidAfter: ctx.state.peers[rec.sessionId]?.observed.pid ?? null,
+      pidAfter: ctx.state.peers[rec.handle]?.observed.pid ?? null,
     });
 
     // Let it come up before taking the next one down. Skipped after the last

@@ -2,6 +2,7 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { canonicalHostTarget } from "../src/hosts/driver.ts";
 
 const homeHolder = vi.hoisted(() => ({ current: "" }));
 
@@ -47,7 +48,7 @@ describe("D — a restart asks for the peer's home BEFORE destroying it", () => 
     const { handlers, state, mock } = await importAll();
     const doc = state.emptyState("0.10.9-test");
     doc.peers["p"] = {
-      sessionId: "p",
+      handle: "p",
       desired: {
         team: "obetni",
         command: "/bin/sh",
@@ -58,7 +59,7 @@ describe("D — a restart asks for the peer's home BEFORE destroying it", () => 
       observed: {
         name: "w1",
         hostDriver: "mock",
-        tmuxTarget: "@652",
+        tmuxTarget: canonicalHostTarget("@652"),
         pid: 500,
         status: "live",
         adopted: true,
@@ -115,7 +116,7 @@ describe("D — a restart asks for the peer's home BEFORE destroying it", () => 
     homeHolder.current = `/tmp/cbd-orphan-${process.hrtime.bigint()}`;
     const doc = state.emptyState("0.10.9-test");
     doc.peers["p"] = {
-      sessionId: "p",
+      handle: "p",
       desired: {
         team: "obetni",
         command: "/bin/sh",
@@ -128,7 +129,7 @@ describe("D — a restart asks for the peer's home BEFORE destroying it", () => 
       observed: {
         name: "w1",
         hostDriver: "mock",
-        tmuxTarget: "@728",
+        tmuxTarget: canonicalHostTarget("@728"),
         pid: 500,
         status: "live",
         adopted: true,
@@ -174,7 +175,7 @@ describe("H — a restart keeps the peer's provenance", () => {
     const { handlers, state, mock } = await importAll();
     const doc = state.emptyState("0.10.9-test");
     doc.peers["p"] = {
-      sessionId: "p",
+      handle: "p",
       desired: {
         team: "obetni",
         command: "/bin/sh",
@@ -185,7 +186,7 @@ describe("H — a restart keeps the peer's provenance", () => {
       observed: {
         name: "w1",
         hostDriver: "mock",
-        tmuxTarget: "w1",
+        tmuxTarget: canonicalHostTarget("w1"),
         pid: 500,
         status: "live",
         adopted: true,
@@ -292,7 +293,7 @@ describe("G — a peer that dies right after starting is not a success", () => {
     homeHolder.current = `/tmp/cbd-died-${process.hrtime.bigint()}`;
     const doc = state.emptyState("0.10.9-test");
     doc.peers["p"] = {
-      sessionId: "p",
+      handle: "p",
       desired: {
         // Exits the instant it starts — the shape of a failed resume.
         command: "/bin/sh",
@@ -303,7 +304,7 @@ describe("G — a peer that dies right after starting is not a success", () => {
       observed: {
         name: "dies",
         hostDriver: "mock",
-        tmuxTarget: "dies",
+        tmuxTarget: canonicalHostTarget("dies"),
         pid: 500,
         status: "live",
         model: null,
@@ -339,7 +340,7 @@ describe("I — team_status sees window-keyed peers", () => {
     const { handlers, state, mock } = await importAll();
     const doc = state.emptyState("0.10.9-test");
     doc.peers["p"] = {
-      sessionId: "p",
+      handle: "p",
       desired: {
         team: "obetni",
         accountProfile: null,
@@ -347,7 +348,7 @@ describe("I — team_status sees window-keyed peers", () => {
       observed: {
         name: "w2",
         hostDriver: "mock",
-        tmuxTarget: "@650",
+        tmuxTarget: canonicalHostTarget("@650"),
         pid: 501,
         status: "live",
         adopted: true,

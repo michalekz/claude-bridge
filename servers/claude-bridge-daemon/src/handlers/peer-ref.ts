@@ -25,12 +25,12 @@ import type { PeerRecord } from "../state.ts";
  * circuits before names are considered at all.
  */
 export type PeerRefResolution =
-  | { kind: "found"; sessionId: string; record: PeerRecord }
+  | { kind: "found"; handle: string; record: PeerRecord }
   | { kind: "not_found" }
   | { kind: "ambiguous"; candidates: PeerRefCandidate[] };
 
 export interface PeerRefCandidate {
-  sessionId: string;
+  handle: string;
   name: string;
   tmuxTarget: string | null;
   status: string;
@@ -75,12 +75,12 @@ export function resolvePeerRef(
   callerTeam?: string | null,
 ): PeerRefResolution {
   const byId = peers[ref];
-  if (byId) return { kind: "found", sessionId: ref, record: byId };
+  if (byId) return { kind: "found", handle: ref, record: byId };
 
   const exact = Object.entries(peers).filter(([, rec]) => rec.observed.name === ref);
   if (exact.length === 1) {
-    const [sessionId, record] = exact[0] as [string, PeerRecord];
-    return { kind: "found", sessionId, record };
+    const [handle, record] = exact[0] as [string, PeerRecord];
+    return { kind: "found", handle, record };
   }
   // A duplicated FULL name means the fleet has two peers claiming one
   // identity. Nothing can disambiguate that but the session id.
@@ -89,15 +89,15 @@ export function resolvePeerRef(
   const short = Object.entries(peers).filter(([, rec]) => shortFormOf(rec) === ref);
   if (short.length === 0) return { kind: "not_found" };
   if (short.length === 1) {
-    const [sessionId, record] = short[0] as [string, PeerRecord];
-    return { kind: "found", sessionId, record };
+    const [handle, record] = short[0] as [string, PeerRecord];
+    return { kind: "found", handle, record };
   }
 
   if (callerTeam) {
     const own = short.filter(([, rec]) => rec.desired.team === callerTeam);
     if (own.length === 1) {
-      const [sessionId, record] = own[0] as [string, PeerRecord];
-      return { kind: "found", sessionId, record };
+      const [handle, record] = own[0] as [string, PeerRecord];
+      return { kind: "found", handle, record };
     }
   }
   return ambiguous(short);
@@ -106,8 +106,8 @@ export function resolvePeerRef(
 function ambiguous(matches: Array<[string, PeerRecord]>): PeerRefResolution {
   return {
     kind: "ambiguous",
-    candidates: matches.map(([sessionId, rec]) => ({
-      sessionId,
+    candidates: matches.map(([handle, rec]) => ({
+      handle,
       name: rec.observed.name,
       tmuxTarget: rec.observed.tmuxTarget,
       status: rec.observed.status,
@@ -128,6 +128,6 @@ export function ambiguousPeerMessage(ref: string, candidates: PeerRefCandidate[]
   const list =
     distinctNames.size === candidates.length
       ? candidates.map((c) => c.name).join(", ")
-      : candidates.map((c) => `${c.name} [${c.sessionId}]`).join(", ");
+      : candidates.map((c) => `${c.name} [${c.handle}]`).join(", ");
   return `'${ref}' matches ${candidates.length} peers — refusing to guess which one. Use the full name: ${list}`;
 }

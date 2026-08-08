@@ -35,7 +35,8 @@ const DEFAULT_ACK_POLL_MS = 500;
 const STOP_ACK_FILENAME_EXTENSION = ".json";
 
 const PeerOrderableSchema = z.object({
-  sessionId: z.string().min(1),
+  /** Registry key — renamed from `sessionId` in R3 (v0.11.21). See team_layout. */
+  handle: z.string().min(1),
   displayName: z.string().min(1),
   role: z.string().optional(),
 });
@@ -102,7 +103,7 @@ async function loadTeamOrder(team: string): Promise<z.infer<typeof TeamStopFileS
  */
 
 interface StopOutcome {
-  sessionId: string;
+  handle: string;
   displayName: string;
   outcome: "cleanly" | "forced" | "dead" | "skipped" | "failed";
   err?: string;
@@ -137,15 +138,15 @@ interface StopOutcome {
 async function stopSinglePeer(
   req: RequestEnvelope,
   ctx: HandlerContext,
-  peer: { sessionId: string; displayName: string; role?: string | undefined },
+  peer: { handle: string; displayName: string; role?: string | undefined },
   args: TeamStopArgs,
   threadId: string,
   anchorTimeoutMs: number,
   ackPollMs: number,
 ): Promise<StopOutcome> {
-  const record = ctx.state.peers[peer.sessionId];
+  const record = ctx.state.peers[peer.handle];
   if (!record) {
-    return { sessionId: peer.sessionId, displayName: peer.displayName, outcome: "dead" };
+    return { handle: peer.handle, displayName: peer.displayName, outcome: "dead" };
   }
   const sessionKey = record.observed.tmuxTarget ?? record.observed.name;
 
@@ -153,11 +154,11 @@ async function stopSinglePeer(
     handlePeerStop(
       {
         schemaVersion: req.schemaVersion,
-        id: `${req.id}:stop:${peer.sessionId}${force ? ":force" : ""}`,
+        id: `${req.id}:stop:${peer.handle}${force ? ":force" : ""}`,
         ts: req.ts,
         tool: "peer_stop",
         args: {
-          peer: peer.sessionId,
+          peer: peer.handle,
           reason: `team_stop:${args.team}:${label}`,
           force,
           // The team keeps its members as tombstones so `team_layout apply` can
@@ -178,7 +179,7 @@ async function stopSinglePeer(
   if (res.outcome === "error") {
     if (res.error?.code !== "stop_ack_timeout") {
       return {
-        sessionId: peer.sessionId,
+        handle: peer.handle,
         displayName: peer.displayName,
         outcome: "failed",
         err: res.error?.message,
@@ -193,7 +194,7 @@ async function stopSinglePeer(
         by: { sessionId: req.requestedBy.sessionId, name: req.requestedBy.name },
         requestId: req.id,
         details: {
-          sessionId: peer.sessionId,
+          handle: peer.handle,
           sessionKey,
           team: args.team,
           threadId,
@@ -201,7 +202,7 @@ async function stopSinglePeer(
           note: "peer left running — pass force:true to end it anyway",
         },
       });
-      return { sessionId: peer.sessionId, displayName: peer.displayName, outcome: "skipped" };
+      return { handle: peer.handle, displayName: peer.displayName, outcome: "skipped" };
     }
     // `force` on a TEAM means "ask, then kill anyway". The asking already
     // happened, above; this second call is the killing.
@@ -209,7 +210,7 @@ async function stopSinglePeer(
     res = await callStop(true, "forced");
     if (res.outcome === "error") {
       return {
-        sessionId: peer.sessionId,
+        handle: peer.handle,
         displayName: peer.displayName,
         outcome: "failed",
         err: res.error?.message,
@@ -233,7 +234,7 @@ async function stopSinglePeer(
     by: { sessionId: req.requestedBy.sessionId, name: req.requestedBy.name },
     requestId: req.id,
     details: {
-      sessionId: peer.sessionId,
+      sessionId: peer.handle,
       sessionKey,
       team: args.team,
       threadId,
@@ -247,12 +248,12 @@ async function stopSinglePeer(
   if (outcome !== "dead") {
     await publishLifecycleEvent({
       event: outcome === "cleanly" ? "peer_stopped_cleanly" : "peer_stopped_forced",
-      sessionId: peer.sessionId,
+      handle: peer.handle,
       sessionKey,
       details: { team: args.team, threadId },
     });
   }
-  return { sessionId: peer.sessionId, displayName: peer.displayName, outcome };
+  return { handle: peer.handle, displayName: peer.displayName, outcome };
 }
 
 /**
@@ -312,7 +313,7 @@ export async function handleTeamStop(
       mode: "dryRun",
       team: spec.team,
       order: ordered.map((p) => ({
-        sessionId: p.sessionId,
+        handle: p.handle,
         displayName: p.displayName,
         role: p.role ?? null,
       })),
@@ -332,7 +333,7 @@ export async function handleTeamStop(
     details: {
       team: spec.team,
       threadId,
-      order: ordered.map((p) => p.sessionId),
+      order: ordered.map((p) => p.handle),
       anchorTimeoutMs,
       force: args.force,
     },
@@ -355,13 +356,13 @@ export async function handleTeamStop(
   const summary = {
     team: spec.team,
     threadId,
-    stoppedCleanly: outcomes.filter((o) => o.outcome === "cleanly").map((o) => o.sessionId),
-    stoppedForced: outcomes.filter((o) => o.outcome === "forced").map((o) => o.sessionId),
-    stoppedDead: outcomes.filter((o) => o.outcome === "dead").map((o) => o.sessionId),
-    skipped: outcomes.filter((o) => o.outcome === "skipped").map((o) => o.sessionId),
+    stoppedCleanly: outcomes.filter((o) => o.outcome === "cleanly").map((o) => o.handle),
+    stoppedForced: outcomes.filter((o) => o.outcome === "forced").map((o) => o.handle),
+    stoppedDead: outcomes.filter((o) => o.outcome === "dead").map((o) => o.handle),
+    skipped: outcomes.filter((o) => o.outcome === "skipped").map((o) => o.handle),
     failedKill: outcomes
       .filter((o) => o.outcome === "failed")
-      .map((o) => ({ sessionId: o.sessionId, err: o.err ?? "unknown" })),
+      .map((o) => ({ sessionId: o.handle, err: o.err ?? "unknown" })),
   };
 
   await writeEvent({

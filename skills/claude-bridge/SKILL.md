@@ -43,6 +43,31 @@ Every peer has two identifiers:
 
 When in doubt, prefer `id`.
 
+### A third word, if you use the control plane: `handle`
+
+The daemon's registry has its own key, and since v0.11.21 it is called
+`handle` — not `sessionId`, which is what it was called before.
+
+| word | addresses | who chooses it | when it exists |
+|---|---|---|---|
+| `handle` | the RECORD in the daemon's registry | you, or a team spec | before the peer is started |
+| `sessionId` | the PEER itself | only the peer | after it boots |
+
+For a peer the daemon adopted, the two are the same string, because adoption
+read the identity off a running process. For a peer named in a `team_layout`
+spec they are not, and that difference is what the rename exists to keep
+visible: a handle handed to `--resume` names no transcript, so the peer comes
+back **empty under its own name** and the tool reports success.
+
+Practical rules:
+
+- `peer_spawn`, `team_layout` and `team_stop` specs take **`handle`**. Passing
+  `sessionId` now fails validation — deliberately, and with no alias.
+- `session_stats`, `list_sessions`, `peer_ask { to }` and the inbox directory
+  take a **`sessionId`**. Those were never handles and did not change.
+- If you are writing a bridge message to a peer, address it by its session id.
+  The daemon's registry key is not an inbox.
+
 ## Common workflows
 
 ### Workflow 1 — Manager dispatches to workers

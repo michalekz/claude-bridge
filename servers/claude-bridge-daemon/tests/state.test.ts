@@ -2,6 +2,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { canonicalHostTarget } from "../src/hosts/driver.ts";
 
 const homeHolder = vi.hoisted(() => ({ current: "" }));
 
@@ -39,14 +40,14 @@ describe("daemon state", () => {
     const { loadState, saveState } = await importState();
     const doc = await loadState("0.10.0-alpha.0");
     doc.peers["peer-a"] = {
-      sessionId: "peer-a",
+      handle: "peer-a",
       desired: {
         accountProfile: null,
       },
       observed: {
         name: "alice",
         hostDriver: "tmux",
-        tmuxTarget: "hmh:alice",
+        tmuxTarget: canonicalHostTarget("hmh:alice"),
         pid: 12345,
         status: "live",
         model: "sonnet-5",

@@ -16,16 +16,16 @@ import type { PeerDesired, PeerObserved, PeerRecord } from "../src/state.ts";
  * which side it belongs on.
  */
 export function makePeer(
-  sessionId: string,
+  handle: string,
   desired: Partial<PeerDesired> = {},
   observed: Partial<PeerObserved> = {},
 ): PeerRecord {
   const now = new Date().toISOString();
   return {
-    sessionId,
+    handle,
     desired: { ...desired },
     observed: {
-      name: sessionId,
+      name: handle,
       hostDriver: "mock",
       tmuxTarget: null,
       pid: null,

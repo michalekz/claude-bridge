@@ -137,7 +137,7 @@ function spawnRequest(handle: string, extra: Record<string, unknown> = {}) {
     ts: new Date().toISOString(),
     tool: "peer_spawn",
     args: {
-      sessionId: handle,
+      handle: handle,
       displayName: handle,
       cwd: "/tmp",
       // A path ending in `claude`: identity is only measured for a Claude peer,
@@ -187,7 +187,7 @@ describe("peer_spawn — measures who it started", () => {
     expect(res.outcome).toBe("ok");
     const data = res.data as Record<string, unknown>;
     // The handle is unchanged — it is still how you address this peer.
-    expect(data["sessionId"]).toBe("tst-handle");
+    expect(data["handle"]).toBe("tst-handle");
     // TOP LEVEL, so a caller cannot miss it.
     expect(data["identity"]).toBe("measured");
     expect(data["measuredSessionId"]).toBe(REAL_UUID);
@@ -281,7 +281,7 @@ describe("team_reconcile — unknown is temporary, not a scar", () => {
         startedAt: new Date().toISOString(),
         peers: {
           "tst-handle": {
-            sessionId: "tst-handle",
+            handle: "tst-handle",
             desired: { team: "tst" },
             observed: {
               name: "tst-handle",

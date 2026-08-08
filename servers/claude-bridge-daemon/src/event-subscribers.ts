@@ -1,7 +1,7 @@
 import { randomBytes } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
-import { atomicWriteJson, bridgeRoot, controlDir, makeLogger } from "@claude-bridge/shared";
+import { controlDir, makeLogger, syntheticSenderId, writeEnvelope } from "@claude-bridge/shared";
 
 /**
  * Lifecycle event routing into peer inboxes.
@@ -39,10 +39,6 @@ function subscribersFilePath(): string {
   return join(controlDir(), "subscribers.json");
 }
 
-function inboxPendingDir(peerId: string): string {
-  return join(bridgeRoot(), "inbox", peerId, "pending");
-}
-
 export async function readSubscribers(): Promise<SubscriberEntry[]> {
   try {
     const raw = await readFile(subscribersFilePath(), "utf-8");
@@ -64,7 +60,8 @@ function generateMsgId(): string {
 
 export interface LifecycleEventPayload {
   event: string;
-  sessionId: string;
+  /** WHICH peer this is about — the registry key (R3, v0.11.21). */
+  handle: string;
   sessionKey: string;
   details: Record<string, unknown>;
 }
@@ -80,22 +77,38 @@ export async function publishLifecycleEvent(payload: LifecycleEventPayload): Pro
 
   for (const sub of interested) {
     const msgId = generateMsgId();
-    const envelope = {
-      id: msgId,
-      ts: new Date().toISOString(),
-      from: { sessionId: "control-plane-daemon", name: "control-plane-daemon" },
-      to: { sessionId: sub.peerId, name: sub.peerId },
-      kind: "lifecycle-event",
-      content: {
-        event: payload.event,
-        sessionId: payload.sessionId,
-        sessionKey: payload.sessionKey,
-        details: payload.details,
-      },
-    };
     try {
-      const path = join(inboxPendingDir(sub.peerId), `${msgId}.json`);
-      await atomicWriteJson(path, envelope);
+      // THE FOURTH HAND-BUILT ENVELOPE (found by R3, v0.11.21).
+      //
+      // This one disagreed with `MessageEnvelopeSchema` in all four of the ways
+      // `peer_compact`'s did: `from`/`to` as `{sessionId, name}` objects rather
+      // than strings, `ts` instead of `sentAt`, `content` as an object rather
+      // than text, and `kind: "lifecycle-event"` — which is not in an enum
+      // holding exactly `ask`, `reply`, `broadcast`. The recipient `safeParse`s
+      // and returns null, so every one of these would have landed in `pending/`
+      // and been invisible to the peer it was written for.
+      //
+      // NEVER FIRED. Measured 2026-08-08: `control/subscribers.json` does not
+      // exist, so `interested` has always been empty and the loop never ran.
+      // A latent defect in a feature nobody switched on — reported at that
+      // strength, and fixed because a write path known to be broken is worse
+      // sitting there than in a changelog.
+      //
+      // `writeEnvelope` PARSES rather than safe-parses, so a future mistake
+      // here throws at the writer, which knows what it meant.
+      await writeEnvelope({
+        id: msgId,
+        from: syntheticSenderId("control-plane-daemon"),
+        fromName: "control-plane-daemon",
+        to: sub.peerId,
+        kind: "broadcast",
+        sentAt: new Date().toISOString(),
+        content: [
+          `[control-plane] ${payload.event} — ${payload.handle} (${payload.sessionKey})`,
+          "",
+          JSON.stringify(payload.details, null, 2),
+        ].join("\n"),
+      });
     } catch (e) {
       log.warn("subscriber_dispatch_failed", {
         subscriber: sub.peerId,

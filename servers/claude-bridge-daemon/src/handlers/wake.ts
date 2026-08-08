@@ -58,7 +58,24 @@ export const RESTART_WAKE_PROMPT =
   "[daemon] Restart complete — same session, new process. Re-onboard from your anchor, read your inbox (peer_inbox_read) and report to whoever restarted you.";
 
 export interface WakePeerOptions {
-  sessionId: string;
+  /**
+   * The peer's BRIDGE address — `bridgeIdOf(record)`, NOT the registry key
+   * (R3, v0.11.21).
+   *
+   * This field was called `sessionId` and both callers handed it a handle, so
+   * the wake message after a restart or a layout resume landed in
+   * `inbox/<handle>/pending/` — a directory nobody drains. The peer came back,
+   * was never told why, and no error was raised anywhere.
+   *
+   * The same defect acceptance found in `peer_restart` on 2026-08-08, in the
+   * step of that very protocol that reports the outcome to the peer. v0.11.18
+   * fixed the three places it looked at and this was the fourth: a rule kept by
+   * memory holds until the next caller, and step g) WAS the next caller.
+   *
+   * Renamed rather than merely reassigned, because a caller that hands a handle
+   * to a field named `bridgeId` has to notice what it is doing.
+   */
+  bridgeId: string;
   sessionKey: string;
   /** Reason recorded in the inbox message and the audit events. */
   reason: string;
@@ -87,7 +104,8 @@ export interface WakePeerOptions {
 }
 
 export interface WakeOutcome {
-  sessionId: string;
+  /** Who was woken, as the BRIDGE addresses them — see `WakePeerOptions`. */
+  bridgeId: string;
   wakeMsgId: string | null;
   injected: boolean;
   error?: string;
@@ -163,7 +181,7 @@ async function writeWakeMsg(opts: WakePeerOptions, threadId: string): Promise<st
     id: msgId,
     from: syntheticSenderId("control-plane-daemon"),
     fromName: "control-plane-daemon",
-    to: opts.sessionId,
+    to: opts.bridgeId,
     kind: "ask",
     sentAt: new Date().toISOString(),
     threadId,
@@ -184,7 +202,7 @@ export async function wakePeer(
   ctx: HandlerContext,
   opts: WakePeerOptions,
 ): Promise<WakeOutcome> {
-  const threadId = `wake:${opts.sessionId}:${Date.now().toString(36)}`;
+  const threadId = `wake:${opts.bridgeId}:${Date.now().toString(36)}`;
 
   let wakeMsgId: string | null = null;
   try {
@@ -196,9 +214,9 @@ export async function wakePeer(
       level: "warn",
       by: { sessionId: req.requestedBy.sessionId, name: req.requestedBy.name },
       requestId: req.id,
-      details: { sessionId: opts.sessionId, stage: "inbox_write", err },
+      details: { bridgeId: opts.bridgeId, stage: "inbox_write", err },
     });
-    return { sessionId: opts.sessionId, wakeMsgId: null, injected: false, error: err };
+    return { bridgeId: opts.bridgeId, wakeMsgId: null, injected: false, error: err };
   }
 
   const sendKeys = ctx.hostDriver.sendKeys?.bind(ctx.hostDriver);
@@ -211,13 +229,13 @@ export async function wakePeer(
       by: { sessionId: req.requestedBy.sessionId, name: req.requestedBy.name },
       requestId: req.id,
       details: {
-        sessionId: opts.sessionId,
+        bridgeId: opts.bridgeId,
         wakeMsgId,
         hostDriver: ctx.hostDriver.name,
         note: "driver has no send-keys — peer stays silent until a turn is triggered by hand",
       },
     });
-    return { sessionId: opts.sessionId, wakeMsgId, injected: false };
+    return { bridgeId: opts.bridgeId, wakeMsgId, injected: false };
   }
 
   const delay = opts.wakeDelayMs ?? DEFAULT_WAKE_DELAY_MS;
@@ -230,7 +248,7 @@ export async function wakePeer(
     by: { sessionId: req.requestedBy.sessionId, name: req.requestedBy.name },
     requestId: req.id,
     details: {
-      sessionId: opts.sessionId,
+      bridgeId: opts.bridgeId,
       sessionKey: opts.sessionKey,
       threadId,
       wakeMsgId,
@@ -248,9 +266,9 @@ export async function wakePeer(
       level: "warn",
       by: { sessionId: req.requestedBy.sessionId, name: req.requestedBy.name },
       requestId: req.id,
-      details: { sessionId: opts.sessionId, sessionKey: opts.sessionKey, stage: "send_keys", err },
+      details: { bridgeId: opts.bridgeId, sessionKey: opts.sessionKey, stage: "send_keys", err },
     });
-    return { sessionId: opts.sessionId, wakeMsgId, injected: false, error: err };
+    return { bridgeId: opts.bridgeId, wakeMsgId, injected: false, error: err };
   }
 
   await writeEvent({
@@ -258,7 +276,7 @@ export async function wakePeer(
     by: { sessionId: req.requestedBy.sessionId, name: req.requestedBy.name },
     requestId: req.id,
     details: {
-      sessionId: opts.sessionId,
+      bridgeId: opts.bridgeId,
       sessionKey: opts.sessionKey,
       threadId,
       wakeMsgId,
@@ -269,9 +287,9 @@ export async function wakePeer(
   });
   await publishLifecycleEvent({
     event: "peer_woken",
-    sessionId: opts.sessionId,
+    handle: opts.bridgeId,
     sessionKey: opts.sessionKey,
     details: { reason: opts.reason, stoppedCleanly: opts.stoppedCleanly ?? null },
   });
-  return { sessionId: opts.sessionId, wakeMsgId, injected: true };
+  return { bridgeId: opts.bridgeId, wakeMsgId, injected: true };
 }

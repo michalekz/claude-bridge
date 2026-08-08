@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { canonicalHostTarget } from "../src/hosts/driver.ts";
 
 const homeHolder = vi.hoisted(() => ({ current: "" }));
 
@@ -59,7 +60,7 @@ async function fixture(over: {
   const { handlers, state, mock } = await importAll();
   const doc = state.emptyState("0.11.1-test");
   doc.peers["p"] = {
-    sessionId: "p",
+    handle: "p",
     desired: {
       ...(over.team !== undefined ? { team: over.team } : {}),
       ...(over.label !== undefined ? { label: over.label } : {}),
@@ -71,7 +72,7 @@ async function fixture(over: {
     observed: {
       name: over.name,
       hostDriver: "mock",
-      tmuxTarget: "@652",
+      tmuxTarget: canonicalHostTarget("@652"),
       pid: 500,
       status: "live",
       adopted: true,
@@ -198,12 +199,12 @@ describe("a restart copies an environment, it never claims to have sampled one",
     const { state } = await importAll();
     const doc = state.emptyState("0.11.1-test");
     doc.peers["a"] = {
-      sessionId: "a",
+      handle: "a",
       desired: { team: "mic" },
       observed: {
         name: "mic-tester",
         hostDriver: "tmux",
-        tmuxTarget: "@1",
+        tmuxTarget: canonicalHostTarget("@1"),
         pid: 1,
         status: "live",
         model: null,
@@ -233,12 +234,12 @@ describe("a restart copies an environment, it never claims to have sampled one",
     const doc = state.emptyState("0.11.1-test");
     doc.harvestProvenanceRevokedAt = "2026-08-06T18:00:00.000Z";
     doc.peers["a"] = {
-      sessionId: "a",
+      handle: "a",
       desired: {},
       observed: {
         name: "fresh",
         hostDriver: "tmux",
-        tmuxTarget: "@1",
+        tmuxTarget: canonicalHostTarget("@1"),
         pid: 1,
         status: "live",
         model: null,
@@ -265,7 +266,7 @@ describe("a restart copies an environment, it never claims to have sampled one",
     const obs = (name: string) => ({
       name,
       hostDriver: "tmux" as const,
-      tmuxTarget: "@1",
+      tmuxTarget: canonicalHostTarget("@1"),
       pid: 1,
       status: "live" as const,
       model: null,
@@ -274,19 +275,19 @@ describe("a restart copies an environment, it never claims to have sampled one",
     });
     // The artifact: label === FQN on a peer that has a team prefix.
     doc.peers["a"] = {
-      sessionId: "a",
+      handle: "a",
       desired: { team: "etl", label: "etl-dev" },
       observed: obs("etl-dev"),
     };
     // A real choice — must survive.
     doc.peers["b"] = {
-      sessionId: "b",
+      handle: "b",
       desired: { team: "mic", label: "QA" },
       observed: obs("mic-tester"),
     };
     // No team: the short form does not exist, so the label is not an artifact.
     doc.peers["c"] = {
-      sessionId: "c",
+      handle: "c",
       desired: { label: "legacy-box" },
       observed: obs("legacy-box"),
     };

@@ -2,6 +2,11 @@ import { mkdtemp, readdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import {
+  type CanonicalTarget,
+  canonicalHostTarget,
+  trustCanonicalTarget,
+} from "../src/hosts/driver.ts";
 
 const homeHolder = vi.hoisted(() => ({ current: "" }));
 
@@ -67,21 +72,21 @@ describe("v0.10.1 acceptance — no overlapping dispatch under the live poll loo
     const doc = emptyState("0.10.1-rc.1");
     const driver = new MockDriver();
     await driver.spawn({
-      sessionKey: "overlap_peer",
+      sessionKey: trustCanonicalTarget("overlap_peer"),
       cwd: "/tmp",
       command: "/bin/sh",
       args: ["-c", "sleep 30", "mock"],
       env: {},
     });
     doc.peers[sessionId] = {
-      sessionId: sessionId,
+      handle: sessionId,
       desired: {
         accountProfile: null,
       },
       observed: {
         name: "overlap_peer",
         hostDriver: "mock",
-        tmuxTarget: "overlap_peer",
+        tmuxTarget: canonicalHostTarget("overlap_peer"),
         pid: 1234,
         status: "live",
         model: null,
@@ -99,7 +104,7 @@ describe("v0.10.1 acceptance — no overlapping dispatch under the live poll loo
       tool: "team_stop",
       args: {
         team: "overlap",
-        inline: { team: "overlap", peers: [{ sessionId, displayName: "overlap_peer" }] },
+        inline: { team: "overlap", peers: [{ handle: sessionId, displayName: "overlap_peer" }] },
         anchorTimeoutMs: ACK_WINDOW_MS,
         ackPollMs: 100,
       },

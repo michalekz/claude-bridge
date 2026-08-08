@@ -126,7 +126,7 @@ describe("v1 records migrate into desired/observed without loss", () => {
     const { loadState } = await import("../src/state.ts");
     const doc = await loadState("0.11.0");
     expect(Object.keys(doc.peers)).toHaveLength(23);
-    expect(doc.stateVersion).toBe(2);
+    expect(doc.stateVersion).toBe(3);
   });
 
   it("the pre-migration document is kept on disk", async () => {
@@ -147,7 +147,29 @@ describe("v1 records migrate into desired/observed without loss", () => {
     expect(raw.peers[V1_PEER.sessionId].name).toBe("mic-tester");
   });
 
-  it("an unknown older version refuses to start rather than wiping state", async () => {
+  it("an UNRECOGNISABLE shape refuses to start rather than wiping state", async () => {
+    await writeStateDoc({
+      stateVersion: 0,
+      daemonVersion: "ancient",
+      daemonStartedAt: "2026-01-01T00:00:00.000Z",
+      // Neither flat-v1 nor desired/observed — a shape this daemon has never
+      // written. Nothing can be inferred from it, so nothing is attempted.
+      peers: { "who-knows": { totally: "unfamiliar" } },
+    });
+    const { loadState } = await import("../src/state.ts");
+    // Refusing is the right failure: an operator can restore a backup, but
+    // cannot recover a registry that was silently emptied at boot.
+    await expect(loadState("0.11.0")).rejects.toThrow(/no migration path/);
+  });
+
+  it("a RECOGNISABLE shape under a bogus stamp migrates on its content", async () => {
+    // The other half of the same rule — and the half that reached the daemon.
+    // Widened in R3 (v0.11.21): the content check used to run only when the
+    // stamp was CURRENT, so a v1 record stamped 2 went down the v2 path and had
+    // a field grafted onto a record that has no `observed` at all.
+    //
+    // Refusing here would be refusing to read data plainly in front of us: a
+    // flat record is a v1 record whatever number sits above it.
     await writeStateDoc({
       stateVersion: 0,
       daemonVersion: "ancient",
@@ -155,9 +177,10 @@ describe("v1 records migrate into desired/observed without loss", () => {
       peers: { [V1_PEER.sessionId]: V1_PEER },
     });
     const { loadState } = await import("../src/state.ts");
-    // Refusing is the right failure: an operator can restore a backup, but
-    // cannot recover a registry that was silently emptied at boot.
-    await expect(loadState("0.11.0")).rejects.toThrow(/no migration path/);
+    const doc = await loadState("0.11.0");
+    expect(doc.stateVersion).toBe(3);
+    expect(doc.peers[V1_PEER.sessionId]?.observed.name).toBe("mic-tester");
+    expect(doc.peers[V1_PEER.sessionId]?.handle).toBe(V1_PEER.sessionId);
   });
 
   it("a version stamp that disagrees with the content does not crash the daemon", async () => {

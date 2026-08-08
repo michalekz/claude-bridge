@@ -6,6 +6,124 @@ All notable changes to this project are documented here. Format follows [Keep a 
 
 _Nothing yet._
 
+## [0.11.21] — 2026-08-08
+
+### An address is an address, a handle is a handle
+
+R3 — the last item of the ratified lifecycle plan. Two words that each meant two
+things now mean one thing each, and the measurement that preceded the work
+corrected the plan twice and found two live defects nobody had looked for.
+
+#### The audit item was measuring the wrong side of a boundary
+
+R3 asked for "canonicalisation everywhere an address is an address" and reported
+2 of 13 handler sites using it. Measured before implementing: the driver
+canonicalises at **every one of its six public entry points** and has since
+v0.11.6. A handler PASSES an address; the driver RECEIVES it, and receiving is
+where normalising belongs. The 2-of-13 figure was counting call sites that never
+needed it.
+
+What was genuinely unprotected is **comparison** — six places matching a stored
+`tmuxTarget` against host output as strings, with no driver in between. Those
+maps are filled from `listSessions`/`listWindows`, so a record holding a raw name
+matches nothing and `team_reconcile` reports a running peer as a pane that no
+longer exists.
+
+`CanonicalTarget` is now a branded type, so "remember to canonicalise before
+storing" is a compile error rather than a rule kept by memory. The one write that
+could have produced a raw address — `peer_spawn` filing the record before the
+driver answered — is closed. Measured on the fleet: 0 of 26 records were
+affected, so this is a **latent trap, not an outage**; it needed a display name
+carrying `:` or `.`, and names are chosen by people.
+
+#### The correction that measurement forced
+
+Sanitising an address the **host** reported does not normalise it — it renames
+it. tmux rewrites `:` and `.` itself at creation, so those never come back out;
+a SPACE does not. `tmux new-session -s "my session"` yields a session that
+answers to `my session` and to nothing else, and every adopted peer's address
+arrives that way. Hence two functions with two meanings: `canonicalHostTarget`
+derives an address from a name we chose, `trustCanonicalTarget` accepts one the
+host already owns.
+
+#### `sessionId` → `handle`, hard, no alias
+
+v0.11.16 fixed the BEHAVIOUR of defect N4 and left the word, so the code was
+right while the record still said otherwise. The rename is a semantic cut, not a
+find-and-replace — measured by meaning before touching anything:
+
+| what it means | count | outcome |
+|---|---|---|
+| registry key (`rec.sessionId`) | 115 | → `handle` |
+| wire input (`args.sessionId`) | 29 | → `handle` |
+| caller identity (`requestedBy.sessionId`) | 70 | unchanged |
+| measured identity (`observed.sessionId`) | 10 | unchanged |
+
+After the cut, `sessionId` means exactly one thing everywhere: a Claude Code
+session UUID. `session_stats`, `list_sessions` and the inbox key were never
+handles and are untouched — giving three names to two things would have turned
+the fix against itself.
+
+Three wire inputs renamed with no deprecation alias, by the owner's decision:
+`peer_spawn.handle`, and the `handle` member of the `team_layout` and
+`team_stop` specs.
+
+`state.json` moves to **stateVersion 3** with a real migration. The version is
+raised rather than repaired in place on purpose: a daemon older than this one
+reading a v3 registry would find `sessionId: undefined` on every record and
+carry on with a fleet keyed by nothing. Refusing to start is a loud failure at
+the one moment somebody is watching. Also measured: `record.sessionId` equalled
+its key in 26 of 26 records — a third copy of one truth, so the migration checks
+the two agree instead of assuming it.
+
+#### Two live defects the rename exposed
+
+Neither was on the plan. Both are the addressing defect v0.11.18's acceptance
+found — the daemon addressing a peer by the registry key while the peer drains
+its own session id — in the two places that fix did not reach. They read as
+correct while one word meant both things.
+
+- **`peer_compact` polled the ack at the wrong address.** The anchor request
+  tells the peer to write `compact-ack/<its own session id>.json`; the daemon
+  waited on `compact-ack/<handle>.json`. Both sides told the truth and never
+  met. For a handle-keyed peer a compact could only ever end in
+  `anchor_timeout` — and `team_layout` is what makes handle-keyed peers. Compact
+  was named in the v0.11.18 finding and did not get the fix.
+- **`wake` wrote to an inbox nobody drains.** Step g) of the restart protocol —
+  the step that tells the peer what happened, including that its anchor may be
+  half-written after a forced restart. The option is now called `bridgeId`
+  rather than reassigned, because a caller handing a handle to a field with that
+  name has to notice.
+
+#### A fourth hand-built envelope, which never fired
+
+`event-subscribers.ts` built an envelope disagreeing with `MessageEnvelopeSchema`
+in all four of the ways `peer_compact`'s did, including `kind: "lifecycle-event"`
+in an enum holding `ask`, `reply`, `broadcast`. Measured: `subscribers.json` has
+never existed, so the loop has never run. Reported at that strength and fixed
+anyway — a write path known to be broken is worse sitting in the code than in a
+changelog. Its acceptance test read the file back with a bare `JSON.parse`, which
+is happy with anything; it now parses with the contract's own schema.
+
+#### Surface
+
+- **BREAKING — `team_layout` `apply` defaults to `false`.** It was the only bulk
+  tool that executed unless told not to, while `team_restart`, `team_adopt` and
+  `team_stop` all preview first. A mistyped team name here spawns peers.
+  Measured: four applies in the daemon's whole history, all internal.
+- **BREAKING — `team_status` refuses `team`** with `not_implemented` and a
+  sentence naming what to do instead. It used to be accepted, echoed back in the
+  response, and ignored: an answer that looked filtered held the whole fleet. An
+  argument that is accepted, echoed and ignored is worse than one refused.
+- Tool descriptions promising a capability "in v0.11.1" said so at v0.11.20. The
+  promises are reworded without dates and the capabilities remain wanted — a
+  promise with a version in it goes stale exactly the way a count written in
+  prose does.
+- `loadState` checks content against the version stamp in **both** directions.
+  It only did so when the stamp was current, so a document stamped 2 holding flat
+  records went down the v2 path and had a field grafted onto a record with no
+  `observed` at all.
+
 ## [0.11.20] — 2026-08-08
 
 ### One wait loop — for the waits that are actually waiting

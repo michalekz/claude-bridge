@@ -4,6 +4,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import {
+  type CanonicalTarget,
+  canonicalHostTarget,
+  trustCanonicalTarget,
+} from "../src/hosts/driver.ts";
 
 const execFileAsync = promisify(execFile);
 const homeHolder = vi.hoisted(() => ({ current: "" }));
@@ -93,7 +98,7 @@ describe("L — a failed restart keeps the record", () => {
     const { handlers, state, mock } = await importAll();
     const doc = state.emptyState("0.10.11-test");
     doc.peers["p"] = {
-      sessionId: "p",
+      handle: "p",
       desired: {
         team: "obetni2",
         command: "/nonexistent/claude",
@@ -104,7 +109,7 @@ describe("L — a failed restart keeps the record", () => {
       observed: {
         name: "p",
         hostDriver: "mock",
-        tmuxTarget: "p",
+        tmuxTarget: canonicalHostTarget("p"),
         pid: 500,
         status: "live",
         // v0.11.18: step a) refuses to restart a peer whose identity is
@@ -164,7 +169,7 @@ describe.skipIf(!haveTmux)("K — a home session that no longer exists is recrea
     await execFileAsync("tmux", ["kill-session", "-t", S]).catch(() => undefined);
 
     const rec = await driver.spawn({
-      sessionKey: "lonely",
+      sessionKey: trustCanonicalTarget("lonely"),
       inSession: S,
       cwd: "/tmp",
       command: "/bin/sh",
@@ -205,7 +210,7 @@ describe("M — a record that outlives a failed restart does not claim to be liv
     const { handlers, state, mock } = await importAll();
     const doc = state.emptyState("0.10.12-test");
     doc.peers["p"] = {
-      sessionId: "p",
+      handle: "p",
       desired: {
         team: "obetni",
         // Starts, then exits at once — the shape of a failed resume.
@@ -217,7 +222,7 @@ describe("M — a record that outlives a failed restart does not claim to be liv
       observed: {
         name: "w2",
         hostDriver: "mock",
-        tmuxTarget: "w2",
+        tmuxTarget: canonicalHostTarget("w2"),
         pid: 500,
         status: "live",
         adopted: true,
@@ -272,7 +277,7 @@ describe("P — a relaunch uses the peer's own environment, not the daemon's", (
     const { handlers, state, mock } = await importAll();
     const doc = state.emptyState("0.10.13-test");
     doc.peers["p"] = {
-      sessionId: "p",
+      handle: "p",
       desired: {
         command: "/bin/sh",
         spawnArgs: ["-c", "sleep 30"],
@@ -282,7 +287,7 @@ describe("P — a relaunch uses the peer's own environment, not the daemon's", (
       observed: {
         name: "p",
         hostDriver: "mock",
-        tmuxTarget: "p",
+        tmuxTarget: canonicalHostTarget("p"),
         pid: 500,
         status: "live",
         // Captured from the peer at adoption. Contains nvm; the daemon's does not.
@@ -317,7 +322,7 @@ describe("P — a relaunch uses the peer's own environment, not the daemon's", (
     const { handlers, state, mock } = await importAll();
     const doc = state.emptyState("0.10.13-test");
     doc.peers["p"] = {
-      sessionId: "p",
+      handle: "p",
       desired: {
         command: "/bin/sh",
         spawnArgs: ["-c", "sleep 30"],
@@ -327,7 +332,7 @@ describe("P — a relaunch uses the peer's own environment, not the daemon's", (
       observed: {
         name: "p",
         hostDriver: "mock",
-        tmuxTarget: "p",
+        tmuxTarget: canonicalHostTarget("p"),
         pid: 500,
         status: "live",
         // A contaminated peer. Its PATH is welcome; its key is not.

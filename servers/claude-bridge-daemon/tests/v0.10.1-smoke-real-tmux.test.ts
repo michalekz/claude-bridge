@@ -104,7 +104,7 @@ describe.skipIf(!TMUX)("v0.10.1 smoke — team lifecycle on real tmux", () => {
       team: "smoke",
       peers: [
         {
-          sessionId,
+          handle: sessionId,
           displayName,
           cwd: "/tmp",
           command: "/bin/sh",
@@ -145,7 +145,7 @@ describe.skipIf(!TMUX)("v0.10.1 smoke — team lifecycle on real tmux", () => {
         "team_stop",
         {
           team: "smoke",
-          inline: { team: "smoke", peers: [{ sessionId, displayName }] },
+          inline: { team: "smoke", peers: [{ handle: sessionId, displayName }] },
           anchorTimeoutMs: 8_000,
           ackPollMs: 100,
         },

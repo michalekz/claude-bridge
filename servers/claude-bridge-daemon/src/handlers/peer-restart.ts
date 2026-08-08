@@ -226,7 +226,7 @@ export type ResumeDecision =
   | { kind: "refuse"; why: string };
 
 export function decideResume(record: PeerRecord): ResumeDecision {
-  const handle = record.sessionId;
+  const handle = record.handle;
   const measured = record.observed.sessionId ?? null;
   const identity = record.observed.identity;
 
@@ -287,9 +287,9 @@ export function decideResume(record: PeerRecord): ResumeDecision {
  * lie with a plausible pid attached. Keeping the row is right; keeping its
  * claim is not (plt-designer, 4th pilot round, finding M).
  */
-async function markNotRunning(ctx: HandlerContext, sessionId: string): Promise<void> {
+async function markNotRunning(ctx: HandlerContext, handle: string): Promise<void> {
   await applyStateChange(ctx.state, (draft) => {
-    const rec = draft.peers[sessionId];
+    const rec = draft.peers[handle];
     if (!rec) return;
     rec.observed.status = "unknown";
     rec.observed.pid = null;
@@ -314,7 +314,7 @@ type RestartPhase = "ready-ack" | "stopping" | "spawning" | "verifying";
  */
 async function markRestart(
   ctx: HandlerContext,
-  sessionId: string,
+  handle: string,
   phase: RestartPhase,
   fields: {
     threadId: string;
@@ -326,7 +326,7 @@ async function markRestart(
   },
 ): Promise<void> {
   await applyStateChange(ctx.state, (draft) => {
-    const rec = draft.peers[sessionId];
+    const rec = draft.peers[handle];
     if (!rec) return;
     rec.observed.restartRequest = { ...fields, phase };
     // `restarting` only while the peer is still up. Once its own stop has run,
@@ -338,9 +338,9 @@ async function markRestart(
 }
 
 /** The restart resolved — one way or the other. The mark is history now. */
-async function clearRestartMark(ctx: HandlerContext, sessionId: string): Promise<void> {
+async function clearRestartMark(ctx: HandlerContext, handle: string): Promise<void> {
   await applyStateChange(ctx.state, (draft) => {
-    const rec = draft.peers[sessionId];
+    const rec = draft.peers[handle];
     if (!rec?.observed.restartRequest) return;
     rec.observed.restartRequest = null;
     rec.observed.lastUpdatedAt = new Date().toISOString();
@@ -378,11 +378,11 @@ type ReadyOutcome =
 async function runReadyPhase(
   req: RequestEnvelope,
   ctx: HandlerContext,
-  target: { sessionId: string; sessionKey: string; record: PeerRecord },
+  target: { handle: string; sessionKey: string; record: PeerRecord },
   args: { force: boolean; readyTimeoutMs?: number; readyPollMs?: number; reason?: string },
   resumeSessionId: string | null,
 ): Promise<ReadyOutcome> {
-  const { sessionId, sessionKey, record } = target;
+  const { handle, sessionKey, record } = target;
   if (args.force) return { kind: "skipped" };
 
   // Nobody home — no request can be delivered and no ack can arrive. Waiting out
@@ -414,14 +414,16 @@ async function runReadyPhase(
       event: "peer_restart_ready_resumed",
       by: { sessionId: req.requestedBy.sessionId, name: req.requestedBy.name },
       requestId: req.id,
-      details: { sessionId, threadId, requestedAt: pending.requestedAt, note: "no second request" },
+      details: { handle, threadId, requestedAt: pending.requestedAt, note: "no second request" },
     });
   } else {
     await restartAcks.sweepStale(bridgeId, "pre-request");
-    threadId = restartThreadId(sessionId);
+    // The thread the PEER will echo back, so it is built from the address the
+    // peer was written to — not from the key we file it under.
+    threadId = restartThreadId(bridgeId);
     requestedAtMs = Date.now();
     msgId = await requestRestartReady(bridgeId, threadId, args.reason ?? null);
-    await markRestart(ctx, sessionId, "ready-ack", {
+    await markRestart(ctx, handle, "ready-ack", {
       threadId,
       msgId,
       requestedAt: new Date(requestedAtMs).toISOString(),
@@ -433,7 +435,7 @@ async function runReadyPhase(
       event: "peer_restart_requested",
       by: { sessionId: req.requestedBy.sessionId, name: req.requestedBy.name },
       requestId: req.id,
-      details: { sessionId, bridgeId, sessionKey, threadId, msgId, timeoutMs, resumeSessionId },
+      details: { handle, bridgeId, sessionKey, threadId, msgId, timeoutMs, resumeSessionId },
     });
   }
 
@@ -509,8 +511,8 @@ export async function handlePeerRestart(
       req.id,
       req.tool,
       "restart_in_progress",
-      `A restart of '${record.sessionId}' is already in its ${inFlight.phase} phase (requested at ${inFlight.requestedAt} by ${inFlight.requestId}). Entering it twice would risk two processes behind one record. Wait for it, or check team_reconcile for a restart_pending drift if the caller is gone.`,
-      { sessionId: record.sessionId, phase: inFlight.phase, since: inFlight.requestedAt },
+      `A restart of '${record.handle}' is already in its ${inFlight.phase} phase (requested at ${inFlight.requestedAt} by ${inFlight.requestId}). Entering it twice would risk two processes behind one record. Wait for it, or check team_reconcile for a restart_pending drift if the caller is gone.`,
+      { sessionId: record.handle, phase: inFlight.phase, since: inFlight.requestedAt },
     );
   }
 
@@ -549,7 +551,7 @@ export async function handlePeerRestart(
       by: { sessionId: req.requestedBy.sessionId, name: req.requestedBy.name },
       requestId: req.id,
       details: {
-        sessionId: record.sessionId,
+        sessionId: record.handle,
         missing,
         fallbackCwd: cwd,
         fallbackCommand: command,
@@ -578,15 +580,15 @@ export async function handlePeerRestart(
       level: "warn",
       by: { sessionId: req.requestedBy.sessionId, name: req.requestedBy.name },
       requestId: req.id,
-      details: { sessionId: record.sessionId, reason: resumeDecision.why },
+      details: { sessionId: record.handle, reason: resumeDecision.why },
     });
     return errResult(
       req.id,
       req.tool,
       "restart_identity_unknown",
-      `Refusing to restart '${record.sessionId}': ${resumeDecision.why}. Resuming the handle would relaunch the peer EMPTY and report success; resuming nothing would drop its context on purpose. Neither is this tool's decision to make. Run team_reconcile to measure the identity, then restart. NOTHING WAS TOUCHED — the peer is still running.`,
+      `Refusing to restart '${record.handle}': ${resumeDecision.why}. Resuming the handle would relaunch the peer EMPTY and report success; resuming nothing would drop its context on purpose. Neither is this tool's decision to make. Run team_reconcile to measure the identity, then restart. NOTHING WAS TOUCHED — the peer is still running.`,
       {
-        sessionId: record.sessionId,
+        sessionId: record.handle,
         identity: record.observed.identity ?? null,
         measuredSessionId: record.observed.sessionId ?? null,
       },
@@ -621,7 +623,7 @@ export async function handlePeerRestart(
         by: { sessionId: req.requestedBy.sessionId, name: req.requestedBy.name },
         requestId: req.id,
         details: {
-          sessionId: record.sessionId,
+          sessionId: record.handle,
           tmuxTarget: record.observed.tmuxTarget,
           hint: "The window is not on the host, so its parent session cannot be read. The peer will be relaunched as a session of its own.",
         },
@@ -661,7 +663,7 @@ export async function handlePeerRestart(
   const ready = await runReadyPhase(
     req,
     ctx,
-    { sessionId: record.sessionId, sessionKey, record },
+    { handle: record.handle, sessionKey, record },
     args,
     resumeSessionId,
   );
@@ -674,7 +676,7 @@ export async function handlePeerRestart(
       by: { sessionId: req.requestedBy.sessionId, name: req.requestedBy.name },
       requestId: req.id,
       details: {
-        sessionId: record.sessionId,
+        sessionId: record.handle,
         threadId: ready.threadId,
         timeoutMs: ready.timeoutMs,
         waitedMs: ready.waitedMs,
@@ -686,9 +688,9 @@ export async function handlePeerRestart(
       req.id,
       req.tool,
       "restart_ready_timeout",
-      `Peer '${record.sessionId}' did not say it was ready within ${ready.timeoutMs} ms (waited ${ready.waitedMs} ms, last ack verdict: ${ready.ackVerdict}). NOTHING WAS STOPPED and nothing was killed — the peer is running exactly as before. The request stands: call peer_restart again to keep waiting on the same thread (a late ack still counts), or peer_restart with force:true to restart it now and lose whatever it had not written down.`,
+      `Peer '${record.handle}' did not say it was ready within ${ready.timeoutMs} ms (waited ${ready.waitedMs} ms, last ack verdict: ${ready.ackVerdict}). NOTHING WAS STOPPED and nothing was killed — the peer is running exactly as before. The request stands: call peer_restart again to keep waiting on the same thread (a late ack still counts), or peer_restart with force:true to restart it now and lose whatever it had not written down.`,
       {
-        sessionId: record.sessionId,
+        sessionId: record.handle,
         threadId: ready.threadId,
         waitedMs: ready.waitedMs,
         stillRunning: true,
@@ -696,7 +698,7 @@ export async function handlePeerRestart(
     );
   }
 
-  const readyThreadId = ready.kind === "acked" ? ready.threadId : restartThreadId(record.sessionId);
+  const readyThreadId = ready.kind === "acked" ? ready.threadId : restartThreadId(record.handle);
   const restartMarkFields = {
     threadId: readyThreadId,
     msgId: ready.kind === "acked" ? ready.msgId : null,
@@ -705,7 +707,7 @@ export async function handlePeerRestart(
     requestId: req.id,
     resumeSessionId,
   };
-  await markRestart(ctx, record.sessionId, "stopping", restartMarkFields);
+  await markRestart(ctx, record.handle, "stopping", restartMarkFields);
 
   // STEP c) — the graceful primitive from v0.11.15. Same code, switched on.
   const stopArgs = {
@@ -714,7 +716,7 @@ export async function handlePeerRestart(
     ts: req.ts,
     tool: "peer_stop",
     args: {
-      peer: record.sessionId,
+      peer: record.handle,
       reason: args.reason ?? "peer_restart",
       // 🔴 ONE ASK, NOT TWO — corrected by the acceptance run.
       //
@@ -761,14 +763,14 @@ export async function handlePeerRestart(
     // This caller came back — it is returning an error right now. Abandonment
     // is the absence of that, and only `ready-ack` keeps its mark, because
     // there the mark IS the resumable request.
-    await clearRestartMark(ctx, record.sessionId);
+    await clearRestartMark(ctx, record.handle);
     await writeEvent({
       event: "peer_restart_stop_failed",
       level: "warn",
       by: { sessionId: req.requestedBy.sessionId, name: req.requestedBy.name },
       requestId: req.id,
       details: {
-        sessionId: record.sessionId,
+        sessionId: record.handle,
         code: stopResult.error?.code ?? null,
         readyAcked: ready.kind === "acked",
       },
@@ -778,7 +780,7 @@ export async function handlePeerRestart(
       req.tool,
       "restart_stop_failed",
       `${stopResult.error?.message ?? "peer_stop failed"} — the restart stopped here, and the peer is still running. Retry, or use force:true.`,
-      { stopResult, sessionId: record.sessionId, stillRunning: true },
+      { stopResult, sessionId: record.handle, stillRunning: true },
     );
   }
   const stoppedCleanly =
@@ -790,7 +792,7 @@ export async function handlePeerRestart(
     ts: req.ts,
     tool: "peer_spawn",
     args: {
-      sessionId: record.sessionId,
+      handle: record.handle,
       displayName: record.observed.name,
       cwd,
       // The test override stays ahead of the record so the acceptance suite can
@@ -854,7 +856,7 @@ export async function handlePeerRestart(
   // The mark moves to `spawning` BEFORE the spawn — the one phase whose
   // abandonment can leave a process that no record names. A mark written after a
   // successful spawn would be silent about the spawn that did not finish.
-  await markRestart(ctx, record.sessionId, "spawning", restartMarkFields);
+  await markRestart(ctx, record.handle, "spawning", restartMarkFields);
 
   const spawnResult = await handlePeerSpawn(spawnArgs, ctx);
   if (spawnResult.outcome === "error") {
@@ -870,7 +872,7 @@ export async function handlePeerRestart(
     // It comes back as `unknown`, not `live`: nothing is running, and this
     // release is about not saying otherwise.
     await applyStateChange(ctx.state, (draft) => {
-      draft.peers[record.sessionId] = {
+      draft.peers[record.handle] = {
         ...record,
         // Intent is untouched — the operator still wants this peer, which is
         // exactly why the record survives a failed relaunch. Only the
@@ -893,7 +895,7 @@ export async function handlePeerRestart(
       by: { sessionId: req.requestedBy.sessionId, name: req.requestedBy.name },
       requestId: req.id,
       details: {
-        sessionId: record.sessionId,
+        sessionId: record.handle,
         status: "unknown",
         hint: "The relaunch failed. The record is kept so the peer can be retried or released; nothing is running behind it.",
       },
@@ -911,7 +913,7 @@ export async function handlePeerRestart(
     Object.keys(provenanceDesired).length > 0 || Object.keys(provenanceObserved).length > 0;
   if (hasProvenance) {
     await applyStateChange(ctx.state, (draft) => {
-      const rec = draft.peers[record.sessionId];
+      const rec = draft.peers[record.handle];
       if (!rec) return;
       // Each half onto its own half. A single flat `Object.assign` used to be
       // enough and now silently would not be: it would hang `team` off the top
@@ -923,7 +925,7 @@ export async function handlePeerRestart(
     });
   }
 
-  await markRestart(ctx, record.sessionId, "verifying", restartMarkFields);
+  await markRestart(ctx, record.handle, "verifying", restartMarkFields);
 
   // STEP f) — did the peer come back as ITSELF?
   //
@@ -958,35 +960,30 @@ export async function handlePeerRestart(
   // key is not a session id, so passing it here switched `mustRegister` off and
   // the survival window shrank from 2500 ms to 400 — the check quietly relaxing
   // itself for exactly the peers it was needed for.
-  const liveness = await confirmStillRunning(
-    newPid,
-    identity,
-    resumeSessionId ?? record.sessionId,
-    {
-      ...(ctx.restartSettleMs !== undefined ? { settleMs: ctx.restartSettleMs } : {}),
-      ...(ctx.procRoot ? { procRoot: ctx.procRoot } : {}),
-      command,
-    },
-  );
+  const liveness = await confirmStillRunning(newPid, identity, resumeSessionId ?? record.handle, {
+    ...(ctx.restartSettleMs !== undefined ? { settleMs: ctx.restartSettleMs } : {}),
+    ...(ctx.procRoot ? { procRoot: ctx.procRoot } : {}),
+    command,
+  });
   if (!liveness.ok) {
     // The spawn wrote a `live` record with the new pid before we learned the
     // peer was gone. Leave it standing and the state file asserts a running
     // peer behind a dead pid.
-    await markNotRunning(ctx, record.sessionId);
-    await clearRestartMark(ctx, record.sessionId);
+    await markNotRunning(ctx, record.handle);
+    await clearRestartMark(ctx, record.handle);
     await writeEvent({
       event: "peer_restart_died_after_spawn",
       level: "error",
       by: { sessionId: req.requestedBy.sessionId, name: req.requestedBy.name },
       requestId: req.id,
-      details: { sessionId: record.sessionId, pid: newPid, reason: liveness.reason },
+      details: { sessionId: record.handle, pid: newPid, reason: liveness.reason },
     });
     return errResult(
       req.id,
       req.tool,
       "restart_died_after_spawn",
       `The relaunched peer did not survive: ${liveness.reason}`,
-      { sessionId: record.sessionId, pid: newPid, reason: liveness.reason },
+      { sessionId: record.handle, pid: newPid, reason: liveness.reason },
     );
   }
 
@@ -994,8 +991,8 @@ export async function handlePeerRestart(
     // Something IS running, but not the peer this record names. Reporting it as
     // this peer, live, is the worst of the three outcomes: every lifecycle call
     // would then act on a stranger.
-    await markNotRunning(ctx, record.sessionId);
-    await clearRestartMark(ctx, record.sessionId);
+    await markNotRunning(ctx, record.handle);
+    await clearRestartMark(ctx, record.handle);
     await writeEvent({
       event: "peer_restart_identity_mismatch",
       level: "error",
@@ -1003,7 +1000,7 @@ export async function handlePeerRestart(
       requestId: req.id,
       details: {
         expected: resumeSessionId,
-        handle: record.sessionId,
+        handle: record.handle,
         actual: identity.actual,
         pid: newPid,
         hint: "The peer is running but under a different session id — the record now points at an identity that no longer exists. Adopt the new id or stop the peer; do not trust lifecycle calls on this record.",
@@ -1014,18 +1011,18 @@ export async function handlePeerRestart(
       req.tool,
       "restart_identity_mismatch",
       `Peer restarted as '${identity.actual ?? "unknown"}', not '${resumeSessionId}' — the resume did not take and the record now names an identity that is not running.`,
-      { expected: resumeSessionId, handle: record.sessionId, actual: identity.actual, pid: newPid },
+      { expected: resumeSessionId, handle: record.handle, actual: identity.actual, pid: newPid },
     );
   }
 
-  await clearRestartMark(ctx, record.sessionId);
+  await clearRestartMark(ctx, record.handle);
 
   await writeEvent({
     event: "peer_restarted",
     by: { sessionId: req.requestedBy.sessionId, name: req.requestedBy.name },
     requestId: req.id,
     details: {
-      sessionId: record.sessionId,
+      sessionId: record.handle,
       reason: args.reason ?? null,
       force: args.force,
       mode: args.force ? "forced" : ready.kind === "acked" ? "graceful" : "no-host",
@@ -1052,7 +1049,10 @@ export async function handlePeerRestart(
   // this is the only thing that tells it so. Force skips waiting, never
   // evidence — and a warning that never arrives is the absence of evidence.
   const wake = await wakePeer(req, ctx, {
-    sessionId: record.sessionId,
+    // The BRIDGE address, not the key — the same distinction step b) of this
+    // protocol already makes when it ASKS the peer. Step g) TELLS it, and until
+    // R3 it told a directory nobody drains.
+    bridgeId: bridgeIdOf(record),
     sessionKey: (spawnData as { sessionKey?: string } | undefined)?.sessionKey ?? sessionKey,
     reason: args.reason ?? "peer_restart",
     // WAS THE PEER ASKED? — not "did the stop report itself clean".
@@ -1074,7 +1074,7 @@ export async function handlePeerRestart(
   });
 
   return okResult(req.id, req.tool, {
-    sessionId: record.sessionId,
+    sessionId: record.handle,
     // TOP LEVEL, all of it. A caller must not have to dig through two nested
     // results to learn whether the peer kept its context, whether it was asked
     // first, or whether it was told what happened.

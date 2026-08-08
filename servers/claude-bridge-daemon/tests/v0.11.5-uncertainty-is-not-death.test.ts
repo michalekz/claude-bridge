@@ -33,15 +33,15 @@ const importAll = async () => ({
   mock: await import("../src/hosts/mock-driver.ts"),
 });
 
-function spawnRequest(sessionId: string) {
+function spawnRequest(handle: string) {
   return {
     schemaVersion: 1 as const,
-    id: `req-${sessionId}`,
+    id: `req-${handle}`,
     ts: "2026-08-07T07:30:00.000Z",
     tool: "peer_spawn",
     args: {
-      sessionId,
-      displayName: sessionId,
+      handle,
+      displayName: handle,
       cwd: "/tmp",
       command: "/bin/sh",
       args: ["-c", "sleep 5"],

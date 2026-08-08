@@ -334,7 +334,7 @@ export async function controlStatusTool(): Promise<ToolResult> {
 
 export const PeerStopArgs = z
   .object({
-    peer: z.string().describe("Peer sessionId or display name"),
+    peer: z.string().describe("Peer handle (registry key) or display name"),
     reason: z.string().optional(),
     force: z.boolean().optional(),
     ackTimeoutMs: z.number().int().positive().max(600_000).optional(),
@@ -454,7 +454,12 @@ export async function peerStopTool(
 
 export const PeerSpawnArgs = z
   .object({
-    sessionId: z.string().min(1),
+    /**
+     * Registry key for the new peer — renamed from `sessionId` in v0.11.21.
+     * BREAKING, without an alias: a peer that has not booted cannot have a
+     * session id, and the old name is what let the key be handed to `--resume`.
+     */
+    handle: z.string().min(1),
     displayName: z.string().min(1),
     cwd: z.string().min(1),
     command: z.string().min(1),
@@ -474,7 +479,7 @@ export async function peerSpawnTool(
   args: z.infer<typeof PeerSpawnArgs>,
 ): Promise<ToolResult> {
   const daemonArgs: Record<string, unknown> = {
-    sessionId: args.sessionId,
+    handle: args.handle,
     displayName: args.displayName,
     cwd: args.cwd,
     command: args.command,

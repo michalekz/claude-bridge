@@ -1,6 +1,11 @@
 import { mkdir, readFile, readdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import {
+  type CanonicalTarget,
+  canonicalHostTarget,
+  trustCanonicalTarget,
+} from "../src/hosts/driver.ts";
 
 const homeHolder = vi.hoisted(() => ({ current: "" }));
 
@@ -43,14 +48,14 @@ describe("rc acceptance", () => {
 
       // Pre-existing extra peer that's NOT in the team spec.
       doc.peers["extra-1"] = {
-        sessionId: "extra-1",
+        handle: "extra-1",
         desired: {
           accountProfile: null,
         },
         observed: {
           name: "extra:one",
           hostDriver: "mock",
-          tmuxTarget: "extra:one",
+          tmuxTarget: canonicalHostTarget("extra:one"),
           pid: 1111,
           status: "live",
           model: null,
@@ -61,7 +66,7 @@ describe("rc acceptance", () => {
       // Pretend it's alive at the host level too (so peer_stop's driver
       // path finds something to kill).
       await driver.spawn({
-        sessionKey: "extra:one",
+        sessionKey: trustCanonicalTarget("extra:one"),
         cwd: "/tmp",
         command: "/bin/sleep",
         args: ["10"],
@@ -72,7 +77,7 @@ describe("rc acceptance", () => {
         team: "rc-test",
         peers: [
           {
-            sessionId: "peer-a",
+            handle: "peer-a",
             displayName: "rc-test:alice",
             cwd: "/tmp",
             command: "/bin/sleep",
@@ -84,7 +89,7 @@ describe("rc acceptance", () => {
             extraEnv: {},
           },
           {
-            sessionId: "peer-b",
+            handle: "peer-b",
             displayName: "rc-test:bob",
             cwd: "/tmp",
             command: "/bin/sleep",
@@ -163,7 +168,7 @@ describe("rc acceptance", () => {
         makeRequest(
           "peer_spawn",
           {
-            sessionId: "rc-peer-1",
+            handle: "rc-peer-1",
             displayName: "rc:one",
             cwd: "/tmp",
             command: "/bin/sleep",
@@ -179,9 +184,26 @@ describe("rc acceptance", () => {
       const files = await readdir(inboxDir);
       expect(files.length).toBeGreaterThan(0);
       const msg = JSON.parse(await readFile(join(inboxDir, files[0] ?? ""), "utf-8"));
-      expect(msg.kind).toBe("lifecycle-event");
-      expect(msg.content.event).toBe("peer_started");
-      expect(msg.content.sessionId).toBe("rc-peer-1");
+      // R3 (v0.11.21): this test used to assert the BROKEN shape. The envelope
+      // was hand-built with `kind: "lifecycle-event"` — a value absent from
+      // `MessageKindSchema` — plus object `from`/`to`, `ts` instead of
+      // `sentAt`, and an object `content`. The reader `safeParse`s, so every
+      // one of these would have been written and then silently ignored.
+      //
+      // Nobody noticed because `subscribers.json` has never existed on the
+      // fleet (measured 2026-08-08), so the loop had never run outside this
+      // test — and this test read the file back with a bare `JSON.parse`,
+      // which is happy with anything. A contract test that does not use the
+      // contract's own parser tests the writer against itself.
+      const { MessageEnvelopeSchema } = await import("@claude-bridge/shared");
+      const parsed = MessageEnvelopeSchema.parse(msg);
+      expect(parsed.kind).toBe("broadcast");
+      expect(parsed.to).toBe("keeper-peer");
+      expect(typeof parsed.content).toBe("string");
+      expect(parsed.content).toContain("peer_started");
+      // The handle names WHICH peer the event is about — it is in the text,
+      // because `content` is text now.
+      expect(parsed.content).toContain("rc-peer-1");
 
       driver.reset();
     });
@@ -198,7 +220,7 @@ describe("rc acceptance", () => {
         makeRequest(
           "peer_spawn",
           {
-            sessionId: "compact-peer",
+            handle: "compact-peer",
             displayName: "compact:target",
             cwd: "/tmp",
             command: "/bin/sleep",
@@ -274,7 +296,7 @@ describe("rc acceptance", () => {
         makeRequest(
           "peer_spawn",
           {
-            sessionId: "timeout-peer",
+            handle: "timeout-peer",
             displayName: "timeout:target",
             cwd: "/tmp",
             command: "/bin/sleep",

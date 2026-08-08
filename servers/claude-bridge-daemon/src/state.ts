@@ -1,6 +1,7 @@
 import { readFile, writeFile } from "node:fs/promises";
 import { atomicWriteJson, makeLogger, stateFilePath } from "@claude-bridge/shared";
 import { HOST_PROVIDED_VARS, stripHostProvided } from "./env-whitelist.ts";
+import { type CanonicalTarget, trustCanonicalTarget } from "./hosts/driver.ts";
 
 /**
  * Daemon-authoritative state (single writer).
@@ -15,7 +16,7 @@ import { HOST_PROVIDED_VARS, stripHostProvided } from "./env-whitelist.ts";
 
 const log = makeLogger("daemon.state");
 
-export const STATE_VERSION = 2;
+export const STATE_VERSION = 3;
 
 export type PeerLifecycleStatus =
   | "unknown"
@@ -54,11 +55,36 @@ export type PeerHostDriver = "tmux" | "bg-pty" | "mock" | "unknown";
  *              Never replayed as intent; carries `harvestedAt` when it was
  *              sampled from somewhere that can go stale.
  *
- * `sessionId` belongs to neither — it is the identity, and it is the one thing
- * that is true whether or not anybody is looking.
+ * `handle` belongs to neither. It is the NAME OF THE RECORD — chosen before the
+ * peer exists, by whoever wrote the team spec — and it is the key of
+ * `state.peers`.
  */
 export interface PeerRecord {
-  sessionId: string;
+  /**
+   * The registry key. Renamed from `sessionId` in R3 (v0.11.21).
+   *
+   * v0.11.16 fixed the BEHAVIOUR of defect N4 — the daemon stopped treating
+   * this string as the peer's Claude Code session id and started measuring the
+   * real one into `observed.sessionId`. The field kept its old name, so the
+   * code was right and the record still said otherwise, and every reader had
+   * to know which of the two `sessionId`s they were holding.
+   *
+   * After this rename the two words mean one thing each, everywhere:
+   *
+   *   handle    — addresses the RECORD. Ours to choose, valid before boot.
+   *   sessionId — addresses the PEER. Only the peer can mint it, only after
+   *               boot, and it lives on the measurement side.
+   *
+   * For adopted peers the two coincide, because adoption read the identity off
+   * a running process in the first place — which is why 25 of 26 keys were
+   * already genuine UUIDs and the v0.11.16 fix needed no data migration.
+   *
+   * ALWAYS EQUAL TO THE KEY. Measured 2026-08-08: 26 of 26. It is a third copy
+   * of one truth — the same shape as the catalog entry that carried a stale sha
+   * for three releases — so `loadState` checks the two agree instead of
+   * trusting that they do.
+   */
+  handle: string;
   desired: PeerDesired;
   observed: PeerObserved;
 }
@@ -98,7 +124,7 @@ export interface PeerDesired {
    * v0.11.0 STORES this and reports drift. It does NOT move windows. Asserting
    * it makes reconcile a writer against a surface a human also edits, and a
    * control plane that silently undoes a deliberate drag is the same defect
-   * inverted — intent passed off as observation. The assertion lands in v0.11.1
+   * inverted — intent passed off as observation. Asserting it is a wanted
    * behind an explicit opt-in, alongside the `adopt` path that lets the
    * operator declare reality to be the intent instead.
    */
@@ -166,7 +192,22 @@ export interface PeerObserved {
    */
   name: string;
   hostDriver: PeerHostDriver;
-  tmuxTarget: string | null;
+  /**
+   * The peer's address on the host — a tmux window id (`@42`) or a session
+   * name, always in the form `parseHostTarget` produces.
+   *
+   * Branded since R3 (v0.11.21) because this field is COMPARED, not only
+   * passed. The driver normalises everything handed to it, so a call was never
+   * the risk; a stored value read back and matched against
+   * `listWindows()`/`listSessions()` output was. A raw display name in here
+   * matches nothing, and `team_reconcile` reads that as a peer whose pane is
+   * gone.
+   *
+   * The brand makes the one path that could put a raw name here — `peer_spawn`
+   * writing the record before the driver has answered — fail to compile
+   * instead of failing on a fleet with an unlucky name.
+   */
+  tmuxTarget: CanonicalTarget | null;
   pid: number | null;
   status: PeerLifecycleStatus;
   /**
@@ -465,7 +506,7 @@ function repairHarvestedEnv(peers: Record<string, PeerRecord>): Record<string, P
     const cleaned = stripHostProvided(env);
     if (Object.keys(cleaned).length === Object.keys(env).length) continue;
     log.info("spawn_env_repaired", {
-      sessionId: record.sessionId,
+      sessionId: record.handle,
       dropped: HOST_PROVIDED_VARS.filter((v) => v in env),
     });
     record.observed.spawnEnv = cleaned;
@@ -526,6 +567,50 @@ interface LegacyPeerRecord {
  *
  * A version stamp is a claim about content. Cheap to check, so check it.
  */
+/**
+ * v2 -> v3: `sessionId` becomes `handle` on every record (R3, v0.11.21).
+ *
+ * The value does not change — only the word does. Measured before writing this:
+ * 26 of 26 records carried `sessionId` exactly equal to their key, so the field
+ * was a third copy of one truth wearing the name of a different thing.
+ *
+ * The KEY wins where they disagree. Every lookup in the daemon goes through
+ * `state.peers[<key>]`, so a record whose self-name differs from its key is
+ * already unreachable under that name — taking the field's word for it would
+ * mint a peer nothing can address. Disagreement is reported rather than quietly
+ * accepted: it has never happened, and if it starts, somebody needs to know.
+ *
+ * THE VERSION IS BUMPED rather than repaired in place, deliberately. A daemon
+ * older than v0.11.21 reading a v3 registry would find `sessionId: undefined`
+ * on every record and carry on — a whole fleet keyed by `undefined`. `loadState`
+ * refuses to start on a version from the future, so a rollback fails loudly at
+ * the one moment somebody is watching instead of silently at 3am.
+ */
+export function migrateV2ToV3(v2Peers: Record<string, Record<string, unknown>>): {
+  peers: Record<string, PeerRecord>;
+  migrated: number;
+  disagreed: string[];
+} {
+  const peers: Record<string, PeerRecord> = {};
+  const disagreed: string[] = [];
+  let migrated = 0;
+  for (const [id, old] of Object.entries(v2Peers)) {
+    const self = typeof old["sessionId"] === "string" ? (old["sessionId"] as string) : null;
+    if (self !== null && self !== id) disagreed.push(`${id} (record said '${self}')`);
+    const { sessionId: _dropped, ...rest } = old;
+    peers[id] = { ...(rest as unknown as Omit<PeerRecord, "handle">), handle: id };
+    migrated++;
+  }
+  return { peers, migrated, disagreed };
+}
+
+/** A v2 record names itself `sessionId`; a v3 record names itself `handle`. */
+function looksV2(peers: Record<string, unknown>): boolean {
+  const first = Object.values(peers)[0];
+  if (!first || typeof first !== "object") return false;
+  return "observed" in first && !("handle" in first);
+}
+
 function looksLegacy(peers: Record<string, unknown>): boolean {
   const first = Object.values(peers)[0];
   if (!first || typeof first !== "object") return false;
@@ -551,7 +636,17 @@ export function migrateV1ToV2(legacyPeers: Record<string, LegacyPeerRecord>): {
     const observed: PeerObserved = {
       name: old.name,
       hostDriver: old.hostDriver,
-      tmuxTarget: old.tmuxTarget,
+      // TRUSTED, not sanitised — and that is a correction to my own first
+      // instinct here (R3, v0.11.21). A v1 record predates the T1 fix, so it
+      // COULD hold a raw display name; it could equally hold a genuine host
+      // address with a space, which is what an adopted peer's target looks
+      // like. Nothing distinguishes the two after the fact, and sanitising
+      // would silently rename the second kind to close the first.
+      //
+      // So the migration carries the value as written and lets `team_reconcile`
+      // say so if it matches nothing on the host. A drift entry a human can
+      // read beats an address quietly rewritten during an upgrade.
+      tmuxTarget: old.tmuxTarget === null ? null : trustCanonicalTarget(old.tmuxTarget),
       pid: old.pid,
       status: old.status,
       model: old.model,
@@ -562,7 +657,7 @@ export function migrateV1ToV2(legacyPeers: Record<string, LegacyPeerRecord>): {
     if (old.adopted !== undefined) observed.adopted = old.adopted;
     if (old.spawnEnv !== undefined) observed.spawnEnv = old.spawnEnv;
 
-    peers[id] = { sessionId: old.sessionId, desired, observed };
+    peers[id] = { handle: old.sessionId, desired, observed };
     migrated++;
   }
   return { peers, migrated };
@@ -574,13 +669,31 @@ export async function loadState(daemonVersion: string): Promise<StateDoc> {
     const parsed = JSON.parse(raw) as Partial<StateDoc>;
     let onDisk = parsed.stateVersion ?? 0;
     if (onDisk > STATE_VERSION) throw new StateVersionMismatch(onDisk, STATE_VERSION);
-    if (onDisk === STATE_VERSION && looksLegacy(parsed.peers ?? {})) {
+    // A version stamp is a CLAIM about content. Cheap to check, so check the
+    // content — and check it WHATEVER the stamp says, not only when the stamp
+    // is current. Restricting this to `onDisk === STATE_VERSION` (which is how
+    // it was first written in R3, and how it was written in v0.11.0 before
+    // that) leaves the case that actually reached the daemon: a document
+    // stamped 2 holding FLAT records went down the v2 path and had `handle`
+    // grafted onto a record with no `observed` at all.
+    //
+    // Content wins over the stamp in both directions. There is no reading of a
+    // flat record that makes it a v2 document.
+    const contentSays = looksLegacy(parsed.peers ?? {})
+      ? 1
+      : looksV2(parsed.peers ?? {})
+        ? 2
+        : null;
+    if (contentSays !== null && contentSays !== onDisk) {
       log.warn("state_version_stamp_disagrees_with_content", {
         stamped: onDisk,
-        treatingAs: 1,
-        hint: "records are flat; migrating on content rather than crashing on the stamp",
+        treatingAs: contentSays,
+        hint:
+          contentSays === 1
+            ? "records are flat; migrating on content rather than crashing on the stamp"
+            : "records name themselves `sessionId`; migrating on content rather than trusting the stamp",
       });
-      onDisk = 1;
+      onDisk = contentSays;
     }
     if (onDisk < STATE_VERSION) {
       // Until v0.11.0 this branch called `emptyState()` — a version bump threw
@@ -588,7 +701,7 @@ export async function loadState(daemonVersion: string): Promise<StateDoc> {
       // invisible: raising the version today would have silently discarded 23
       // adopted peers, and the daemon would have come up looking healthy and
       // empty. A migration that cannot carry data is not a migration.
-      if (onDisk !== 1) {
+      if (onDisk !== 1 && onDisk !== 2) {
         throw new Error(
           `state.json stateVersion=${onDisk} has no migration path to ${STATE_VERSION}; ` +
             `refusing to start rather than discard ${Object.keys(parsed.peers ?? {}).length} peers`,
@@ -596,9 +709,21 @@ export async function loadState(daemonVersion: string): Promise<StateDoc> {
       }
       const backup = `${stateFilePath()}.v${onDisk}.${new Date().toISOString().replace(/[:.]/g, "-")}.bak`;
       await writeFile(backup, raw, "utf-8");
-      const { peers, migrated } = migrateV1ToV2(
-        parsed.peers as unknown as Record<string, LegacyPeerRecord>,
+      // v1 documents go through BOTH steps. Chaining rather than writing a
+      // direct v1->v3 path: one migration per shape change, each testable on
+      // its own, and no third place to keep in step with the other two.
+      const viaV2 =
+        onDisk === 1
+          ? migrateV1ToV2(parsed.peers as unknown as Record<string, LegacyPeerRecord>).peers
+          : (parsed.peers as unknown as Record<string, Record<string, unknown>>);
+      const { peers, migrated, disagreed } = migrateV2ToV3(
+        viaV2 as unknown as Record<string, Record<string, unknown>>,
       );
+      if (disagreed.length > 0) {
+        // Never observed. If it ever is, the key was still the only reachable
+        // name — this says so rather than letting the choice go unrecorded.
+        log.warn("state_handle_disagreed_with_key", { peers: disagreed, resolvedAs: "key" });
+      }
       log.warn("state_migrated", { from: onDisk, to: STATE_VERSION, peers: migrated, backup });
       const fresh: StateDoc = {
         stateVersion: STATE_VERSION,

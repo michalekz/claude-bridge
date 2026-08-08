@@ -1,6 +1,7 @@
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { canonicalHostTarget } from "../src/hosts/driver.ts";
 
 const homeHolder = vi.hoisted(() => ({ current: "" }));
 
@@ -43,9 +44,9 @@ describe("v0.10.1 team_stop", () => {
     const inline = {
       team: "dryrun-team",
       peers: [
-        { sessionId: "peer-velitel", displayName: "team:velitel", role: "velitel" },
-        { sessionId: "peer-a", displayName: "team:alice" },
-        { sessionId: "peer-b", displayName: "team:bob" },
+        { handle: "peer-velitel", displayName: "team:velitel", role: "velitel" },
+        { handle: "peer-a", displayName: "team:alice" },
+        { handle: "peer-b", displayName: "team:bob" },
       ],
     };
 
@@ -56,11 +57,11 @@ describe("v0.10.1 team_stop", () => {
     expect(res.outcome).toBe("ok");
     const data = res.data as {
       mode: string;
-      order: Array<{ sessionId: string; role: string | null }>;
+      order: Array<{ handle: string; role: string | null }>;
     };
     expect(data.mode).toBe("dryRun");
     // Velitel LAST (explicit role wins).
-    expect(data.order.map((p) => p.sessionId)).toEqual(["peer-a", "peer-b", "peer-velitel"]);
+    expect(data.order.map((p) => p.handle)).toEqual(["peer-a", "peer-b", "peer-velitel"]);
     expect(Object.keys(doc.peers)).toHaveLength(0);
     driver.reset();
   });
@@ -75,7 +76,7 @@ describe("v0.10.1 team_stop", () => {
       makeRequest(
         "peer_spawn",
         {
-          sessionId: "ts-peer-1",
+          handle: "ts-peer-1",
           displayName: "ts:one",
           cwd: "/tmp",
           command: "/bin/sleep",
@@ -105,7 +106,7 @@ describe("v0.10.1 team_stop", () => {
 
     const inline = {
       team: "ts-team",
-      peers: [{ sessionId: "ts-peer-1", displayName: "ts:one" }],
+      peers: [{ handle: "ts-peer-1", displayName: "ts:one" }],
     };
     const res = await handlers.dispatch(
       makeRequest(
@@ -155,7 +156,7 @@ describe("v0.10.1 team_stop", () => {
       makeRequest(
         "peer_spawn",
         {
-          sessionId: "ts-peer-2",
+          handle: "ts-peer-2",
           displayName: "ts:two",
           cwd: "/tmp",
           command: "/bin/sleep",
@@ -168,7 +169,7 @@ describe("v0.10.1 team_stop", () => {
 
     const inline = {
       team: "ts-team",
-      peers: [{ sessionId: "ts-peer-2", displayName: "ts:two" }],
+      peers: [{ handle: "ts-peer-2", displayName: "ts:two" }],
     };
     const res = await handlers.dispatch(
       makeRequest(
@@ -214,14 +215,14 @@ describe("v0.10.1 team_stop", () => {
     // Hand-craft a state entry for a peer that has NO host session — simulates
     // a peer that died between the last daemon rehydrate and now.
     doc.peers["ts-peer-3"] = {
-      sessionId: "ts-peer-3",
+      handle: "ts-peer-3",
       desired: {
         accountProfile: null,
       },
       observed: {
         name: "ts:three",
         hostDriver: "mock",
-        tmuxTarget: "ts_three",
+        tmuxTarget: canonicalHostTarget("ts_three"),
         pid: 4242,
         status: "live",
         model: null,
@@ -232,7 +233,7 @@ describe("v0.10.1 team_stop", () => {
 
     const inline = {
       team: "ts-team",
-      peers: [{ sessionId: "ts-peer-3", displayName: "ts:three" }],
+      peers: [{ handle: "ts-peer-3", displayName: "ts:three" }],
     };
     const res = await handlers.dispatch(
       makeRequest(

@@ -6,6 +6,7 @@ import { writeEvent } from "../events.ts";
 import type { RequestEnvelope, ResultEnvelope } from "../rpc.ts";
 import { errResult, okResult } from "../rpc.ts";
 import type { HandlerContext } from "./context.ts";
+import { bridgeIdOf } from "./peer-identity.ts";
 import { handlePeerSpawn } from "./peer-spawn.ts";
 import { handlePeerStop } from "./peer-stop.ts";
 import { applyStateChange } from "./state-writer.ts";
@@ -35,7 +36,17 @@ import { type WakeOutcome, wakePeer } from "./wake.ts";
  */
 
 const PeerSpecSchema = z.object({
-  sessionId: z.string().min(1),
+  /**
+   * The registry key for this peer — renamed from `sessionId` in R3
+   * (v0.11.21). BREAKING, deliberately and without an alias.
+   *
+   * A layout names peers that do not exist yet, so this string cannot be a
+   * session id: only a booted peer can mint one. Calling it `sessionId` is what
+   * made `team_layout` hand the key to `--resume` (fixed v0.11.18) and address
+   * a wake to a directory nobody drains (fixed here) — both times because the
+   * field's NAME said it was an identity.
+   */
+  handle: z.string().min(1),
   displayName: z.string().min(1),
   cwd: z.string().min(1),
   command: z.string().min(1),
@@ -58,7 +69,20 @@ export type TeamFile = z.infer<typeof TeamFileSchema>;
 export const TeamLayoutArgsSchema = z
   .object({
     team: z.string().min(1),
-    apply: z.boolean().default(true),
+    /**
+     * Execute the plan. DEFAULT FALSE since R3 (v0.11.21) — BREAKING.
+     *
+     * This was the one bulk tool that acted unless told not to, while
+     * `team_restart`, `team_adopt` and `team_stop` all preview first. The
+     * asymmetry is not a preference: a mistyped team name here SPAWNS PEERS,
+     * and the operator finds out afterwards. Four calls exist in the whole
+     * history of the daemon (measured from `events.jsonl` 2026-08-08), all
+     * ours, so the cost of the change is a flag and the cost of leaving it is
+     * one bad afternoon.
+     *
+     * `apply: false` reports exactly what `apply: true` would do.
+     */
+    apply: z.boolean().default(false),
     prune: z.boolean().default(false),
     /**
      * Prune WITHOUT asking (v0.11.17). Default false: a peer dropped from a
@@ -147,7 +171,7 @@ export async function handleTeamLayout(
     );
   }
 
-  const specIds = new Set(spec.peers.map((p) => p.sessionId));
+  const specIds = new Set(spec.peers.map((p) => p.handle));
   const stateIds = new Set(Object.keys(ctx.state.peers));
   /**
    * Peers put to sleep by `team_stop` keep their record with
@@ -163,8 +187,8 @@ export async function handleTeamLayout(
   );
   const runningIds = new Set([...stateIds].filter((id) => !stoppedIds.has(id)));
 
-  const toSpawn = spec.peers.filter((p) => !stateIds.has(p.sessionId));
-  const toResume = spec.peers.filter((p) => stoppedIds.has(p.sessionId));
+  const toSpawn = spec.peers.filter((p) => !stateIds.has(p.handle));
+  const toResume = spec.peers.filter((p) => stoppedIds.has(p.handle));
   // Only RUNNING extras are stop candidates — a tombstone has nothing to kill.
   const runningExtras = [...runningIds].filter((id) => !specIds.has(id));
   const toStop = args.prune ? runningExtras : [];
@@ -175,8 +199,8 @@ export async function handleTeamLayout(
 
   const diff = {
     team: spec.team,
-    plannedSpawn: toSpawn.map((p) => p.sessionId),
-    plannedResume: toResume.map((p) => p.sessionId),
+    plannedSpawn: toSpawn.map((p) => p.handle),
+    plannedResume: toResume.map((p) => p.handle),
     plannedStop: toStop,
     plannedForget: toForget,
     keptExtras: args.prune ? [] : runningExtras,
@@ -194,14 +218,14 @@ export async function handleTeamLayout(
 
   /** Shared by the spawn and resume paths — same tool, different intent. */
   const spawnOne = async (p: PeerSpec, forceResume: boolean, label: string) => {
-    const record = ctx.state.peers[p.sessionId];
+    const record = ctx.state.peers[p.handle];
     const spawnReq = {
       schemaVersion: req.schemaVersion,
-      id: `${req.id}:${label}:${p.sessionId}`,
+      id: `${req.id}:${label}:${p.handle}`,
       ts: req.ts,
       tool: "peer_spawn",
       args: {
-        sessionId: p.sessionId,
+        handle: p.handle,
         displayName: p.displayName,
         cwd: p.cwd,
         command: p.command,
@@ -212,7 +236,7 @@ export async function handleTeamLayout(
         // 🔴 WHICH transcript (v0.11.19) — and this is the tool where it matters
         // most, because this is the tool that MAKES handle-keyed peers.
         //
-        // The spec names a peer before it exists, so `p.sessionId` is a handle.
+        // The spec names a peer before it exists, so `p.handle` is a handle.
         // Passing it to `--resume` was the v0.11.18 defect one tool over: a
         // handle matches no transcript, so Claude Code drops into its Resume
         // picker, the peer wedges at a prompt with a brand-new identity, and the
@@ -251,10 +275,10 @@ export async function handleTeamLayout(
   for (const p of toSpawn) {
     const res = await spawnOne(p, false, "spawn");
     if (res.outcome === "ok") {
-      await stampTeam(p.sessionId);
-      spawnedOk.push(p.sessionId);
+      await stampTeam(p.handle);
+      spawnedOk.push(p.handle);
     } else {
-      spawnedFailed.push({ sessionId: p.sessionId, err: res.error?.message ?? "unknown" });
+      spawnedFailed.push({ sessionId: p.handle, err: res.error?.message ?? "unknown" });
     }
   }
 
@@ -265,18 +289,23 @@ export async function handleTeamLayout(
     // Capture the tombstone's stop quality BEFORE peer_spawn overwrites the
     // record — a forced stop means the peer never flushed its anchor, and the
     // wake message has to say so.
-    const stoppedCleanly = ctx.state.peers[p.sessionId]?.observed.stoppedCleanly ?? null;
+    const stoppedCleanly = ctx.state.peers[p.handle]?.observed.stoppedCleanly ?? null;
     const res = await spawnOne(p, true, "resume");
     if (res.outcome !== "ok") {
-      resumedFailed.push({ sessionId: p.sessionId, err: res.error?.message ?? "unknown" });
+      resumedFailed.push({ sessionId: p.handle, err: res.error?.message ?? "unknown" });
       continue;
     }
-    await stampTeam(p.sessionId);
-    resumedOk.push(p.sessionId);
+    await stampTeam(p.handle);
+    resumedOk.push(p.handle);
     if (!args.wake) continue;
     const data = res.data as { sessionKey?: string } | undefined;
+    const rec = ctx.state.peers[p.handle];
     const outcome = await wakePeer(req, ctx, {
-      sessionId: p.sessionId,
+      // The BRIDGE address. `team_layout` is the tool that MAKES handle-keyed
+      // records, so it is the caller for which the handle and the bridge id
+      // most often differ — and whose wake was therefore the least likely to
+      // arrive. The fallback covers a record that vanished mid-run only.
+      bridgeId: rec ? bridgeIdOf(rec) : p.handle,
       sessionKey: data?.sessionKey ?? p.displayName,
       reason: `team_layout_resume:${spec.team}`,
       stoppedCleanly,
@@ -347,10 +376,10 @@ export async function handleTeamLayout(
     }
   }
 
-  const wokenOk = wakeOutcomes.filter((w) => w.injected).map((w) => w.sessionId);
+  const wokenOk = wakeOutcomes.filter((w) => w.injected).map((w) => w.bridgeId);
   const wokenSilent = wakeOutcomes
     .filter((w) => !w.injected)
-    .map((w) => ({ sessionId: w.sessionId, err: w.error ?? "not injected" }));
+    .map((w) => ({ bridgeId: w.bridgeId, err: w.error ?? "not injected" }));
 
   await writeEvent({
     event: "team_layout_applied",

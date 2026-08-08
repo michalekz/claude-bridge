@@ -2,6 +2,7 @@ import { mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { canonicalHostTarget } from "../src/hosts/driver.ts";
 import { makePeer } from "./peer-fixture.ts";
 
 const homeHolder = vi.hoisted(() => ({ current: "" }));
@@ -44,7 +45,7 @@ function record(sessionId: string, name: string, pid: number | null, target: str
     { team: "hmh" },
     {
       name,
-      tmuxTarget: target,
+      tmuxTarget: target === null ? null : canonicalHostTarget(target),
       pid,
       startedAt: "2026-08-04T10:00:00.000Z",
       lastUpdatedAt: "2026-08-04T10:00:00.000Z",
@@ -187,7 +188,7 @@ describe("team_reconcile reports the gap between state and reality", () => {
         {
           pid: 7777,
           ppid: 1,
-          sessionId: "zzz",
+          handle: "zzz",
           sessionIdSource: "sessions-json",
           cmdline: "claude",
           argv: ["claude"],

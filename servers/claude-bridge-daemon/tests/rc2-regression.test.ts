@@ -54,7 +54,7 @@ describe("v0.10.0-rc.2 regression — T1 sessionKey + T2 stop reconcile", () => 
         makeRequest(
           "peer_spawn",
           {
-            sessionId: "peer-x",
+            handle: "peer-x",
             displayName: "rc-test:alice", // <-- unsafe raw name
             cwd: "/tmp",
             command: "/bin/sleep",
@@ -143,7 +143,7 @@ describe("v0.10.0-rc.2 regression — T1 sessionKey + T2 stop reconcile", () => 
         makeRequest(
           "peer_spawn",
           {
-            sessionId: "peer-y",
+            handle: "peer-y",
             displayName: "rc2-test-bob",
             cwd: "/tmp",
             command: "/bin/sleep",

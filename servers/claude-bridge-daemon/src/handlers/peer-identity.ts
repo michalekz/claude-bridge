@@ -55,10 +55,13 @@ import { pollUntil } from "../poll.ts";
  * So: the key addresses the RECORD, this addresses the PEER. Never mix them.
  */
 export function bridgeIdOf(record: {
-  sessionId: string;
+  handle: string;
   observed: { sessionId?: string | null };
 }): string {
-  return record.observed.sessionId ?? record.sessionId;
+  // Reads as its own explanation since R3 (v0.11.21): the measured session id
+  // if we have one, otherwise the handle — which is the right fallback only
+  // because for a peer the daemon did not spawn, the two are the same string.
+  return record.observed.sessionId ?? record.handle;
 }
 
 /** How the peer's own MCP server learns its identity — so it is authoritative. */

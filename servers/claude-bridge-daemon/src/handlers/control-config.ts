@@ -27,7 +27,7 @@ import { applyStateChange } from "./state-writer.ts";
  *     a tool whose dry-run flag has to be right every single time.
  *   - Nothing to the world. It writes `desired` and records the request; the
  *     window is not moved and no keys are injected. Reconcile REPORTS the gap
- *     (see `windowIndex`), and closing it lands in v0.11.1 behind an explicit
+ *     (see `windowIndex`), and closing it is a wanted capability behind an explicit
  *     opt-in. Writing intent and enacting it are separate powers, and this
  *     release only grants the first.
  */
@@ -189,7 +189,7 @@ export function viewOf(record: PeerRecord): PeerConfigView {
       desired: dIdx,
       observed: oIdx,
       resolve: {
-        assert: `move the window to index ${dIdx} (v0.11.1: reconcile --assert; today: tmux move-window)`,
+        assert: `move the window to index ${dIdx} (no daemon-side assert yet; today: tmux move-window)`,
         adopt: `accept reality — control_config peer:"${record.observed.name}" set:{windowIndex:${oIdx}}`,
       },
     });
@@ -202,13 +202,13 @@ export function viewOf(record: PeerRecord): PeerConfigView {
       desired: dModel,
       observed: oModel,
       resolve: {
-        assert: `switch the peer to ${dModel} (v0.11.1: verified /model send)`,
+        assert: `switch the peer to ${dModel} (no daemon-side assert yet; today: send /model by hand)`,
         adopt: `accept reality — control_config peer:"${record.observed.name}" set:{model:"${oModel}"}`,
       },
     });
   }
   return {
-    sessionId: record.sessionId,
+    sessionId: record.handle,
     name: record.observed.name,
     desired: { ...record.desired },
     observed: {
@@ -336,7 +336,7 @@ export async function handleControlConfig(
       event: "control_config_preview",
       by: { sessionId: req.requestedBy.sessionId, name: req.requestedBy.name },
       requestId: req.id,
-      details: { sessionId: record.sessionId, changes, reason: args.reason ?? null },
+      details: { sessionId: record.handle, changes, reason: args.reason ?? null },
     });
     return okResult(req.id, req.tool, {
       dryRun: true,
@@ -347,7 +347,7 @@ export async function handleControlConfig(
   }
 
   await applyStateChange(ctx.state, (draft) => {
-    const rec = draft.peers[record.sessionId];
+    const rec = draft.peers[record.handle];
     if (!rec) return;
     // Only `desired`. The measured half belongs to whatever measured it, and a
     // config tool that could write `observed` would let an operator declare a
@@ -366,16 +366,20 @@ export async function handleControlConfig(
     event: "control_config_set",
     by: { sessionId: req.requestedBy.sessionId, name: req.requestedBy.name },
     requestId: req.id,
-    details: { sessionId: record.sessionId, changes, reason: args.reason ?? null },
+    details: { sessionId: record.handle, changes, reason: args.reason ?? null },
   });
 
-  const after = ctx.state.peers[record.sessionId];
+  const after = ctx.state.peers[record.handle];
   return okResult(req.id, req.tool, {
     dryRun: false,
     changed: changes,
     peer: after ? viewOf(after) : null,
     // Said plainly, because "I set windowIndex and nothing moved" is otherwise
     // read as a bug rather than as the documented boundary of this release.
-    note: "Declared. Nothing in the world was changed — v0.11.0 records intent and reports drift; asserting it lands in v0.11.1.",
+    // No version number in a promise (R3, v0.11.21). This one said "lands in
+    // v0.11.1" and was still saying it at v0.11.20 — a promise with a version
+    // in it goes stale exactly the way a count written in prose does. The
+    // capability is still wanted, so the sentence stays; only the date goes.
+    note: "Declared. Nothing in the world was changed — this tool records intent and reports drift. Asserting intent is not implemented yet; each drift entry names both ways out.",
   });
 }

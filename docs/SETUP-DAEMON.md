@@ -141,7 +141,7 @@ For each event listed, the daemon drops a `lifecycle-event` message into that pe
   "team": "hmh",
   "peers": [
     {
-      "sessionId": "keeper-uuid",
+      "handle": "keeper-uuid",
       "displayName": "hmh-memory-keeper",
       "cwd": "/opt/hmh",
       "command": "claude",
@@ -156,9 +156,13 @@ For each event listed, the daemon drops a `lifecycle-event` message into that pe
 }
 ```
 
-Reconcile with `team_layout({ team: "hmh", apply: true })`. Add `prune: true` to also stop peers that aren't in the spec. Preview with `apply: false`.
+`handle` is the registry key — the name the control plane files this peer under. It was called `sessionId` before v0.11.21; the rename is a hard break with no alias, because a peer named in a layout has not booted yet and therefore cannot have a session id. Use a UUID here only when you mean "resume that exact transcript".
 
-**displayName canonicalization (v0.10.0-rc.2):** `displayName` is used as the tmux session name. Characters outside `[A-Za-z0-9_-]` (notably `:` and `.` — both reserved by tmux target syntax) are silently replaced with `_` when the daemon talks to tmux; the canonical form is returned as `sessionKey` in the spawn response and stored in `state.peers[].tmuxTarget`. `name` keeps the raw string. So `"hmh:node.1"` becomes `hmh_node_1` on the tmux side while still showing as `hmh:node.1` in `team_status`.
+Reconcile with `team_layout({ team: "hmh", apply: true })`. **`apply` defaults to `false` since v0.11.21** — a bare call previews the diff and changes nothing, the same way `team_restart` and `team_adopt` behave. Add `prune: true` to also stop peers that aren't in the spec; a pruned peer is asked first unless you pass `pruneForce: true`.
+
+**displayName canonicalization (v0.10.0-rc.2, typed in v0.11.21):** `displayName` is used as the tmux session name. Characters outside `[A-Za-z0-9_-]` (notably `:` and `.` — both reserved by tmux target syntax) are silently replaced with `_` when the daemon talks to tmux; the canonical form is returned as `sessionKey` in the spawn response and stored in `state.peers[].tmuxTarget`. `name` keeps the raw string. So `"hmh:node.1"` becomes `hmh_node_1` on the tmux side while still showing as `hmh:node.1` in `team_status`.
+
+Since v0.11.21 the canonical form is a distinct type inside the daemon, so a raw name can no longer be stored as an address by accident. Note the direction: a name **you choose** is sanitized, an address **tmux reports** is not. tmux rewrites `:` and `.` itself at creation, but it does not touch spaces — a session genuinely named `my session` answers to `my session` and to nothing else, and sanitizing that would rename it rather than normalize it. Every adopted peer's address arrives that way.
 
 ## Auditing
 

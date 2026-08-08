@@ -12,6 +12,7 @@ import {
   verifyAckFile,
 } from "./ack-protocol.ts";
 import type { HandlerContext } from "./context.ts";
+import { bridgeIdOf } from "./peer-identity.ts";
 import { ambiguousPeerMessage, resolvePeerRef } from "./peer-ref.ts";
 
 /**
@@ -133,7 +134,7 @@ export type { AckVerdict };
  *
  * This used to build its own object and write it with a raw `atomicWriteJson`,
  * and that object disagreed with `MessageEnvelopeSchema` in five places at
- * once: `from` and `to` were `{sessionId, name}` rather than strings, the
+ * once: `from` and `to` were `{handle, name}` rather than strings, the
  * timestamp was `ts` rather than `sentAt`, `content` was an object, and `kind`
  * was `compact-anchor-request`, which is not in the enum.
  *
@@ -212,13 +213,32 @@ export async function handlePeerCompact(
       { peer: args.peer },
     );
   }
-  const sessionId = found.sessionId;
-  const record = ctx.state.peers[sessionId];
+  const handle = found.handle;
+  const record = ctx.state.peers[handle];
   if (!record) {
     return errResult(req.id, req.tool, "peer_gone", "Peer disappeared before compact started", {
-      sessionId,
+      handle,
     });
   }
+  /**
+   * THE BRIDGE ADDRESS — the defect R3 found by renaming (v0.11.21).
+   *
+   * v0.11.18 discovered that the daemon addresses a peer's inbox by the
+   * registry key while the peer drains its own session id, and fixed it in
+   * `peer_stop` and `peer_restart`. `peer_compact` was named in that finding
+   * and did not get the fix: it wrote the anchor request into
+   * `inbox/<handle>/pending/` and then polled `compact-ack/<handle>.json` for a
+   * reply, while the message it sent told the peer to answer under its OWN
+   * session id.
+   *
+   * For 24 of the 26 records on this fleet the two are the same string, so it
+   * worked; for a handle-keyed peer the compact could only ever end in
+   * `anchor_timeout` — and `team_layout` is what makes handle-keyed peers.
+   *
+   * The rename is what exposed it. `sessionId` meant both things, so the code
+   * read as correct in both readings.
+   */
+  const bridgeId = bridgeIdOf(record);
   const sessionKey = record.observed.tmuxTarget ?? record.observed.name;
   const sendKeys = ctx.hostDriver.sendKeys?.bind(ctx.hostDriver);
   if (!sendKeys) {
@@ -233,7 +253,7 @@ export async function handlePeerCompact(
 
   const anchorTimeoutMs = args.anchorTimeoutMs ?? DEFAULT_ANCHOR_TIMEOUT_MS;
   const ackPollMs = args.ackPollMs ?? DEFAULT_ACK_POLL_MS;
-  const threadId = `compact:${sessionId}:${Date.now().toString(36)}`;
+  const threadId = `compact:${bridgeId}:${Date.now().toString(36)}`;
 
   await mkdir(compactAcks.dir(), { recursive: true });
 
@@ -246,7 +266,7 @@ export async function handlePeerCompact(
   if (!args.skipAnchorRequest) {
     // Clear the ground first. Everything after this point is an answer to THIS
     // request, without anyone having to reason about it.
-    sweptStale = await compactAcks.sweepStale(sessionId, "stale");
+    sweptStale = await compactAcks.sweepStale(bridgeId, "stale");
     if (sweptStale) {
       await writeEvent({
         event: "peer_compact_stale_ack_swept",
@@ -254,14 +274,14 @@ export async function handlePeerCompact(
         by: { sessionId: req.requestedBy.sessionId, name: req.requestedBy.name },
         requestId: req.id,
         details: {
-          sessionId,
+          handle,
           movedTo: sweptStale,
           note: "An ack was already on disk before this request. It answered something else — v0.11.2 and earlier would have injected /compact over it.",
         },
       });
     }
     try {
-      anchorMsgId = await writeAnchorRequestMsg(sessionId, threadId);
+      anchorMsgId = await writeAnchorRequestMsg(bridgeId, threadId);
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       await writeEvent({
@@ -269,15 +289,15 @@ export async function handlePeerCompact(
         level: "error",
         by: { sessionId: req.requestedBy.sessionId, name: req.requestedBy.name },
         requestId: req.id,
-        details: { sessionId, stage: "anchor_request", err: msg },
+        details: { handle, stage: "anchor_request", err: msg },
       });
-      return errResult(req.id, req.tool, "anchor_request_write_failed", msg, { sessionId });
+      return errResult(req.id, req.tool, "anchor_request_write_failed", msg, { handle });
     }
     await writeEvent({
       event: "peer_compact_anchor_requested",
       by: { sessionId: req.requestedBy.sessionId, name: req.requestedBy.name },
       requestId: req.id,
-      details: { sessionId, sessionKey, threadId, anchorMsgId, timeoutMs: anchorTimeoutMs },
+      details: { handle, sessionKey, threadId, anchorMsgId, timeoutMs: anchorTimeoutMs },
     });
   }
 
@@ -287,7 +307,7 @@ export async function handlePeerCompact(
   // older than the anchor window is the stale-ack defect wearing the one hat
   // that makes it look intentional.
   const ackFloorMs = args.skipAnchorRequest ? requestedAtMs - anchorTimeoutMs : requestedAtMs;
-  const verdict = await compactAcks.poll(sessionId, deadline, ackPollMs, ackFloorMs, threadId);
+  const verdict = await compactAcks.poll(bridgeId, deadline, ackPollMs, ackFloorMs, threadId);
   if (!verdict.accepted) {
     await writeEvent({
       event: "peer_compact_anchor_timeout",
@@ -295,7 +315,7 @@ export async function handlePeerCompact(
       by: { sessionId: req.requestedBy.sessionId, name: req.requestedBy.name },
       requestId: req.id,
       details: {
-        sessionId,
+        handle,
         sessionKey,
         threadId,
         timeoutMs: anchorTimeoutMs,
@@ -320,9 +340,9 @@ export async function handlePeerCompact(
       req.id,
       req.tool,
       "anchor_timeout",
-      `Peer '${sessionId}' was not compacted: ${why}. Nothing was injected.`,
+      `Peer '${handle}' was not compacted: ${why}. Nothing was injected.`,
       {
-        sessionId,
+        handle,
         threadId,
         ackVerdict: verdict.reason,
         ackWrittenAt: verdict.writtenAt ?? null,
@@ -337,7 +357,7 @@ export async function handlePeerCompact(
     event: "peer_compact_inject",
     by: { sessionId: req.requestedBy.sessionId, name: req.requestedBy.name },
     requestId: req.id,
-    details: { sessionId, sessionKey, threadId, injectedKeys: "[daemon] /compact" },
+    details: { handle, sessionKey, threadId, injectedKeys: "[daemon] /compact" },
   });
 
   try {
@@ -349,22 +369,22 @@ export async function handlePeerCompact(
       level: "error",
       by: { sessionId: req.requestedBy.sessionId, name: req.requestedBy.name },
       requestId: req.id,
-      details: { sessionId, sessionKey, stage: "send_keys", err: msg },
+      details: { handle, sessionKey, stage: "send_keys", err: msg },
     });
-    return errResult(req.id, req.tool, "send_keys_failed", msg, { sessionId, sessionKey });
+    return errResult(req.id, req.tool, "send_keys_failed", msg, { handle, sessionKey });
   }
-  await compactAcks.consume(sessionId);
+  await compactAcks.consume(bridgeId);
   await writeEvent({
     event: "peer_compacted",
     by: { sessionId: req.requestedBy.sessionId, name: req.requestedBy.name },
     requestId: req.id,
-    details: { sessionId, sessionKey, threadId, reason: args.reason ?? null },
+    details: { handle, sessionKey, threadId, reason: args.reason ?? null },
   });
   await publishLifecycleEvent({
     event: "peer_compacted",
-    sessionId,
+    handle: handle,
     sessionKey,
     details: { threadId, reason: args.reason ?? null },
   });
-  return okResult(req.id, req.tool, { sessionId, sessionKey, threadId, anchorMsgId });
+  return okResult(req.id, req.tool, { handle, sessionKey, threadId, anchorMsgId });
 }

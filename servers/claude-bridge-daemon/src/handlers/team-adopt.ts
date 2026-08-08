@@ -2,7 +2,12 @@ import { makeLogger, resolvePeer } from "@claude-bridge/shared";
 import { z } from "zod";
 import { harvestEnv } from "../env-whitelist.ts";
 import { writeEvent } from "../events.ts";
-import { formatHostTarget, parseHostTarget, sanitizeSessionKey } from "../hosts/driver.ts";
+import {
+  type CanonicalTarget,
+  formatHostTarget,
+  parseHostTarget,
+  sanitizeSessionKey,
+} from "../hosts/driver.ts";
 import { type ProcessRecord, defaultProcessInspector } from "../hosts/process-inspector.ts";
 import type { RequestEnvelope, ResultEnvelope } from "../rpc.ts";
 import { errResult, okResult } from "../rpc.ts";
@@ -58,7 +63,7 @@ export const TeamAdoptArgsSchema = z
 export type TeamAdoptArgs = z.infer<typeof TeamAdoptArgsSchema>;
 
 interface AdoptionCandidate {
-  sessionKey: string;
+  sessionKey: CanonicalTarget;
   sessionId: string;
   pid: number | null;
   sessionIdSource: ProcessRecord["sessionIdSource"] | "manual";
@@ -77,7 +82,7 @@ interface AdoptionCandidate {
 }
 
 interface AdoptionSkip {
-  sessionKey: string;
+  sessionKey: CanonicalTarget;
   reason: "already_adopted" | "no_claude_process" | "no_session_id" | "not_on_host";
   details?: string;
 }
@@ -191,7 +196,7 @@ export function stripReappendedArgs(argv: string[]): string[] {
 }
 
 interface AdoptionAmbiguity {
-  sessionKey: string;
+  sessionKey: CanonicalTarget;
   candidates: Array<{ pid: number; sessionId: string | null }>;
 }
 
@@ -206,7 +211,7 @@ interface AdoptionAmbiguity {
 async function discoverCandidates(
   ctx: HandlerContext,
   hostSessions: Array<{
-    sessionKey: string;
+    sessionKey: CanonicalTarget;
     label: string;
     homeSession?: string;
     pid: number | null;
@@ -360,7 +365,7 @@ export async function handleTeamAdopt(
     });
   }
   const hostSessions: Array<{
-    sessionKey: string;
+    sessionKey: CanonicalTarget;
     label: string;
     homeSession?: string;
     pid: number | null;
@@ -524,7 +529,7 @@ export async function handleTeamAdopt(
     const now = new Date().toISOString();
     await applyStateChange(ctx.state, (draft) => {
       draft.peers[c.sessionId] = {
-        sessionId: c.sessionId,
+        handle: c.sessionId,
         desired: {
           team: args.team,
           label: windowLabelFor(c.label ?? c.sessionKey, args.team),

@@ -5,7 +5,8 @@ import {
   type SessionHostDriver,
   type SessionHostRecord,
   type SessionHostSpawnOptions,
-  sanitizeSessionKey,
+  canonicalHostTarget,
+  trustCanonicalTarget,
 } from "./driver.ts";
 
 const log = makeLogger("daemon.host.mock");
@@ -47,13 +48,13 @@ export class MockDriver implements SessionHostDriver {
   }
 
   async hasSession(sessionKey: string): Promise<boolean> {
-    return this.sessions.has(sanitizeSessionKey(sessionKey));
+    return this.sessions.has(canonicalHostTarget(sessionKey));
   }
 
   async spawn(opts: SessionHostSpawnOptions): Promise<SessionHostRecord> {
     // Mirror TmuxDriver: sanitize once at the boundary so tests exercise
     // the same canonical-key contract callers see in production.
-    const canonicalKey = sanitizeSessionKey(opts.sessionKey);
+    const canonicalKey = canonicalHostTarget(opts.sessionKey);
     if (this.sessions.has(canonicalKey)) {
       throw new Error(`Mock session '${canonicalKey}' already exists`);
     }
@@ -93,7 +94,7 @@ export class MockDriver implements SessionHostDriver {
 
   async kill(sessionKey: string): Promise<void> {
     // Idempotent — matches the TmuxDriver contract (v0.10.0-rc.2).
-    const canonical = sanitizeSessionKey(sessionKey);
+    const canonical = canonicalHostTarget(sessionKey);
     const entry = this.sessions.get(canonical);
     if (!entry) return;
     if (entry.proc && entry.pid !== null) {
@@ -114,7 +115,7 @@ export class MockDriver implements SessionHostDriver {
   async listSessions(): Promise<SessionHostRecord[]> {
     const out: SessionHostRecord[] = [];
     for (const [sessionKey, entry] of this.sessions.entries()) {
-      out.push({ sessionKey, alive: true, pid: entry.pid });
+      out.push({ sessionKey: trustCanonicalTarget(sessionKey), alive: true, pid: entry.pid });
     }
     return out;
   }

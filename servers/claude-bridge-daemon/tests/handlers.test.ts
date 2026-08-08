@@ -1,4 +1,9 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import {
+  type CanonicalTarget,
+  canonicalHostTarget,
+  trustCanonicalTarget,
+} from "../src/hosts/driver.ts";
 
 const homeHolder = vi.hoisted(() => ({ current: "" }));
 const spawnCallsHolder = vi.hoisted(() => ({
@@ -88,7 +93,7 @@ describe("handlers", () => {
       try {
         const res = await dispatch(
           makeRequest("peer_spawn", {
-            sessionId: "peer-a",
+            handle: "peer-a",
             displayName: "test:alice",
             cwd: "/tmp",
             command: "/bin/sleep",
@@ -125,14 +130,14 @@ describe("handlers", () => {
       const state = await newState();
       const { driver } = await newDriver();
       state.peers["peer-a"] = {
-        sessionId: "peer-a",
+        handle: "peer-a",
         desired: {
           accountProfile: null,
         },
         observed: {
           name: "test:alice",
           hostDriver: "mock",
-          tmuxTarget: "test:alice",
+          tmuxTarget: canonicalHostTarget("test:alice"),
           pid: 12345,
           status: "live",
           model: null,
@@ -142,7 +147,7 @@ describe("handlers", () => {
       };
       const res = await dispatch(
         makeRequest("peer_spawn", {
-          sessionId: "peer-a",
+          handle: "peer-a",
           displayName: "test:alice",
           cwd: "/tmp",
           command: "/bin/sleep",
@@ -160,7 +165,7 @@ describe("handlers", () => {
       const { driver } = await newDriver();
       // Simulate an orphaned session in the driver (post-daemon-crash + host survived).
       await driver.spawn({
-        sessionKey: "test:alice",
+        sessionKey: trustCanonicalTarget("test:alice"),
         cwd: "/tmp",
         command: "/bin/sleep",
         args: [],
@@ -168,7 +173,7 @@ describe("handlers", () => {
       });
       const res = await dispatch(
         makeRequest("peer_spawn", {
-          sessionId: "peer-a",
+          handle: "peer-a",
           displayName: "test:alice",
           cwd: "/tmp",
           command: "/bin/sleep",
@@ -190,7 +195,7 @@ describe("handlers", () => {
       const driver = new MockDriver({ hostRespawnHook: () => true });
       await dispatch(
         makeRequest("peer_spawn", {
-          sessionId: "peer-a",
+          handle: "peer-a",
           displayName: "test:alice",
           cwd: "/tmp",
           command: "/bin/sleep",
@@ -227,7 +232,7 @@ describe("handlers", () => {
         makeRequest(
           "peer_spawn",
           {
-            sessionId: "peer-b",
+            handle: "peer-b",
             displayName: "test:bob",
             cwd: "/tmp",
             command: "/bin/sleep",
@@ -279,7 +284,7 @@ describe("handlers", () => {
         makeRequest(
           "peer_spawn",
           {
-            sessionId: "peer-c",
+            handle: "peer-c",
             displayName: "test:carol",
             cwd: "/tmp",
             command: "/bin/sleep",
@@ -293,7 +298,7 @@ describe("handlers", () => {
         makeRequest(
           "peer_spawn",
           {
-            sessionId: "peer-c",
+            handle: "peer-c",
             displayName: "test:carol",
             cwd: "/tmp",
             command: "/bin/sleep",

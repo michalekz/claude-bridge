@@ -1,4 +1,9 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import {
+  type CanonicalTarget,
+  canonicalHostTarget,
+  trustCanonicalTarget,
+} from "../src/hosts/driver.ts";
 
 const homeHolder = vi.hoisted(() => ({ current: "" }));
 
@@ -94,8 +99,8 @@ describe("v0.10.1 team_adopt", () => {
     // Register host sessions whose pane pid is the SHELL, not claude —
     // matching how tmux actually reports panes.
     driver.listSessions = async () => [
-      { sessionKey: "hmh_alice", alive: true, pid: 100 },
-      { sessionKey: "hmh_bob", alive: true, pid: 200 },
+      { sessionKey: trustCanonicalTarget("hmh_alice"), alive: true, pid: 100 },
+      { sessionKey: trustCanonicalTarget("hmh_bob"), alive: true, pid: 200 },
     ];
     const inspector = fakeInspector(
       [
@@ -160,7 +165,9 @@ describe("v0.10.1 team_adopt", () => {
     const { handlers, state, mock } = await importAll();
     const doc = state.emptyState("0.10.1-rc.1");
     const driver = new mock.MockDriver();
-    driver.listSessions = async () => [{ sessionKey: "hmh_dup", alive: true, pid: 300 }];
+    driver.listSessions = async () => [
+      { sessionKey: trustCanonicalTarget("hmh_dup"), alive: true, pid: 300 },
+    ];
     // The §6/11 duplicate-identity failure mode: one pane, two peers.
     const inspector = fakeInspector(
       [
@@ -193,14 +200,14 @@ describe("v0.10.1 team_adopt", () => {
     const { driver, inspector } = await twoSessionFixture();
     const known = "aaaaaaaa-1111-4111-8111-aaaaaaaaaaaa";
     doc.peers[known] = {
-      sessionId: known,
+      handle: known,
       desired: {
         accountProfile: null,
       },
       observed: {
         name: "spawned-by-daemon",
         hostDriver: "mock",
-        tmuxTarget: "hmh_alice",
+        tmuxTarget: canonicalHostTarget("hmh_alice"),
         pid: 999,
         status: "live",
         model: "claude-opus-4-7",
@@ -229,7 +236,9 @@ describe("v0.10.1 team_adopt", () => {
     const { handlers, state, mock } = await importAll();
     const doc = state.emptyState("0.10.1-rc.1");
     const driver = new mock.MockDriver();
-    driver.listSessions = async () => [{ sessionKey: "just_a_shell", alive: true, pid: 400 }];
+    driver.listSessions = async () => [
+      { sessionKey: trustCanonicalTarget("just_a_shell"), alive: true, pid: 400 },
+    ];
     const inspector = fakeInspector([], {});
 
     const res = await handlers.dispatch(
@@ -245,7 +254,9 @@ describe("v0.10.1 team_adopt", () => {
     const { handlers, state, mock } = await importAll();
     const doc = state.emptyState("0.10.1-rc.1");
     const driver = new mock.MockDriver();
-    driver.listSessions = async () => [{ sessionKey: "hmh_carol", alive: true, pid: 500 }];
+    driver.listSessions = async () => [
+      { sessionKey: trustCanonicalTarget("hmh_carol"), alive: true, pid: 500 },
+    ];
 
     const res = await handlers.dispatch(
       makeRequest(

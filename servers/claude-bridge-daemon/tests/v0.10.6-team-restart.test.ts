@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { canonicalHostTarget } from "../src/hosts/driver.ts";
 import type { PeerDesired } from "../src/state.ts";
 import { makePeer } from "./peer-fixture.ts";
 
@@ -52,7 +53,7 @@ function record(sessionId: string, name: string, over: Partial<PeerDesired> = {}
     },
     {
       name,
-      tmuxTarget: name,
+      tmuxTarget: canonicalHostTarget(name),
       pid: 100,
       startedAt: "2026-08-04T10:00:00.000Z",
       lastUpdatedAt: "2026-08-04T10:00:00.000Z",

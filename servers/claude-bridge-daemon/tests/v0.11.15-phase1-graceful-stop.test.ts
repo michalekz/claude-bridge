@@ -64,7 +64,7 @@ const PEER_ID = "11111111-2222-3333-4444-555555555555";
 
 function peerRecord() {
   return {
-    sessionId: PEER_ID,
+    handle: PEER_ID,
     desired: { team: "tst", label: "tst-victim" },
     observed: {
       name: "tst-victim",

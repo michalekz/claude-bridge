@@ -2,6 +2,11 @@ import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import {
+  type CanonicalTarget,
+  canonicalHostTarget,
+  trustCanonicalTarget,
+} from "../src/hosts/driver.ts";
 
 const homeHolder = vi.hoisted(() => ({ current: "" }));
 
@@ -87,7 +92,7 @@ describe("a spawn that starts nothing must not report success", () => {
 
     const res = await dispatch(
       makeRequest("peer_spawn", {
-        sessionId: "victim-0804",
+        handle: "victim-0804",
         displayName: "victim-0804",
         cwd: "/tmp",
         command: DEAD_COMMAND,
@@ -109,7 +114,7 @@ describe("a spawn that starts nothing must not report success", () => {
 
     const res = await dispatch(
       makeRequest("peer_spawn", {
-        sessionId: "healthy-0804",
+        handle: "healthy-0804",
         displayName: "healthy-0804",
         cwd: "/tmp",
         command: "/bin/sh",
@@ -141,7 +146,7 @@ describe("a spawn that starts nothing must not report success", () => {
     try {
       await dispatch(
         makeRequest("peer_spawn", {
-          sessionId: "moving-0804",
+          handle: "moving-0804",
           displayName: "moving-0804",
           cwd: peerCwd,
           command: "/bin/sh",
@@ -179,7 +184,7 @@ describe("a spawn that starts nothing must not report success", () => {
     const driver = new MockDriver({});
 
     const dead = await driver.spawn({
-      sessionKey: "dead-key",
+      sessionKey: trustCanonicalTarget("dead-key"),
       cwd: "/tmp",
       command: DEAD_COMMAND,
       args: [],
@@ -189,7 +194,7 @@ describe("a spawn that starts nothing must not report success", () => {
     expect(dead.pid).toBeNull();
 
     const live = await driver.spawn({
-      sessionKey: "live-key",
+      sessionKey: trustCanonicalTarget("live-key"),
       cwd: "/tmp",
       command: "/bin/sh",
       args: ["-c", "sleep 30"],
@@ -236,7 +241,7 @@ describe("a restart relaunches the peer the way it was launched", () => {
     const ABSOLUTE = "/bin/sh";
     await dispatch(
       makeRequest("peer_spawn", {
-        sessionId: "nvm-shaped-0804",
+        handle: "nvm-shaped-0804",
         displayName: "nvm-shaped-0804",
         cwd: "/tmp",
         command: ABSOLUTE,
@@ -280,7 +285,7 @@ describe("a restart relaunches the peer the way it was launched", () => {
 
     await dispatch(
       makeRequest("peer_spawn", {
-        sessionId: UUID,
+        handle: UUID,
         displayName: "carries-args-0804",
         cwd: "/tmp",
         command: "/bin/sh",
@@ -310,7 +315,7 @@ describe("a restart relaunches the peer the way it was launched", () => {
 
     await dispatch(
       makeRequest("peer_spawn", {
-        sessionId: "obetni-w3",
+        handle: "obetni-w3",
         displayName: "obetni-w3",
         cwd: "/tmp",
         command: "/bin/sh",
@@ -336,7 +341,7 @@ describe("a restart relaunches the peer the way it was launched", () => {
 
     // A peer as v0.10.2 would have written it: cwd present, command absent.
     ctx.state.peers["legacy-record-0804"] = {
-      sessionId: "legacy-record-0804",
+      handle: "legacy-record-0804",
       desired: {
         cwd: "/tmp",
         accountProfile: null,
@@ -344,7 +349,7 @@ describe("a restart relaunches the peer the way it was launched", () => {
       observed: {
         name: "legacy-record-0804",
         hostDriver: "mock",
-        tmuxTarget: "legacy-record-0804",
+        tmuxTarget: canonicalHostTarget("legacy-record-0804"),
         pid: 1,
         status: "live",
         model: null,

@@ -38,7 +38,7 @@ function spawnReq(over: Record<string, unknown>) {
     ts: "2026-08-08T10:00:00.000Z",
     tool: "peer_spawn",
     args: {
-      sessionId: UUID,
+      handle: UUID,
       displayName: "scr-a",
       cwd: "/opt/hmh",
       command: CLAUDE,

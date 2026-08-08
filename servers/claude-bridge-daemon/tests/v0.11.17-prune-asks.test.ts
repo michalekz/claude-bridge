@@ -91,6 +91,10 @@ function layoutRequest(extra: Record<string, unknown> = {}) {
     args: {
       team: "plt",
       inline: { team: "plt", peers: [] },
+      // Explicit since R3 (v0.11.21): `apply` defaults to FALSE now, so a
+      // layout call that does not say so is a preview. These tests are about
+      // what prune DOES, which means they have to ask for it.
+      apply: true,
       prune: true,
       wake: false,
       ...extra,
