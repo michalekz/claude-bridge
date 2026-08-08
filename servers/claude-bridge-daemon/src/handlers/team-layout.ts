@@ -209,6 +209,21 @@ export async function handleTeamLayout(
         // Resuming a tombstone MUST pass `--resume <sessionId>`, otherwise the
         // peer comes back as a blank session and its transcript is orphaned.
         resume: forceResume || p.resume,
+        // 🔴 WHICH transcript (v0.11.19) — and this is the tool where it matters
+        // most, because this is the tool that MAKES handle-keyed peers.
+        //
+        // The spec names a peer before it exists, so `p.sessionId` is a handle.
+        // Passing it to `--resume` was the v0.11.18 defect one tool over: a
+        // handle matches no transcript, so Claude Code drops into its Resume
+        // picker, the peer wedges at a prompt with a brand-new identity, and the
+        // record is orphaned behind a pid that still matches.
+        //
+        // The identity survives the tombstone: `peer_stop keepInState` clears
+        // status and pid, and leaves `observed.sessionId` and `identity`
+        // untouched. So a resume can ask the record who it actually is.
+        ...(record?.observed.identity === "measured" && record.observed.sessionId
+          ? { resumeSessionId: record.observed.sessionId }
+          : {}),
         // Fall back to what the peer was last running with, so a stop→start
         // round trip does not silently downgrade the model.
         model: p.model ?? record?.desired.model ?? record?.observed.model ?? null,

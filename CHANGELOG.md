@@ -6,6 +6,69 @@ All notable changes to this project are documented here. Format follows [Keep a 
 
 _Nothing yet._
 
+## [0.11.19] — 2026-08-08
+
+### Team tools stop reimplementing the primitives
+
+Phase 3 of the lifecycle redesign. The owner's first principle: *"code must be
+shared, so we do not debug the same thing twice."*
+
+#### `team_stop` is a thin wrapper — seventy lines went out
+
+It held a private copy of the ask/wait/consume cycle (`stopAcks.sweepStale`,
+`requestStop`, `stopAcks.poll`, `stopAcks.consume`) and then called `peer_stop`
+with the courtesy pinned OFF to do the killing. That was right in v0.10.1, when
+it was the only implementation. Since v0.11.15 `peer_stop` does the whole cycle,
+so the copy stopped being history and became duplication.
+
+**It proved the point while it existed.** The copy never received the v0.11.3
+stale-ack fix, never received the `writeEnvelope` fix — five schema mismatches,
+so its request was undeliverable and its graceful branch never completed once —
+and needed the v0.11.18 bridge-address fix applied to it separately. Three
+fixes, one of them latent for two days, none of which a caller of the shared
+code would have needed.
+
+What stays is POLICY, because a team genuinely differs: who is asked first, what
+a refusal means for the run, and one shape the primitive does not have —
+**`team_stop force` means "ask, and kill anyway if nobody answers", while
+`peer_stop force` means "do not ask at all"**. That escalation is now two calls
+to the primitive rather than a flag inside it.
+
+⚠ **Visible change:** a member that does not ack now reads `status: "stopping"`
+with a resumable `stopRequest`, instead of staying `live`. That is the point —
+it makes the member visible to `team_reconcile` as `stop_pending`. The hole
+v0.11.17 closed for `peer_stop` closes here by sharing code, not by remembering
+to copy the fix.
+
+#### 🔴 `team_layout` resumed the handle — the v0.11.18 defect at its source
+
+`team_layout` names peers before they exist, so its spec entries are handles by
+construction — and its resume path passed that handle to `--resume`. A handle
+matches no transcript, so Claude Code drops into its Resume picker, the peer
+wedges at a prompt under a brand-new identity, and the record is orphaned behind
+a pid that still matches.
+
+**This is the more dangerous instance of the defect fixed in v0.11.18**: closing
+the hole in `peer_restart` while leaving it open in the tool that *produces*
+handle-keyed records would have fixed the symptom at one end and kept the source
+at the other. A resume now asks the record who it actually is
+(`observed.sessionId` survives a `keepInState` tombstone) — and when the identity
+was never measured, it passes nothing rather than guessing.
+
+#### R4 was closed by measurement, not by work
+
+The audit claimed an unfinished `peer-ref` migration across 11 handlers. Grep:
+`resolvePeerRef` is used by the 7 files that take a caller-supplied reference,
+and each of the 11 remaining direct registry reads was checked individually —
+none is a name lookup (`callerTeamOf` indexes the sender's exact id, spec entries
+are declarations rather than lookups, the rest are already-resolved records read
+back). The audit item had gone stale. Recorded with the breakdown rather than as
+a claim.
+
+R7 (the shell's "Background work is running" guard) is deliberately **not** in
+this release: porting screen-scraping detection is a new capability, not a
+consolidation, and the scripts keep it until that gets its own decision.
+
 ## [0.11.18] — 2026-08-08
 
 ### The gentle restart — protocol a)–g), and the context it was quietly losing

@@ -709,3 +709,148 @@ describe("the startup sweep covers every channel", () => {
     }
   }, 15_000);
 });
+
+describe("v0.11.19 — the same defect in the tool that makes handle-keyed peers", () => {
+  /**
+   * `team_layout` names peers before they exist, so its spec entries are handles
+   * by construction. Its resume path passed that handle to `--resume`, which is
+   * exactly the v0.11.18 defect one tool over — and the more dangerous instance,
+   * because closing the hole in `peer_restart` while leaving it open in the tool
+   * that produces the records would fix the symptom at one end and keep the
+   * source at the other.
+   */
+  it("🔴 a resumed tombstone gets its MEASURED identity, not its handle", async () => {
+    const spawnArgs: Array<Record<string, unknown>> = [];
+    vi.doMock("../src/handlers/peer-spawn.ts", () => ({
+      handlePeerSpawn: async (req: { args: Record<string, unknown> }) => {
+        spawnArgs.push(req.args);
+        return { outcome: "ok", data: { pid: 7, sessionKey: "tst:1" } };
+      },
+    }));
+    const { handleTeamLayout } = await import("../src/handlers/team-layout.ts");
+    // A tombstone, as `peer_stop keepInState` leaves one: no pid, no status,
+    // and the identity still measured.
+    const state = stateWith({
+      sessionId: HANDLE,
+      desired: { team: "tst", cwd: "/tmp", command: "/usr/bin/claude", spawnArgs: [] },
+      observed: {
+        name: HANDLE,
+        hostDriver: "tmux",
+        tmuxTarget: null,
+        pid: null,
+        status: "stopped",
+        model: null,
+        sessionId: IDENTITY,
+        identity: "measured",
+        startedAt: new Date().toISOString(),
+        lastUpdatedAt: new Date().toISOString(),
+      },
+    });
+    const ctx = {
+      state,
+      hostDriver: { name: "mock", hasSession: async () => false, listSessions: async () => [] },
+      daemonVersion: "0.11.19",
+      // biome-ignore lint/suspicious/noExplicitAny: hand-built minimal context
+    } as any;
+
+    await handleTeamLayout(
+      {
+        schemaVersion: 1,
+        id: "req-layout",
+        ts: new Date().toISOString(),
+        tool: "team_layout",
+        args: {
+          team: "tst",
+          apply: true,
+          wake: false,
+          inline: {
+            team: "tst",
+            peers: [
+              {
+                sessionId: HANDLE,
+                displayName: HANDLE,
+                cwd: "/tmp",
+                command: "/usr/bin/claude",
+                resume: true,
+              },
+            ],
+          },
+        },
+        requestedBy: { sessionId: "cli:test", name: "test" },
+        // biome-ignore lint/suspicious/noExplicitAny: hand-built minimal envelope
+      } as any,
+      ctx,
+    );
+
+    expect(spawnArgs).toHaveLength(1);
+    expect(spawnArgs[0]?.["resume"]).toBe(true);
+    // Before v0.11.19: absent, so `--resume tst-c` — a string no transcript is
+    // named after. The peer wedges in the Resume picker under a new identity.
+    expect(spawnArgs[0]?.["resumeSessionId"]).toBe(IDENTITY);
+    // The handle is still the key. Only what gets resumed changed.
+    expect(spawnArgs[0]?.["sessionId"]).toBe(HANDLE);
+  }, 15_000);
+
+  it("an unmeasured record resumes nothing extra — no guessing", async () => {
+    const spawnArgs: Array<Record<string, unknown>> = [];
+    vi.doMock("../src/handlers/peer-spawn.ts", () => ({
+      handlePeerSpawn: async (req: { args: Record<string, unknown> }) => {
+        spawnArgs.push(req.args);
+        return { outcome: "ok", data: { pid: 7 } };
+      },
+    }));
+    const { handleTeamLayout } = await import("../src/handlers/team-layout.ts");
+    const state = stateWith({
+      sessionId: HANDLE,
+      desired: { team: "tst", cwd: "/tmp", command: "/usr/bin/claude", spawnArgs: [] },
+      observed: {
+        name: HANDLE,
+        hostDriver: "tmux",
+        tmuxTarget: null,
+        pid: null,
+        status: "stopped",
+        model: null,
+        sessionId: null,
+        identity: "unknown",
+        startedAt: new Date().toISOString(),
+        lastUpdatedAt: new Date().toISOString(),
+      },
+    });
+    const ctx = {
+      state,
+      hostDriver: { name: "mock", hasSession: async () => false, listSessions: async () => [] },
+      daemonVersion: "0.11.19",
+      // biome-ignore lint/suspicious/noExplicitAny: hand-built minimal context
+    } as any;
+    await handleTeamLayout(
+      {
+        schemaVersion: 1,
+        id: "req-layout2",
+        ts: new Date().toISOString(),
+        tool: "team_layout",
+        args: {
+          team: "tst",
+          apply: true,
+          wake: false,
+          inline: {
+            team: "tst",
+            peers: [
+              {
+                sessionId: HANDLE,
+                displayName: HANDLE,
+                cwd: "/tmp",
+                command: "/usr/bin/claude",
+                resume: true,
+              },
+            ],
+          },
+        },
+        requestedBy: { sessionId: "cli:test", name: "test" },
+        // biome-ignore lint/suspicious/noExplicitAny: hand-built minimal envelope
+      } as any,
+      ctx,
+    );
+    // An identity we never measured is not an identity to resume.
+    expect(spawnArgs[0]?.["resumeSessionId"]).toBeUndefined();
+  }, 15_000);
+});

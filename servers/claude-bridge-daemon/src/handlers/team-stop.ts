@@ -1,4 +1,4 @@
-import { mkdir, readFile } from "node:fs/promises";
+import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { teamsDir } from "@claude-bridge/shared";
 import { z } from "zod";
@@ -7,10 +7,8 @@ import { writeEvent } from "../events.ts";
 import type { RequestEnvelope, ResultEnvelope } from "../rpc.ts";
 import { errResult, okResult } from "../rpc.ts";
 import type { HandlerContext } from "./context.ts";
-import { bridgeIdOf } from "./peer-identity.ts";
 import { type OrderResult, orderCoordinatorLast } from "./peer-order.ts";
 import { handlePeerStop } from "./peer-stop.ts";
-import { requestStop, stopAcks } from "./stop-protocol.ts";
 
 /**
  * team_stop — controlled sleep of an entire team (§9 zadání, v0.10.1).
@@ -110,6 +108,32 @@ interface StopOutcome {
   err?: string;
 }
 
+/**
+ * Stop ONE member — by calling the primitive, and nothing else.
+ *
+ * 🔴 v0.11.19: seventy lines went out of here. This function held a private copy
+ * of the ask/wait/consume cycle — `stopAcks.sweepStale`, `requestStop`,
+ * `stopAcks.poll`, `stopAcks.consume` — and then called `peer_stop` with the
+ * courtesy pinned OFF to do the killing. That was correct in v0.10.1, when it
+ * was the ONLY implementation of the protocol. Since v0.11.15 `peer_stop` does
+ * the whole cycle itself, so the copy stopped being history and became
+ * duplication: two places to fix, and the owner's first principle is that we do
+ * not debug the same thing twice.
+ *
+ * It also proved the point while it existed. The private copy never received the
+ * v0.11.3 stale-ack fix, never received the `writeEnvelope` fix (five schema
+ * mismatches, so its request was undeliverable and its graceful branch never ran
+ * once), and needed the v0.11.18 bridge-address fix applied to it separately.
+ * Three fixes, one of them for two days, none of which it would have needed.
+ *
+ * WHAT STAYS IS POLICY, and it is genuinely different for a team: who is asked
+ * first, what a refusal means for the run, and — the one shape the primitive
+ * does not have — `force` here means "ask, and kill anyway if nobody answers",
+ * while `peer_stop force` means "do not ask at all". So the escalation is two
+ * calls to the primitive rather than a flag inside it: ask; if the answer is a
+ * timeout and the operator said force, force it. Nothing about the protocol is
+ * reimplemented to do that.
+ */
 async function stopSinglePeer(
   req: RequestEnvelope,
   ctx: HandlerContext,
@@ -124,27 +148,65 @@ async function stopSinglePeer(
     return { sessionId: peer.sessionId, displayName: peer.displayName, outcome: "dead" };
   }
   const sessionKey = record.observed.tmuxTarget ?? record.observed.name;
-  const alive = record.observed.tmuxTarget ? await ctx.hostDriver.hasSession(sessionKey) : false;
-  if (!alive) {
-    const stopReq = {
-      schemaVersion: req.schemaVersion,
-      id: `${req.id}:stop:${peer.sessionId}`,
-      ts: req.ts,
-      tool: "peer_stop",
-      args: {
-        peer: peer.sessionId,
-        reason: `team_stop:${args.team}:dead`,
-        // PINNED (v0.11.15 phase 1): no courtesy, no force. The peer has no host
-        // session, so there is nobody to ask and nothing to hurry — this call is
-        // bookkeeping. `force:false` keeps the driver's full verify budget.
-        skipCourtesy: true,
-        force: false,
-        keepInState: true,
-        stoppedCleanly: null,
+
+  const callStop = async (force: boolean, label: string) =>
+    handlePeerStop(
+      {
+        schemaVersion: req.schemaVersion,
+        id: `${req.id}:stop:${peer.sessionId}${force ? ":force" : ""}`,
+        ts: req.ts,
+        tool: "peer_stop",
+        args: {
+          peer: peer.sessionId,
+          reason: `team_stop:${args.team}:${label}`,
+          force,
+          // The team keeps its members as tombstones so `team_layout apply` can
+          // resume the same session ids later.
+          keepInState: true,
+          ...(force ? {} : { ackTimeoutMs: anchorTimeoutMs, ackPollMs }),
+        },
+        requestedBy: req.requestedBy,
       },
-      requestedBy: req.requestedBy,
-    };
-    const res = await handlePeerStop(stopReq, ctx);
+      ctx,
+    );
+
+  // ASK. The primitive decides everything the protocol decides: whether there is
+  // anyone to ask, how long to wait, whether a late ack counts.
+  let res = await callStop(false, "graceful");
+  let escalated = false;
+
+  if (res.outcome === "error") {
+    if (res.error?.code !== "stop_ack_timeout") {
+      return {
+        sessionId: peer.sessionId,
+        displayName: peer.displayName,
+        outcome: "failed",
+        err: res.error?.message,
+      };
+    }
+    // Nobody answered. Without `force` this is where a team stop STOPS for this
+    // member: the peer keeps running and is reported, not killed.
+    if (!args.force) {
+      await writeEvent({
+        event: "stop_ack_timeout",
+        level: "warn",
+        by: { sessionId: req.requestedBy.sessionId, name: req.requestedBy.name },
+        requestId: req.id,
+        details: {
+          sessionId: peer.sessionId,
+          sessionKey,
+          team: args.team,
+          threadId,
+          timeoutMs: anchorTimeoutMs,
+          note: "peer left running — pass force:true to end it anyway",
+        },
+      });
+      return { sessionId: peer.sessionId, displayName: peer.displayName, outcome: "skipped" };
+    }
+    // `force` on a TEAM means "ask, then kill anyway". The asking already
+    // happened, above; this second call is the killing.
+    escalated = true;
+    res = await callStop(true, "forced");
     if (res.outcome === "error") {
       return {
         sessionId: peer.sessionId,
@@ -153,47 +215,21 @@ async function stopSinglePeer(
         err: res.error?.message,
       };
     }
-    await writeEvent({
-      event: "peer_stopped_dead",
-      by: { sessionId: req.requestedBy.sessionId, name: req.requestedBy.name },
-      requestId: req.id,
-      details: { sessionId: peer.sessionId, sessionKey, team: args.team, threadId },
-    });
-    return { sessionId: peer.sessionId, displayName: peer.displayName, outcome: "dead" };
   }
-  await mkdir(stopAcks.dir(), { recursive: true });
-  // Clear the ground before asking, so every ack that appears afterwards is
-  // fresh by construction rather than by comparison (the v0.11.3 lesson, which
-  // this handler's private copy never received).
-  // `peer` here is the team spec entry, not the record — and the record is the
-  // one that knows the bridge address.
-  const bridgeId = bridgeIdOf(record);
-  const swept = await stopAcks.sweepStale(bridgeId, "stale");
-  if (swept) {
-    await writeEvent({
-      event: "peer_stop_stale_ack_swept",
-      level: "warn",
-      by: { sessionId: req.requestedBy.sessionId, name: req.requestedBy.name },
-      requestId: req.id,
-      details: { sessionId: peer.sessionId, team: args.team, movedTo: swept },
-    });
-  }
-  // Taken BEFORE the request is written, so an ack the peer produces the instant
-  // it reads the message still counts.
-  const requestedAtMs = Date.now();
-  let stopReqMsgId: string;
-  try {
-    stopReqMsgId = await requestStop(bridgeId, threadId, args.force ? "force:true" : null);
-  } catch (e) {
-    return {
-      sessionId: peer.sessionId,
-      displayName: peer.displayName,
-      outcome: "failed",
-      err: e instanceof Error ? e.message : String(e),
-    };
-  }
+
+  // The primitive MEASURED what happened; this reads it rather than deciding it.
+  const mode = (res.data as { mode?: string } | undefined)?.mode ?? null;
+  const outcome: StopOutcome["outcome"] =
+    mode === "already-gone" ? "dead" : escalated || mode === "forced" ? "forced" : "cleanly";
+
+  const event =
+    outcome === "dead"
+      ? "peer_stopped_dead"
+      : outcome === "cleanly"
+        ? "peer_stopped_cleanly"
+        : "peer_stopped_forced";
   await writeEvent({
-    event: "peer_stop_requested",
+    event,
     by: { sessionId: req.requestedBy.sessionId, name: req.requestedBy.name },
     requestId: req.id,
     details: {
@@ -201,83 +237,22 @@ async function stopSinglePeer(
       sessionKey,
       team: args.team,
       threadId,
-      stopReqMsgId,
-      timeoutMs: anchorTimeoutMs,
+      mode,
+      // The primitive's own thread, so a reader can follow the ask across both
+      // audit trails instead of guessing which run this belonged to.
+      stopThreadId: (res.data as { threadId?: string | null } | undefined)?.threadId ?? null,
+      ackWaitedMs: (res.data as { ackWaitedMs?: number | null } | undefined)?.ackWaitedMs ?? null,
     },
   });
-  const deadline = Date.now() + anchorTimeoutMs;
-  const verdict = await stopAcks.poll(bridgeId, deadline, ackPollMs, requestedAtMs, threadId);
-  const acked = verdict.accepted;
-  if (!acked && !args.force) {
-    await writeEvent({
-      event: "stop_ack_timeout",
-      level: "warn",
-      by: { sessionId: req.requestedBy.sessionId, name: req.requestedBy.name },
-      requestId: req.id,
-      details: {
-        sessionId: peer.sessionId,
-        sessionKey,
-        team: args.team,
-        threadId,
-        timeoutMs: anchorTimeoutMs,
-        // WHY there was no usable ack. "Nobody answered" and "an ack was there
-        // and it answered something else" call for different next steps.
-        ackVerdict: verdict.reason,
-        ackThreadId: verdict.ackThreadId ?? null,
-        ackWrittenAt: verdict.writtenAt ?? null,
-      },
-    });
-    return { sessionId: peer.sessionId, displayName: peer.displayName, outcome: "skipped" };
-  }
-  if (acked) {
-    await stopAcks.consume(bridgeId);
-  }
-  const stopReq = {
-    schemaVersion: req.schemaVersion,
-    id: `${req.id}:stop:${peer.sessionId}`,
-    ts: req.ts,
-    tool: "peer_stop",
-    args: {
-      peer: peer.sessionId,
-      reason: `team_stop:${args.team}:${acked ? "cleanly" : "forced"}`,
-      // PINNED (v0.11.15 phase 1): the courtesy happened a floor up, in THIS
-      // function. Without the pin `peer_stop` would ask a second time and wait
-      // out another full window on a peer that has already acked.
-      skipCourtesy: true,
-      // Unchanged from v0.11.14: an acked peer gets the full verify budget, a
-      // peer that never answered gets the short one.
-      force: !acked,
-      keepInState: true,
-      stoppedCleanly: acked,
-    },
-    requestedBy: req.requestedBy,
-  };
-  const res = await handlePeerStop(stopReq, ctx);
-  if (res.outcome === "error") {
-    return {
+  if (outcome !== "dead") {
+    await publishLifecycleEvent({
+      event: outcome === "cleanly" ? "peer_stopped_cleanly" : "peer_stopped_forced",
       sessionId: peer.sessionId,
-      displayName: peer.displayName,
-      outcome: "failed",
-      err: res.error?.message,
-    };
+      sessionKey,
+      details: { team: args.team, threadId },
+    });
   }
-  await writeEvent({
-    event: acked ? "peer_stopped_cleanly" : "peer_stopped_forced",
-    by: { sessionId: req.requestedBy.sessionId, name: req.requestedBy.name },
-    requestId: req.id,
-    details: { sessionId: peer.sessionId, sessionKey, team: args.team, threadId },
-  });
-  await publishLifecycleEvent({
-    event: acked ? "peer_stopped_cleanly" : "peer_stopped_forced",
-    sessionId: peer.sessionId,
-    sessionKey,
-    details: { team: args.team, threadId },
-  });
-  return {
-    sessionId: peer.sessionId,
-    displayName: peer.displayName,
-    outcome: acked ? "cleanly" : "forced",
-  };
+  return { sessionId: peer.sessionId, displayName: peer.displayName, outcome };
 }
 
 /**

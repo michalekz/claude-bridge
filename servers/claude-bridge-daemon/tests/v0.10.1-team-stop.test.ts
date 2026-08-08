@@ -188,9 +188,20 @@ describe("v0.10.1 team_stop", () => {
     const data = res.data as { stoppedCleanly: string[]; skipped: string[] };
     expect(data.stoppedCleanly).toEqual([]);
     expect(data.skipped).toEqual(["ts-peer-2"]);
-    // Peer still alive on host + in state as "live" (untouched).
-    expect(doc.peers["ts-peer-2"]?.observed.status).toBe("live");
+    // The peer is STILL RUNNING — that is the invariant, and it holds.
     expect(await driver.hasSession("ts_two")).toBe(true);
+    // But the record no longer says `live` (v0.11.19).
+    //
+    // `team_stop` used to run its own copy of the ask/wait cycle and simply not
+    // touch the record on a timeout, so a member that had been asked and had not
+    // answered was indistinguishable from one nobody ever spoke to. Now the
+    // shared primitive handles it, and it leaves the honest intermediate state:
+    // `stopping` plus a resumable `stopRequest`. That is what makes the member
+    // visible to `team_reconcile` as `stop_pending` — the hole v0.11.17 closed
+    // for `peer_stop` closes here too, by sharing the code rather than by
+    // remembering to copy the fix.
+    expect(doc.peers["ts-peer-2"]?.observed.status).toBe("stopping");
+    expect(doc.peers["ts-peer-2"]?.observed.stopRequest?.threadId).toMatch(/^stop:/);
 
     driver.reset();
   });
