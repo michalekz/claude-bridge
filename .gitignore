@@ -1,5 +1,13 @@
 # Node.js dependencies — installed locally per developer
+# Both forms, deliberately. `node_modules/` matches a DIRECTORY only, so a
+# SYMLINK of that name slips past it — and `git add -A` on this branch then
+# committed one pointing at an absolute path on the author's machine
+# (2026-08-08, commit 2b19607). Every later checkout of main replaced the real
+# install with a self-referential link and destroyed the workspace's
+# dependencies; the pre-push hook then refused to push, because it could no
+# longer run the checks it was there to run.
 node_modules/
+node_modules
 
 # Build artifact policy: keep dist/*.cjs (installable artifacts —
 # bundle.cjs = MCP server, statusline.cjs = statusLine wrapper (v0.9.0+),
