@@ -59,7 +59,7 @@ import { applyStateChange } from "./state-writer.ts";
  * approval, 2026-08-06 — written here rather than in a meeting note so that
  * whoever reaches for the obvious completion in a month reads the reason.)
  */
-const PEER_SETTABLE = ["label", "windowIndex", "model", "accountProfile", "role"] as const;
+export const PEER_SETTABLE = ["label", "windowIndex", "model", "accountProfile", "role"] as const;
 
 const PeerSetSchema = z
   .object({

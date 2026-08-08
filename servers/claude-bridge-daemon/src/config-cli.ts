@@ -1,6 +1,7 @@
 import { randomBytes } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { atomicWriteJson, requestPath, resultPath } from "@claude-bridge/shared";
+import { PEER_SETTABLE } from "./handlers/control-config.ts";
 import { readLock } from "./lock.ts";
 
 /**
@@ -30,7 +31,7 @@ Usage:
   config <peer> --set <k>=<v> --dry-run
                                       Show what would change, write nothing
 
-Settable keys: label, windowIndex, model, accountProfile, team
+Settable keys: ${PEER_SETTABLE.join(", ")}
   windowIndex is RECORDED and drift is reported. It does not move any window
   in v0.11.0 — asserting it is v0.11.1, behind an explicit opt-in.
 

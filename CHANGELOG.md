@@ -6,6 +6,27 @@ All notable changes to this project are documented here. Format follows [Keep a 
 
 _Nothing yet._
 
+## [0.11.14] — 2026-08-08
+
+### The help offered a key the tool refuses, and hid one that works
+
+`config --help` advertised `label, windowIndex, model, accountProfile, team`.
+`team` was removed from the whitelist in v0.11.3 — moving a peer between teams
+is lifecycle work, not a declaration — and `role` was added in v0.11.13. The
+help said neither.
+
+Offering a key that will be rejected is worse than not documenting it: the
+operator writes the command, gets an error, and starts doubting the tool rather
+than the sentence.
+
+**Fourth instance of this defect in two days** — after `peer-compact.ts`'s "the
+only send-keys path in the daemon", and `team_reconcile`'s "four kinds of drift"
+twice over (header comment and tool description). So the fix is not to correct
+the sentence. The help now interpolates the whitelist, and a test asserts the two
+cannot drift apart.
+
+Found by ai-designer while declaring roles after v0.11.13.
+
 ## [0.11.13] — 2026-08-08
 
 Phase 0 of the peer-lifecycle redesign (plan ratified by the owner, 2026-08-08).

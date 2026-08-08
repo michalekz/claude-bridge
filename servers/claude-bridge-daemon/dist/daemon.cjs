@@ -4320,7 +4320,7 @@ async function resolvePeer(idOrName, root = bridgeRoot(), now = Date.now()) {
 // package.json
 var package_default = {
   name: "claude-bridge-daemon",
-  version: "0.11.13",
+  version: "0.11.14",
   private: true,
   description: "Control-plane daemon for the claude-bridge plugin: peer lifecycle, telemetry, audit. Distributed as opt-in artefact \u2014 see ADR-008.",
   type: "module",
@@ -4356,233 +4356,17 @@ var package_default = {
 
 // src/config-cli.ts
 var import_node_crypto3 = require("node:crypto");
-var import_promises4 = require("node:fs/promises");
-
-// src/lock.ts
-var import_node_fs = require("node:fs");
-var import_promises3 = require("node:fs/promises");
-var log = makeLogger("daemon.lock");
-var LockAcquireError = class extends Error {
-  constructor(message, heldBy) {
-    super(message);
-    this.heldBy = heldBy;
-    this.name = "LockAcquireError";
-  }
-};
-function readProcStart(pid) {
-  if (process.platform !== "linux") return null;
-  try {
-    const stat4 = (0, import_node_fs.readFileSync)(`/proc/${pid}/stat`, "utf-8");
-    const afterComm = stat4.slice(stat4.lastIndexOf(")") + 1).trim();
-    const fields = afterComm.split(/\s+/);
-    const starttime = fields[19];
-    return starttime ?? null;
-  } catch {
-    return null;
-  }
-}
-function isProcessAlive(pid) {
-  if (pid <= 0) return false;
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (e) {
-    const code = e.code;
-    return code === "EPERM";
-  }
-}
-function isStale(payload) {
-  if (!isProcessAlive(payload.pid)) return true;
-  if (process.platform === "linux" && payload.procStart) {
-    const currentStart = readProcStart(payload.pid);
-    if (currentStart !== null && currentStart !== payload.procStart) return true;
-  }
-  return false;
-}
-async function readLock() {
-  try {
-    const raw = await (0, import_promises3.readFile)(daemonLockPath(), "utf-8");
-    const parsed = JSON.parse(raw);
-    if (typeof parsed.pid !== "number") return null;
-    return parsed;
-  } catch (e) {
-    const code = e.code;
-    if (code === "ENOENT") return null;
-    log.warn("lock_read_error", { code, err: String(e) });
-    return null;
-  }
-}
-async function acquireLock() {
-  const existing = await readLock();
-  if (existing) {
-    if (isStale(existing)) {
-      log.warn("lock_takeover_stale", { heldBy: existing });
-    } else {
-      throw new LockAcquireError(
-        `daemon.lock held by live pid ${existing.pid} (started ${existing.startedAt})`,
-        existing
-      );
-    }
-  }
-  const payload = {
-    pid: process.pid,
-    startedAt: (/* @__PURE__ */ new Date()).toISOString(),
-    procStart: readProcStart(process.pid)
-  };
-  await atomicWriteJson(daemonLockPath(), payload);
-  log.info("lock_acquired", { pid: payload.pid });
-  return payload;
-}
-async function releaseLock() {
-  try {
-    await (0, import_promises3.unlink)(daemonLockPath());
-    log.info("lock_released");
-  } catch (e) {
-    const code = e.code;
-    if (code !== "ENOENT") log.warn("lock_release_error", { code, err: String(e) });
-  }
-}
-
-// src/config-cli.ts
-var CONFIG_HELP = `claude-bridge-daemon config \u2014 read and declare peer intent
-
-Usage:
-  config                              Show declared intent + drift for every peer
-  config <peer>                       Show one peer (id, full name, or short name)
-  config --team <team>                Show every peer of a team
-  config <peer> --set <k>=<v> [...]   Declare values
-  config <peer> --unset <k> [...]     Withdraw a declaration (NOT the same as
-                                      setting it empty \u2014 an undeclared value
-                                      reports no drift at all)
-  config <peer> --set <k>=<v> --dry-run
-                                      Show what would change, write nothing
-
-Settable keys: label, windowIndex, model, accountProfile, team
-  windowIndex is RECORDED and drift is reported. It does not move any window
-  in v0.11.0 \u2014 asserting it is v0.11.1, behind an explicit opt-in.
-
-Examples:
-  config mic-tester
-  config velitel --set label=velitel --dry-run
-  config ai-designer --set model=claude-opus-5 --reason "post-soak bump"
-`;
-var NUMERIC_KEYS = /* @__PURE__ */ new Set(["windowIndex"]);
-function parseConfigArgs(argv) {
-  const out = { set: {}, unset: [], dryRun: false };
-  for (let i = 0; i < argv.length; i++) {
-    const a = argv[i];
-    if (a === "--dry-run") {
-      out.dryRun = true;
-    } else if (a === "--team") {
-      out.team = argv[++i];
-    } else if (a === "--unset") {
-      const key = argv[++i];
-      if (!key || key.startsWith("--")) throw new Error("--unset expects a key name");
-      out.unset.push(key);
-    } else if (a === "--reason") {
-      out.reason = argv[++i];
-    } else if (a === "--set") {
-      const pair = argv[++i];
-      if (!pair || !pair.includes("=")) {
-        throw new Error(`--set expects <key>=<value>, got ${pair ?? "nothing"}`);
-      }
-      const idx = pair.indexOf("=");
-      const key = pair.slice(0, idx);
-      const raw = pair.slice(idx + 1);
-      if (NUMERIC_KEYS.has(key)) {
-        const n = Number(raw);
-        if (!Number.isInteger(n)) throw new Error(`${key} expects an integer, got '${raw}'`);
-        out.set[key] = n;
-      } else if (raw === "null") {
-        out.set[key] = null;
-      } else {
-        out.set[key] = raw;
-      }
-    } else if (a?.startsWith("--")) {
-      throw new Error(`unknown flag ${a}`);
-    } else if (a !== void 0 && out.peer === void 0) {
-      out.peer = a;
-    } else {
-      throw new Error(`unexpected argument '${a}'`);
-    }
-  }
-  return out;
-}
-function generateRequestId() {
-  return `cli-${Date.now().toString(36)}-${(0, import_node_crypto3.randomBytes)(4).toString("hex")}`;
-}
-async function pollForResult(requestId, timeoutMs) {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    try {
-      return JSON.parse(await (0, import_promises4.readFile)(resultPath(requestId), "utf-8"));
-    } catch (e) {
-      if (e.code !== "ENOENT") throw e;
-    }
-    await new Promise((r) => setTimeout(r, 200));
-  }
-  return null;
-}
-async function runConfig(argv) {
-  if (argv[0] === "--help" || argv[0] === "-h") {
-    process.stdout.write(CONFIG_HELP);
-    return 0;
-  }
-  let parsed;
-  try {
-    parsed = parseConfigArgs(argv);
-  } catch (e) {
-    process.stderr.write(`${e instanceof Error ? e.message : String(e)}
-
-${CONFIG_HELP}`);
-    return 2;
-  }
-  const lock = await readLock();
-  if (!lock) {
-    process.stderr.write(
-      "daemon is not running \u2014 config goes through the daemon so that state.json keeps a single writer\n"
-    );
-    return 1;
-  }
-  const args = { dryRun: parsed.dryRun };
-  if (parsed.peer !== void 0) args["peer"] = parsed.peer;
-  if (parsed.team !== void 0) args["team"] = parsed.team;
-  if (parsed.reason !== void 0) args["reason"] = parsed.reason;
-  if (Object.keys(parsed.set).length > 0) args["set"] = parsed.set;
-  if (parsed.unset.length > 0) args["unset"] = parsed.unset;
-  const id = generateRequestId();
-  await atomicWriteJson(requestPath(id), {
-    schemaVersion: 1,
-    id,
-    ts: (/* @__PURE__ */ new Date()).toISOString(),
-    tool: "control_config",
-    args,
-    // The CLI is not a peer. Saying so keeps short-name resolution honest —
-    // there is no caller team to search, so a bare `velitel` is ambiguous here
-    // and the error will say which ones it matched.
-    requestedBy: { sessionId: `cli:${process.pid}`, name: "cli" }
-  });
-  const result = await pollForResult(id, 1e4);
-  if (result === null) {
-    process.stderr.write(`no result within 10s (request ${id}); daemon may be busy
-`);
-    return 1;
-  }
-  process.stdout.write(`${JSON.stringify(result, null, 2)}
-`);
-  const outcome = result.outcome;
-  return outcome === "error" ? 1 : 0;
-}
+var import_promises7 = require("node:fs/promises");
 
 // src/events.ts
-var import_promises5 = require("node:fs/promises");
+var import_promises3 = require("node:fs/promises");
 var import_node_path5 = require("node:path");
-var log2 = makeLogger("daemon.events");
+var log = makeLogger("daemon.events");
 var EVENTS_SCHEMA_VERSION = 1;
 var ensured = false;
 async function ensureDir() {
   if (ensured) return;
-  await (0, import_promises5.mkdir)((0, import_node_path5.dirname)(eventsFilePath()), { recursive: true });
+  await (0, import_promises3.mkdir)((0, import_node_path5.dirname)(eventsFilePath()), { recursive: true });
   ensured = true;
 }
 var EVENTS_MAX_BYTES_DEFAULT = 16 * 1024 * 1024;
@@ -4599,7 +4383,7 @@ async function rotateIfNeeded(pendingBytes) {
   const maxBytes = eventsMaxBytes();
   if (liveBytes < 0) {
     try {
-      liveBytes = (await (0, import_promises5.stat)(path)).size;
+      liveBytes = (await (0, import_promises3.stat)(path)).size;
     } catch {
       liveBytes = 0;
     }
@@ -4609,15 +4393,15 @@ async function rotateIfNeeded(pendingBytes) {
     return;
   }
   for (let i = EVENTS_KEEP_ROTATIONS - 1; i >= 1; i--) {
-    await (0, import_promises5.rename)(`${path}.${i}`, `${path}.${i + 1}`).catch(() => void 0);
+    await (0, import_promises3.rename)(`${path}.${i}`, `${path}.${i + 1}`).catch(() => void 0);
   }
   try {
-    await (0, import_promises5.rename)(path, `${path}.1`);
+    await (0, import_promises3.rename)(path, `${path}.1`);
     liveBytes = pendingBytes;
-    log2.info("events_rotated", { keep: EVENTS_KEEP_ROTATIONS, maxBytes });
+    log.info("events_rotated", { keep: EVENTS_KEEP_ROTATIONS, maxBytes });
   } catch (e) {
     liveBytes = 0;
-    log2.warn("events_rotate_failed", { err: String(e) });
+    log.warn("events_rotate_failed", { err: String(e) });
   }
 }
 var writeChain = Promise.resolve();
@@ -4642,9 +4426,9 @@ async function writeEventInner(evt) {
     const line = `${JSON.stringify(wire)}
 `;
     await rotateIfNeeded(Buffer.byteLength(line, "utf-8"));
-    await (0, import_promises5.appendFile)(eventsFilePath(), line, "utf-8");
+    await (0, import_promises3.appendFile)(eventsFilePath(), line, "utf-8");
   } catch (e) {
-    log2.error("event_write_failed", { event: evt.event, err: String(e) });
+    log.error("event_write_failed", { event: evt.event, err: String(e) });
   }
 }
 async function writeDaemonEvent(event, details = {}, level = "info") {
@@ -4657,48 +4441,48 @@ async function writeDaemonEvent(event, details = {}, level = "info") {
 }
 
 // src/rpc.ts
-var import_promises6 = require("node:fs/promises");
-var log3 = makeLogger("daemon.rpc");
+var import_promises4 = require("node:fs/promises");
+var log2 = makeLogger("daemon.rpc");
 var REQUEST_SCHEMA_VERSION = 1;
 async function ensureRpcDirs() {
-  await (0, import_promises6.mkdir)(requestsDir(), { recursive: true });
-  await (0, import_promises6.mkdir)(requestsDoneDir(), { recursive: true });
-  await (0, import_promises6.mkdir)(resultsDir(), { recursive: true });
+  await (0, import_promises4.mkdir)(requestsDir(), { recursive: true });
+  await (0, import_promises4.mkdir)(requestsDoneDir(), { recursive: true });
+  await (0, import_promises4.mkdir)(resultsDir(), { recursive: true });
 }
 async function listPendingRequests() {
   try {
-    const files = await (0, import_promises6.readdir)(requestsDir());
+    const files = await (0, import_promises4.readdir)(requestsDir());
     return files.filter((f) => f.endsWith(".json")).sort();
   } catch (e) {
     const code = e.code;
     if (code === "ENOENT") return [];
-    log3.warn("requests_list_error", { err: String(e) });
+    log2.warn("requests_list_error", { err: String(e) });
     return [];
   }
 }
 async function readRequest(fileName) {
   const requestId = fileName.replace(/\.json$/, "");
   try {
-    const raw = await (0, import_promises6.readFile)(requestPath(requestId), "utf-8");
+    const raw = await (0, import_promises4.readFile)(requestPath(requestId), "utf-8");
     const parsed = JSON.parse(raw);
     if (!parsed.id || !parsed.tool) {
-      log3.warn("request_invalid_shape", { fileName });
+      log2.warn("request_invalid_shape", { fileName });
       return null;
     }
     return parsed;
   } catch (e) {
-    log3.warn("request_read_error", { fileName, err: String(e) });
+    log2.warn("request_read_error", { fileName, err: String(e) });
     return null;
   }
 }
 async function markRequestDone(requestId) {
   try {
-    await (0, import_promises6.rename)(requestPath(requestId), requestDonePath(requestId));
+    await (0, import_promises4.rename)(requestPath(requestId), requestDonePath(requestId));
     return true;
   } catch (e) {
     const code = e.code;
     if (code === "ENOENT") return true;
-    log3.warn("request_mark_done_failed", { requestId, err: String(e) });
+    log2.warn("request_mark_done_failed", { requestId, err: String(e) });
     return false;
   }
 }
@@ -4777,7 +4561,7 @@ function ambiguousPeerMessage(ref, candidates) {
 }
 
 // src/state.ts
-var import_promises7 = require("node:fs/promises");
+var import_promises5 = require("node:fs/promises");
 
 // src/env-whitelist.ts
 var BASE_ALLOWLIST = Object.freeze([
@@ -4849,7 +4633,7 @@ var SPAWN_ESSENTIAL_CLAUDE_VARS = /* @__PURE__ */ new Set([
 ]);
 
 // src/state.ts
-var log4 = makeLogger("daemon.state");
+var log3 = makeLogger("daemon.state");
 var STATE_VERSION = 2;
 var REPAIR_HARVEST_PROVENANCE = "revoke-harvest-stamps-pre-0.11.1";
 var REPAIR_DERIVED_LABELS = "revoke-derived-labels-pre-0.11.2";
@@ -4881,7 +4665,7 @@ function revokeUntrustedHarvestStamps(doc) {
   }
   markRepair(doc, REPAIR_HARVEST_PROVENANCE);
   doc.harvestProvenanceRevokedAt = (/* @__PURE__ */ new Date()).toISOString();
-  if (cleared > 0) log4.warn("harvest_stamps_revoked", { cleared, reason: "written_before_0_11_1" });
+  if (cleared > 0) log3.warn("harvest_stamps_revoked", { cleared, reason: "written_before_0_11_1" });
   return cleared;
 }
 function hasRepair(doc, id) {
@@ -4903,7 +4687,7 @@ function revokeDerivedLabels(doc) {
     cleared++;
   }
   markRepair(doc, REPAIR_DERIVED_LABELS);
-  if (cleared > 0) log4.warn("derived_labels_revoked", { cleared, reason: "written_before_0_11_2" });
+  if (cleared > 0) log3.warn("derived_labels_revoked", { cleared, reason: "written_before_0_11_2" });
   return cleared;
 }
 function repairHarvestedEnv(peers) {
@@ -4912,7 +4696,7 @@ function repairHarvestedEnv(peers) {
     if (!env) continue;
     const cleaned = stripHostProvided(env);
     if (Object.keys(cleaned).length === Object.keys(env).length) continue;
-    log4.info("spawn_env_repaired", {
+    log3.info("spawn_env_repaired", {
       sessionId: record.sessionId,
       dropped: HOST_PROVIDED_VARS.filter((v) => v in env)
     });
@@ -4957,12 +4741,12 @@ function migrateV1ToV2(legacyPeers) {
 }
 async function loadState(daemonVersion) {
   try {
-    const raw = await (0, import_promises7.readFile)(stateFilePath(), "utf-8");
+    const raw = await (0, import_promises5.readFile)(stateFilePath(), "utf-8");
     const parsed = JSON.parse(raw);
     let onDisk = parsed.stateVersion ?? 0;
     if (onDisk > STATE_VERSION) throw new StateVersionMismatch(onDisk, STATE_VERSION);
     if (onDisk === STATE_VERSION && looksLegacy(parsed.peers ?? {})) {
-      log4.warn("state_version_stamp_disagrees_with_content", {
+      log3.warn("state_version_stamp_disagrees_with_content", {
         stamped: onDisk,
         treatingAs: 1,
         hint: "records are flat; migrating on content rather than crashing on the stamp"
@@ -4976,11 +4760,11 @@ async function loadState(daemonVersion) {
         );
       }
       const backup = `${stateFilePath()}.v${onDisk}.${(/* @__PURE__ */ new Date()).toISOString().replace(/[:.]/g, "-")}.bak`;
-      await (0, import_promises7.writeFile)(backup, raw, "utf-8");
+      await (0, import_promises5.writeFile)(backup, raw, "utf-8");
       const { peers, migrated } = migrateV1ToV2(
         parsed.peers
       );
-      log4.warn("state_migrated", { from: onDisk, to: STATE_VERSION, peers: migrated, backup });
+      log3.warn("state_migrated", { from: onDisk, to: STATE_VERSION, peers: migrated, backup });
       const fresh = {
         stateVersion: STATE_VERSION,
         daemonVersion,
@@ -5008,10 +4792,10 @@ async function loadState(daemonVersion) {
     if (e instanceof StateVersionMismatch) throw e;
     const code = e.code;
     if (code === "ENOENT") {
-      log4.info("state_missing_bootstrap");
+      log3.info("state_missing_bootstrap");
       return emptyState(daemonVersion);
     }
-    log4.error("state_load_error", { err: String(e) });
+    log3.error("state_load_error", { err: String(e) });
     throw e;
   }
 }
@@ -5252,6 +5036,222 @@ async function handleControlConfig(req, ctx) {
     // read as a bug rather than as the documented boundary of this release.
     note: "Declared. Nothing in the world was changed \u2014 v0.11.0 records intent and reports drift; asserting it lands in v0.11.1."
   });
+}
+
+// src/lock.ts
+var import_node_fs = require("node:fs");
+var import_promises6 = require("node:fs/promises");
+var log4 = makeLogger("daemon.lock");
+var LockAcquireError = class extends Error {
+  constructor(message, heldBy) {
+    super(message);
+    this.heldBy = heldBy;
+    this.name = "LockAcquireError";
+  }
+};
+function readProcStart(pid) {
+  if (process.platform !== "linux") return null;
+  try {
+    const stat4 = (0, import_node_fs.readFileSync)(`/proc/${pid}/stat`, "utf-8");
+    const afterComm = stat4.slice(stat4.lastIndexOf(")") + 1).trim();
+    const fields = afterComm.split(/\s+/);
+    const starttime = fields[19];
+    return starttime ?? null;
+  } catch {
+    return null;
+  }
+}
+function isProcessAlive(pid) {
+  if (pid <= 0) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (e) {
+    const code = e.code;
+    return code === "EPERM";
+  }
+}
+function isStale(payload) {
+  if (!isProcessAlive(payload.pid)) return true;
+  if (process.platform === "linux" && payload.procStart) {
+    const currentStart = readProcStart(payload.pid);
+    if (currentStart !== null && currentStart !== payload.procStart) return true;
+  }
+  return false;
+}
+async function readLock() {
+  try {
+    const raw = await (0, import_promises6.readFile)(daemonLockPath(), "utf-8");
+    const parsed = JSON.parse(raw);
+    if (typeof parsed.pid !== "number") return null;
+    return parsed;
+  } catch (e) {
+    const code = e.code;
+    if (code === "ENOENT") return null;
+    log4.warn("lock_read_error", { code, err: String(e) });
+    return null;
+  }
+}
+async function acquireLock() {
+  const existing = await readLock();
+  if (existing) {
+    if (isStale(existing)) {
+      log4.warn("lock_takeover_stale", { heldBy: existing });
+    } else {
+      throw new LockAcquireError(
+        `daemon.lock held by live pid ${existing.pid} (started ${existing.startedAt})`,
+        existing
+      );
+    }
+  }
+  const payload = {
+    pid: process.pid,
+    startedAt: (/* @__PURE__ */ new Date()).toISOString(),
+    procStart: readProcStart(process.pid)
+  };
+  await atomicWriteJson(daemonLockPath(), payload);
+  log4.info("lock_acquired", { pid: payload.pid });
+  return payload;
+}
+async function releaseLock() {
+  try {
+    await (0, import_promises6.unlink)(daemonLockPath());
+    log4.info("lock_released");
+  } catch (e) {
+    const code = e.code;
+    if (code !== "ENOENT") log4.warn("lock_release_error", { code, err: String(e) });
+  }
+}
+
+// src/config-cli.ts
+var CONFIG_HELP = `claude-bridge-daemon config \u2014 read and declare peer intent
+
+Usage:
+  config                              Show declared intent + drift for every peer
+  config <peer>                       Show one peer (id, full name, or short name)
+  config --team <team>                Show every peer of a team
+  config <peer> --set <k>=<v> [...]   Declare values
+  config <peer> --unset <k> [...]     Withdraw a declaration (NOT the same as
+                                      setting it empty \u2014 an undeclared value
+                                      reports no drift at all)
+  config <peer> --set <k>=<v> --dry-run
+                                      Show what would change, write nothing
+
+Settable keys: ${PEER_SETTABLE.join(", ")}
+  windowIndex is RECORDED and drift is reported. It does not move any window
+  in v0.11.0 \u2014 asserting it is v0.11.1, behind an explicit opt-in.
+
+Examples:
+  config mic-tester
+  config velitel --set label=velitel --dry-run
+  config ai-designer --set model=claude-opus-5 --reason "post-soak bump"
+`;
+var NUMERIC_KEYS = /* @__PURE__ */ new Set(["windowIndex"]);
+function parseConfigArgs(argv) {
+  const out = { set: {}, unset: [], dryRun: false };
+  for (let i = 0; i < argv.length; i++) {
+    const a = argv[i];
+    if (a === "--dry-run") {
+      out.dryRun = true;
+    } else if (a === "--team") {
+      out.team = argv[++i];
+    } else if (a === "--unset") {
+      const key = argv[++i];
+      if (!key || key.startsWith("--")) throw new Error("--unset expects a key name");
+      out.unset.push(key);
+    } else if (a === "--reason") {
+      out.reason = argv[++i];
+    } else if (a === "--set") {
+      const pair = argv[++i];
+      if (!pair || !pair.includes("=")) {
+        throw new Error(`--set expects <key>=<value>, got ${pair ?? "nothing"}`);
+      }
+      const idx = pair.indexOf("=");
+      const key = pair.slice(0, idx);
+      const raw = pair.slice(idx + 1);
+      if (NUMERIC_KEYS.has(key)) {
+        const n = Number(raw);
+        if (!Number.isInteger(n)) throw new Error(`${key} expects an integer, got '${raw}'`);
+        out.set[key] = n;
+      } else if (raw === "null") {
+        out.set[key] = null;
+      } else {
+        out.set[key] = raw;
+      }
+    } else if (a?.startsWith("--")) {
+      throw new Error(`unknown flag ${a}`);
+    } else if (a !== void 0 && out.peer === void 0) {
+      out.peer = a;
+    } else {
+      throw new Error(`unexpected argument '${a}'`);
+    }
+  }
+  return out;
+}
+function generateRequestId() {
+  return `cli-${Date.now().toString(36)}-${(0, import_node_crypto3.randomBytes)(4).toString("hex")}`;
+}
+async function pollForResult(requestId, timeoutMs) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    try {
+      return JSON.parse(await (0, import_promises7.readFile)(resultPath(requestId), "utf-8"));
+    } catch (e) {
+      if (e.code !== "ENOENT") throw e;
+    }
+    await new Promise((r) => setTimeout(r, 200));
+  }
+  return null;
+}
+async function runConfig(argv) {
+  if (argv[0] === "--help" || argv[0] === "-h") {
+    process.stdout.write(CONFIG_HELP);
+    return 0;
+  }
+  let parsed;
+  try {
+    parsed = parseConfigArgs(argv);
+  } catch (e) {
+    process.stderr.write(`${e instanceof Error ? e.message : String(e)}
+
+${CONFIG_HELP}`);
+    return 2;
+  }
+  const lock = await readLock();
+  if (!lock) {
+    process.stderr.write(
+      "daemon is not running \u2014 config goes through the daemon so that state.json keeps a single writer\n"
+    );
+    return 1;
+  }
+  const args = { dryRun: parsed.dryRun };
+  if (parsed.peer !== void 0) args["peer"] = parsed.peer;
+  if (parsed.team !== void 0) args["team"] = parsed.team;
+  if (parsed.reason !== void 0) args["reason"] = parsed.reason;
+  if (Object.keys(parsed.set).length > 0) args["set"] = parsed.set;
+  if (parsed.unset.length > 0) args["unset"] = parsed.unset;
+  const id = generateRequestId();
+  await atomicWriteJson(requestPath(id), {
+    schemaVersion: 1,
+    id,
+    ts: (/* @__PURE__ */ new Date()).toISOString(),
+    tool: "control_config",
+    args,
+    // The CLI is not a peer. Saying so keeps short-name resolution honest —
+    // there is no caller team to search, so a bare `velitel` is ambiguous here
+    // and the error will say which ones it matched.
+    requestedBy: { sessionId: `cli:${process.pid}`, name: "cli" }
+  });
+  const result = await pollForResult(id, 1e4);
+  if (result === null) {
+    process.stderr.write(`no result within 10s (request ${id}); daemon may be busy
+`);
+    return 1;
+  }
+  process.stdout.write(`${JSON.stringify(result, null, 2)}
+`);
+  const outcome = result.outcome;
+  return outcome === "error" ? 1 : 0;
 }
 
 // src/handlers/control-status.ts
