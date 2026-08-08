@@ -4320,7 +4320,7 @@ async function resolvePeer(idOrName, root = bridgeRoot(), now = Date.now()) {
 // package.json
 var package_default = {
   name: "claude-bridge-daemon",
-  version: "0.11.16",
+  version: "0.11.17",
   private: true,
   description: "Control-plane daemon for the claude-bridge plugin: peer lifecycle, telemetry, audit. Distributed as opt-in artefact \u2014 see ADR-008.",
   type: "module",
@@ -7517,6 +7517,20 @@ var TeamLayoutArgsSchema = external_exports.object({
   apply: external_exports.boolean().default(true),
   prune: external_exports.boolean().default(false),
   /**
+   * Prune WITHOUT asking (v0.11.17). Default false: a peer dropped from a
+   * layout gets the same courtesy as one told to sleep.
+   *
+   * v0.11.15 pinned prune to the impolite path with a TODO, because it was
+   * impolite only for want of an alternative — `peer_stop` had no other mode.
+   * Now it does. A peer being removed from a spec has as much unwritten work
+   * as any other, so it is asked first, and a peer that does not answer is
+   * REPORTED rather than killed. `pruneForce: true` is the old behaviour and
+   * now has to be said.
+   */
+  pruneForce: external_exports.boolean().default(false),
+  /** How long a pruned peer gets to acknowledge before it is reported as refused. */
+  pruneAckTimeoutMs: external_exports.number().int().positive().max(6e5).optional(),
+  /**
    * Explicit team spec — bypasses the on-disk file. Used by tests
    * and by future callers who want to preview a spec before writing
    * it to teams/.
@@ -7678,6 +7692,7 @@ async function handleTeamLayout(req, ctx) {
   }
   const stoppedOk = [];
   const stoppedFailed = [];
+  const stoppedRefused = [];
   const forgotten = [];
   if (args.prune) {
     for (const id of toStop) {
@@ -7689,23 +7704,30 @@ async function handleTeamLayout(req, ctx) {
         args: {
           peer: id,
           reason: `team_layout_prune:${spec.team}`,
-          // PINNED to v0.11.14 semantics (v0.11.15 phase 1): prune kills without
-          // asking, exactly as it always has.
+          // The v0.11.15 TODO, resolved (v0.11.17).
           //
-          // TODO(phase 3): revisit this one. For `team_stop` the pin is obviously
-          // right — the courtesy happened a floor up. Here it is NOT obvious.
-          // Prune removes a peer because it fell out of the declared layout, and
-          // a peer being dropped from a layout has as much unsaved work as a peer
-          // being told to sleep. Nobody has ever decided that layout reconcile
-          // should be the impolite path; it is impolite because `peer_stop` used
-          // to have no other mode. Phase 3 owns that decision.
-          skipCourtesy: true
+          // That pin was `skipCourtesy: true` with a note saying the decision
+          // was not obvious and belonged to a later phase. It is resolved the
+          // other way: prune ASKS. A peer removed from a layout has as much
+          // unwritten work as one told to sleep, and prune was impolite only
+          // because `peer_stop` had no other mode when this was written.
+          //
+          // A peer that does not answer is left running and reported — pruning
+          // is reconciliation, and reconciliation that destroys unsaved work to
+          // make a list come true has the priority backwards.
+          ...args.pruneForce ? { force: true } : {},
+          ...args.pruneAckTimeoutMs !== void 0 ? { ackTimeoutMs: args.pruneAckTimeoutMs } : {}
         },
         requestedBy: req.requestedBy
       };
       const res = await handlePeerStop(stopReq, ctx);
-      if (res.outcome === "ok") stoppedOk.push(id);
-      else stoppedFailed.push({ sessionId: id, err: res.error?.message ?? "unknown" });
+      if (res.outcome === "ok") {
+        stoppedOk.push(id);
+      } else if (res.error?.code === "stop_ack_timeout") {
+        stoppedRefused.push({ sessionId: id, detail: res.error?.message ?? "no ack" });
+      } else {
+        stoppedFailed.push({ sessionId: id, err: res.error?.message ?? "unknown" });
+      }
     }
     for (const id of toForget) {
       await applyStateChange(ctx.state, (draft) => {
@@ -7737,6 +7759,7 @@ async function handleTeamLayout(req, ctx) {
       wokenOk,
       wokenSilent,
       stoppedOk,
+      stoppedRefused,
       stoppedFailed,
       forgotten,
       keptExtras: diff.keptExtras
@@ -7752,6 +7775,7 @@ async function handleTeamLayout(req, ctx) {
     wokenOk,
     wokenSilent,
     stoppedOk,
+    stoppedRefused,
     stoppedFailed,
     forgotten,
     keptExtras: diff.keptExtras
@@ -7850,6 +7874,18 @@ async function handleTeamReconcile(req, ctx) {
         kind: "dead",
         actualPid: null,
         detail: rec.observed.pid === null ? `record is '${rec.observed.status}' with no pid at all` : `record is '${rec.observed.status}' but pid ${rec.observed.pid} is not running${corpse ? ` \u2014 its pane is still standing and holds exit status ${corpse.exitStatus ?? "unknown"}; read it with \`tmux capture-pane -p -S -2000 -t ${corpse.target}\` before removing it` : " and its pane is gone"}`
+      });
+      continue;
+    }
+    const pending = rec.observed.stopRequest;
+    if (pending && rec.observed.status === "stopping") {
+      const askedAt = Date.parse(pending.requestedAt);
+      const ageMs = Number.isNaN(askedAt) ? null : Date.now() - askedAt;
+      drift.push({
+        ...base,
+        kind: "stop_pending",
+        actualPid: rec.observed.pid,
+        detail: `a stop was requested at ${pending.requestedAt}${ageMs === null ? "" : ` (${Math.round(ageMs / 1e3)}s ago)`} and never resolved \u2014 the peer is STILL RUNNING. Call peer_stop again to keep waiting on the same request (a late ack still counts), peer_stop with force:true to end it now, or leave it be.`
       });
       continue;
     }

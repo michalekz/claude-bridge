@@ -123,7 +123,11 @@ describe("rc acceptance", () => {
       const pruneRes = await handlers.dispatch(
         makeRequest(
           "team_layout",
-          { team: "rc-test", apply: true, prune: true, inline: inlineSpec },
+          // `pruneForce` pins the pre-v0.11.17 semantics. This case is about
+          // WHICH peers prune removes, not about whether they are asked first;
+          // without it the graceful path waits out its full ack window on a
+          // mock peer that has nobody to answer for it.
+          { team: "rc-test", apply: true, prune: true, pruneForce: true, inline: inlineSpec },
           "req-prune",
         ),
         { state: doc, hostDriver: driver, daemonVersion: "0.10.0-rc.0" },

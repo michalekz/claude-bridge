@@ -6,6 +6,50 @@ All notable changes to this project are documented here. Format follows [Keep a 
 
 _Nothing yet._
 
+## [0.11.17] — 2026-08-08
+
+### Prune asks now, and an abandoned stop is no longer invisible
+
+Two loose ends from phase 1, both about a peer nobody came back for.
+
+**`team_layout` prune is graceful by default.** v0.11.15 pinned it to the
+impolite path with a TODO saying the decision was not obvious and belonged to a
+later phase. It is resolved the other way round: a peer dropped from a layout has
+as much unwritten work as one told to sleep, and prune was impolite only because
+`peer_stop` had no other mode when it was written. Reconciliation that destroys
+unsaved work to make a list come true has the priority backwards.
+
+`pruneForce: true` is the old behaviour. A peer that does not answer is reported
+in `stoppedRefused` — held apart from `stoppedFailed`, because the two want
+different things from a reader: patience or force, versus investigating.
+
+**New drift kind `stop_pending`.** Idempotence covered a retry; nothing covered
+ABANDONMENT. A graceful stop that times out leaves `status: "stopping"` and a
+`stopRequest` on the record, and nothing makes anyone come back for it. Until
+now such a peer was INVISIBLE: process alive, pid matching, window where it
+should be — so every check called it healthy.
+
+`team_reconcile` now reports it, with the age of the request, and does not
+correct it. Finishing the stop is `peer_stop`; deciding to leave the peer alone
+is a person's call. Raised by ai-designer as "who cleans up the intermediate
+state when the caller vanishes" — it was a real hole, not a covered case.
+
+### A stale list, inside the sentence warning about stale lists
+
+`team-reconcile.ts` carried a copy of the drift kinds in its header comment,
+directly under a line explaining that a list in prose goes stale. Adding
+`stop_pending` staled it within the hour. Sixth instance of this defect in three
+days, and the first to happen inside its own warning — so the copy is gone rather
+than corrected, and the header points at `DriftKind`.
+
+### Not changed here, and worth naming before someone reports it as a regression
+
+A spawned peer with no transcript is reported by the bridge under a DERIVED name
+(`tmp-6a` — the working directory's basename plus two characters), not its
+display name. That is the second, independent cause described in the N4 section
+of `KNOWN-LIMITATIONS.md` and it predates v0.11.16, which fixed the identity, not
+the name. Cross-referencing works; the label is still ugly.
+
 ## [0.11.16] — 2026-08-08
 
 ### The handle stopped pretending to be the identity (defect N4)

@@ -20,20 +20,14 @@ import { applyStateChange } from "./state-writer.ts";
  * record saying `status: "live"` is a belief about a pid, and beliefs go stale
  * the moment a process dies without telling anyone.
  *
- * So this tool measures the gap and says it out loud. The kinds are enumerated
- * by `DriftKind` below — read them there, not from a count in this sentence,
- * which is the sort of thing that silently goes stale (as one did in
- * `peer-compact.ts`, fixed in v0.11.6):
+ * So this tool measures the gap and says it out loud.
  *
- *   dead          record says live, no process behind the pid
- *   host_missing  process alive, but its tmux target is gone
- *   pid_changed   target holds a DIFFERENT pid than the record — the most
- *                 dangerous one, because every lifecycle call would then act
- *                 on a peer nobody meant
- *   unmanaged     a Claude peer running on the host with no record at all
- *   dead_pane     a window held open after its process exited, belonging to no
- *                 record — visible only because the daemon asks tmux to keep
- *                 the panes of peers it spawned
+ * THE KINDS ARE IN `DriftKind` BELOW, each documented where it is declared.
+ * They are deliberately NOT listed again here. This comment used to carry a
+ * copy of the list — under a sentence warning that a list in prose goes stale —
+ * and it went stale within the hour when `stop_pending` was added in v0.11.17.
+ * Sixth instance of that defect in three days, and the first one to happen
+ * inside its own warning.
  *
  * **Read-only by default and it will stay that way.** `markDead: true` is the
  * only write, and all it does is set `status: "unknown"` on records whose
@@ -72,7 +66,20 @@ export type DriftKind =
    * whatever died there. Reported whole-host, like `unmanaged`, because a
    * corpse belongs to no team.
    */
-  | "dead_pane";
+  | "dead_pane"
+  /**
+   * A stop was ASKED FOR and never resolved (v0.11.17).
+   *
+   * The graceful stop leaves `status: "stopping"` and a `stopRequest` on the
+   * record when a peer does not acknowledge. Retrying resumes it — but nothing
+   * makes anyone retry, and until this kind existed a peer abandoned there was
+   * INVISIBLE: its process is alive, its pid matches, its window is where it
+   * should be, so every other check called it healthy.
+   *
+   * Reported, never corrected. Finishing the stop is `peer_stop` (retry, or
+   * `force`), and deciding to leave the peer alone is a person's call.
+   */
+  | "stop_pending";
 
 export interface DriftEntry {
   kind: DriftKind;
@@ -222,6 +229,20 @@ export async function handleTeamReconcile(
                   ? ` — its pane is still standing and holds exit status ${corpse.exitStatus ?? "unknown"}; read it with \`tmux capture-pane -p -S -2000 -t ${corpse.target}\` before removing it`
                   : " and its pane is gone"
               }`,
+      });
+      continue;
+    }
+
+    // Asked to stop, still running, nobody came back for it.
+    const pending = rec.observed.stopRequest;
+    if (pending && rec.observed.status === "stopping") {
+      const askedAt = Date.parse(pending.requestedAt);
+      const ageMs = Number.isNaN(askedAt) ? null : Date.now() - askedAt;
+      drift.push({
+        ...base,
+        kind: "stop_pending",
+        actualPid: rec.observed.pid,
+        detail: `a stop was requested at ${pending.requestedAt}${ageMs === null ? "" : ` (${Math.round(ageMs / 1000)}s ago)`} and never resolved — the peer is STILL RUNNING. Call peer_stop again to keep waiting on the same request (a late ack still counts), peer_stop with force:true to end it now, or leave it be.`,
       });
       continue;
     }

@@ -61,6 +61,20 @@ export const TeamLayoutArgsSchema = z
     apply: z.boolean().default(true),
     prune: z.boolean().default(false),
     /**
+     * Prune WITHOUT asking (v0.11.17). Default false: a peer dropped from a
+     * layout gets the same courtesy as one told to sleep.
+     *
+     * v0.11.15 pinned prune to the impolite path with a TODO, because it was
+     * impolite only for want of an alternative — `peer_stop` had no other mode.
+     * Now it does. A peer being removed from a spec has as much unwritten work
+     * as any other, so it is asked first, and a peer that does not answer is
+     * REPORTED rather than killed. `pruneForce: true` is the old behaviour and
+     * now has to be said.
+     */
+    pruneForce: z.boolean().default(false),
+    /** How long a pruned peer gets to acknowledge before it is reported as refused. */
+    pruneAckTimeoutMs: z.number().int().positive().max(600_000).optional(),
+    /**
      * Explicit team spec — bypasses the on-disk file. Used by tests
      * and by future callers who want to preview a spec before writing
      * it to teams/.
@@ -258,6 +272,8 @@ export async function handleTeamLayout(
 
   const stoppedOk: string[] = [];
   const stoppedFailed: Array<{ sessionId: string; err: string }> = [];
+  /** Asked, still running, still recorded. Not an error — an unfinished ask. */
+  const stoppedRefused: Array<{ sessionId: string; detail: string }> = [];
   const forgotten: string[] = [];
   if (args.prune) {
     for (const id of toStop) {
@@ -269,23 +285,34 @@ export async function handleTeamLayout(
         args: {
           peer: id,
           reason: `team_layout_prune:${spec.team}`,
-          // PINNED to v0.11.14 semantics (v0.11.15 phase 1): prune kills without
-          // asking, exactly as it always has.
+          // The v0.11.15 TODO, resolved (v0.11.17).
           //
-          // TODO(phase 3): revisit this one. For `team_stop` the pin is obviously
-          // right — the courtesy happened a floor up. Here it is NOT obvious.
-          // Prune removes a peer because it fell out of the declared layout, and
-          // a peer being dropped from a layout has as much unsaved work as a peer
-          // being told to sleep. Nobody has ever decided that layout reconcile
-          // should be the impolite path; it is impolite because `peer_stop` used
-          // to have no other mode. Phase 3 owns that decision.
-          skipCourtesy: true,
+          // That pin was `skipCourtesy: true` with a note saying the decision
+          // was not obvious and belonged to a later phase. It is resolved the
+          // other way: prune ASKS. A peer removed from a layout has as much
+          // unwritten work as one told to sleep, and prune was impolite only
+          // because `peer_stop` had no other mode when this was written.
+          //
+          // A peer that does not answer is left running and reported — pruning
+          // is reconciliation, and reconciliation that destroys unsaved work to
+          // make a list come true has the priority backwards.
+          ...(args.pruneForce ? { force: true } : {}),
+          ...(args.pruneAckTimeoutMs !== undefined ? { ackTimeoutMs: args.pruneAckTimeoutMs } : {}),
         },
         requestedBy: req.requestedBy,
       };
       const res = await handlePeerStop(stopReq, ctx);
-      if (res.outcome === "ok") stoppedOk.push(id);
-      else stoppedFailed.push({ sessionId: id, err: res.error?.message ?? "unknown" });
+      if (res.outcome === "ok") {
+        stoppedOk.push(id);
+      } else if (res.error?.code === "stop_ack_timeout") {
+        // REFUSED, not failed. The peer is alive and well and simply has not
+        // agreed to stop yet. Reported apart from a kill that went wrong,
+        // because the two want different things from a reader: this one wants
+        // patience or `pruneForce`, the other wants investigating.
+        stoppedRefused.push({ sessionId: id, detail: res.error?.message ?? "no ack" });
+      } else {
+        stoppedFailed.push({ sessionId: id, err: res.error?.message ?? "unknown" });
+      }
     }
     // Tombstones outside the spec: drop the record outright. There is no host
     // session to kill, so peer_stop would be the wrong instrument.
@@ -323,6 +350,7 @@ export async function handleTeamLayout(
       wokenOk,
       wokenSilent,
       stoppedOk,
+      stoppedRefused,
       stoppedFailed,
       forgotten,
       keptExtras: diff.keptExtras,
@@ -339,6 +367,7 @@ export async function handleTeamLayout(
     wokenOk,
     wokenSilent,
     stoppedOk,
+    stoppedRefused,
     stoppedFailed,
     forgotten,
     keptExtras: diff.keptExtras,
