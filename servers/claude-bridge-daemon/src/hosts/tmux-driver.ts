@@ -438,6 +438,35 @@ export class TmuxDriver implements SessionHostDriver {
     // The new window's id IS its address, so the record must carry that rather
     // than the key the caller asked for.
     const effectiveKey = createdWindowId ?? canonicalKey;
+
+    // Keep the window when the command exits (v0.11.8).
+    //
+    // Without this tmux destroys the pane the moment the process ends, and the
+    // pane is where the process said why it was ending. That is how the spawn
+    // failure of 2026-08-07 stayed unexplained: by the time anyone looked,
+    // there was nothing to look at.
+    //
+    // Set PER WINDOW, on windows this daemon created, and never globally — a
+    // global default would leave corpses all over a human's tmux server, and
+    // the ones outside the daemon's registry are the ones nobody would clear.
+    //
+    // ⚠ It cannot catch everything, and the gap is worth stating: a command
+    // that dies BEFORE this call lands — a missing binary exits in
+    // microseconds — still takes its pane with it. That case has not regressed;
+    // it reports `no-such-target` exactly as before. What is now caught is the
+    // command that runs, fails, and says something first.
+    await this.tmux(
+      ["set-window-option", "-t", effectiveKey, "remain-on-exit", "on"],
+      QUERY_TIMEOUT_MS,
+    ).catch((e) => {
+      // Never fail a spawn over this: a peer that started is more valuable than
+      // the ability to autopsy it later.
+      log.warn("tmux_remain_on_exit_not_set", {
+        sessionKey: effectiveKey,
+        err: e instanceof Error ? e.message.split("\n")[0] : String(e),
+      });
+    });
+
     const probe = await this.probePanePid(effectiveKey);
     if (probe.kind === "no-such-target") {
       log.error("tmux_spawn_target_gone", {

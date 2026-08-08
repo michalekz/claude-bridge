@@ -4298,7 +4298,7 @@ async function resolvePeer(idOrName, root = bridgeRoot(), now = Date.now()) {
 // package.json
 var package_default = {
   name: "claude-bridge-daemon",
-  version: "0.11.7",
+  version: "0.11.8",
   private: true,
   description: "Control-plane daemon for the claude-bridge plugin: peer lifecycle, telemetry, audit. Distributed as opt-in artefact \u2014 see ADR-008.",
   type: "module",
@@ -7365,6 +7365,11 @@ async function handleTeamReconcile(req, ctx) {
   for (const w of windows) hostTargets.set(w.target, w.pid);
   for (const s of sessions)
     if (!hostTargets.has(s.sessionKey)) hostTargets.set(s.sessionKey, s.pid);
+  const deadPanes = /* @__PURE__ */ new Map();
+  for (const w of windows) {
+    if (w.dead)
+      deadPanes.set(w.target, { exitStatus: w.exitStatus, label: w.windowName || w.label });
+  }
   const hostWindowIndex = /* @__PURE__ */ new Map();
   for (const w of windows) {
     if (typeof w.window === "number") hostWindowIndex.set(w.target, w.window);
@@ -7390,11 +7395,12 @@ async function handleTeamReconcile(req, ctx) {
     };
     const alive = rec.observed.pid !== null && pidAlive(rec.observed.pid, procRoot);
     if (!alive) {
+      const corpse = rec.observed.tmuxTarget ? deadPanes.get(rec.observed.tmuxTarget) : void 0;
       drift.push({
         ...base,
         kind: "dead",
         actualPid: null,
-        detail: rec.observed.pid === null ? `record is '${rec.observed.status}' with no pid at all` : `record is '${rec.observed.status}' but pid ${rec.observed.pid} is not running`
+        detail: rec.observed.pid === null ? `record is '${rec.observed.status}' with no pid at all` : `record is '${rec.observed.status}' but pid ${rec.observed.pid} is not running${corpse ? ` \u2014 its pane is still standing and holds exit status ${corpse.exitStatus ?? "unknown"}; read it with \`tmux capture-pane -p -S -2000 -t ${rec.observed.tmuxTarget}\` before removing it` : " and its pane is gone"}`
       });
       continue;
     }
@@ -7433,6 +7439,22 @@ async function handleTeamReconcile(req, ctx) {
       actualPid: proc.pid,
       tmuxTarget: null,
       detail: `pid ${proc.pid} is a Claude peer with no record${proc.sessionId ? "" : " and no resolvable session id"}`
+    });
+  }
+  const recordedTargets = new Set(
+    Object.values(ctx.state.peers).map((r) => r.observed.tmuxTarget).filter((t) => t !== null)
+  );
+  for (const [target, info] of deadPanes) {
+    if (recordedTargets.has(target)) continue;
+    drift.push({
+      kind: "dead_pane",
+      sessionId: null,
+      name: info.label,
+      team: null,
+      recordedPid: null,
+      actualPid: null,
+      tmuxTarget: target,
+      detail: `window '${info.label}' (${target}) is held open after its process exited${info.exitStatus === null ? "" : ` with status ${info.exitStatus}`} and belongs to no record \u2014 read it with \`tmux capture-pane -p -S -2000 -t ${target}\`, then \`tmux kill-window -t ${target}\``
     });
   }
   const marked = [];
@@ -8596,6 +8618,15 @@ var TmuxDriver = class _TmuxDriver {
       });
     }
     const effectiveKey = createdWindowId ?? canonicalKey;
+    await this.tmux(
+      ["set-window-option", "-t", effectiveKey, "remain-on-exit", "on"],
+      QUERY_TIMEOUT_MS
+    ).catch((e) => {
+      log8.warn("tmux_remain_on_exit_not_set", {
+        sessionKey: effectiveKey,
+        err: e instanceof Error ? e.message.split("\n")[0] : String(e)
+      });
+    });
     const probe = await this.probePanePid(effectiveKey);
     if (probe.kind === "no-such-target") {
       log8.error("tmux_spawn_target_gone", {

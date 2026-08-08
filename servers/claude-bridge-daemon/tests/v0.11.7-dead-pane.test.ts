@@ -159,6 +159,116 @@ describe.skipIf(!TMUX)("probing a pane against a real tmux server", () => {
   }, 20_000);
 });
 
+/**
+ * A held-open pane is a NEW KIND OF OBJECT on the host, and an operator has to
+ * be able to recognise it in the tools rather than read about it in a changelog
+ * (ai-designer's condition on enabling `remain-on-exit`, msk1uiyx).
+ */
+describe("team_reconcile makes a corpse readable", () => {
+  beforeEach(() => {
+    homeHolder.current = `/tmp/cbd-recon-dead-${process.hrtime.bigint()}`;
+    vi.resetModules();
+  });
+
+  async function reconcile(windows: unknown[], peers: Record<string, unknown>) {
+    const handlers = await import("../src/handlers/index.ts");
+    const state = await import("../src/state.ts");
+    const mock = await import("../src/hosts/mock-driver.ts");
+    const doc = state.emptyState("0.11.8-test");
+    Object.assign(doc.peers, peers);
+    const driver = new mock.MockDriver();
+    // biome-ignore lint/suspicious/noExplicitAny: mock gains an optional method
+    (driver as any).listWindows = async () => windows;
+    return handlers.dispatch(
+      {
+        schemaVersion: 1 as const,
+        id: "req-recon",
+        ts: "2026-08-08T10:00:00.000Z",
+        tool: "team_reconcile",
+        args: {},
+        requestedBy: { sessionId: "operator", name: "operator" },
+      },
+      // `procRoot` points at a directory with no pids, so every record reads dead.
+      { state: doc, hostDriver: driver, daemonVersion: "0.11.8-test", procRoot: "/nonexistent" },
+    );
+  }
+
+  const corpseWindow = {
+    target: "@9",
+    label: "team:9",
+    session: "team",
+    window: 9,
+    windowName: "died-here",
+    pid: 999,
+    dead: true,
+    exitStatus: 127,
+  };
+
+  it("a record whose pane is STILL STANDING says so, with the exit status", async () => {
+    const res = await reconcile([corpseWindow], {
+      "peer-1": {
+        sessionId: "peer-1",
+        desired: {},
+        observed: {
+          name: "peer-1",
+          hostDriver: "tmux",
+          tmuxTarget: "@9",
+          pid: 999,
+          status: "live",
+          model: null,
+          startedAt: "2026-08-08T09:00:00.000Z",
+          lastUpdatedAt: "2026-08-08T09:00:00.000Z",
+        },
+      },
+    });
+    const entry = (res.data as { drift: Array<{ kind: string; detail: string }> }).drift.find(
+      (d) => d.kind === "dead",
+    );
+    expect(entry).toBeDefined();
+    // The two situations need different actions, so they must read differently.
+    expect(entry?.detail).toContain("pane is still standing");
+    expect(entry?.detail).toContain("127");
+    expect(entry?.detail).toContain("capture-pane");
+  });
+
+  it("the same record with NO pane says the pane is gone", async () => {
+    const res = await reconcile([], {
+      "peer-2": {
+        sessionId: "peer-2",
+        desired: {},
+        observed: {
+          name: "peer-2",
+          hostDriver: "tmux",
+          tmuxTarget: "@9",
+          pid: 999,
+          status: "live",
+          model: null,
+          startedAt: "2026-08-08T09:00:00.000Z",
+          lastUpdatedAt: "2026-08-08T09:00:00.000Z",
+        },
+      },
+    });
+    const entry = (res.data as { drift: Array<{ kind: string; detail: string }> }).drift.find(
+      (d) => d.kind === "dead",
+    );
+    expect(entry?.detail).toContain("pane is gone");
+  });
+
+  it("THE GRAVEYARD: a corpse belonging to no record is reported anyway", async () => {
+    // A dead pane has no process, so the live-process scan cannot find it.
+    // Without its own pass it would stand on the host unmentioned by any tool.
+    const res = await reconcile([corpseWindow], {});
+    const entry = (res.data as { drift: Array<{ kind: string; detail: string }> }).drift.find(
+      (d) => d.kind === "dead_pane",
+    );
+    expect(entry).toBeDefined();
+    expect(entry?.detail).toContain("died-here");
+    expect(entry?.detail).toContain("127");
+    // And how to get rid of it — after reading it.
+    expect(entry?.detail).toContain("kill-window");
+  });
+});
+
 function existsProc(pid: number): boolean {
   try {
     execFileSync("test", ["-d", `/proc/${pid}`]);

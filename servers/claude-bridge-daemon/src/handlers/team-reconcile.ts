@@ -19,7 +19,10 @@ import { applyStateChange } from "./state-writer.ts";
  * record saying `status: "live"` is a belief about a pid, and beliefs go stale
  * the moment a process dies without telling anyone.
  *
- * So this tool measures the gap and says it out loud. Four kinds of drift:
+ * So this tool measures the gap and says it out loud. The kinds are enumerated
+ * by `DriftKind` below — read them there, not from a count in this sentence,
+ * which is the sort of thing that silently goes stale (as one did in
+ * `peer-compact.ts`, fixed in v0.11.6):
  *
  *   dead          record says live, no process behind the pid
  *   host_missing  process alive, but its tmux target is gone
@@ -27,6 +30,9 @@ import { applyStateChange } from "./state-writer.ts";
  *                 dangerous one, because every lifecycle call would then act
  *                 on a peer nobody meant
  *   unmanaged     a Claude peer running on the host with no record at all
+ *   dead_pane     a window held open after its process exited, belonging to no
+ *                 record — visible only because the daemon asks tmux to keep
+ *                 the panes of peers it spawned
  *
  * **Read-only by default and it will stay that way.** `markDead: true` is the
  * only write, and all it does is set `status: "unknown"` on records whose
@@ -50,7 +56,22 @@ export const TeamReconcileArgsSchema = z
 
 export type TeamReconcileArgs = z.infer<typeof TeamReconcileArgsSchema>;
 
-export type DriftKind = "dead" | "host_missing" | "pid_changed" | "unmanaged";
+export type DriftKind =
+  | "dead"
+  | "host_missing"
+  | "pid_changed"
+  | "unmanaged"
+  /**
+   * A window whose process has exited, which tmux is holding open because the
+   * daemon asked it to (v0.11.8, `remain-on-exit` on spawned peers).
+   *
+   * A new kind of object on the host, and one an operator has to be able to
+   * RECOGNISE rather than read about in a changelog: it is not a running peer,
+   * it is not gone either, and it holds the exit status and the last output of
+   * whatever died there. Reported whole-host, like `unmanaged`, because a
+   * corpse belongs to no team.
+   */
+  | "dead_pane";
 
 export interface DriftEntry {
   kind: DriftKind;
@@ -119,6 +140,14 @@ export async function handleTeamReconcile(
   for (const s of sessions)
     if (!hostTargets.has(s.sessionKey)) hostTargets.set(s.sessionKey, s.pid);
 
+  // Windows tmux is holding open because their process exited. Keyed by target
+  // so a record's drift entry can say whether its pane is still there to read.
+  const deadPanes = new Map<string, { exitStatus: number | null; label: string }>();
+  for (const w of windows) {
+    if (w.dead)
+      deadPanes.set(w.target, { exitStatus: w.exitStatus, label: w.windowName || w.label });
+  }
+
   // Where each window actually sits, so `desired.windowIndex` has something to
   // be compared against. Recording the measurement is what makes the drift
   // report possible at all — without it the field would be declarable and
@@ -154,6 +183,15 @@ export async function handleTeamReconcile(
 
     const alive = rec.observed.pid !== null && pidAlive(rec.observed.pid, procRoot);
     if (!alive) {
+      // Liveness comes from /proc, never from tmux — a held-open pane keeps
+      // quoting the exited process's pid, so asking tmux would answer "still
+      // running" about a corpse.
+      //
+      // But if the pane IS still standing, say so, because the two situations
+      // need different actions from a reader: a peer whose window is gone
+      // leaves nothing to inspect, while one whose window was held leaves an
+      // exit status and its final output.
+      const corpse = rec.observed.tmuxTarget ? deadPanes.get(rec.observed.tmuxTarget) : undefined;
       drift.push({
         ...base,
         kind: "dead",
@@ -161,7 +199,11 @@ export async function handleTeamReconcile(
         detail:
           rec.observed.pid === null
             ? `record is '${rec.observed.status}' with no pid at all`
-            : `record is '${rec.observed.status}' but pid ${rec.observed.pid} is not running`,
+            : `record is '${rec.observed.status}' but pid ${rec.observed.pid} is not running${
+                corpse
+                  ? ` — its pane is still standing and holds exit status ${corpse.exitStatus ?? "unknown"}; read it with \`tmux capture-pane -p -S -2000 -t ${rec.observed.tmuxTarget}\` before removing it`
+                  : " and its pane is gone"
+              }`,
       });
       continue;
     }
@@ -228,6 +270,36 @@ export async function handleTeamReconcile(
       actualPid: proc.pid,
       tmuxTarget: null,
       detail: `pid ${proc.pid} is a Claude peer with no record${proc.sessionId ? "" : " and no resolvable session id"}`,
+    });
+  }
+
+  // Held-open windows that belong to no record — the graveyard nobody would
+  // otherwise notice. Reported whole-host regardless of the `team` filter, for
+  // the same reason as `unmanaged`: a corpse belongs to no team, and hiding it
+  // behind a filter is how it stays hidden.
+  //
+  // These do not appear in the scan above, which walks LIVE Claude processes: a
+  // dead pane has no process to find. Without this loop a peer that died and
+  // whose record was already removed would leave a window standing on the host
+  // that no tool mentions.
+  const recordedTargets = new Set(
+    Object.values(ctx.state.peers)
+      .map((r) => r.observed.tmuxTarget)
+      .filter((t): t is string => t !== null),
+  );
+  for (const [target, info] of deadPanes) {
+    if (recordedTargets.has(target)) continue; // already told as part of its record
+    drift.push({
+      kind: "dead_pane",
+      sessionId: null,
+      name: info.label,
+      team: null,
+      recordedPid: null,
+      actualPid: null,
+      tmuxTarget: target,
+      detail: `window '${info.label}' (${target}) is held open after its process exited${
+        info.exitStatus === null ? "" : ` with status ${info.exitStatus}`
+      } and belongs to no record — read it with \`tmux capture-pane -p -S -2000 -t ${target}\`, then \`tmux kill-window -t ${target}\``,
     });
   }
 

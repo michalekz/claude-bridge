@@ -6,6 +6,47 @@ All notable changes to this project are documented here. Format follows [Keep a 
 
 _Nothing yet._
 
+## [0.11.8] — 2026-08-08
+
+### The daemon keeps the panes of the peers it spawns
+
+v0.11.7 taught every consumer to read `pane_dead` instead of trusting a pid.
+This release turns the thing on: a window created by `peer_spawn` gets
+`remain-on-exit`, so when the process inside dies the window stays, holding its
+exit status and its last output.
+
+That is the difference between a spawn failure you can diagnose and one you can
+only reproduce — and reproducing was exactly what nobody could do on 2026-08-07,
+because the pane holding the answer was gone before anyone looked.
+
+**Per window, on windows this daemon created, never globally.** A global default
+would leave corpses across a human's whole tmux server, and the ones outside the
+daemon's registry are the ones nobody would ever clear.
+
+**The gap, stated rather than glossed:** a command that dies before the option
+is applied — a missing binary exits in microseconds — still takes its pane with
+it. That case has not regressed; it reports `no-such-target` exactly as before.
+What is now caught is the command that runs, fails, and says something first.
+
+### A held-open pane is a new kind of object, so the tools name it
+
+A corpse is neither a running peer nor a peer that is gone, and an operator has
+to be able to recognise one in a tool rather than remember it from a changelog.
+
+- `team_reconcile` gains a fifth drift kind, `dead_pane`: a held-open window
+  belonging to no record. These cannot show up in the existing scan, which walks
+  live processes — a dead pane has none — so without their own pass they would
+  stand on the host unmentioned by anything.
+- An existing `dead` entry now says whether the pane is still there. "Its pane
+  is still standing and holds exit status 127; read it with `capture-pane`"
+  and "its pane is gone" call for different actions, so they read differently.
+- Both messages carry the command to read the pane, and the graveyard entry
+  carries the command to remove it — after reading.
+
+The header comment that used to say "four kinds of drift" now points at the
+type. A count maintained in prose is a count that goes stale silently; this is
+the same defect the `peer_compact` charter comment had, fixed in v0.11.6.
+
 ## [0.11.7] — 2026-08-08
 
 ### A pane keeps answering for a process that has already exited
