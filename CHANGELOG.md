@@ -6,6 +6,107 @@ All notable changes to this project are documented here. Format follows [Keep a 
 
 _Nothing yet._
 
+## [0.11.15] — 2026-08-08
+
+### Phase 1 of the lifecycle redesign: a peer gets asked before it is killed
+
+`peer_stop` did one thing — `driver.kill()`. The graceful protocol lived a floor
+up in `team_stop`, which is backwards against the owner's principle that a team
+operation should be nothing but the primitive repeated, and it meant a single
+peer could not be wound down politely at all.
+
+**BREAKING: `peer_stop` is now graceful by default.** It writes a stop request
+into the peer's inbox, waits for the peer to park its work and flush its anchor
+and memory, and kills the session only after the acknowledgement. `force: true`
+is the old behaviour and now has to be said out loud.
+
+When the peer does NOT answer, **nothing is killed**. The call fails with
+`stop_ack_timeout`, the peer keeps running, and the record carries the pending
+request so a retry resumes the same thread instead of asking twice. A late ack
+still counts: a peer that acknowledges ninety seconds after the caller gave up is
+answering a question that was asked once, and the retry collects it.
+
+### The graceful stop had never run. Not once, anywhere.
+
+Found while moving it. `team_stop` has carried a private copy of this protocol
+since v0.10.1, and it built its request envelope by hand. Measured against the
+message schema on 2026-08-08 — both the shared one and the MCP server's own copy:
+
+```
+from    → object, want string        sentAt  → missing (it wrote `ts`)
+to      → object, want string        content → object, want string
+kind    → "stop-request", not in the enum
+```
+
+Five mismatches. The reader `safeParse`s and skips, so the file landed in
+`pending/`, the watcher fired, the push pump ran, and `listPending` never
+returned it. No push, no delivery, no error anywhere.
+
+This is the same defect, in the same shape, that cost `peer_compact` two days and
+three wrong hypotheses before v0.11.x. That fix never reached here, because
+nobody went looking for who ELSE built their own envelope.
+
+**The defect is latent, not observed in production.** There is no `stop-ack/`
+directory on the live host and not one `peer_stop_requested` event in the whole
+of `events.jsonl` — the graceful branch was never run, which is why nobody
+noticed. Had it been run, every peer would have timed out and `stoppedCleanly:
+false` would have read as "the peer did not answer" when the truth was "the peer
+was never asked".
+
+### One ack protocol, not three
+
+`peer_compact` and `peer_stop` have the same conversation: ask, wait, verify the
+answer belongs to this request, consume it. New `ack-protocol.ts` owns it —
+freshness, thread matching, the stale sweep, the startup sweep, and the envelope
+— and both callers use it. `peer_compact` keeps `verifyAck` and
+`sweepAllAcksAtStartup` as re-exports; its v0.11.3 regression tests pass
+unchanged, which is the evidence the behaviour did not move.
+
+The stop channel therefore inherits the v0.11.3 stale-ack fix it never had: the
+ack directory is swept before asking, so every ack that appears afterwards is
+fresh by construction rather than by comparison.
+
+### `skipCourtesy` — because `force` means two things to the driver
+
+Every internal caller pins today's semantics explicitly: `team_stop`,
+`team_layout` (with a TODO that phase 3 revisits it), and `peer_restart`.
+
+They pin `skipCourtesy: true`, not `force: true`. `force` also halves the
+post-kill verify budget (`tmux-driver.ts:571`), and that verify is what catches a
+supervised process respawning behind us. An orchestrator that has already done
+the asking wants the wait skipped, and must not buy a shorter verify as a side
+effect: **force skips WAITING, never EVIDENCE**. `skipCourtesy` is internal only
+and is deliberately not on the MCP wire — a caller who wants no courtesy wants
+`force`, and should have to say the word.
+
+`peer_restart` is the one that mattered. It is the handler `team_restart` wraps,
+it sends no stop request, so no peer would ever ack one — inheriting the new
+default would have made every restart wait out the full window and then refuse,
+holding the daemon's single-threaded request loop for sixteen minutes on an
+eight-peer roll.
+
+### A note for whoever writes the next test against this protocol
+
+`team_stop` walks its team SERIALLY and sweeps each peer's ack directory
+immediately before asking that peer. So a test that pre-writes acks for two peers
+sees the second one swept away before its request is even written, and times out
+waiting for an answer it already gave.
+
+The ack must follow the question, per peer. Three existing tests pre-wrote acks
+and passed only because the old code honoured any ack that existed — which is the
+v0.11.3 stale-ack defect stated as a test. They now behave like real peers and
+watch the inbox before acknowledging.
+
+### Also
+
+- `peer_stop`'s MCP description still said the handler returns
+  `not_implemented_in_alpha`. Four releases of the tool's own documentation
+  describing something that stopped being true in v0.10.0-beta.
+- New `observed.stopRequest` on `PeerRecord`: the honest record of a stop that
+  was asked for and has not resolved.
+- `peer_stop` results gained `mode` (`graceful` | `forced` | `already-gone`), so
+  a reader of the audit log never infers it from a combination of flags.
+
 ## [0.11.14] — 2026-08-08
 
 ### The help offered a key the tool refuses, and hid one that works

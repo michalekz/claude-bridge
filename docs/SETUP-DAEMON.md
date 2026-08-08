@@ -97,7 +97,7 @@ The plugin exposes seven tools that talk to the daemon over file-based RPC:
 |---|---|
 | `control_status` | Read-only health + state summary. |
 | `peer_spawn` | Start a peer inside a tmux session with sanitized env. |
-| `peer_stop` | Kill the supervised tree; verify no supervisor respawn. |
+| `peer_stop` | Ask the peer to stand down, wait for its ack, then kill the supervised tree and verify no supervisor respawn. `force:true` skips the asking. |
 | `peer_restart` | Stop + spawn with carry-over from `state.peers`. |
 | `peer_compact` | Orchestrated `/compact` (charter §8 audited path). |
 | `team_status` | Read-only view over `state.peers` + host driver. |
@@ -183,6 +183,7 @@ Canonical events:
 - Daemon lifecycle: `daemon_started`, `daemon_stopping`, `daemon_stopped`
 - Request pipeline: `request_received`, `request_completed`, `request_unknown_tool`, `request_malformed`
 - Peer lifecycle: `peer_started`, `peer_stopped`, `peer_restarted`, `peer_stop_rejected`, `peer_stop_failed`, `peer_stop_respawn_detected`, `peer_spawn_rejected`, `peer_spawn_failed`
+- Graceful stop (v0.11.15): `peer_stop_requested`, `peer_stop_request_resumed`, `peer_stop_stale_ack_swept`, `stop_ack_timeout`
 - Compact: `peer_compact_anchor_requested`, `peer_compact_anchor_timeout`, `peer_compact_inject`, `peer_compacted`, `peer_compact_failed`
 - Team layout: `team_layout_reconciling`, `team_layout_applied`
 
@@ -213,6 +214,27 @@ A future setup-check hook (v0.10.0 F2) will do this automatically.
 1. Check the lock file: `cat ~/.claude-bridge/control/daemon.lock` — if missing, service is down.
 2. `systemctl --user status claude-bridge-daemon.service` — journal will show the last error.
 3. Re-run `install --systemd` — the bundled path may point at an outdated plugin cache after an update.
+
+### `stop_ack_timeout` from `peer_stop` (v0.11.15)
+
+**The peer is still running. Nothing was killed.** That is the designed outcome,
+not a half-finished operation: `peer_stop` asks the peer to park its work and
+flush its anchor, and without that acknowledgement it refuses to end the session.
+
+Three ways forward, in order of preference:
+
+1. **Wait longer, by calling again.** The request stands — a second `peer_stop`
+   resumes the SAME request rather than asking twice, and an ack that arrives
+   late still counts. This is the normal answer for a peer that is mid-turn.
+2. **Look at what the peer is doing** (`peer_context_status`, or the pane). A
+   peer in a long generation reaches its inbox only between turns.
+3. **`force: true`** — ends the session immediately. Whatever the peer had not
+   written down is lost. It skips the WAITING; the dead-pane archive and the
+   audit events still happen.
+
+`ackVerdict` in the event says WHY there was no usable ack: `none` (nobody
+answered), `wrong_thread` (an ack exists but answers a different stop — another
+one is running on this peer), `too_old` (a leftover from an earlier request).
 
 `supervisor_respawn` from `peer_stop`:
 - Something outside the daemon is bringing the session back after `kill-session`. Look for `bg-pty-host …/pty/<sessionId>.sock` or similar supervisor processes. Kill them first, then retry `peer_stop`.

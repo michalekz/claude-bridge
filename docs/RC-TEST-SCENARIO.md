@@ -72,9 +72,26 @@ Live demo of the control-plane daemon on a **test peer** that is completely sepa
    Expect `outcome:"ok", mode:"plan"`. `plannedSpawn:[], plannedStop:[], keptExtras:[]` (peer already matches spec, nothing to do).
 9. **`peer_stop wait:true, timeoutMs:5000`**:
    ```json
-   { "peer": "rc-test-alice", "reason": "rc-test-cleanup", "wait": true, "timeoutMs": 5000 }
+   { "peer": "rc-test-alice", "reason": "rc-test-cleanup", "force": true, "wait": true, "timeoutMs": 5000 }
    ```
-   Expect `outcome:"ok"`. Audit event `peer_stopped`. `tmux list-sessions` shows no `rc-test:alice`.
+   Expect `outcome:"ok"`, `mode:"forced"`. Audit event `peer_stopped`.
+   `tmux list-sessions` shows no `rc-test:alice`.
+
+   **`force: true` is deliberate here (v0.11.15).** Without it `peer_stop` is
+   graceful: it asks the peer to flush its anchor and waits up to 120 s for an
+   acknowledgement. The rc-test peer is a bare session with nobody reading its
+   inbox, so it would never ack, and the step would correctly fail with
+   `stop_ack_timeout` — leaving the peer running. A cleanup step wants the
+   impolite path, and now has to say so.
+
+9b. **Optional — prove the graceful refusal.** Same call WITHOUT `force`, with
+   `ackTimeoutMs: 3000`:
+   ```json
+   { "peer": "rc-test-alice", "ackTimeoutMs": 3000, "wait": true, "timeoutMs": 10000 }
+   ```
+   Expect `outcome:"error"`, code `stop_ack_timeout`, and — the point of the
+   check — `tmux list-sessions` still showing `rc-test:alice`. A stop that did
+   not happen must not read like one that did. Run this BEFORE step 9.
 10. **`team_status`** — `peerCount:0`, matching the baseline from step 2. Test done.
 
 ## What we're checking (checklist for Owner)
@@ -86,6 +103,7 @@ Live demo of the control-plane daemon on a **test peer** that is completely sepa
 - [ ] Ack file consumption cleanup works
 - [ ] team_layout plan mode reports zero-diff correctly
 - [ ] peer_stop leaves no zombies (`tmux list-sessions` clean)
+- [ ] peer_stop WITHOUT force refuses when the peer cannot ack, and leaves it running
 - [ ] state.peers empty at the end
 
 ## Rollback / safety

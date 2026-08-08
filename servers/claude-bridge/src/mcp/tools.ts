@@ -2642,7 +2642,7 @@ export const TOOLS: ToolSpec[] = [
   {
     name: "peer_stop",
     description:
-      "Ask the control-plane daemon to stop a peer. v0.10.0-alpha ships this as a fire-and-forget wire: the MCP tool writes a request envelope to the daemon inbox and returns `{ requestId, queuedAt }`. Full lifecycle (graceful signal + host-driver cleanup) lands in v0.10.0-beta — alpha handler currently returns `not_implemented_in_alpha` for known peers and `peer_not_found` for unknown ones. Pass `wait:true, timeoutMs:N` to poll for the result envelope before returning.",
+      'Stop a peer through the control-plane daemon. **BREAKING in v0.11.15: this is now GRACEFUL by default.** The daemon puts a stop request in the peer\'s inbox, the peer parks its work and flushes its anchor and memory, and only after it acknowledges is the session ended. Nothing is killed until the peer says it is ready. If the peer does NOT answer within `ackTimeoutMs` (default 120 s), the call FAILS with `stop_ack_timeout` and the peer is left running — a stop that did not happen must not read like one that did. The request stands: calling again resumes the SAME request rather than asking twice, and a late ack still counts, so a retry is idempotent. `force:true` is the old behaviour — kill now, ask nothing, and accept the shorter post-kill verify budget; it skips WAITING, never EVIDENCE (the dead-pane archive and the audit events happen either way). A peer with no host session is stopped immediately without asking, because there is nobody to ask. Note the interaction with `wait`: a graceful stop can legitimately take minutes, so `wait:true` with the default 10 s timeout returns `outcome: "pending"` and you collect the verdict with control_result — that is not a failure. Prefer sessionId over display name.',
     inputSchema: {
       type: "object",
       properties: {
@@ -2657,7 +2657,14 @@ export const TOOLS: ToolSpec[] = [
         force: {
           type: "boolean",
           description:
-            "Skip graceful signal, kill immediately. Not honoured in alpha (stub handler) — recorded for beta.",
+            "Skip the courtesy phase and kill immediately (default false). The peer is never asked and never gets to flush its anchor. Use when the peer is unresponsive or the work is expendable.",
+        },
+        ackTimeoutMs: {
+          type: "number",
+          minimum: 1,
+          maximum: 600000,
+          description:
+            "How long the peer gets to acknowledge before the stop is reported as failed (default 120000). Ignored when force:true.",
         },
         wait: {
           type: "boolean",

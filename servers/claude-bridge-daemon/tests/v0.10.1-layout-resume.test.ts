@@ -97,12 +97,31 @@ describe("v0.10.1 team_layout resume-from-stopped", () => {
     expect(up.outcome).toBe("ok");
     expect((up.data as { spawnedOk: string[] }).spawnedOk.sort()).toEqual(["rt-a", "rt-b"]);
 
-    // 2. Put it to sleep with acks pre-written, so both stop cleanly.
+    // 2. Put it to sleep. Both peers ack AFTER the request arrives — the only
+    // order accepted since v0.11.15, which sweeps the ack directory before
+    // asking so that a leftover cannot answer for a peer that never did.
     const { shared } = await importAll();
     const ackDir = join(shared.controlDir(), "stop-ack");
-    await mkdir(ackDir, { recursive: true });
-    await writeFile(join(ackDir, "rt-a.json"), JSON.stringify({ ready: true }));
-    await writeFile(join(ackDir, "rt-b.json"), JSON.stringify({ ready: true }));
+    // A mock peer, and it has to be a real one: `team_stop` walks the team
+    // SERIALLY and sweeps each peer's ack directory immediately before asking
+    // it. Writing both acks up front means the second is swept away before its
+    // request is even written — the ack must follow the question, per peer.
+    const ackers = (async () => {
+      const pending = new Set(["rt-a", "rt-b"]);
+      const deadline = Date.now() + 15_000;
+      while (pending.size > 0 && Date.now() < deadline) {
+        for (const id of [...pending]) {
+          const inbox = join(shared.bridgeRoot(), "inbox", id, "pending");
+          const msgs = await readdir(inbox).catch(() => [] as string[]);
+          if (msgs.length > 0) {
+            await mkdir(ackDir, { recursive: true });
+            await writeFile(join(ackDir, `${id}.json`), JSON.stringify({ ready: true }));
+            pending.delete(id);
+          }
+        }
+        await new Promise((r) => setTimeout(r, 25));
+      }
+    })();
 
     const stop = await handlers.dispatch(
       makeRequest(
@@ -116,7 +135,7 @@ describe("v0.10.1 team_layout resume-from-stopped", () => {
               { sessionId: "rt-b", displayName: "rt:bob" },
             ],
           },
-          anchorTimeoutMs: 1_000,
+          anchorTimeoutMs: 5_000,
           ackPollMs: 50,
         },
         "req-stop",
@@ -154,7 +173,7 @@ describe("v0.10.1 team_layout resume-from-stopped", () => {
     expect(await driver.hasSession("rt_bob")).toBe(true);
 
     driver.reset();
-  });
+  }, 25_000);
 
   it("resume passes --resume <sessionId> so the transcript is not orphaned", async () => {
     const { handlers, state, mock } = await importAll();

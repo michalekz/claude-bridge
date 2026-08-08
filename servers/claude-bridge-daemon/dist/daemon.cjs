@@ -7,7 +7,7 @@ var __export = (target, all) => {
 };
 
 // src/index.ts
-var import_promises18 = require("node:fs/promises");
+var import_promises20 = require("node:fs/promises");
 
 // ../../packages/shared/src/atomic-write.ts
 var import_node_crypto = require("node:crypto");
@@ -4320,7 +4320,7 @@ async function resolvePeer(idOrName, root = bridgeRoot(), now = Date.now()) {
 // package.json
 var package_default = {
   name: "claude-bridge-daemon",
-  version: "0.11.14",
+  version: "0.11.15",
   private: true,
   description: "Control-plane daemon for the claude-bridge plugin: peer lifecycle, telemetry, audit. Distributed as opt-in artefact \u2014 see ADR-008.",
   type: "module",
@@ -5266,9 +5266,7 @@ async function handleControlStatus(req, ctx) {
 }
 
 // src/handlers/peer-compact.ts
-var import_node_crypto5 = require("node:crypto");
-var import_promises9 = require("node:fs/promises");
-var import_node_path7 = require("node:path");
+var import_promises10 = require("node:fs/promises");
 
 // src/event-subscribers.ts
 var import_node_crypto4 = require("node:crypto");
@@ -5330,29 +5328,10 @@ async function publishLifecycleEvent(payload) {
   }
 }
 
-// src/handlers/peer-compact.ts
-var DEFAULT_ANCHOR_TIMEOUT_MS = 3e5;
-var DEFAULT_ACK_POLL_MS = 500;
-var COMPACT_ACK_FILENAME_EXTENSION = ".json";
-var PeerCompactArgsSchema = external_exports.object({
-  peer: external_exports.string().min(1),
-  anchorTimeoutMs: external_exports.number().int().positive().max(3e5).optional(),
-  ackPollMs: external_exports.number().int().positive().max(1e4).optional(),
-  /** Skip the anchor request → treat the ack file as pre-existing. */
-  skipAnchorRequest: external_exports.boolean().default(false),
-  reason: external_exports.string().optional()
-}).strict();
-function compactAckDir() {
-  return (0, import_node_path7.join)(controlDir(), "compact-ack");
-}
-function compactAckPath(sessionId) {
-  return (0, import_node_path7.join)(compactAckDir(), `${sessionId}${COMPACT_ACK_FILENAME_EXTENSION}`);
-}
-function generateMsgId2() {
-  const ms = Date.now().toString(36);
-  const rand = (0, import_node_crypto5.randomBytes)(4).toString("hex");
-  return `${ms}-${rand}`;
-}
+// src/handlers/ack-protocol.ts
+var import_promises9 = require("node:fs/promises");
+var import_node_path7 = require("node:path");
+var ACK_FILENAME_EXTENSION = ".json";
 async function fileExists(path) {
   try {
     await (0, import_promises9.access)(path);
@@ -5361,41 +5340,7 @@ async function fileExists(path) {
     return false;
   }
 }
-async function sweepStaleAck(sessionId, reason) {
-  const src = compactAckPath(sessionId);
-  if (!await fileExists(src)) return null;
-  const done = (0, import_node_path7.join)(compactAckDir(), "done");
-  await (0, import_promises9.mkdir)(done, { recursive: true });
-  const dest = (0, import_node_path7.join)(done, `${sessionId}-${reason}-${Date.now()}.json`);
-  try {
-    await (0, import_promises9.rename)(src, dest);
-  } catch {
-    await (0, import_promises9.unlink)(src).catch(() => void 0);
-  }
-  return dest;
-}
-async function sweepAllAcksAtStartup() {
-  const dir = compactAckDir();
-  let names;
-  try {
-    names = await (0, import_promises9.readdir)(dir);
-  } catch {
-    return 0;
-  }
-  const done = (0, import_node_path7.join)(dir, "done");
-  await (0, import_promises9.mkdir)(done, { recursive: true });
-  let swept = 0;
-  for (const name of names) {
-    if (!name.endsWith(COMPACT_ACK_FILENAME_EXTENSION)) continue;
-    try {
-      await (0, import_promises9.rename)((0, import_node_path7.join)(dir, name), (0, import_node_path7.join)(done, `${name.slice(0, -5)}-startup-${Date.now()}.json`));
-      swept++;
-    } catch {
-    }
-  }
-  return swept;
-}
-async function verifyAck(path, requestedAtMs, threadId) {
+async function verifyAckFile(path, requestedAtMs, threadId) {
   let stat4;
   try {
     stat4 = await (0, import_promises9.lstat)(path);
@@ -5403,11 +5348,7 @@ async function verifyAck(path, requestedAtMs, threadId) {
     return { accepted: false, reason: "none" };
   }
   if (stat4.mtimeMs < requestedAtMs - 1e3) {
-    return {
-      accepted: false,
-      reason: "too_old",
-      writtenAt: new Date(stat4.mtimeMs).toISOString()
-    };
+    return { accepted: false, reason: "too_old", writtenAt: new Date(stat4.mtimeMs).toISOString() };
   }
   let ackThreadId = null;
   try {
@@ -5430,29 +5371,77 @@ async function verifyAck(path, requestedAtMs, threadId) {
     writtenAt: new Date(stat4.mtimeMs).toISOString()
   };
 }
-async function pollForAck(sessionId, deadline, pollMs, requestedAtMs, threadId) {
-  const path = compactAckPath(sessionId);
-  let last = { accepted: false, reason: "none" };
-  while (Date.now() < deadline) {
-    last = await verifyAck(path, requestedAtMs, threadId);
-    if (last.accepted) return last;
-    await new Promise((r) => setTimeout(r, pollMs));
-  }
-  const final = await verifyAck(path, requestedAtMs, threadId);
-  return final.accepted ? final : final.reason === "none" ? last : final;
+function createAckChannel(channel) {
+  const dir = () => (0, import_node_path7.join)(controlDir(), channel);
+  const path = (sessionId) => (0, import_node_path7.join)(dir(), `${sessionId}${ACK_FILENAME_EXTENSION}`);
+  return {
+    channel,
+    dir,
+    path,
+    async sweepStale(sessionId, reason) {
+      const src = path(sessionId);
+      if (!await fileExists(src)) return null;
+      const done = (0, import_node_path7.join)(dir(), "done");
+      await (0, import_promises9.mkdir)(done, { recursive: true });
+      const dest = (0, import_node_path7.join)(done, `${sessionId}-${reason}-${Date.now()}.json`);
+      try {
+        await (0, import_promises9.rename)(src, dest);
+      } catch {
+        await (0, import_promises9.unlink)(src).catch(() => void 0);
+      }
+      return dest;
+    },
+    async sweepAllAtStartup() {
+      let names;
+      try {
+        names = await (0, import_promises9.readdir)(dir());
+      } catch {
+        return 0;
+      }
+      const done = (0, import_node_path7.join)(dir(), "done");
+      await (0, import_promises9.mkdir)(done, { recursive: true });
+      let swept = 0;
+      for (const name of names) {
+        if (!name.endsWith(ACK_FILENAME_EXTENSION)) continue;
+        try {
+          await (0, import_promises9.rename)(
+            (0, import_node_path7.join)(dir(), name),
+            (0, import_node_path7.join)(
+              done,
+              `${name.slice(0, -ACK_FILENAME_EXTENSION.length)}-startup-${Date.now()}.json`
+            )
+          );
+          swept++;
+        } catch {
+        }
+      }
+      return swept;
+    },
+    async poll(sessionId, deadline, pollMs, requestedAtMs, threadId) {
+      const p = path(sessionId);
+      let last = { accepted: false, reason: "none" };
+      while (Date.now() < deadline) {
+        last = await verifyAckFile(p, requestedAtMs, threadId);
+        if (last.accepted) return last;
+        await new Promise((r) => setTimeout(r, pollMs));
+      }
+      const final = await verifyAckFile(p, requestedAtMs, threadId);
+      return final.accepted ? final : final.reason === "none" ? last : final;
+    },
+    async consume(sessionId) {
+      const src = path(sessionId);
+      const done = (0, import_node_path7.join)(dir(), "done");
+      try {
+        await (0, import_promises9.mkdir)(done, { recursive: true });
+        await (0, import_promises9.rename)(src, (0, import_node_path7.join)(done, `${sessionId}-${Date.now()}.json`));
+      } catch {
+        await (0, import_promises9.unlink)(src).catch(() => void 0);
+      }
+    }
+  };
 }
-async function consumeAckFile(sessionId) {
-  const src = compactAckPath(sessionId);
-  const done = (0, import_node_path7.join)(compactAckDir(), "done");
-  try {
-    await (0, import_promises9.mkdir)(done, { recursive: true });
-    await (0, import_promises9.rename)(src, (0, import_node_path7.join)(done, `${sessionId}-${Date.now()}.json`));
-  } catch {
-    await (0, import_promises9.unlink)(src).catch(() => void 0);
-  }
-}
-async function writeAnchorRequestMsg(peerId, threadId) {
-  const msgId = generateMsgId2();
+async function requestFromPeer(peerId, threadId, content) {
+  const msgId = generateMessageId();
   await writeEnvelope({
     id: msgId,
     from: syntheticSenderId("control-plane-daemon"),
@@ -5461,7 +5450,32 @@ async function writeAnchorRequestMsg(peerId, threadId) {
     kind: "ask",
     sentAt: (/* @__PURE__ */ new Date()).toISOString(),
     threadId,
-    content: [
+    content
+  });
+  return msgId;
+}
+var compactAcks = createAckChannel("compact-ack");
+var stopAcks = createAckChannel("stop-ack");
+
+// src/handlers/peer-compact.ts
+var DEFAULT_ANCHOR_TIMEOUT_MS = 3e5;
+var DEFAULT_ACK_POLL_MS = 500;
+var PeerCompactArgsSchema = external_exports.object({
+  peer: external_exports.string().min(1),
+  anchorTimeoutMs: external_exports.number().int().positive().max(3e5).optional(),
+  ackPollMs: external_exports.number().int().positive().max(1e4).optional(),
+  /** Skip the anchor request → treat the ack file as pre-existing. */
+  skipAnchorRequest: external_exports.boolean().default(false),
+  reason: external_exports.string().optional()
+}).strict();
+async function sweepAllAcksAtStartup() {
+  return compactAcks.sweepAllAtStartup();
+}
+async function writeAnchorRequestMsg(peerId, threadId) {
+  return requestFromPeer(
+    peerId,
+    threadId,
+    [
       "Compact anchor requested by the control plane. Write your compact anchor, then",
       "write ~/.claude-bridge/control/compact-ack/<sessionId>.json containing:",
       "",
@@ -5474,8 +5488,7 @@ async function writeAnchorRequestMsg(peerId, threadId) {
       "An empty `touch` still works \u2014 it is accepted on freshness alone \u2014 but two",
       "compacts racing on one peer can only be told apart by the thread."
     ].join("\n")
-  });
-  return msgId;
+  );
 }
 function callerTeamOf2(req, ctx) {
   return ctx.state.peers[req.requestedBy.sessionId]?.desired.team ?? null;
@@ -5529,12 +5542,12 @@ async function handlePeerCompact(req, ctx) {
   const anchorTimeoutMs = args.anchorTimeoutMs ?? DEFAULT_ANCHOR_TIMEOUT_MS;
   const ackPollMs = args.ackPollMs ?? DEFAULT_ACK_POLL_MS;
   const threadId = `compact:${sessionId}:${Date.now().toString(36)}`;
-  await (0, import_promises9.mkdir)(compactAckDir(), { recursive: true });
+  await (0, import_promises10.mkdir)(compactAcks.dir(), { recursive: true });
   const requestedAtMs = Date.now();
   let anchorMsgId = null;
   let sweptStale = null;
   if (!args.skipAnchorRequest) {
-    sweptStale = await sweepStaleAck(sessionId, "stale");
+    sweptStale = await compactAcks.sweepStale(sessionId, "stale");
     if (sweptStale) {
       await writeEvent({
         event: "peer_compact_stale_ack_swept",
@@ -5570,7 +5583,7 @@ async function handlePeerCompact(req, ctx) {
   }
   const deadline = Date.now() + anchorTimeoutMs;
   const ackFloorMs = args.skipAnchorRequest ? requestedAtMs - anchorTimeoutMs : requestedAtMs;
-  const verdict = await pollForAck(sessionId, deadline, ackPollMs, ackFloorMs, threadId);
+  const verdict = await compactAcks.poll(sessionId, deadline, ackPollMs, ackFloorMs, threadId);
   if (!verdict.accepted) {
     await writeEvent({
       event: "peer_compact_anchor_timeout",
@@ -5625,7 +5638,7 @@ async function handlePeerCompact(req, ctx) {
     });
     return errResult(req.id, req.tool, "send_keys_failed", msg, { sessionId, sessionKey });
   }
-  await consumeAckFile(sessionId);
+  await compactAcks.consume(sessionId);
   await writeEvent({
     event: "peer_compacted",
     by: { sessionId: req.requestedBy.sessionId, name: req.requestedBy.name },
@@ -5643,7 +5656,7 @@ async function handlePeerCompact(req, ctx) {
 
 // src/handlers/peer-restart.ts
 var import_node_fs3 = require("node:fs");
-var import_promises10 = require("node:fs/promises");
+var import_promises12 = require("node:fs/promises");
 var import_node_os3 = require("node:os");
 var import_node_path9 = require("node:path");
 
@@ -6067,10 +6080,71 @@ async function handlePeerSpawn(req, ctx) {
 }
 
 // src/handlers/peer-stop.ts
+var import_promises11 = require("node:fs/promises");
+
+// src/handlers/stop-protocol.ts
+var DEFAULT_STOP_ACK_TIMEOUT_MS = 12e4;
+var DEFAULT_STOP_ACK_POLL_MS = 500;
+function stopThreadId(sessionId, now = Date.now()) {
+  return `stop:${sessionId}:${now.toString(36)}`;
+}
+async function requestStop(peerId, threadId, reason) {
+  return requestFromPeer(
+    peerId,
+    threadId,
+    [
+      "Stop requested by the control plane. Park or finish what you are doing, flush your",
+      "anchor and memory, then write ~/.claude-bridge/control/stop-ack/<sessionId>.json containing:",
+      "",
+      `    {"threadId": "${threadId}"}`,
+      "",
+      "The daemon ends your session only after that file appears. Until then nothing is",
+      "killed \u2014 so take the time you need, and do not ack before your work is durable.",
+      "",
+      "If you do NOT ack, the daemon does not kill you either: the stop is reported as",
+      "failed and left for a human. A forced stop is a separate, explicit decision.",
+      "",
+      "The `threadId` matters: an ack that answers a DIFFERENT request is refused.",
+      "An empty `touch` still works \u2014 it is accepted on freshness alone.",
+      reason ? `
+Reason given: ${reason}` : ""
+    ].join("\n").trimEnd()
+  );
+}
+
+// src/handlers/peer-stop.ts
 var PeerStopArgsSchema = external_exports.object({
   peer: external_exports.string().min(1),
   reason: external_exports.string().optional(),
+  /**
+   * Skip the courtesy phase and kill immediately.
+   *
+   * BREAKING in v0.11.15: this used to be the only behaviour, so every
+   * internal caller that wants it now says so explicitly. The default flipped
+   * because a human typing `peer_stop` almost always means "wind it down",
+   * and the dangerous reading is the one that should need a word.
+   */
   force: external_exports.boolean().default(false),
+  /**
+   * The courtesy already happened somewhere else — skip it, change nothing
+   * else. FOR INTERNAL CALLERS.
+   *
+   * This exists because `force` means two things to the driver, and only one
+   * of them belongs to an internal caller. `force` skips the ack wait AND
+   * halves the post-kill verify budget (`tmux-driver.ts:571`) — and that
+   * verify is what catches a supervised process respawning behind us. An
+   * orchestrator that has already done the asking wants the first half and
+   * must not silently buy the second: a shorter verify makes a false "kill
+   * succeeded" more likely, and FORCE SKIPS WAITING, NEVER EVIDENCE.
+   *
+   * So `team_stop`, `team_layout` and `peer_restart` pin `skipCourtesy: true`
+   * and pass `force` through unchanged, which reproduces their v0.11.14
+   * behaviour exactly. A human still says `force: true` and gets both.
+   */
+  skipCourtesy: external_exports.boolean().default(false),
+  /** How long the peer gets to ack before the stop is reported as failed. */
+  ackTimeoutMs: external_exports.number().int().positive().max(6e5).optional(),
+  ackPollMs: external_exports.number().int().positive().max(1e4).optional(),
   /**
    * v0.10.1: keep the peer in state.peers with status:"stopped" instead
    * of deleting it. Used by team_stop so that team_layout apply can
@@ -6080,13 +6154,102 @@ var PeerStopArgsSchema = external_exports.object({
   keepInState: external_exports.boolean().default(false),
   /**
    * Only meaningful when keepInState:true — sets the resulting
-   * PeerRecord.stoppedCleanly. Callers that don't know (plain peer_stop)
-   * pass null; team_stop passes true/false based on ack outcome.
+   * PeerRecord.stoppedCleanly.
+   *
+   * Honoured in FORCE mode only. In the graceful path this handler measures
+   * the outcome itself (an ack arrived, or it did not), and a measurement
+   * does not take instructions from its caller. Passing it alongside
+   * `force:false` is ignored, deliberately: the alternative is a record whose
+   * `stoppedCleanly` says whatever the caller hoped for.
    */
   stoppedCleanly: external_exports.boolean().nullable().optional()
 }).strict();
 function callerTeamOf3(req, ctx) {
   return ctx.state.peers[req.requestedBy.sessionId]?.desired.team ?? null;
+}
+async function runCourtesyPhase(req, ctx, target, args) {
+  const { sessionId, sessionKey, record } = target;
+  const alive = record.observed.tmuxTarget ? await ctx.hostDriver.hasSession(sessionKey).catch(() => false) : false;
+  if (!alive) return { kind: "no-host" };
+  const timeoutMs = args.ackTimeoutMs ?? DEFAULT_STOP_ACK_TIMEOUT_MS;
+  const pollMs = args.ackPollMs ?? DEFAULT_STOP_ACK_POLL_MS;
+  await (0, import_promises11.mkdir)(stopAcks.dir(), { recursive: true });
+  const pending = record.observed.stopRequest ?? null;
+  const resumed = pending !== null;
+  let threadId;
+  let requestedAtMs;
+  if (pending) {
+    threadId = pending.threadId;
+    requestedAtMs = Date.parse(pending.requestedAt);
+    if (Number.isNaN(requestedAtMs)) requestedAtMs = Date.now() - timeoutMs;
+    await writeEvent({
+      event: "peer_stop_request_resumed",
+      by: { sessionId: req.requestedBy.sessionId, name: req.requestedBy.name },
+      requestId: req.id,
+      details: {
+        sessionId,
+        sessionKey,
+        threadId,
+        originallyRequestedAt: pending.requestedAt,
+        note: "A stop was already pending for this peer. Waiting on the same thread \u2014 no second request was written."
+      }
+    });
+  } else {
+    const swept = await stopAcks.sweepStale(sessionId, "stale");
+    if (swept) {
+      await writeEvent({
+        event: "peer_stop_stale_ack_swept",
+        level: "warn",
+        by: { sessionId: req.requestedBy.sessionId, name: req.requestedBy.name },
+        requestId: req.id,
+        details: { sessionId, movedTo: swept }
+      });
+    }
+    requestedAtMs = Date.now();
+    threadId = stopThreadId(sessionId, requestedAtMs);
+    const msgId = await requestStop(sessionId, threadId, args.reason ?? null);
+    await applyStateChange(ctx.state, (draft) => {
+      const rec = draft.peers[sessionId];
+      if (rec) {
+        rec.observed.status = "stopping";
+        rec.observed.stopRequest = {
+          threadId,
+          msgId,
+          requestedAt: new Date(requestedAtMs).toISOString(),
+          timeoutMs
+        };
+        rec.observed.lastUpdatedAt = (/* @__PURE__ */ new Date()).toISOString();
+      }
+    });
+    await writeEvent({
+      event: "peer_stop_requested",
+      by: { sessionId: req.requestedBy.sessionId, name: req.requestedBy.name },
+      requestId: req.id,
+      details: { sessionId, sessionKey, threadId, msgId, timeoutMs }
+    });
+  }
+  const startedWaitingAt = Date.now();
+  const verdict = await stopAcks.poll(
+    sessionId,
+    startedWaitingAt + timeoutMs,
+    pollMs,
+    requestedAtMs,
+    threadId
+  );
+  const waitedMs = Date.now() - startedWaitingAt;
+  if (!verdict.accepted) {
+    return {
+      kind: "no-ack",
+      threadId,
+      timeoutMs,
+      waitedMs,
+      ackVerdict: verdict.reason,
+      ackThreadId: verdict.ackThreadId ?? null,
+      resumed
+    };
+  }
+  await stopAcks.consume(sessionId);
+  return { kind: "acked", threadId, waitedMs, resumed };
 }
 async function handlePeerStop(req, ctx) {
   const parsed = PeerStopArgsSchema.safeParse(req.args);
@@ -6136,6 +6299,46 @@ async function handlePeerStop(req, ctx) {
     return okResult(req.id, req.tool, { sessionId, alreadyGone: true });
   }
   const sessionKey = record.observed.tmuxTarget ?? record.observed.name;
+  const forceFlag = args.force === true;
+  let courtesy = { kind: "skipped" };
+  if (!forceFlag && !args.skipCourtesy) {
+    courtesy = await runCourtesyPhase(req, ctx, { sessionId, sessionKey, record }, args);
+    if (courtesy.kind === "no-ack") {
+      await writeEvent({
+        event: "stop_ack_timeout",
+        level: "warn",
+        by: { sessionId: req.requestedBy.sessionId, name: req.requestedBy.name },
+        requestId: req.id,
+        details: {
+          sessionId,
+          sessionKey,
+          threadId: courtesy.threadId,
+          timeoutMs: courtesy.timeoutMs,
+          waitedMs: courtesy.waitedMs,
+          ackVerdict: courtesy.ackVerdict,
+          ackThreadId: courtesy.ackThreadId,
+          resumed: courtesy.resumed
+        }
+      });
+      const why = courtesy.ackVerdict === "wrong_thread" ? `an ack exists but answers thread '${courtesy.ackThreadId}', not '${courtesy.threadId}' \u2014 another stop is running on this peer` : courtesy.ackVerdict === "too_old" ? "an ack exists but predates this request \u2014 it answers something else" : `the peer did not ack within ${courtesy.timeoutMs}ms`;
+      return errResult(
+        req.id,
+        req.tool,
+        "stop_ack_timeout",
+        `Peer '${sessionId}' is STILL RUNNING and nothing was killed: ${why}. The request stands \u2014 call peer_stop again to keep waiting on the same thread (a late ack still counts), or peer_stop with force:true to end the session now and lose whatever the peer had not written down.`,
+        {
+          sessionId,
+          sessionKey,
+          stopped: false,
+          processLeftRunning: true,
+          threadId: courtesy.threadId,
+          waitedMs: courtesy.waitedMs,
+          ackVerdict: courtesy.ackVerdict,
+          retryIsIdempotent: true
+        }
+      );
+    }
+  }
   await applyStateChange(ctx.state, (draft) => {
     const rec = draft.peers[sessionId];
     if (rec) {
@@ -6143,7 +6346,6 @@ async function handlePeerStop(req, ctx) {
       rec.observed.lastUpdatedAt = (/* @__PURE__ */ new Date()).toISOString();
     }
   });
-  const forceFlag = args.force === true;
   try {
     await ctx.hostDriver.kill(sessionKey, { force: forceFlag });
   } catch (e) {
@@ -6168,7 +6370,8 @@ async function handlePeerStop(req, ctx) {
     return errResult(req.id, req.tool, "host_kill_failed", msg, { sessionId, sessionKey });
   }
   const keepInState = args.keepInState;
-  const stoppedCleanly = keepInState ? args.stoppedCleanly ?? null : void 0;
+  const measuredCleanly = courtesy.kind === "acked" ? true : courtesy.kind === "no-host" ? null : void 0;
+  const stoppedCleanly = keepInState ? measuredCleanly ?? args.stoppedCleanly ?? null : measuredCleanly ?? void 0;
   await applyStateChange(ctx.state, (draft) => {
     if (keepInState) {
       const rec = draft.peers[sessionId];
@@ -6176,37 +6379,49 @@ async function handlePeerStop(req, ctx) {
         rec.observed.status = "stopped";
         rec.observed.stoppedCleanly = stoppedCleanly ?? null;
         rec.observed.pid = null;
+        rec.observed.stopRequest = null;
         rec.observed.lastUpdatedAt = (/* @__PURE__ */ new Date()).toISOString();
       }
     } else {
       delete draft.peers[sessionId];
     }
   });
+  const mode = courtesy.kind === "acked" ? "graceful" : courtesy.kind === "no-host" ? "already-gone" : "forced";
+  const ackWaitedMs = courtesy.kind === "acked" ? courtesy.waitedMs : null;
+  const threadId = courtesy.kind === "acked" ? courtesy.threadId : null;
+  const details = {
+    sessionId,
+    sessionKey,
+    reason: args.reason ?? null,
+    force: forceFlag,
+    keepInState,
+    stoppedCleanly,
+    mode,
+    ackWaitedMs,
+    threadId
+  };
   await writeEvent({
     event: "peer_stopped",
     by: { sessionId: req.requestedBy.sessionId, name: req.requestedBy.name },
     requestId: req.id,
-    details: {
-      sessionId,
-      sessionKey,
-      reason: args.reason ?? null,
-      force: forceFlag,
-      keepInState,
-      stoppedCleanly
-    }
+    details
   });
   await publishLifecycleEvent({
     event: "peer_stopped",
     sessionId,
     sessionKey,
-    details: { reason: args.reason ?? null, force: forceFlag, keepInState, stoppedCleanly }
+    details: { reason: args.reason ?? null, force: forceFlag, keepInState, stoppedCleanly, mode }
   });
   return okResult(req.id, req.tool, {
     sessionId,
     sessionKey,
+    stopped: true,
+    mode,
     force: forceFlag,
     keepInState,
-    stoppedCleanly
+    stoppedCleanly,
+    ackWaitedMs,
+    threadId
   });
 }
 
@@ -6261,7 +6476,7 @@ async function verifyRestartedIdentity(expected, pid, opts = {}) {
   const path = (0, import_node_path9.join)(home, ".claude", "sessions", `${pid}.json`);
   for (let i = 0; i < attempts; i++) {
     try {
-      const raw = JSON.parse(await (0, import_promises10.readFile)(path, "utf-8"));
+      const raw = JSON.parse(await (0, import_promises12.readFile)(path, "utf-8"));
       const actual = typeof raw.sessionId === "string" ? raw.sessionId : null;
       if (actual) return { mismatch: actual !== expected, actual };
     } catch {
@@ -6354,6 +6569,26 @@ async function handlePeerRestart(req, ctx) {
     args: {
       peer: record.sessionId,
       reason: args.reason ?? "peer_restart",
+      // PINNED to v0.11.14 semantics (v0.11.15 phase 1).
+      //
+      // `peer_stop` became graceful by default in this release, and inheriting
+      // that here would have been the most expensive line in it: a restart
+      // sends no stop-request, so no peer would ever ack one. Every restart
+      // would wait out the full 120 s window and then REFUSE to stop anything,
+      // and since `team_restart` is a thin wrapper over this handler, an
+      // eight-peer roll would hold the daemon's single-threaded request loop
+      // for sixteen minutes and fail eight times at the end of it.
+      //
+      // `skipCourtesy` rather than `force: true`, deliberately. Forcing would
+      // also halve the driver's post-kill verify budget, and that verify is
+      // what catches a supervised process respawning behind us — a change
+      // nobody asked for, bought as a side effect of pinning. `args.force`
+      // passes through untouched, so this call behaves exactly as it did.
+      //
+      // A gentle RESTART — ask, wait, relaunch — is the owner's protocol a)–f)
+      // and lands in a later phase, where the request is actually sent. Until
+      // then a restart is a hard stop followed by a spawn, and it says so.
+      skipCourtesy: true,
       force: args.force
     },
     requestedBy: req.requestedBy
@@ -6555,7 +6790,7 @@ async function handlePeerRestart(req, ctx) {
 
 // src/hosts/process-inspector.ts
 var import_node_fs4 = require("node:fs");
-var import_promises11 = require("node:fs/promises");
+var import_promises13 = require("node:fs/promises");
 var import_node_os4 = require("node:os");
 var import_node_path10 = require("node:path");
 var DEFAULT_MAX_DEPTH = 8;
@@ -6585,7 +6820,7 @@ var LinuxProcessInspector = class {
   async listClaudePeers() {
     let entries;
     try {
-      entries = await (0, import_promises11.readdir)(this.procRoot);
+      entries = await (0, import_promises13.readdir)(this.procRoot);
     } catch {
       return [];
     }
@@ -6649,7 +6884,7 @@ var LinuxProcessInspector = class {
       if (dir.length === 0) continue;
       const candidate = (0, import_node_path10.join)(dir, command);
       try {
-        await (0, import_promises11.access)(candidate, import_node_fs4.constants.X_OK);
+        await (0, import_promises13.access)(candidate, import_node_fs4.constants.X_OK);
         return candidate;
       } catch {
       }
@@ -6658,7 +6893,7 @@ var LinuxProcessInspector = class {
   }
   async readProcCwd(pid) {
     try {
-      return await (0, import_promises11.readlink)((0, import_node_path10.join)(this.procRoot, String(pid), "cwd"));
+      return await (0, import_promises13.readlink)((0, import_node_path10.join)(this.procRoot, String(pid), "cwd"));
     } catch {
       return null;
     }
@@ -6684,7 +6919,7 @@ var LinuxProcessInspector = class {
    */
   async resolveSessionId(pid, cmdline) {
     try {
-      const raw = await (0, import_promises11.readFile)((0, import_node_path10.join)(this.sessionsDir, `${pid}.json`), "utf-8");
+      const raw = await (0, import_promises13.readFile)((0, import_node_path10.join)(this.sessionsDir, `${pid}.json`), "utf-8");
       const parsed = JSON.parse(raw);
       if (parsed.sessionId) return { sessionId: parsed.sessionId, source: "sessions-json" };
     } catch {
@@ -6695,7 +6930,7 @@ var LinuxProcessInspector = class {
   }
   async readProcFile(pid, name) {
     try {
-      return await (0, import_promises11.readFile)((0, import_node_path10.join)(this.procRoot, String(pid), name), "utf-8");
+      return await (0, import_promises13.readFile)((0, import_node_path10.join)(this.procRoot, String(pid), name), "utf-8");
     } catch {
       return null;
     }
@@ -7035,20 +7270,20 @@ async function handleTeamAdopt(req, ctx) {
 }
 
 // src/handlers/team-layout.ts
-var import_promises12 = require("node:fs/promises");
+var import_promises14 = require("node:fs/promises");
 var import_node_path11 = require("node:path");
 
 // src/handlers/wake.ts
-var import_node_crypto6 = require("node:crypto");
+var import_node_crypto5 = require("node:crypto");
 var DEFAULT_WAKE_DELAY_MS = 8e3;
 var DEFAULT_WAKE_PROMPT = "[daemon] Wake \u2014 you were resumed from a stopped state. Re-onboard from your anchor, read your inbox (peer_inbox_read) and report to whoever woke you.";
-function generateMsgId3() {
+function generateMsgId2() {
   const ms = Date.now().toString(36);
-  const rand = (0, import_node_crypto6.randomBytes)(4).toString("hex");
+  const rand = (0, import_node_crypto5.randomBytes)(4).toString("hex");
   return `${ms}-${rand}`;
 }
 async function writeWakeMsg(opts, threadId) {
-  const msgId = generateMsgId3();
+  const msgId = generateMsgId2();
   const dirty = opts.stoppedCleanly === false;
   const lines = [
     "You were resumed from a stopped state. Re-onboard from your anchor before",
@@ -7204,7 +7439,7 @@ function teamFilePath(team) {
 }
 async function loadTeamSpec(team) {
   try {
-    const raw = await (0, import_promises12.readFile)(teamFilePath(team), "utf-8");
+    const raw = await (0, import_promises14.readFile)(teamFilePath(team), "utf-8");
     const parsed = TeamFileSchema.safeParse(JSON.parse(raw));
     if (!parsed.success) throw new Error(`Team spec parse failed: ${parsed.error.message}`);
     return parsed.data;
@@ -7352,7 +7587,21 @@ async function handleTeamLayout(req, ctx) {
         id: `${req.id}:stop:${id}`,
         ts: req.ts,
         tool: "peer_stop",
-        args: { peer: id, reason: `team_layout_prune:${spec.team}` },
+        args: {
+          peer: id,
+          reason: `team_layout_prune:${spec.team}`,
+          // PINNED to v0.11.14 semantics (v0.11.15 phase 1): prune kills without
+          // asking, exactly as it always has.
+          //
+          // TODO(phase 3): revisit this one. For `team_stop` the pin is obviously
+          // right — the courtesy happened a floor up. Here it is NOT obvious.
+          // Prune removes a peer because it fell out of the declared layout, and
+          // a peer being dropped from a layout has as much unsaved work as a peer
+          // being told to sleep. Nobody has ever decided that layout reconcile
+          // should be the impolite path; it is impolite because `peer_stop` used
+          // to have no other mode. Phase 3 owns that decision.
+          skipCourtesy: true
+        },
         requestedBy: req.requestedBy
       };
       const res = await handlePeerStop(stopReq, ctx);
@@ -8075,12 +8324,10 @@ async function handleTeamStatus(req, ctx) {
 }
 
 // src/handlers/team-stop.ts
-var import_node_crypto7 = require("node:crypto");
-var import_promises13 = require("node:fs/promises");
+var import_promises15 = require("node:fs/promises");
 var import_node_path13 = require("node:path");
 var DEFAULT_ANCHOR_TIMEOUT_MS2 = 12e4;
 var DEFAULT_ACK_POLL_MS2 = 500;
-var STOP_ACK_FILENAME_EXTENSION = ".json";
 var PeerOrderableSchema = external_exports.object({
   sessionId: external_exports.string().min(1),
   displayName: external_exports.string().min(1),
@@ -8103,7 +8350,7 @@ function teamFilePath2(team) {
 }
 async function loadTeamOrder(team) {
   try {
-    const raw = await (0, import_promises13.readFile)(teamFilePath2(team), "utf-8");
+    const raw = await (0, import_promises15.readFile)(teamFilePath2(team), "utf-8");
     const json = JSON.parse(raw);
     const parsed = TeamStopFileSchema.safeParse(json);
     if (!parsed.success) throw new Error(`Team spec parse failed: ${parsed.error.message}`);
@@ -8113,64 +8360,6 @@ async function loadTeamOrder(team) {
     if (code === "ENOENT") return null;
     throw e;
   }
-}
-function stopAckDir() {
-  return (0, import_node_path13.join)(controlDir(), "stop-ack");
-}
-function stopAckPath(sessionId) {
-  return (0, import_node_path13.join)(stopAckDir(), `${sessionId}${STOP_ACK_FILENAME_EXTENSION}`);
-}
-function inboxPendingDir3(peerId) {
-  return (0, import_node_path13.join)(bridgeRoot(), "inbox", peerId, "pending");
-}
-function generateMsgId4() {
-  const ms = Date.now().toString(36);
-  const rand = (0, import_node_crypto7.randomBytes)(4).toString("hex");
-  return `${ms}-${rand}`;
-}
-async function fileExists2(path) {
-  try {
-    await (0, import_promises13.access)(path);
-    return true;
-  } catch {
-    return false;
-  }
-}
-async function pollForAck2(sessionId, deadline, pollMs) {
-  const path = stopAckPath(sessionId);
-  while (Date.now() < deadline) {
-    if (await fileExists2(path)) return true;
-    await new Promise((r) => setTimeout(r, pollMs));
-  }
-  return fileExists2(path);
-}
-async function consumeAckFile2(sessionId) {
-  const src = stopAckPath(sessionId);
-  const done = (0, import_node_path13.join)(stopAckDir(), "done");
-  try {
-    await (0, import_promises13.mkdir)(done, { recursive: true });
-    await (0, import_promises13.rename)(src, (0, import_node_path13.join)(done, `${sessionId}-${Date.now()}.json`));
-  } catch {
-    await (0, import_promises13.unlink)(src).catch(() => void 0);
-  }
-}
-async function writeStopRequestMsg(peerId, threadId, reason) {
-  const msgId = generateMsgId4();
-  const envelope = {
-    id: msgId,
-    ts: (/* @__PURE__ */ new Date()).toISOString(),
-    from: { sessionId: "control-plane-daemon", name: "control-plane-daemon" },
-    to: { sessionId: peerId, name: peerId },
-    kind: "stop-request",
-    threadId,
-    content: {
-      instruction: "Finish or park current work, flush anchor + memory, then touch ~/.claude-bridge/control/stop-ack/<sessionId>.json \u2014 the daemon will kill your session once the ack file is present.",
-      reason
-    }
-  };
-  const path = (0, import_node_path13.join)(inboxPendingDir3(peerId), `${msgId}.json`);
-  await atomicWriteJson(path, envelope);
-  return msgId;
 }
 async function stopSinglePeer(req, ctx, peer, args, threadId, anchorTimeoutMs, ackPollMs) {
   const record = ctx.state.peers[peer.sessionId];
@@ -8188,6 +8377,10 @@ async function stopSinglePeer(req, ctx, peer, args, threadId, anchorTimeoutMs, a
       args: {
         peer: peer.sessionId,
         reason: `team_stop:${args.team}:dead`,
+        // PINNED (v0.11.15 phase 1): no courtesy, no force. The peer has no host
+        // session, so there is nobody to ask and nothing to hurry — this call is
+        // bookkeeping. `force:false` keeps the driver's full verify budget.
+        skipCourtesy: true,
         force: false,
         keepInState: true,
         stoppedCleanly: null
@@ -8211,14 +8404,21 @@ async function stopSinglePeer(req, ctx, peer, args, threadId, anchorTimeoutMs, a
     });
     return { sessionId: peer.sessionId, displayName: peer.displayName, outcome: "dead" };
   }
-  await (0, import_promises13.mkdir)(stopAckDir(), { recursive: true });
+  await (0, import_promises15.mkdir)(stopAcks.dir(), { recursive: true });
+  const swept = await stopAcks.sweepStale(peer.sessionId, "stale");
+  if (swept) {
+    await writeEvent({
+      event: "peer_stop_stale_ack_swept",
+      level: "warn",
+      by: { sessionId: req.requestedBy.sessionId, name: req.requestedBy.name },
+      requestId: req.id,
+      details: { sessionId: peer.sessionId, team: args.team, movedTo: swept }
+    });
+  }
+  const requestedAtMs = Date.now();
   let stopReqMsgId;
   try {
-    stopReqMsgId = await writeStopRequestMsg(
-      peer.sessionId,
-      threadId,
-      args.force ? "force:true" : null
-    );
+    stopReqMsgId = await requestStop(peer.sessionId, threadId, args.force ? "force:true" : null);
   } catch (e) {
     return {
       sessionId: peer.sessionId,
@@ -8241,7 +8441,8 @@ async function stopSinglePeer(req, ctx, peer, args, threadId, anchorTimeoutMs, a
     }
   });
   const deadline = Date.now() + anchorTimeoutMs;
-  const acked = await pollForAck2(peer.sessionId, deadline, ackPollMs);
+  const verdict = await stopAcks.poll(peer.sessionId, deadline, ackPollMs, requestedAtMs, threadId);
+  const acked = verdict.accepted;
   if (!acked && !args.force) {
     await writeEvent({
       event: "stop_ack_timeout",
@@ -8253,13 +8454,18 @@ async function stopSinglePeer(req, ctx, peer, args, threadId, anchorTimeoutMs, a
         sessionKey,
         team: args.team,
         threadId,
-        timeoutMs: anchorTimeoutMs
+        timeoutMs: anchorTimeoutMs,
+        // WHY there was no usable ack. "Nobody answered" and "an ack was there
+        // and it answered something else" call for different next steps.
+        ackVerdict: verdict.reason,
+        ackThreadId: verdict.ackThreadId ?? null,
+        ackWrittenAt: verdict.writtenAt ?? null
       }
     });
     return { sessionId: peer.sessionId, displayName: peer.displayName, outcome: "skipped" };
   }
   if (acked) {
-    await consumeAckFile2(peer.sessionId);
+    await stopAcks.consume(peer.sessionId);
   }
   const stopReq = {
     schemaVersion: req.schemaVersion,
@@ -8269,6 +8475,12 @@ async function stopSinglePeer(req, ctx, peer, args, threadId, anchorTimeoutMs, a
     args: {
       peer: peer.sessionId,
       reason: `team_stop:${args.team}:${acked ? "cleanly" : "forced"}`,
+      // PINNED (v0.11.15 phase 1): the courtesy happened a floor up, in THIS
+      // function. Without the pin `peer_stop` would ask a second time and wait
+      // out another full window on a peer that has already acked.
+      skipCourtesy: true,
+      // Unchanged from v0.11.14: an acked peer gets the full verify budget, a
+      // peer that never answered gets the short one.
       force: !acked,
       keepInState: true,
       stoppedCleanly: acked
@@ -8433,17 +8645,17 @@ async function dispatch(req, ctx) {
 }
 
 // src/heartbeat.ts
-var import_promises14 = require("node:fs/promises");
+var import_promises16 = require("node:fs/promises");
 var log7 = makeLogger("daemon.heartbeat");
 var timer = null;
 async function touch() {
   const now = /* @__PURE__ */ new Date();
   try {
-    await (0, import_promises14.utimes)(heartbeatPath(), now, now);
+    await (0, import_promises16.utimes)(heartbeatPath(), now, now);
   } catch (e) {
     const code = e.code;
     if (code === "ENOENT") {
-      await (0, import_promises14.writeFile)(heartbeatPath(), "");
+      await (0, import_promises16.writeFile)(heartbeatPath(), "");
     } else {
       log7.warn("heartbeat_touch_failed", { err: String(e) });
     }
@@ -8466,7 +8678,7 @@ function stopHeartbeat() {
 // src/hosts/tmux-driver.ts
 var import_node_child_process = require("node:child_process");
 var import_node_fs6 = require("node:fs");
-var import_promises15 = require("node:fs/promises");
+var import_promises17 = require("node:fs/promises");
 var import_node_path14 = require("node:path");
 var import_node_util = require("node:util");
 
@@ -9123,10 +9335,10 @@ var TmuxDriver = class _TmuxDriver {
     if (content.trim().length === 0) return null;
     try {
       const dir = (0, import_node_path14.join)(controlDir(), "archive");
-      await (0, import_promises15.mkdir)(dir, { recursive: true });
+      await (0, import_promises17.mkdir)(dir, { recursive: true });
       const stamp = (/* @__PURE__ */ new Date()).toISOString().replace(/[:.]/g, "-");
       const path = (0, import_node_path14.join)(dir, `pane-${canonical}-${stamp}.log`);
-      await (0, import_promises15.appendFile)(
+      await (0, import_promises17.appendFile)(
         path,
         `# archived ${(/* @__PURE__ */ new Date()).toISOString()} \u2014 target ${canonical} \u2014 ${reason}
 ${content}`,
@@ -9167,9 +9379,9 @@ ${content}`,
   async logSendKeys(sessionKey, entry) {
     try {
       const dir = (0, import_node_path14.join)(controlDir(), "logs");
-      await (0, import_promises15.mkdir)(dir, { recursive: true });
+      await (0, import_promises17.mkdir)(dir, { recursive: true });
       const line = JSON.stringify({ ts: (/* @__PURE__ */ new Date()).toISOString(), sessionKey, ...entry });
-      await (0, import_promises15.appendFile)((0, import_node_path14.join)(dir, `sendkeys-${sessionKey}.log`), `${line}
+      await (0, import_promises17.appendFile)((0, import_node_path14.join)(dir, `sendkeys-${sessionKey}.log`), `${line}
 `, "utf-8");
     } catch {
     }
@@ -9411,7 +9623,7 @@ async function runDaemon(opts) {
 
 // src/install.ts
 var import_node_child_process2 = require("node:child_process");
-var import_promises16 = require("node:fs/promises");
+var import_promises18 = require("node:fs/promises");
 var import_node_os5 = require("node:os");
 var import_node_path15 = require("node:path");
 var log11 = makeLogger("daemon.install");
@@ -9444,7 +9656,7 @@ async function readTemplate() {
   ];
   for (const candidate of candidates) {
     try {
-      return await (0, import_promises16.readFile)(candidate, "utf-8");
+      return await (0, import_promises18.readFile)(candidate, "utf-8");
     } catch {
     }
   }
@@ -9465,26 +9677,26 @@ async function deployDaemonBinary(sourceBin) {
     log11.info("deploy_skipped_same_path", { path: target });
     return target;
   }
-  await (0, import_promises16.mkdir)((0, import_node_path15.dirname)(target), { recursive: true });
-  await (0, import_promises16.copyFile)(sourceBin, target);
-  await (0, import_promises16.chmod)(target, 493);
+  await (0, import_promises18.mkdir)((0, import_node_path15.dirname)(target), { recursive: true });
+  await (0, import_promises18.copyFile)(sourceBin, target);
+  await (0, import_promises18.chmod)(target, 493);
   try {
     const templateSource = await readTemplate();
     const templateTarget = (0, import_node_path15.join)((0, import_node_path15.dirname)(target), "templates", UNIT_NAME);
-    await (0, import_promises16.mkdir)((0, import_node_path15.dirname)(templateTarget), { recursive: true });
-    await (0, import_promises16.writeFile)(templateTarget, templateSource, "utf-8");
+    await (0, import_promises18.mkdir)((0, import_node_path15.dirname)(templateTarget), { recursive: true });
+    await (0, import_promises18.writeFile)(templateTarget, templateSource, "utf-8");
   } catch (e) {
     log11.warn("template_deploy_failed", { err: String(e) });
   }
   let version = "unknown";
   try {
     const pkg = JSON.parse(
-      await (0, import_promises16.readFile)((0, import_node_path15.resolve)((0, import_node_path15.dirname)(sourceBin), "..", "package.json"), "utf-8")
+      await (0, import_promises18.readFile)((0, import_node_path15.resolve)((0, import_node_path15.dirname)(sourceBin), "..", "package.json"), "utf-8")
     );
     version = pkg.version ?? "unknown";
   } catch {
   }
-  await (0, import_promises16.writeFile)(
+  await (0, import_promises18.writeFile)(
     deployMetaPath(),
     `${JSON.stringify({ source: (0, import_node_path15.resolve)(sourceBin), version, deployedAt: (/* @__PURE__ */ new Date()).toISOString() }, null, 2)}
 `,
@@ -9501,8 +9713,8 @@ async function installSystemd() {
   const daemonBin = await deployDaemonBinary(sourceBin);
   const template = await readTemplate();
   const rendered = template.replace(/__NODE_BIN__/g, nodeBin).replace(/__DAEMON_BIN__/g, daemonBin);
-  await (0, import_promises16.mkdir)(systemdUserDir(), { recursive: true });
-  await (0, import_promises16.writeFile)(unitPath(), rendered, "utf-8");
+  await (0, import_promises18.mkdir)(systemdUserDir(), { recursive: true });
+  await (0, import_promises18.writeFile)(unitPath(), rendered, "utf-8");
   log11.info("unit_written", { path: unitPath(), execStart: daemonBin });
   runSystemctl("daemon-reload");
   runSystemctl("enable", UNIT_NAME);
@@ -9522,14 +9734,14 @@ async function uninstallSystemd() {
     log11.warn("systemd_disable_failed", { err: String(e) });
   }
   try {
-    await (0, import_promises16.unlink)(unitPath());
+    await (0, import_promises18.unlink)(unitPath());
   } catch (e) {
     const code = e.code;
     if (code !== "ENOENT") log11.warn("unit_unlink_failed", { err: String(e) });
   }
   for (const path of [deployedDaemonPath(), deployMetaPath()]) {
     try {
-      await (0, import_promises16.unlink)(path);
+      await (0, import_promises18.unlink)(path);
     } catch (e) {
       const code = e.code;
       if (code !== "ENOENT") log11.warn("deployed_binary_unlink_failed", { path, err: String(e) });
@@ -9547,7 +9759,7 @@ async function ensureBinariesExist(daemonBin, nodeBin) {
     ["node", nodeBin]
   ]) {
     try {
-      await (0, import_promises16.stat)(path);
+      await (0, import_promises18.stat)(path);
     } catch {
       throw new Error(`${label} binary not found at ${path} \u2014 build daemon first (npm run build)`);
     }
@@ -9555,7 +9767,7 @@ async function ensureBinariesExist(daemonBin, nodeBin) {
 }
 
 // src/send.ts
-var import_promises17 = require("node:fs/promises");
+var import_promises19 = require("node:fs/promises");
 var EXIT_OK = 0;
 var EXIT_PEER = 2;
 var EXIT_USAGE = 3;
@@ -9631,7 +9843,7 @@ ${SEND_HELP}` };
   let content;
   if (parsed.textFile !== void 0) {
     try {
-      content = parsed.textFile === "-" ? await readStdin() : await (0, import_promises17.readFile)(parsed.textFile, "utf-8");
+      content = parsed.textFile === "-" ? await readStdin() : await (0, import_promises19.readFile)(parsed.textFile, "utf-8");
     } catch (e) {
       return { code: EXIT_USAGE, stderr: `send: cannot read --text-file: ${String(e)}
 ` };
@@ -9727,7 +9939,7 @@ async function statusCommand() {
   const lock = await readLock();
   let heartbeatAgeMs = null;
   try {
-    const s = await (0, import_promises18.stat)(heartbeatPath());
+    const s = await (0, import_promises20.stat)(heartbeatPath());
     heartbeatAgeMs = Date.now() - s.mtimeMs;
   } catch {
     heartbeatAgeMs = null;

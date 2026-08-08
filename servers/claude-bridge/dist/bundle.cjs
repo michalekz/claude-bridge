@@ -18243,7 +18243,7 @@ var StdioServerTransport = class {
 // package.json
 var package_default = {
   name: "claude-bridge",
-  version: "0.11.5",
+  version: "0.11.15",
   private: true,
   description: "MCP server for cross-Claude-Code-chat orchestration over local session JSONL files",
   type: "module",
@@ -21987,11 +21987,12 @@ var ControlConfigArgs = external_exports.object({
   team: external_exports.string().min(1).optional(),
   set: external_exports.object({
     label: external_exports.string().min(1).max(64).optional(),
+    role: external_exports.string().min(1).max(32).nullable().optional(),
     windowIndex: external_exports.number().int().min(0).max(999).optional(),
     model: external_exports.string().min(1).nullable().optional(),
     accountProfile: external_exports.string().min(1).nullable().optional()
   }).strict().optional(),
-  unset: external_exports.array(external_exports.enum(["label", "windowIndex", "model", "accountProfile"])).optional(),
+  unset: external_exports.array(external_exports.enum(["label", "role", "windowIndex", "model", "accountProfile"])).optional(),
   dryRun: external_exports.boolean().optional(),
   reason: external_exports.string().optional(),
   wait: external_exports.boolean().optional(),
@@ -22009,6 +22010,50 @@ async function controlConfigTool(ctx, args) {
     wait: args.wait ?? true,
     timeoutMs: args.timeoutMs ?? 5e3
   });
+}
+var ControlResultArgs = external_exports.object({
+  requestId: external_exports.string().min(1),
+  /** Keep waiting for it, up to `timeoutMs`. */
+  wait: external_exports.boolean().optional(),
+  timeoutMs: external_exports.number().int().positive().max(6e4).optional()
+}).strict();
+async function controlResultTool(args) {
+  const presence = await probeDaemon();
+  const timeoutMs = args.wait ? args.timeoutMs ?? 1e4 : 0;
+  const result = timeoutMs > 0 ? await pollForResult(args.requestId, timeoutMs) : await readResult(args.requestId);
+  if (result) {
+    return ok({ requestId: args.requestId, outcome: "settled", result });
+  }
+  const stillQueued = await requestExists(args.requestId);
+  if (stillQueued) {
+    return ok({
+      requestId: args.requestId,
+      outcome: "pending",
+      daemonRunning: presence.running,
+      note: presence.running ? "The request is still queued or running. Ask again; do not re-submit the original call." : "The request is queued but THE DAEMON IS NOT RUNNING, so nothing is processing it. Start the daemon and it will be picked up. Do not re-submit: the queued request is still there and would then run twice."
+    });
+  }
+  return ok({
+    requestId: args.requestId,
+    outcome: "unknown",
+    note: "No verdict and no queued request under that id. Either the id is wrong, or this request settled long ago and its files were cleaned up. `~/.claude-bridge/control/events.jsonl` is the durable record \u2014 search it for the id before concluding anything about what happened."
+  });
+}
+async function readResult(requestId) {
+  try {
+    return JSON.parse(await (0, import_promises14.readFile)(resultPath(requestId), "utf-8"));
+  } catch (e) {
+    if (e.code === "ENOENT") return null;
+    throw e;
+  }
+}
+async function requestExists(requestId) {
+  try {
+    await (0, import_promises14.stat)(requestPath(requestId));
+    return true;
+  } catch {
+    return false;
+  }
 }
 var ControlStatusArgs = external_exports.object({}).strict();
 async function controlStatusTool() {
@@ -22041,6 +22086,7 @@ var PeerStopArgs = external_exports.object({
   peer: external_exports.string().describe("Peer sessionId or display name"),
   reason: external_exports.string().optional(),
   force: external_exports.boolean().optional(),
+  ackTimeoutMs: external_exports.number().int().positive().max(6e5).optional(),
   wait: external_exports.boolean().optional(),
   timeoutMs: external_exports.number().int().positive().max(6e4).optional()
 }).strict();
@@ -22096,17 +22142,22 @@ async function submitDaemonRequest(ctx, tool, args, opts) {
         requestId,
         queuedAt: envelope.ts,
         waited: true,
-        timedOut: true
+        waitedMs: timeoutMs,
+        outcome: "pending",
+        // Kept so older readers do not break, but `outcome` is authoritative.
+        timedOut: true,
+        note: `No verdict yet: the daemon has not written a result for ${requestId} within ${timeoutMs} ms. The request was NOT cancelled \u2014 it is queued or still running, and a long operation ahead of it in the queue delays everything behind it. Collect the real outcome with \`control_result\` (requestId: "${requestId}"). DO NOT re-submit the same call: it would perform the operation a second time.`
       });
     }
-    return ok({ requestId, queuedAt: envelope.ts, waited: true, result });
+    return ok({ requestId, queuedAt: envelope.ts, waited: true, outcome: "settled", result });
   }
-  return ok({ requestId, queuedAt: envelope.ts });
+  return ok({ requestId, queuedAt: envelope.ts, outcome: "submitted" });
 }
 async function peerStopTool(ctx, args) {
   const daemonArgs = { peer: args.peer };
   if (args.reason !== void 0) daemonArgs["reason"] = args.reason;
   if (args.force !== void 0) daemonArgs["force"] = args.force;
+  if (args.ackTimeoutMs !== void 0) daemonArgs["ackTimeoutMs"] = args.ackTimeoutMs;
   return submitDaemonRequest(ctx, "peer_stop", daemonArgs, {
     wait: args.wait,
     timeoutMs: args.timeoutMs
@@ -24107,7 +24158,7 @@ var TOOLS = [
   },
   {
     name: "control_config",
-    description: "Read and DECLARE peer intent \u2014 the single configuration tool for the control plane (v0.11.0). No args: every peer's declared values plus any drift. `peer`: one peer (session id, full name, or short name inside your team). `team`: that team's peers. `set`: declare values \u2014 allowed keys are label, windowIndex, model, accountProfile. `unset: [\"windowIndex\"]` withdraws a declaration entirely, which is different from setting it empty. `team` is deliberately NOT settable: moving a peer between teams is lifecycle work (window, home session, label) and belongs to team_adopt/team_release. `dryRun:true` shows the change and writes nothing. IMPORTANT: this writes the DESIRED half of the record only; it changes nothing in the world. windowIndex is recorded and drift is reported, but no window is moved in v0.11.0 \u2014 asserting intent lands in v0.11.1 behind an explicit opt-in. Drift entries carry BOTH the declared and the measured value and BOTH ways out: `assert` (make the world match) and `adopt` (accept reality as the new intent). Destructive lifecycle operations are deliberately NOT here \u2014 see peer_stop / peer_restart / team_stop. The same function is reachable from a shell: `claude-bridge-daemon config --help`.",
+    description: 'Read and DECLARE peer intent \u2014 the single configuration tool for the control plane (v0.11.0). No args: every peer\'s declared values plus any drift. `peer`: one peer (session id, full name, or short name inside your team). `team`: that team\'s peers. `set`: declare values \u2014 allowed keys are label, role, windowIndex, model, accountProfile. `role: "velitel"` is the one the daemon acts on: that peer is ordered LAST in a team stop or restart, because a coordinator goes down after the peers it coordinates. Undeclared peers fall back to matching the name, and both tools report which source decided \u2014 a name match is a guess (`mic-velitel-zastupce` contains the word and is not the coordinator). `unset: ["windowIndex"]` withdraws a declaration entirely, which is different from setting it empty. `team` is deliberately NOT settable: moving a peer between teams is lifecycle work (window, home session, label) and belongs to team_adopt/team_release. `dryRun:true` shows the change and writes nothing. IMPORTANT: this writes the DESIRED half of the record only; it changes nothing in the world. windowIndex is recorded and drift is reported, but no window is moved in v0.11.0 \u2014 asserting intent lands in v0.11.1 behind an explicit opt-in. Drift entries carry BOTH the declared and the measured value and BOTH ways out: `assert` (make the world match) and `adopt` (accept reality as the new intent). Destructive lifecycle operations are deliberately NOT here \u2014 see peer_stop / peer_restart / team_stop. The same function is reachable from a shell: `claude-bridge-daemon config --help`.',
     inputSchema: {
       type: "object",
       properties: {
@@ -24162,8 +24213,36 @@ var TOOLS = [
     }
   },
   {
+    name: "control_result",
+    description: "Collect the verdict of a control-plane request whose caller-side wait expired. Every submitting tool returns a `requestId`; until v0.11.10 nothing accepted one back, so a caller whose wait ran out could only read events.jsonl by hand. A caller-side timeout NEVER cancels the request \u2014 it stays queued or running \u2014 so the answer exists or will. Three outcomes: `settled` (the verdict, exactly as the daemon recorded it), `pending` (still queued; ask again, and do NOT re-submit the original call \u2014 that would perform the operation twice), `unknown` (no verdict and no queued request: wrong id, or it settled long ago and the files were cleaned up \u2014 events.jsonl is the durable record).",
+    inputSchema: {
+      type: "object",
+      properties: {
+        requestId: {
+          type: "string",
+          description: "The requestId returned by the submitting tool."
+        },
+        wait: {
+          type: "boolean",
+          description: "Keep waiting for the verdict. Default false \u2014 one look."
+        },
+        timeoutMs: {
+          type: "number",
+          description: "Wait budget in ms when `wait` is true (default 10000)."
+        }
+      },
+      required: ["requestId"],
+      additionalProperties: false
+    },
+    handler: async (args) => {
+      const parsed = ControlResultArgs.safeParse(args);
+      if (!parsed.success) return err2("invalid_args", "Schema validation failed", parsed.error);
+      return controlResultTool(parsed.data);
+    }
+  },
+  {
     name: "peer_stop",
-    description: "Ask the control-plane daemon to stop a peer. v0.10.0-alpha ships this as a fire-and-forget wire: the MCP tool writes a request envelope to the daemon inbox and returns `{ requestId, queuedAt }`. Full lifecycle (graceful signal + host-driver cleanup) lands in v0.10.0-beta \u2014 alpha handler currently returns `not_implemented_in_alpha` for known peers and `peer_not_found` for unknown ones. Pass `wait:true, timeoutMs:N` to poll for the result envelope before returning.",
+    description: 'Stop a peer through the control-plane daemon. **BREAKING in v0.11.15: this is now GRACEFUL by default.** The daemon puts a stop request in the peer\'s inbox, the peer parks its work and flushes its anchor and memory, and only after it acknowledges is the session ended. Nothing is killed until the peer says it is ready. If the peer does NOT answer within `ackTimeoutMs` (default 120 s), the call FAILS with `stop_ack_timeout` and the peer is left running \u2014 a stop that did not happen must not read like one that did. The request stands: calling again resumes the SAME request rather than asking twice, and a late ack still counts, so a retry is idempotent. `force:true` is the old behaviour \u2014 kill now, ask nothing, and accept the shorter post-kill verify budget; it skips WAITING, never EVIDENCE (the dead-pane archive and the audit events happen either way). A peer with no host session is stopped immediately without asking, because there is nobody to ask. Note the interaction with `wait`: a graceful stop can legitimately take minutes, so `wait:true` with the default 10 s timeout returns `outcome: "pending"` and you collect the verdict with control_result \u2014 that is not a failure. Prefer sessionId over display name.',
     inputSchema: {
       type: "object",
       properties: {
@@ -24177,7 +24256,13 @@ var TOOLS = [
         },
         force: {
           type: "boolean",
-          description: "Skip graceful signal, kill immediately. Not honoured in alpha (stub handler) \u2014 recorded for beta."
+          description: "Skip the courtesy phase and kill immediately (default false). The peer is never asked and never gets to flush its anchor. Use when the peer is unresponsive or the work is expendable."
+        },
+        ackTimeoutMs: {
+          type: "number",
+          minimum: 1,
+          maximum: 6e5,
+          description: "How long the peer gets to acknowledge before the stop is reported as failed (default 120000). Ignored when force:true."
         },
         wait: {
           type: "boolean",
@@ -24508,7 +24593,7 @@ var TOOLS = [
   },
   {
     name: "team_reconcile",
-    description: "Compare what the daemon believes against what is actually running, and report the gap. A record saying status 'live' is a belief about a pid, and it goes stale the moment a process dies without telling anyone \u2014 this is the tool that checks. Four kinds of drift: `dead` (record says live, no process behind the pid), `host_missing` (process alive, its tmux target gone), `pid_changed` (the target holds a DIFFERENT pid than the record \u2014 the dangerous one, because every lifecycle call would then act on a peer nobody meant), `unmanaged` (a Claude peer running with no record at all, always reported whole-host even when `team` filters the rest). Deliberately stopped peers are state, not drift. **READ-ONLY by default.** `markDead: true` is the only write and only sets status 'unknown' on records whose process is gone \u2014 never 'stopped' (nobody asked them to stop), never deletes, never kills, never adopts. Deleting is team_release, killing is peer_stop, adopting is team_adopt.",
+    description: "Compare what the daemon believes against what is actually running, and report the gap. A record saying status 'live' is a belief about a pid, and it goes stale the moment a process dies without telling anyone \u2014 this is the tool that checks. Kinds of drift: `dead` (record says live, no process behind the pid \u2014 and it now says whether the peer's pane is still standing, with the exit status, or gone), `host_missing` (process alive, its tmux target gone), `pid_changed` (the target holds a DIFFERENT pid than the record \u2014 the dangerous one, because every lifecycle call would then act on a peer nobody meant), `unmanaged` (a Claude peer running with no record at all, always reported whole-host even when `team` filters the rest), `dead_pane` (a window held open after its process exited and belonging to no record \u2014 the graveyard, also whole-host). Deliberately stopped peers are state, not drift. **READ-ONLY by default.** `markDead: true` is the only write and only sets status 'unknown' on records whose process is gone \u2014 never 'stopped' (nobody asked them to stop), never deletes, never kills, never adopts. Deleting is team_release, killing is peer_stop, adopting is team_adopt.",
     inputSchema: {
       type: "object",
       properties: {

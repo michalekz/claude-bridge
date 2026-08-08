@@ -266,7 +266,21 @@ export async function handleTeamLayout(
         id: `${req.id}:stop:${id}`,
         ts: req.ts,
         tool: "peer_stop",
-        args: { peer: id, reason: `team_layout_prune:${spec.team}` },
+        args: {
+          peer: id,
+          reason: `team_layout_prune:${spec.team}`,
+          // PINNED to v0.11.14 semantics (v0.11.15 phase 1): prune kills without
+          // asking, exactly as it always has.
+          //
+          // TODO(phase 3): revisit this one. For `team_stop` the pin is obviously
+          // right — the courtesy happened a floor up. Here it is NOT obvious.
+          // Prune removes a peer because it fell out of the declared layout, and
+          // a peer being dropped from a layout has as much unsaved work as a peer
+          // being told to sleep. Nobody has ever decided that layout reconcile
+          // should be the impolite path; it is impolite because `peer_stop` used
+          // to have no other mode. Phase 3 owns that decision.
+          skipCourtesy: true,
+        },
         requestedBy: req.requestedBy,
       };
       const res = await handlePeerStop(stopReq, ctx);

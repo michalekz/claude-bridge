@@ -337,6 +337,7 @@ export const PeerStopArgs = z
     peer: z.string().describe("Peer sessionId or display name"),
     reason: z.string().optional(),
     force: z.boolean().optional(),
+    ackTimeoutMs: z.number().int().positive().max(600_000).optional(),
     wait: z.boolean().optional(),
     timeoutMs: z.number().int().positive().max(60_000).optional(),
   })
@@ -437,6 +438,10 @@ export async function peerStopTool(
   const daemonArgs: Record<string, unknown> = { peer: args.peer };
   if (args.reason !== undefined) daemonArgs["reason"] = args.reason;
   if (args.force !== undefined) daemonArgs["force"] = args.force;
+  if (args.ackTimeoutMs !== undefined) daemonArgs["ackTimeoutMs"] = args.ackTimeoutMs;
+  // `skipCourtesy` is deliberately NOT on the wire. It exists so an internal
+  // orchestrator that already did the asking can say so; an external caller
+  // that wants no courtesy wants `force`, and should have to say that word.
   return submitDaemonRequest(ctx, "peer_stop", daemonArgs, {
     wait: args.wait,
     timeoutMs: args.timeoutMs,

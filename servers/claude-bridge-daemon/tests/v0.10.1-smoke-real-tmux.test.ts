@@ -130,9 +130,15 @@ describe.skipIf(!TMUX)("v0.10.1 smoke — team lifecycle on real tmux", () => {
     expect(doc.peers[sessionId]?.observed.status).toBe("live");
 
     // ---- 2. controlled stop, peer acks -----------------------------------
+    // The peer acks AFTER the request, as a real one does. Pre-writing worked
+    // until v0.11.15, when the stop channel gained the stale-ack sweep that
+    // `peer_compact` has had since v0.11.3.
     const ackDir = join(shared.controlDir(), "stop-ack");
-    await mkdir(ackDir, { recursive: true });
-    await writeFile(join(ackDir, `${sessionId}.json`), JSON.stringify({ ready: true }));
+    const acker = (async () => {
+      await new Promise((r) => setTimeout(r, 200));
+      await mkdir(ackDir, { recursive: true });
+      await writeFile(join(ackDir, `${sessionId}.json`), JSON.stringify({ ready: true }));
+    })();
 
     const stop = await handlers.dispatch(
       makeRequest(
@@ -140,13 +146,14 @@ describe.skipIf(!TMUX)("v0.10.1 smoke — team lifecycle on real tmux", () => {
         {
           team: "smoke",
           inline: { team: "smoke", peers: [{ sessionId, displayName }] },
-          anchorTimeoutMs: 3_000,
+          anchorTimeoutMs: 8_000,
           ackPollMs: 100,
         },
         "smoke-stop",
       ),
       ctx,
     );
+    await acker;
     expect(stop.outcome).toBe("ok");
     expect((stop.data as { stoppedCleanly: string[] }).stoppedCleanly).toEqual([sessionId]);
     // tmux is the judge, not our own bookkeeping.

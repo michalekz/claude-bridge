@@ -1,7 +1,6 @@
-import { randomBytes } from "node:crypto";
-import { access, mkdir, readFile, rename, unlink } from "node:fs/promises";
+import { mkdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
-import { atomicWriteJson, bridgeRoot, controlDir, teamsDir } from "@claude-bridge/shared";
+import { teamsDir } from "@claude-bridge/shared";
 import { z } from "zod";
 import { publishLifecycleEvent } from "../event-subscribers.ts";
 import { writeEvent } from "../events.ts";
@@ -10,6 +9,7 @@ import { errResult, okResult } from "../rpc.ts";
 import type { HandlerContext } from "./context.ts";
 import { type OrderResult, orderCoordinatorLast } from "./peer-order.ts";
 import { handlePeerStop } from "./peer-stop.ts";
+import { requestStop, stopAcks } from "./stop-protocol.ts";
 
 /**
  * team_stop — controlled sleep of an entire team (§9 zadání, v0.10.1).
@@ -77,76 +77,30 @@ async function loadTeamOrder(team: string): Promise<z.infer<typeof TeamStopFileS
   }
 }
 
-function stopAckDir(): string {
-  return join(controlDir(), "stop-ack");
-}
-
-function stopAckPath(sessionId: string): string {
-  return join(stopAckDir(), `${sessionId}${STOP_ACK_FILENAME_EXTENSION}`);
-}
-
-function inboxPendingDir(peerId: string): string {
-  return join(bridgeRoot(), "inbox", peerId, "pending");
-}
-
-function generateMsgId(): string {
-  const ms = Date.now().toString(36);
-  const rand = randomBytes(4).toString("hex");
-  return `${ms}-${rand}`;
-}
-
-async function fileExists(path: string): Promise<boolean> {
-  try {
-    await access(path);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-async function pollForAck(sessionId: string, deadline: number, pollMs: number): Promise<boolean> {
-  const path = stopAckPath(sessionId);
-  while (Date.now() < deadline) {
-    if (await fileExists(path)) return true;
-    await new Promise((r) => setTimeout(r, pollMs));
-  }
-  return fileExists(path);
-}
-
-async function consumeAckFile(sessionId: string): Promise<void> {
-  const src = stopAckPath(sessionId);
-  const done = join(stopAckDir(), "done");
-  try {
-    await mkdir(done, { recursive: true });
-    await rename(src, join(done, `${sessionId}-${Date.now()}.json`));
-  } catch {
-    await unlink(src).catch(() => undefined);
-  }
-}
-
-async function writeStopRequestMsg(
-  peerId: string,
-  threadId: string,
-  reason: string | null,
-): Promise<string> {
-  const msgId = generateMsgId();
-  const envelope = {
-    id: msgId,
-    ts: new Date().toISOString(),
-    from: { sessionId: "control-plane-daemon", name: "control-plane-daemon" },
-    to: { sessionId: peerId, name: peerId },
-    kind: "stop-request",
-    threadId,
-    content: {
-      instruction:
-        "Finish or park current work, flush anchor + memory, then touch ~/.claude-bridge/control/stop-ack/<sessionId>.json — the daemon will kill your session once the ack file is present.",
-      reason,
-    },
-  };
-  const path = join(inboxPendingDir(peerId), `${msgId}.json`);
-  await atomicWriteJson(path, envelope);
-  return msgId;
-}
+/*
+ * The delivery half of this protocol used to live here, privately, and it did
+ * not work.
+ *
+ * `writeStopRequestMsg` hand-built an envelope and wrote it with a raw
+ * `atomicWriteJson`. Measured against the message schema on 2026-08-08 — both
+ * the shared one and the MCP server's own copy — it failed in five places:
+ * `from` and `to` were objects where strings are required, `ts` stood where
+ * `sentAt` belongs, `content` was an object, and `kind` was "stop-request",
+ * which is not in the enum. The reader `safeParse`s, so the file landed in
+ * `pending/` and `listPending` never returned it: no push, no piggyback, no
+ * error anywhere.
+ *
+ * The identical defect had already cost `peer_compact` two days and three wrong
+ * hypotheses. This copy never got the fix, because nobody went looking for who
+ * ELSE built their own envelope. Nobody noticed here either: the graceful
+ * branch has no `stop-ack/` directory and no `peer_stop_requested` event on the
+ * live host, ever. It was never run.
+ *
+ * The protocol now lives in `stop-protocol.ts` and `ack-protocol.ts`, shared
+ * with `peer_stop` and `peer_compact`. What stays here is POLICY — who is asked
+ * first, what a timeout means for a team, when force applies — because that is
+ * the part that genuinely differs between stopping one peer and stopping eight.
+ */
 
 interface StopOutcome {
   sessionId: string;
@@ -179,6 +133,10 @@ async function stopSinglePeer(
       args: {
         peer: peer.sessionId,
         reason: `team_stop:${args.team}:dead`,
+        // PINNED (v0.11.15 phase 1): no courtesy, no force. The peer has no host
+        // session, so there is nobody to ask and nothing to hurry — this call is
+        // bookkeeping. `force:false` keeps the driver's full verify budget.
+        skipCourtesy: true,
         force: false,
         keepInState: true,
         stoppedCleanly: null,
@@ -202,14 +160,26 @@ async function stopSinglePeer(
     });
     return { sessionId: peer.sessionId, displayName: peer.displayName, outcome: "dead" };
   }
-  await mkdir(stopAckDir(), { recursive: true });
+  await mkdir(stopAcks.dir(), { recursive: true });
+  // Clear the ground before asking, so every ack that appears afterwards is
+  // fresh by construction rather than by comparison (the v0.11.3 lesson, which
+  // this handler's private copy never received).
+  const swept = await stopAcks.sweepStale(peer.sessionId, "stale");
+  if (swept) {
+    await writeEvent({
+      event: "peer_stop_stale_ack_swept",
+      level: "warn",
+      by: { sessionId: req.requestedBy.sessionId, name: req.requestedBy.name },
+      requestId: req.id,
+      details: { sessionId: peer.sessionId, team: args.team, movedTo: swept },
+    });
+  }
+  // Taken BEFORE the request is written, so an ack the peer produces the instant
+  // it reads the message still counts.
+  const requestedAtMs = Date.now();
   let stopReqMsgId: string;
   try {
-    stopReqMsgId = await writeStopRequestMsg(
-      peer.sessionId,
-      threadId,
-      args.force ? "force:true" : null,
-    );
+    stopReqMsgId = await requestStop(peer.sessionId, threadId, args.force ? "force:true" : null);
   } catch (e) {
     return {
       sessionId: peer.sessionId,
@@ -232,7 +202,8 @@ async function stopSinglePeer(
     },
   });
   const deadline = Date.now() + anchorTimeoutMs;
-  const acked = await pollForAck(peer.sessionId, deadline, ackPollMs);
+  const verdict = await stopAcks.poll(peer.sessionId, deadline, ackPollMs, requestedAtMs, threadId);
+  const acked = verdict.accepted;
   if (!acked && !args.force) {
     await writeEvent({
       event: "stop_ack_timeout",
@@ -245,12 +216,17 @@ async function stopSinglePeer(
         team: args.team,
         threadId,
         timeoutMs: anchorTimeoutMs,
+        // WHY there was no usable ack. "Nobody answered" and "an ack was there
+        // and it answered something else" call for different next steps.
+        ackVerdict: verdict.reason,
+        ackThreadId: verdict.ackThreadId ?? null,
+        ackWrittenAt: verdict.writtenAt ?? null,
       },
     });
     return { sessionId: peer.sessionId, displayName: peer.displayName, outcome: "skipped" };
   }
   if (acked) {
-    await consumeAckFile(peer.sessionId);
+    await stopAcks.consume(peer.sessionId);
   }
   const stopReq = {
     schemaVersion: req.schemaVersion,
@@ -260,6 +236,12 @@ async function stopSinglePeer(
     args: {
       peer: peer.sessionId,
       reason: `team_stop:${args.team}:${acked ? "cleanly" : "forced"}`,
+      // PINNED (v0.11.15 phase 1): the courtesy happened a floor up, in THIS
+      // function. Without the pin `peer_stop` would ask a second time and wait
+      // out another full window on a peer that has already acked.
+      skipCourtesy: true,
+      // Unchanged from v0.11.14: an acked peer gets the full verify budget, a
+      // peer that never answered gets the short one.
       force: !acked,
       keepInState: true,
       stoppedCleanly: acked,

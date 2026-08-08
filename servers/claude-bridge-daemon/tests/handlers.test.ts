@@ -204,11 +204,14 @@ describe("handlers", () => {
         await originalKill(key);
         throw new Error(`Session '${key}' respawned within budgetms after kill`);
       };
-      const stopRes = await dispatch(makeRequest("peer_stop", { peer: "peer-a" }, "req-stop"), {
-        state,
-        hostDriver: driver,
-        daemonVersion: "0.10.0-beta.0",
-      });
+      const stopRes = await dispatch(
+        makeRequest("peer_stop", { peer: "peer-a", force: true }, "req-stop"),
+        {
+          state,
+          hostDriver: driver,
+          daemonVersion: "0.10.0-beta.0",
+        },
+      );
       expect(stopRes.outcome).toBe("error");
       expect(stopRes.error?.code).toBe("supervisor_respawn");
     });
@@ -250,11 +253,14 @@ describe("handlers", () => {
       expect(statusData.peers[0]?.sessionId).toBe("peer-b");
       expect(statusData.peers[0]?.hostAlive).toBe(true);
 
-      const stopRes = await dispatch(makeRequest("peer_stop", { peer: "peer-b" }, "req-stop"), {
-        state,
-        hostDriver: driver,
-        daemonVersion: "0.10.0-beta.0",
-      });
+      const stopRes = await dispatch(
+        makeRequest("peer_stop", { peer: "peer-b", force: true }, "req-stop"),
+        {
+          state,
+          hostDriver: driver,
+          daemonVersion: "0.10.0-beta.0",
+        },
+      );
       expect(stopRes.outcome).toBe("ok");
       expect(state.peers["peer-b"]).toBeUndefined();
     });

@@ -294,6 +294,26 @@ export async function handlePeerRestart(
     args: {
       peer: record.sessionId,
       reason: args.reason ?? "peer_restart",
+      // PINNED to v0.11.14 semantics (v0.11.15 phase 1).
+      //
+      // `peer_stop` became graceful by default in this release, and inheriting
+      // that here would have been the most expensive line in it: a restart
+      // sends no stop-request, so no peer would ever ack one. Every restart
+      // would wait out the full 120 s window and then REFUSE to stop anything,
+      // and since `team_restart` is a thin wrapper over this handler, an
+      // eight-peer roll would hold the daemon's single-threaded request loop
+      // for sixteen minutes and fail eight times at the end of it.
+      //
+      // `skipCourtesy` rather than `force: true`, deliberately. Forcing would
+      // also halve the driver's post-kill verify budget, and that verify is
+      // what catches a supervised process respawning behind us — a change
+      // nobody asked for, bought as a side effect of pinning. `args.force`
+      // passes through untouched, so this call behaves exactly as it did.
+      //
+      // A gentle RESTART — ask, wait, relaunch — is the owner's protocol a)–f)
+      // and lands in a later phase, where the request is actually sent. Until
+      // then a restart is a hard stop followed by a spawn, and it says so.
+      skipCourtesy: true,
       force: args.force,
     },
     requestedBy: req.requestedBy,

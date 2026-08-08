@@ -116,7 +116,7 @@ describe("v0.10.0-rc.2 regression — T1 sessionKey + T2 stop reconcile", () => 
 
       // peer_stop should also find the session — driver op receives canonical.
       const stopRes = await handlers.dispatch(
-        makeRequest("peer_stop", { peer: "peer-x" }, "req-stop"),
+        makeRequest("peer_stop", { peer: "peer-x", force: true }, "req-stop"),
         { state: doc, hostDriver: driver, daemonVersion: "0.10.0-rc.2" },
       );
       expect(stopRes.outcome).toBe("ok");
@@ -166,7 +166,7 @@ describe("v0.10.0-rc.2 regression — T1 sessionKey + T2 stop reconcile", () => 
       // `host_kill_failed` because kill was NOT idempotent, leaving
       // status="stopping" forever.
       const stopRes = await handlers.dispatch(
-        makeRequest("peer_stop", { peer: "peer-y" }, "req-stop"),
+        makeRequest("peer_stop", { peer: "peer-y", force: true }, "req-stop"),
         { state: doc, hostDriver: driver, daemonVersion: "0.10.0-rc.2" },
       );
       expect(stopRes.outcome).toBe("ok");

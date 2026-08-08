@@ -169,6 +169,28 @@ export interface PeerObserved {
    */
   stoppedCleanly?: boolean | null;
   /**
+   * A stop that was ASKED FOR and has not resolved (v0.11.15).
+   *
+   * The intermediate state of a graceful stop, and the reason a retry is
+   * idempotent rather than additive: a second `peer_stop` finds this, resumes
+   * waiting on the SAME thread, and does not put a second request into an inbox
+   * that already holds one. A peer that acks two minutes after the first call
+   * timed out is answering a question that was asked once.
+   *
+   * It is also the honest record of a failure that changed nothing. Without it
+   * the timeout would leave `status: "stopping"` with no trace of who asked or
+   * when — a record claiming a transition nobody could verify, which is the
+   * defect this release exists to stop making.
+   *
+   * Cleared when the stop completes, or when the peer comes back live.
+   */
+  stopRequest?: {
+    threadId: string;
+    msgId: string;
+    requestedAt: string;
+    timeoutMs: number;
+  } | null;
+  /**
    * True when the daemon took over a process it did not start (team_adopt).
    * Matters because `startedAt` is then the adoption time, not the boot time,
    * and because provenance is worth keeping when diagnosing identity problems.

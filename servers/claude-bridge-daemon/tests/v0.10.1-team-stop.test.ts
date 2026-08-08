@@ -65,7 +65,7 @@ describe("v0.10.1 team_stop", () => {
     driver.reset();
   });
 
-  it("STOP REQUEST + pre-existing ack → peer_stopped_cleanly, state keeps peer as stopped", async () => {
+  it("STOP REQUEST → peer acks → peer_stopped_cleanly, state keeps peer as stopped", async () => {
     const { handlers, state, mock, shared } = await importAll();
     const doc = state.emptyState("0.10.1-rc.0");
     const driver = new mock.MockDriver();
@@ -87,13 +87,21 @@ describe("v0.10.1 team_stop", () => {
     );
     expect(doc.peers["ts-peer-1"]?.observed.status).toBe("live");
 
-    // Pre-write the ack file — simulates peer having flushed anchor + memory.
+    // The peer acks AFTER the request reaches it — which is the only order the
+    // protocol accepts since v0.11.15.
+    //
+    // This test used to pre-write the ack file, and it passed because
+    // `team_stop` accepted any ack that existed. That is the v0.11.3 stale-ack
+    // defect: an ack written before the request cannot be an answer to it, and
+    // honouring one is how a compact ran over an anchor that belonged to an
+    // earlier run. `team_stop` now sweeps before asking, so a pre-written ack is
+    // correctly discarded — and the test has to behave like a peer instead.
     const ackDir = join(shared.controlDir(), "stop-ack");
-    await mkdir(ackDir, { recursive: true });
-    await writeFile(
-      join(ackDir, "ts-peer-1.json"),
-      JSON.stringify({ ready: true, ts: "2026-08-02T15:30:01.000Z" }),
-    );
+    const acker = (async () => {
+      await new Promise((r) => setTimeout(r, 250));
+      await mkdir(ackDir, { recursive: true });
+      await writeFile(join(ackDir, "ts-peer-1.json"), JSON.stringify({ ready: true }));
+    })();
 
     const inline = {
       team: "ts-team",
@@ -105,13 +113,14 @@ describe("v0.10.1 team_stop", () => {
         {
           team: "ts-team",
           inline,
-          anchorTimeoutMs: 1_500,
+          anchorTimeoutMs: 5_000,
           ackPollMs: 100,
         },
         "req-stop",
       ),
       { state: doc, hostDriver: driver, daemonVersion: "0.10.1-rc.0" },
     );
+    await acker;
     expect(res.outcome).toBe("ok");
     const data = res.data as {
       stoppedCleanly: string[];
