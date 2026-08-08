@@ -4,6 +4,7 @@ import { appendFile, mkdir } from "node:fs/promises";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { controlDir, makeLogger } from "@claude-bridge/shared";
+import { writeEvent } from "../events.ts";
 import {
   type HostWindowRecord,
   type PaneProbe,
@@ -14,6 +15,16 @@ import {
   parseHostTarget,
   sanitizeSessionKey,
 } from "./driver.ts";
+import {
+  CLEAR_STROKE_BATCH,
+  type InputLineProbe,
+  KILL_RING_HINT,
+  MAX_CLEAR_STROKES,
+  displacedDraftNotice,
+  paneContains,
+  readInputLine,
+  refusePayload,
+} from "./input-line.ts";
 
 const execFileAsync = promisify(execFile);
 const log = makeLogger("daemon.host.tmux");
@@ -133,22 +144,18 @@ const SEND_KEYS_TIMEOUT_MS = 5_000;
 /** Settle time between injecting text and reading the pane back. */
 const DEFAULT_SEND_VERIFY_DELAY_MS = 250;
 
-/**
- * Is the injected text visible in the captured pane?
- *
- * Compared on a whitespace-normalised tail because a long prompt wraps across
- * pane columns, so an exact substring match would fail on text that did in
- * fact arrive. The tail is distinctive enough to tell "arrived" from "vanished"
- * without being brittle about where tmux broke the line.
- */
-export function paneContains(captured: string, keys: string): boolean {
-  const flat = (s: string) => s.replace(/\s+/g, " ").trim();
-  const needle = flat(keys);
-  if (needle.length === 0) return true;
-  const haystack = flat(captured);
-  // Match on the tail: the head of a long line may have scrolled off.
-  const probe = needle.length > 40 ? needle.slice(-40) : needle;
-  return haystack.includes(probe);
+/** How long a `⚠` notice stays on the target's status line, in ms. */
+const HUMAN_NOTICE_MS = 8_000;
+
+/** Outcome of the hygiene phase that runs before any payload is typed. */
+export interface ClearOutcome {
+  /** `displaced` means a human's unsent text was taken out of the way. */
+  kind: "was-empty" | "displaced" | "stuck" | "not-an-input-box";
+  /** Best-effort text of what was displaced — audit evidence, not a restore. */
+  draft: string;
+  strokes: number;
+  /** Whether Claude Code offered `Ctrl+Y`, i.e. confirmed it holds the text. */
+  restorable: boolean;
 }
 
 /**
@@ -539,17 +546,43 @@ export class TmuxDriver implements SessionHostDriver {
    * mail, and a wait without a log is an undiagnosable incident.
    *
    * Sequence:
-   *   1. If the pane is in copy-mode it swallows input — cancel out of it first.
-   *   2. Send the TEXT alone and confirm it is visible in the pane. This is the
+   *   1. Refuse payloads that cannot be delivered honestly — see `refusePayload`.
+   *      Checked first, so a rejected payload leaves the pane untouched.
+   *   2. If the pane is in copy-mode it swallows input — cancel out of it first.
+   *   3. CLEAR THE INPUT LINE, and prove it is clear (v0.11.6). See below.
+   *   4. Send the TEXT alone and confirm it is visible in the pane. This is the
    *      real check: it proves the keystrokes reached the application while the
    *      line is still uncommitted, so a failure costs nothing.
-   *   3. Only then send Enter.
+   *   5. Only then send Enter.
+   *
+   * ON STEP 3 — why the control plane empties a box it did not fill.
+   *
+   * These panes belong to people. Someone types half a question, walks away,
+   * and the daemon arrives to inject `/compact`. Without step 3 the payload is
+   * appended to their sentence and Enter submits the pair: the human loses the
+   * thought, and the peer receives a command with a stranger's words glued to
+   * the front. Zdeněk's instruction (2026-08-07): clear first, then send —
+   * and put it in the tool, not in the callers, because a rule that each caller
+   * must remember is a rule that holds until the next caller.
+   *
+   * What makes it safe to do is Claude Code's own kill ring: `Ctrl+Y` restores
+   * a `C-u` exactly, survives an intervening payload, an Enter, and a completed
+   * agent turn, and composes across dozens of strokes. The author's objection —
+   * that this destroys human work — was measured and is wrong. What remains
+   * true is that the human does not KNOW, which is what the two notices in
+   * `announceDisplacement` are for.
    *
    * Every attempt is appended to `control/logs/sendkeys-<sessionKey>.log`.
    * Throws when the text cannot be confirmed, so callers surface a hard failure
    * instead of assuming delivery.
    */
   async sendKeys(sessionKey: string, keys: string): Promise<void> {
+    const refusal = refusePayload(keys);
+    if (refusal) {
+      // Before any tmux call: a refused payload must not disturb the pane.
+      log.error("tmux_send_keys_refused", { sessionKey, reason: refusal.reason });
+      throw new Error(`send-keys to '${sessionKey}' refused — ${refusal.message}`);
+    }
     // `parseHostTarget`, not `sanitizeSessionKey`. A window id IS canonical, and
     // `@` is in `UNSAFE_TARGET_CHARS` — sanitizing turned `@1011` into `_1011`
     // and tmux answered "can't find pane _1011". Every adopted peer is keyed by
@@ -565,6 +598,23 @@ export class TmuxDriver implements SessionHostDriver {
       );
     }
 
+    const cleared = await this.clearInputLine(canonical);
+    if (cleared.kind === "stuck") {
+      // Never type onto a human's text. A draft we cannot clear is a draft we
+      // would corrupt, and the payload has somewhere else to be delivered from.
+      await this.logSendKeys(canonical, {
+        keys,
+        verdict: "refused-input-not-clear",
+        strokes: cleared.strokes,
+        draftChars: cleared.draft.length,
+      });
+      log.error("tmux_send_keys_input_stuck", { sessionKey: canonical, strokes: cleared.strokes });
+      throw new Error(
+        `send-keys to '${canonical}' refused — the input line still holds ${cleared.draft.length} characters after ${cleared.strokes} clear strokes, and typing onto a person's unsent text is not an option. Look at the pane: tmux capture-pane -p -t ${canonical}`,
+      );
+    }
+    if (cleared.kind === "displaced") await this.announceDisplacement(canonical, keys, cleared);
+
     let delivered = false;
     let attempts = 0;
     let capturedTail = "";
@@ -573,7 +623,11 @@ export class TmuxDriver implements SessionHostDriver {
     // second attempt costs a few hundred milliseconds.
     for (attempts = 1; attempts <= 2 && !delivered; attempts++) {
       try {
-        await this.tmux(["send-keys", "-t", canonical, keys], SEND_KEYS_TIMEOUT_MS);
+        // `-l` sends the string literally and `--` ends option parsing. Without
+        // them tmux reads a payload that happens to spell a key name ("Enter",
+        // "Tab", "Space") as that KEY, and a payload starting with "-" as its
+        // own flag. No caller trips this today; the point is that none can.
+        await this.tmux(["send-keys", "-t", canonical, "-l", "--", keys], SEND_KEYS_TIMEOUT_MS);
       } catch (e) {
         // A vanished pane makes tmux itself fail. Record it and keep going to
         // the logging path — an unlogged failure is the half of the
@@ -591,6 +645,11 @@ export class TmuxDriver implements SessionHostDriver {
       paneInMode: inMode,
       attempts: attempts - 1,
       verdict: delivered ? "delivered" : "not-visible",
+      inputLine: cleared.kind,
+      clearStrokes: cleared.strokes,
+      ...(cleared.kind === "displaced"
+        ? { displacedDraft: cleared.draft, restorable: cleared.restorable }
+        : {}),
       ...(lastError ? { error: lastError } : {}),
       capturedTail: capturedTail.slice(-240),
     });
@@ -606,6 +665,101 @@ export class TmuxDriver implements SessionHostDriver {
       );
     }
     await this.tmux(["send-keys", "-t", canonical, "Enter"], SEND_KEYS_TIMEOUT_MS);
+  }
+
+  /**
+   * Empty the input line, and prove it — the hygiene phase of `sendKeys`.
+   *
+   * `C-u` kills to the start of the DISPLAY row, so a wrapped draft needs one
+   * stroke per row; they are sent in batches to keep the round trips down
+   * (measured: three in one call kill three rows). A stroke against an already
+   * empty box is a no-op that leaves the kill ring intact, so over-sending
+   * inside a batch costs nothing.
+   *
+   * Termination is exact rather than heuristic: the box's content always begins
+   * on the marker line and shrinks from the bottom, so the marker line is empty
+   * if and only if the whole box is.
+   *
+   * A pane with no marker at all is not a Claude Code input box — a shell, a
+   * pager, a pane still starting. One `C-u` is still sent, because clearing the
+   * line is right there too and it is what the instruction asks for, but no
+   * verdict is claimed about what was there.
+   */
+  private async clearInputLine(target: string): Promise<ClearOutcome> {
+    const before = readInputLine(await this.capturePane(target));
+    if (before.kind === "no-marker") {
+      await this.tmux(["send-keys", "-t", target, "C-u"], SEND_KEYS_TIMEOUT_MS).catch(
+        () => undefined,
+      );
+      return { kind: "not-an-input-box", draft: "", strokes: 1, restorable: false };
+    }
+    if (before.kind === "empty") {
+      return { kind: "was-empty", draft: "", strokes: 0, restorable: false };
+    }
+
+    let strokes = 0;
+    let probe: InputLineProbe = before;
+    let captured = "";
+    while (strokes < MAX_CLEAR_STROKES) {
+      const batch = Math.min(CLEAR_STROKE_BATCH, MAX_CLEAR_STROKES - strokes);
+      await this.tmux(
+        ["send-keys", "-t", target, ...Array.from({ length: batch }, () => "C-u")],
+        SEND_KEYS_TIMEOUT_MS,
+      ).catch(() => undefined);
+      strokes += batch;
+      await new Promise((r) => setTimeout(r, this.sendVerifyDelayMs));
+      captured = await this.capturePane(target);
+      probe = readInputLine(captured);
+      if (probe.kind !== "draft") break;
+    }
+
+    if (probe.kind === "draft") {
+      return { kind: "stuck", draft: probe.text, strokes, restorable: false };
+    }
+    return {
+      kind: "displaced",
+      draft: before.text,
+      strokes,
+      // Claude Code says so itself, in the status row, right after a kill.
+      restorable: captured.includes(KILL_RING_HINT),
+    };
+  }
+
+  /**
+   * Tell the human, and tell the record. Two channels, because neither is
+   * enough on its own: the status-line notice reaches whoever is sitting there
+   * now and vanishes; `events.jsonl` reaches whoever comes back in an hour and
+   * finds their sentence gone.
+   *
+   * What must NOT happen is folding the notice into the payload. The payload is
+   * addressed to the application in the pane — for `peer_compact` it is
+   * `/compact`, which takes free text as its COMPACTION INSTRUCTIONS, so a
+   * sentence meant for a person would silently steer what the peer keeps; for
+   * `wake` it is a prompt for the agent. Payload belongs to the application,
+   * notices belong to the human, history belongs to the log. Never mixed.
+   */
+  private async announceDisplacement(
+    target: string,
+    keys: string,
+    cleared: ClearOutcome,
+  ): Promise<void> {
+    await this.tmux(
+      ["display-message", "-d", String(HUMAN_NOTICE_MS), "-t", target, displacedDraftNotice()],
+      SEND_KEYS_TIMEOUT_MS,
+    ).catch(() => undefined);
+    await writeEvent({
+      event: "peer_input_displaced",
+      level: "warn",
+      details: {
+        tmuxTarget: target,
+        draft: cleared.draft,
+        draftChars: cleared.draft.length,
+        clearStrokes: cleared.strokes,
+        restorableWithCtrlY: cleared.restorable,
+        // Which injection displaced it — "who reached into whose window, when".
+        payload: keys,
+      },
+    }).catch(() => undefined);
   }
 
   /** `#{pane_in_mode}` is "1" while the pane is in copy-mode / view-mode. */

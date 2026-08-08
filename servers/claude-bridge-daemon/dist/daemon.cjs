@@ -4298,7 +4298,7 @@ async function resolvePeer(idOrName, root = bridgeRoot(), now = Date.now()) {
 // package.json
 var package_default = {
   name: "claude-bridge-daemon",
-  version: "0.11.5",
+  version: "0.11.6",
   private: true,
   description: "Control-plane daemon for the claude-bridge plugin: peer lifecycle, telemetry, audit. Distributed as opt-in artefact \u2014 see ADR-008.",
   type: "module",
@@ -8255,6 +8255,76 @@ var import_node_fs5 = require("node:fs");
 var import_promises15 = require("node:fs/promises");
 var import_node_path13 = require("node:path");
 var import_node_util = require("node:util");
+
+// src/hosts/input-line.ts
+var INPUT_MARKER = "\u276F";
+var PASTE_COLLAPSE_LIMIT = 800;
+var MAX_CLEAR_STROKES = 40;
+var CLEAR_STROKE_BATCH = 4;
+var KILL_RING_HINT = "Ctrl+Y to paste deleted text";
+var RULE = /^[─-╿\s]+$/;
+function readInputLine(captured) {
+  const lines = captured.split("\n");
+  let at = -1;
+  for (let i = lines.length - 1; i >= 0; i--) {
+    if (lines[i]?.includes(INPUT_MARKER)) {
+      at = i;
+      break;
+    }
+  }
+  if (at < 0) return { kind: "no-marker" };
+  const markerLine = lines[at] ?? "";
+  const contentCol = markerLine.indexOf(INPUT_MARKER) + INPUT_MARKER.length + 1;
+  const head = markerLine.slice(contentCol);
+  if (head.trim().length === 0) return { kind: "empty" };
+  const rows = [markerLine];
+  let boxWidth = 0;
+  for (let i = at + 1; i < lines.length; i++) {
+    const line = lines[i] ?? "";
+    if (RULE.test(line)) {
+      boxWidth = line.length - contentCol;
+      break;
+    }
+    rows.push(line);
+  }
+  const parts = [];
+  for (let i = 0; i < rows.length; i++) {
+    const raw = rows[i] ?? "";
+    parts.push(raw.slice(contentCol).trimEnd());
+    const wordWrapped = boxWidth > 0 && raw.length < boxWidth;
+    if (i < rows.length - 1 && wordWrapped) parts.push(" ");
+  }
+  const text = parts.join("").trim();
+  return text.length === 0 ? { kind: "empty" } : { kind: "draft", text };
+}
+function paneContains(captured, keys) {
+  const strip = (s) => s.replace(/\s+/g, "");
+  const needle = strip(keys);
+  if (needle.length === 0) return true;
+  const haystack = strip(captured);
+  const probe = needle.length > 40 ? needle.slice(-40) : needle;
+  return haystack.includes(probe);
+}
+function refusePayload(keys) {
+  if (/[\n\r]/.test(keys)) {
+    return {
+      reason: "multiline",
+      message: "payload contains a newline \u2014 tmux sends each one as Enter, which would submit the payload in pieces. A payload is one line; see docs/SEND-KEYS.md."
+    };
+  }
+  if (keys.length > PASTE_COLLAPSE_LIMIT) {
+    return {
+      reason: "too-long",
+      message: `payload is ${keys.length} characters \u2014 Claude Code collapses anything over ${PASTE_COLLAPSE_LIMIT} into a "[Pasted text]" placeholder, after which delivery cannot be verified. See docs/SEND-KEYS.md.`
+    };
+  }
+  return null;
+}
+function displacedDraftNotice() {
+  return "\u26A0 claude-bridge cleared your unsent draft to deliver an automated command \u2014 press Ctrl+Y to get it back";
+}
+
+// src/hosts/tmux-driver.ts
 var execFileAsync = (0, import_node_util.promisify)(import_node_child_process.execFile);
 var log7 = makeLogger("daemon.host.tmux");
 var EXEC_DEFAULTS = { killSignal: "SIGKILL" };
@@ -8286,14 +8356,7 @@ var QUERY_TIMEOUT_MS = 5e3;
 var MUTATE_TIMEOUT_MS = 1e4;
 var SEND_KEYS_TIMEOUT_MS = 5e3;
 var DEFAULT_SEND_VERIFY_DELAY_MS = 250;
-function paneContains(captured, keys) {
-  const flat = (s) => s.replace(/\s+/g, " ").trim();
-  const needle = flat(keys);
-  if (needle.length === 0) return true;
-  const haystack = flat(captured);
-  const probe = needle.length > 40 ? needle.slice(-40) : needle;
-  return haystack.includes(probe);
-}
+var HUMAN_NOTICE_MS = 8e3;
 var TmuxDriver = class _TmuxDriver {
   name = "tmux";
   tmuxBin;
@@ -8579,17 +8642,42 @@ var TmuxDriver = class _TmuxDriver {
    * mail, and a wait without a log is an undiagnosable incident.
    *
    * Sequence:
-   *   1. If the pane is in copy-mode it swallows input — cancel out of it first.
-   *   2. Send the TEXT alone and confirm it is visible in the pane. This is the
+   *   1. Refuse payloads that cannot be delivered honestly — see `refusePayload`.
+   *      Checked first, so a rejected payload leaves the pane untouched.
+   *   2. If the pane is in copy-mode it swallows input — cancel out of it first.
+   *   3. CLEAR THE INPUT LINE, and prove it is clear (v0.11.6). See below.
+   *   4. Send the TEXT alone and confirm it is visible in the pane. This is the
    *      real check: it proves the keystrokes reached the application while the
    *      line is still uncommitted, so a failure costs nothing.
-   *   3. Only then send Enter.
+   *   5. Only then send Enter.
+   *
+   * ON STEP 3 — why the control plane empties a box it did not fill.
+   *
+   * These panes belong to people. Someone types half a question, walks away,
+   * and the daemon arrives to inject `/compact`. Without step 3 the payload is
+   * appended to their sentence and Enter submits the pair: the human loses the
+   * thought, and the peer receives a command with a stranger's words glued to
+   * the front. Zdeněk's instruction (2026-08-07): clear first, then send —
+   * and put it in the tool, not in the callers, because a rule that each caller
+   * must remember is a rule that holds until the next caller.
+   *
+   * What makes it safe to do is Claude Code's own kill ring: `Ctrl+Y` restores
+   * a `C-u` exactly, survives an intervening payload, an Enter, and a completed
+   * agent turn, and composes across dozens of strokes. The author's objection —
+   * that this destroys human work — was measured and is wrong. What remains
+   * true is that the human does not KNOW, which is what the two notices in
+   * `announceDisplacement` are for.
    *
    * Every attempt is appended to `control/logs/sendkeys-<sessionKey>.log`.
    * Throws when the text cannot be confirmed, so callers surface a hard failure
    * instead of assuming delivery.
    */
   async sendKeys(sessionKey, keys) {
+    const refusal = refusePayload(keys);
+    if (refusal) {
+      log7.error("tmux_send_keys_refused", { sessionKey, reason: refusal.reason });
+      throw new Error(`send-keys to '${sessionKey}' refused \u2014 ${refusal.message}`);
+    }
     const canonical = formatHostTarget(parseHostTarget(sessionKey));
     const inMode = await this.paneInMode(canonical);
     if (inMode) {
@@ -8597,13 +8685,27 @@ var TmuxDriver = class _TmuxDriver {
         () => void 0
       );
     }
+    const cleared = await this.clearInputLine(canonical);
+    if (cleared.kind === "stuck") {
+      await this.logSendKeys(canonical, {
+        keys,
+        verdict: "refused-input-not-clear",
+        strokes: cleared.strokes,
+        draftChars: cleared.draft.length
+      });
+      log7.error("tmux_send_keys_input_stuck", { sessionKey: canonical, strokes: cleared.strokes });
+      throw new Error(
+        `send-keys to '${canonical}' refused \u2014 the input line still holds ${cleared.draft.length} characters after ${cleared.strokes} clear strokes, and typing onto a person's unsent text is not an option. Look at the pane: tmux capture-pane -p -t ${canonical}`
+      );
+    }
+    if (cleared.kind === "displaced") await this.announceDisplacement(canonical, keys, cleared);
     let delivered = false;
     let attempts = 0;
     let capturedTail = "";
     let lastError = null;
     for (attempts = 1; attempts <= 2 && !delivered; attempts++) {
       try {
-        await this.tmux(["send-keys", "-t", canonical, keys], SEND_KEYS_TIMEOUT_MS);
+        await this.tmux(["send-keys", "-t", canonical, "-l", "--", keys], SEND_KEYS_TIMEOUT_MS);
       } catch (e) {
         lastError = e instanceof Error ? e.message : String(e);
         continue;
@@ -8617,6 +8719,9 @@ var TmuxDriver = class _TmuxDriver {
       paneInMode: inMode,
       attempts: attempts - 1,
       verdict: delivered ? "delivered" : "not-visible",
+      inputLine: cleared.kind,
+      clearStrokes: cleared.strokes,
+      ...cleared.kind === "displaced" ? { displacedDraft: cleared.draft, restorable: cleared.restorable } : {},
       ...lastError ? { error: lastError } : {},
       capturedTail: capturedTail.slice(-240)
     });
@@ -8631,6 +8736,93 @@ var TmuxDriver = class _TmuxDriver {
       );
     }
     await this.tmux(["send-keys", "-t", canonical, "Enter"], SEND_KEYS_TIMEOUT_MS);
+  }
+  /**
+   * Empty the input line, and prove it — the hygiene phase of `sendKeys`.
+   *
+   * `C-u` kills to the start of the DISPLAY row, so a wrapped draft needs one
+   * stroke per row; they are sent in batches to keep the round trips down
+   * (measured: three in one call kill three rows). A stroke against an already
+   * empty box is a no-op that leaves the kill ring intact, so over-sending
+   * inside a batch costs nothing.
+   *
+   * Termination is exact rather than heuristic: the box's content always begins
+   * on the marker line and shrinks from the bottom, so the marker line is empty
+   * if and only if the whole box is.
+   *
+   * A pane with no marker at all is not a Claude Code input box — a shell, a
+   * pager, a pane still starting. One `C-u` is still sent, because clearing the
+   * line is right there too and it is what the instruction asks for, but no
+   * verdict is claimed about what was there.
+   */
+  async clearInputLine(target) {
+    const before = readInputLine(await this.capturePane(target));
+    if (before.kind === "no-marker") {
+      await this.tmux(["send-keys", "-t", target, "C-u"], SEND_KEYS_TIMEOUT_MS).catch(
+        () => void 0
+      );
+      return { kind: "not-an-input-box", draft: "", strokes: 1, restorable: false };
+    }
+    if (before.kind === "empty") {
+      return { kind: "was-empty", draft: "", strokes: 0, restorable: false };
+    }
+    let strokes = 0;
+    let probe = before;
+    let captured = "";
+    while (strokes < MAX_CLEAR_STROKES) {
+      const batch = Math.min(CLEAR_STROKE_BATCH, MAX_CLEAR_STROKES - strokes);
+      await this.tmux(
+        ["send-keys", "-t", target, ...Array.from({ length: batch }, () => "C-u")],
+        SEND_KEYS_TIMEOUT_MS
+      ).catch(() => void 0);
+      strokes += batch;
+      await new Promise((r) => setTimeout(r, this.sendVerifyDelayMs));
+      captured = await this.capturePane(target);
+      probe = readInputLine(captured);
+      if (probe.kind !== "draft") break;
+    }
+    if (probe.kind === "draft") {
+      return { kind: "stuck", draft: probe.text, strokes, restorable: false };
+    }
+    return {
+      kind: "displaced",
+      draft: before.text,
+      strokes,
+      // Claude Code says so itself, in the status row, right after a kill.
+      restorable: captured.includes(KILL_RING_HINT)
+    };
+  }
+  /**
+   * Tell the human, and tell the record. Two channels, because neither is
+   * enough on its own: the status-line notice reaches whoever is sitting there
+   * now and vanishes; `events.jsonl` reaches whoever comes back in an hour and
+   * finds their sentence gone.
+   *
+   * What must NOT happen is folding the notice into the payload. The payload is
+   * addressed to the application in the pane — for `peer_compact` it is
+   * `/compact`, which takes free text as its COMPACTION INSTRUCTIONS, so a
+   * sentence meant for a person would silently steer what the peer keeps; for
+   * `wake` it is a prompt for the agent. Payload belongs to the application,
+   * notices belong to the human, history belongs to the log. Never mixed.
+   */
+  async announceDisplacement(target, keys, cleared) {
+    await this.tmux(
+      ["display-message", "-d", String(HUMAN_NOTICE_MS), "-t", target, displacedDraftNotice()],
+      SEND_KEYS_TIMEOUT_MS
+    ).catch(() => void 0);
+    await writeEvent({
+      event: "peer_input_displaced",
+      level: "warn",
+      details: {
+        tmuxTarget: target,
+        draft: cleared.draft,
+        draftChars: cleared.draft.length,
+        clearStrokes: cleared.strokes,
+        restorableWithCtrlY: cleared.restorable,
+        // Which injection displaced it — "who reached into whose window, when".
+        payload: keys
+      }
+    }).catch(() => void 0);
   }
   /** `#{pane_in_mode}` is "1" while the pane is in copy-mode / view-mode. */
   async paneInMode(sessionKey) {

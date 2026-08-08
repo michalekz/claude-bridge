@@ -21,8 +21,7 @@ import { ambiguousPeerMessage, resolvePeerRef } from "./peer-ref.ts";
  *   2. Poll for the ack file within `anchorTimeoutMs` (default 30 s).
  *      No ack → refuse; the peer wasn't ready and injecting /compact
  *      without a durable anchor would lose context.
- *   3. Ack received → `driver.sendKeys(sessionKey, "/compact")` — the
- *      only send-keys path in the daemon (charter §8 audit target).
+ *   3. Ack received → `driver.sendKeys(sessionKey, "/compact")`.
  *   4. Log `peer_compacted` event; publish lifecycle event to
  *      subscribers.
  *
@@ -41,6 +40,23 @@ import { ambiguousPeerMessage, resolvePeerRef } from "./peer-ref.ts";
  * A peer that is busy simply does not answer in time and the run ends in
  * `anchor_timeout` with nothing injected. That is the correct outcome, not a
  * failure to handle the case (edge case B4, ratified 2026-08-06).
+ */
+
+/*
+ * CHARTER §8 — where the audit surface actually is.
+ *
+ * This comment used to claim that the line above was "the only send-keys path
+ * in the daemon". It stopped being true when `wake.ts` gained one, and nobody
+ * noticed, because the sentence was load-bearing for an audit point and was
+ * maintained by memory. A count written into prose is a count that goes stale
+ * silently.
+ *
+ * The audit surface is `TmuxDriver.sendKeys` — ONE function, which every
+ * injection goes through and which owns the clear-first invariant since
+ * v0.11.6. How many callers it has is a question for the code, and the code
+ * answers it:
+ *
+ *     grep -rn 'sendKeys(' servers/claude-bridge-daemon/src
  */
 
 /**

@@ -24,7 +24,7 @@ const TMUX = hasTmux();
 
 describe("paneContains", () => {
   it("matches text that tmux wrapped across pane columns", async () => {
-    const { paneContains } = await import("../src/hosts/tmux-driver.ts");
+    const { paneContains } = await import("../src/hosts/input-line.ts");
     const sent = "[daemon] Wake — re-onboard from your anchor and report back";
     // tmux hard-wraps, so the captured pane has newlines the sent string lacks.
     const captured =
@@ -33,13 +33,13 @@ describe("paneContains", () => {
   });
 
   it("is false when the text never arrived — the 2026-08-02 failure", async () => {
-    const { paneContains } = await import("../src/hosts/tmux-driver.ts");
+    const { paneContains } = await import("../src/hosts/input-line.ts");
     // Exactly what was observed: the pane sat at an untouched prompt.
     expect(paneContains("$ \n", "/exit")).toBe(false);
   });
 
   it("tolerates an empty payload and ignores leading noise", async () => {
-    const { paneContains } = await import("../src/hosts/tmux-driver.ts");
+    const { paneContains } = await import("../src/hosts/input-line.ts");
     expect(paneContains("anything", "")).toBe(true);
     expect(paneContains("noise noise /compact", "/compact")).toBe(true);
   });

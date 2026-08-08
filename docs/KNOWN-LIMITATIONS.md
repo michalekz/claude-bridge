@@ -140,6 +140,41 @@ correct recovery when the two have diverged.
 
 ---
 
+## Injected payloads are one line and at most 800 characters
+
+Anything the control plane types into a pane — `/compact`, a wake prompt, a
+custom `wakePrompt` you pass in — goes through one function that refuses
+multi-line payloads and payloads over 800 characters, before touching tmux.
+
+Both refusals exist because the alternative is worse than an error: a newline
+becomes an Enter that submits the payload in pieces, and Claude Code collapses a
+longer burst into a `[Pasted text #N]` placeholder that makes delivery
+unverifiable. `docs/SEND-KEYS.md` has the measurements.
+
+**Status:** by design, but the ceiling is real. A caller that needs to deliver a
+long instruction should write it to the peer's inbox and inject only a short
+prompt telling it to read.
+
+---
+
+## Reading the input box depends on one Claude Code character
+
+The clear-before-send hygiene finds the input box by its prompt marker, `❯`
+(U+276F). That is Claude Code's rendering choice, not a contract.
+
+If a future version draws a different marker, the daemon stops recognising the
+box. It does not break — it treats the pane as "not a Claude Code input box",
+sends a single `C-u` and proceeds — but it **stops being able to prove the line
+was clear**, and a wrapped draft could once again end up prefixed to a payload.
+
+The failure is silent by construction: everything keeps working, only the
+guarantee is gone. If you upgrade Claude Code and something about injected
+commands looks wrong, check `inputLine` in
+`~/.claude-bridge/control/logs/sendkeys-*.log` — a sudden run of
+`not-an-input-box` on panes that are plainly running Claude Code is the tell.
+
+---
+
 ## Platform support is uneven
 
 - **Linux + tmux** — what the fleet runs on, and where everything above was

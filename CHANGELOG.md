@@ -6,6 +6,105 @@ All notable changes to this project are documented here. Format follows [Keep a 
 
 _Nothing yet._
 
+## [0.11.6] — 2026-08-08
+
+### Typing into a terminal that belongs to a person
+
+The control plane delivers some things by typing them: `/compact`, a wake
+prompt. Until now it typed on top of whatever was already in the box. Someone
+starts a sentence, walks away, the daemon arrives — and Enter submits the two
+glued together. The human loses the thought; the peer gets a command with a
+stranger's words on the front.
+
+Zdeněk's instruction, 2026-08-07: clear first, then send — and put it in the
+tool, not in the callers, because a rule each caller must remember is a rule
+that holds until the next caller. It now lives in `TmuxDriver.sendKeys`, which
+every injection goes through.
+
+**Everything below was measured before it was written**, against Claude Code
+v2.1.224 in tmux on a 188-column pane. Three of the measurements contradicted
+what the author believed at the time, and one of them turned out to be a defect
+that was already shipping.
+
+#### One `C-u` was never going to be enough
+
+`C-u` kills to the start of the display ROW, not of the input. A 4971-character
+draft lost exactly 184 characters per stroke — pane width minus the box frame.
+`Escape` does not clear the box at all.
+
+So the literal reading of "clear the line first" would have deleted one visual
+row of a wrapped draft and appended the payload to the remainder — the exact
+harm the instruction exists to prevent. The clear now loops, in batches, and
+terminates on an exact condition: box content always begins on the `❯` line and
+shrinks from the bottom, so that line is empty if and only if the box is.
+
+**If the line cannot be cleared, nothing is typed.** A draft we cannot clear is
+a draft we would corrupt.
+
+#### The human's work was never in danger — only their knowing about it
+
+Claude Code keeps its own kill ring. `Ctrl+Y` restores a `C-u` exactly, survives
+an intervening payload, an Enter and a completed agent turn, and **composes**:
+402 characters cleared by twenty strokes came back whole on one press.
+
+The author had argued at length that this feature would destroy human work. It
+does not. What it does is make a person's text vanish without telling them, so
+displacement is now announced on two channels — a `display-message` for whoever
+is sitting there, a `peer_input_displaced` event for whoever comes back in an
+hour. Neither is enough alone.
+
+The notice is deliberately NOT folded into the payload. `/compact` takes free
+text as its compaction instructions, so a sentence meant for a person would have
+silently steered what the peer kept. **Payload belongs to the application,
+notices belong to the human, history belongs to the log.**
+
+#### Fixed: delivery could not be verified for payloads over ~190 characters
+
+`paneContains` collapsed whitespace to single spaces before matching. tmux wraps
+a long payload by putting a newline INSIDE it, and a collapsed newline is a
+space the payload does not have.
+
+Measured: the old rule rejected payloads of 200 and 400 characters that had
+arrived perfectly, while accepting 300, 500, 600, 700 and 800 — passing or
+failing according to where the wrap landed relative to the 40-character tail. A
+verification layer whose verdict depends on the reader's terminal width is not a
+verification layer. It now strips whitespace instead of collapsing it.
+
+#### Payloads that cannot be delivered honestly are refused up front
+
+- **Multi-line** — tmux turns every `\n` into Enter, submitting the payload in
+  pieces.
+- **Over 800 characters** — Claude Code collapses the input into a
+  `[Pasted text #N]` placeholder. Measured by bisection: 800 lands literally,
+  801 does not. This is decided by the arrival burst, not by bracketed-paste
+  markers, so raw `send-keys` trips it exactly as a paste does — which is the
+  opposite of what was argued before measuring. The text is not lost; the PROOF
+  is, after which the send throws, Enter is never sent, and the payload sits in
+  the box for the next caller to prepend to.
+
+Both are checked before any tmux call, so a refused payload leaves the pane
+exactly as it was found.
+
+#### Also
+
+- Text is sent with `-l --`. Without them a payload spelling a key name
+  (`Enter`, `Tab`) is pressed rather than typed, and one starting with `-` is
+  parsed as a tmux option. No caller trips this today; the point is that none
+  can.
+- The displaced draft is recorded exactly. Claude Code word-wraps its box and
+  the space it breaks at survives in neither row — the captured pane does not
+  contain that character at all — so rows are rejoined by width: one that
+  stopped short was broken at a space, one that ran the full width was broken
+  mid-word. Verified live against a 377-character draft containing both kinds
+  of break.
+- `peer-compact.ts` claimed to hold "the only send-keys path in the daemon". It
+  stopped being true when `wake.ts` gained one, and nobody noticed, because the
+  sentence was load-bearing for a charter §8 audit point and was maintained by
+  memory. The count now comes from a `grep` the comment spells out.
+- New: `docs/SEND-KEYS.md` — the measurements, the sequence, and the two limits
+  this layer imposes. `docs/KNOWN-LIMITATIONS.md` gains the payload ceiling and
+  the fact that box detection depends on one Claude Code character.
+
 ## [0.11.5] — 2026-08-07
 
 ### Not knowing is not the same as knowing it died
