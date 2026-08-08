@@ -506,7 +506,7 @@ function repairHarvestedEnv(peers: Record<string, PeerRecord>): Record<string, P
     const cleaned = stripHostProvided(env);
     if (Object.keys(cleaned).length === Object.keys(env).length) continue;
     log.info("spawn_env_repaired", {
-      sessionId: record.handle,
+      handle: record.handle,
       dropped: HOST_PROVIDED_VARS.filter((v) => v in env),
     });
     record.observed.spawnEnv = cleaned;

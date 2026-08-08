@@ -147,7 +147,7 @@ export type ControlConfigArgs = z.infer<typeof ControlConfigArgsSchema>;
 
 /** What is declared, what is measured, and where the two disagree. */
 export interface PeerConfigView {
-  sessionId: string;
+  handle: string;
   name: string;
   desired: PeerDesired;
   observed: {
@@ -208,7 +208,7 @@ export function viewOf(record: PeerRecord): PeerConfigView {
     });
   }
   return {
-    sessionId: record.handle,
+    handle: record.handle,
     name: record.observed.name,
     desired: { ...record.desired },
     observed: {
@@ -336,7 +336,7 @@ export async function handleControlConfig(
       event: "control_config_preview",
       by: { sessionId: req.requestedBy.sessionId, name: req.requestedBy.name },
       requestId: req.id,
-      details: { sessionId: record.handle, changes, reason: args.reason ?? null },
+      details: { handle: record.handle, changes, reason: args.reason ?? null },
     });
     return okResult(req.id, req.tool, {
       dryRun: true,
@@ -366,7 +366,7 @@ export async function handleControlConfig(
     event: "control_config_set",
     by: { sessionId: req.requestedBy.sessionId, name: req.requestedBy.name },
     requestId: req.id,
-    details: { sessionId: record.handle, changes, reason: args.reason ?? null },
+    details: { handle: record.handle, changes, reason: args.reason ?? null },
   });
 
   const after = ctx.state.peers[record.handle];

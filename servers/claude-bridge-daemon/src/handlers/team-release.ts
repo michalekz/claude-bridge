@@ -43,7 +43,7 @@ export const TeamReleaseArgsSchema = z
 export type TeamReleaseArgs = z.infer<typeof TeamReleaseArgsSchema>;
 
 interface ReleasePlanEntry {
-  sessionId: string;
+  handle: string;
   name: string;
   status: PeerRecord["observed"]["status"];
   team: string | null;
@@ -54,7 +54,7 @@ interface ReleasePlanEntry {
 
 function describe(rec: PeerRecord): ReleasePlanEntry {
   return {
-    sessionId: rec.handle,
+    handle: rec.handle,
     name: rec.observed.name,
     status: rec.observed.status,
     team: rec.desired.team ?? null,
@@ -173,7 +173,7 @@ export async function handleTeamRelease(
       by: { sessionId: req.requestedBy.sessionId, name: req.requestedBy.name },
       requestId: req.id,
       details: {
-        sessionId: rec.handle,
+        handle: rec.handle,
         name: rec.observed.name,
         team: rec.desired.team ?? null,
         pid: rec.observed.pid,

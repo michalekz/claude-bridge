@@ -90,7 +90,7 @@ export async function handleTeamStatus(
       // The HANDLE, not the peer's session identity (v0.11.16, defect N4). It
       // is how you address this peer and it is the registry key; whether it
       // also happens to BE the session id is answered by `identity` below.
-      sessionId: record.handle,
+      handle: record.handle,
       name: record.observed.name,
       hostDriver: record.observed.hostDriver,
       tmuxTarget: record.observed.tmuxTarget,
@@ -119,8 +119,8 @@ export async function handleTeamStatus(
     peerCount: peers.length,
     peers: args.verbose
       ? peers
-      : peers.map(({ sessionId, name, status, hostAlive, identity }) => ({
-          sessionId,
+      : peers.map(({ handle, name, status, hostAlive, identity }) => ({
+          handle,
           name,
           status,
           // Surfaced even in the compact listing: a peer whose identity is

@@ -512,7 +512,7 @@ export async function handlePeerRestart(
       req.tool,
       "restart_in_progress",
       `A restart of '${record.handle}' is already in its ${inFlight.phase} phase (requested at ${inFlight.requestedAt} by ${inFlight.requestId}). Entering it twice would risk two processes behind one record. Wait for it, or check team_reconcile for a restart_pending drift if the caller is gone.`,
-      { sessionId: record.handle, phase: inFlight.phase, since: inFlight.requestedAt },
+      { handle: record.handle, phase: inFlight.phase, since: inFlight.requestedAt },
     );
   }
 
@@ -551,7 +551,7 @@ export async function handlePeerRestart(
       by: { sessionId: req.requestedBy.sessionId, name: req.requestedBy.name },
       requestId: req.id,
       details: {
-        sessionId: record.handle,
+        handle: record.handle,
         missing,
         fallbackCwd: cwd,
         fallbackCommand: command,
@@ -580,7 +580,7 @@ export async function handlePeerRestart(
       level: "warn",
       by: { sessionId: req.requestedBy.sessionId, name: req.requestedBy.name },
       requestId: req.id,
-      details: { sessionId: record.handle, reason: resumeDecision.why },
+      details: { handle: record.handle, reason: resumeDecision.why },
     });
     return errResult(
       req.id,
@@ -588,7 +588,7 @@ export async function handlePeerRestart(
       "restart_identity_unknown",
       `Refusing to restart '${record.handle}': ${resumeDecision.why}. Resuming the handle would relaunch the peer EMPTY and report success; resuming nothing would drop its context on purpose. Neither is this tool's decision to make. Run team_reconcile to measure the identity, then restart. NOTHING WAS TOUCHED — the peer is still running.`,
       {
-        sessionId: record.handle,
+        handle: record.handle,
         identity: record.observed.identity ?? null,
         measuredSessionId: record.observed.sessionId ?? null,
       },
@@ -623,7 +623,7 @@ export async function handlePeerRestart(
         by: { sessionId: req.requestedBy.sessionId, name: req.requestedBy.name },
         requestId: req.id,
         details: {
-          sessionId: record.handle,
+          handle: record.handle,
           tmuxTarget: record.observed.tmuxTarget,
           hint: "The window is not on the host, so its parent session cannot be read. The peer will be relaunched as a session of its own.",
         },
@@ -676,7 +676,7 @@ export async function handlePeerRestart(
       by: { sessionId: req.requestedBy.sessionId, name: req.requestedBy.name },
       requestId: req.id,
       details: {
-        sessionId: record.handle,
+        handle: record.handle,
         threadId: ready.threadId,
         timeoutMs: ready.timeoutMs,
         waitedMs: ready.waitedMs,
@@ -690,7 +690,7 @@ export async function handlePeerRestart(
       "restart_ready_timeout",
       `Peer '${record.handle}' did not say it was ready within ${ready.timeoutMs} ms (waited ${ready.waitedMs} ms, last ack verdict: ${ready.ackVerdict}). NOTHING WAS STOPPED and nothing was killed — the peer is running exactly as before. The request stands: call peer_restart again to keep waiting on the same thread (a late ack still counts), or peer_restart with force:true to restart it now and lose whatever it had not written down.`,
       {
-        sessionId: record.handle,
+        handle: record.handle,
         threadId: ready.threadId,
         waitedMs: ready.waitedMs,
         stillRunning: true,
@@ -770,7 +770,7 @@ export async function handlePeerRestart(
       by: { sessionId: req.requestedBy.sessionId, name: req.requestedBy.name },
       requestId: req.id,
       details: {
-        sessionId: record.handle,
+        handle: record.handle,
         code: stopResult.error?.code ?? null,
         readyAcked: ready.kind === "acked",
       },
@@ -780,7 +780,7 @@ export async function handlePeerRestart(
       req.tool,
       "restart_stop_failed",
       `${stopResult.error?.message ?? "peer_stop failed"} — the restart stopped here, and the peer is still running. Retry, or use force:true.`,
-      { stopResult, sessionId: record.handle, stillRunning: true },
+      { stopResult, handle: record.handle, stillRunning: true },
     );
   }
   const stoppedCleanly =
@@ -895,7 +895,7 @@ export async function handlePeerRestart(
       by: { sessionId: req.requestedBy.sessionId, name: req.requestedBy.name },
       requestId: req.id,
       details: {
-        sessionId: record.handle,
+        handle: record.handle,
         status: "unknown",
         hint: "The relaunch failed. The record is kept so the peer can be retried or released; nothing is running behind it.",
       },
@@ -976,14 +976,14 @@ export async function handlePeerRestart(
       level: "error",
       by: { sessionId: req.requestedBy.sessionId, name: req.requestedBy.name },
       requestId: req.id,
-      details: { sessionId: record.handle, pid: newPid, reason: liveness.reason },
+      details: { handle: record.handle, pid: newPid, reason: liveness.reason },
     });
     return errResult(
       req.id,
       req.tool,
       "restart_died_after_spawn",
       `The relaunched peer did not survive: ${liveness.reason}`,
-      { sessionId: record.handle, pid: newPid, reason: liveness.reason },
+      { handle: record.handle, pid: newPid, reason: liveness.reason },
     );
   }
 
@@ -1022,7 +1022,7 @@ export async function handlePeerRestart(
     by: { sessionId: req.requestedBy.sessionId, name: req.requestedBy.name },
     requestId: req.id,
     details: {
-      sessionId: record.handle,
+      handle: record.handle,
       reason: args.reason ?? null,
       force: args.force,
       mode: args.force ? "forced" : ready.kind === "acked" ? "graceful" : "no-host",
@@ -1074,7 +1074,7 @@ export async function handlePeerRestart(
   });
 
   return okResult(req.id, req.tool, {
-    sessionId: record.handle,
+    handle: record.handle,
     // TOP LEVEL, all of it. A caller must not have to dig through two nested
     // results to learn whether the peer kept its context, whether it was asked
     // first, or whether it was told what happened.

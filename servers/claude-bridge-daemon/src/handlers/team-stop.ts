@@ -234,7 +234,7 @@ async function stopSinglePeer(
     by: { sessionId: req.requestedBy.sessionId, name: req.requestedBy.name },
     requestId: req.id,
     details: {
-      sessionId: peer.handle,
+      handle: peer.handle,
       sessionKey,
       team: args.team,
       threadId,

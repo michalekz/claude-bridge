@@ -252,10 +252,10 @@ describe("handlers", () => {
       expect(statusRes.outcome).toBe("ok");
       const statusData = statusRes.data as {
         peerCount: number;
-        peers: Array<{ sessionId: string; hostAlive: boolean }>;
+        peers: Array<{ handle: string; hostAlive: boolean }>;
       };
       expect(statusData.peerCount).toBe(1);
-      expect(statusData.peers[0]?.sessionId).toBe("peer-b");
+      expect(statusData.peers[0]?.handle).toBe("peer-b");
       expect(statusData.peers[0]?.hostAlive).toBe(true);
 
       const stopRes = await dispatch(

@@ -6,6 +6,52 @@ All notable changes to this project are documented here. Format follows [Keep a 
 
 _Nothing yet._
 
+## [0.11.22] — 2026-08-08
+
+### The pass R3 owed the surfaces the compiler cannot see
+
+v0.11.21 cut `sessionId` into two words by meaning and let the type system
+enforce the cut. It enforced it everywhere it could reach — the record, the wire
+schemas, the interfaces. Result payloads and event `details` are
+`Record<string, unknown>`, so **46 sites went on emitting a handle under the name
+`sessionId`** and nothing complained.
+
+Found in acceptance, from a live `peer_restart` reply:
+
+```json
+{ "sessionId": "tst-s1", "restarted": true, "mode": "graceful" }
+```
+
+Leaving it would have repeated, deliberately, the defect v0.11.21 criticises
+v0.11.16 for: fixing the behaviour and keeping the word. The behaviour was
+right everywhere — addressing, resume, acks — but a caller reading
+`res.data.sessionId` off `peer_restart` got a handle, which is the exact
+confusion the release claims to have removed.
+
+Renamed across results, audit events and the typed shapes the first pass missed
+(`DriftEntry`, `PeerConfigView`, `ReleasePlanEntry`, `RestartOutcome`,
+`team_layout`'s failure lists). Two things deliberately kept their names:
+
+- `by: { sessionId }` — the CALLER, and a caller genuinely is a session.
+- `decideResume`'s `sessionId` — the value handed to `--resume`. It equals the
+  handle for 24 of 26 fleet records, which is why it is easy to mistake for one.
+- `measuredSessionId` — a genuine session id whose longer name stays, because a
+  caller reading `sessionId` off that result would silently get a different
+  value than before.
+
+#### The test matters more than the rename
+
+The suite could not have caught this: it asserts VALUES, and a value is right
+whatever the key above it is called. `tests/v0.11.22-output-field-names.test.ts`
+asserts the WORDS — `peer_spawn`, `team_status` (both the compact and verbose
+shapes), `team_layout`'s plan, and the audit trail — including that `by` still
+carries a `sessionId`, because not every one of them was wrong.
+
+Verified by effect: reverting one site to the old name fails the new test.
+
+**A rename is only as complete as the type system's reach. The untyped surfaces
+need their own pass, and their own test.**
+
 ## [0.11.21] — 2026-08-08
 
 ### An address is an address, a handle is a handle

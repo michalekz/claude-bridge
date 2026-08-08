@@ -227,14 +227,14 @@ export async function handlePeerSpawn(
       level: "warn",
       by: { sessionId: req.requestedBy.sessionId, name: req.requestedBy.name },
       requestId: req.id,
-      details: { sessionId: args.handle, sessionKey, ...hit.details, reason: hit.reason },
+      details: { handle: args.handle, sessionKey, ...hit.details, reason: hit.reason },
     });
     return errResult(
       req.id,
       req.tool,
       "session_already_live",
       `Refusing to spawn — ${hit.reason === "state_live" ? "daemon state" : "host driver"} still holds sessionId '${args.handle}'`,
-      { sessionId: args.handle, ...hit.details },
+      { handle: args.handle, ...hit.details },
     );
   }
 
@@ -303,7 +303,7 @@ export async function handlePeerSpawn(
         by: { sessionId: req.requestedBy.sessionId, name: req.requestedBy.name },
         requestId: req.id,
         details: {
-          sessionId: args.handle,
+          handle: args.handle,
           resumeTarget,
           reason: "resume_transcript_missing",
           cwd: args.cwd,
@@ -319,7 +319,7 @@ export async function handlePeerSpawn(
           ? `There is no transcript for ${resumeTarget} under cwd '${args.cwd}' (looked for ${transcript}) — but one exists at ${elsewhere}. Claude Code finds transcripts by working directory, so this peer would start, fail to find its own history and exit. Spawn it in the directory its transcript belongs to.`
           : `There is no transcript for ${resumeTarget} anywhere under ~/.claude/projects (looked for ${transcript}). \`--resume\` would print "No conversation found" and exit immediately. Either the session id is wrong, or that session never held a conversation — a session file is written at boot, a transcript only once something is said.`,
         {
-          sessionId: args.handle,
+          handle: args.handle,
           resumeTarget,
           cwd: args.cwd,
           transcript,
@@ -496,7 +496,7 @@ export async function handlePeerSpawn(
         by: { sessionId: req.requestedBy.sessionId, name: req.requestedBy.name },
         requestId: req.id,
         details: {
-          sessionId: args.handle,
+          handle: args.handle,
           sessionKey: canonicalKey,
           reason: "process_exited_after_spawn",
           exitStatus,
@@ -516,7 +516,7 @@ export async function handlePeerSpawn(
             : `The pane could NOT be archived, so it was left standing — read it with \`tmux capture-pane -p -t ${canonicalKey}\` before removing it.`
         }`,
         {
-          sessionId: args.handle,
+          handle: args.handle,
           sessionKey: canonicalKey,
           exitStatus,
           archivePath,
@@ -539,7 +539,7 @@ export async function handlePeerSpawn(
         by: { sessionId: req.requestedBy.sessionId, name: req.requestedBy.name },
         requestId: req.id,
         details: {
-          sessionId: args.handle,
+          handle: args.handle,
           sessionKey: canonicalKey,
           reason: "pane_pid_unavailable",
           hostSaid: record.probe.raw,
@@ -556,7 +556,7 @@ export async function handlePeerSpawn(
           `Nothing was destroyed: inspect the pane with \`tmux capture-pane -p -t ${canonicalKey}\`, then either \`team_reconcile\` or \`peer_stop\`. ` +
           `The host said: ${record.probe.raw}`,
         {
-          sessionId: args.handle,
+          handle: args.handle,
           sessionKey: canonicalKey,
           probe: record.probe,
           cwd: args.cwd,
@@ -577,7 +577,7 @@ export async function handlePeerSpawn(
         by: { sessionId: req.requestedBy.sessionId, name: req.requestedBy.name },
         requestId: req.id,
         details: {
-          sessionId: args.handle,
+          handle: args.handle,
           sessionKey: canonicalKey,
           reason: "no_process_after_spawn",
           cwd: args.cwd,
@@ -590,7 +590,7 @@ export async function handlePeerSpawn(
         "spawn_produced_no_process",
         `The session was created and the host reports no such target — the command exited immediately. Host said: ${record.probe?.kind === "no-such-target" ? record.probe.raw : "(driver reported not-alive without detail)"}`,
         {
-          sessionId: args.handle,
+          handle: args.handle,
           sessionKey: canonicalKey,
           cwd: args.cwd,
           command: args.command,
@@ -666,7 +666,7 @@ export async function handlePeerSpawn(
       by: { sessionId: req.requestedBy.sessionId, name: req.requestedBy.name },
       requestId: req.id,
       details: {
-        sessionId: args.handle,
+        handle: args.handle,
         sessionKey: canonicalKey,
         rawSessionKey: sessionKey !== canonicalKey ? sessionKey : undefined,
         pid: record.pid,
@@ -729,10 +729,10 @@ export async function handlePeerSpawn(
       level: "error",
       by: { sessionId: req.requestedBy.sessionId, name: req.requestedBy.name },
       requestId: req.id,
-      details: { sessionId: args.handle, sessionKey, err: message },
+      details: { handle: args.handle, sessionKey, err: message },
     });
     return errResult(req.id, req.tool, "spawn_failed", message, {
-      sessionId: args.handle,
+      handle: args.handle,
       sessionKey,
     });
   }

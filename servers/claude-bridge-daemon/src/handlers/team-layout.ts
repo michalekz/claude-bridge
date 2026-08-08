@@ -271,19 +271,19 @@ export async function handleTeamLayout(
   };
 
   const spawnedOk: string[] = [];
-  const spawnedFailed: Array<{ sessionId: string; err: string }> = [];
+  const spawnedFailed: Array<{ handle: string; err: string }> = [];
   for (const p of toSpawn) {
     const res = await spawnOne(p, false, "spawn");
     if (res.outcome === "ok") {
       await stampTeam(p.handle);
       spawnedOk.push(p.handle);
     } else {
-      spawnedFailed.push({ sessionId: p.handle, err: res.error?.message ?? "unknown" });
+      spawnedFailed.push({ handle: p.handle, err: res.error?.message ?? "unknown" });
     }
   }
 
   const resumedOk: string[] = [];
-  const resumedFailed: Array<{ sessionId: string; err: string }> = [];
+  const resumedFailed: Array<{ handle: string; err: string }> = [];
   const wakeOutcomes: WakeOutcome[] = [];
   for (const p of toResume) {
     // Capture the tombstone's stop quality BEFORE peer_spawn overwrites the
@@ -292,7 +292,7 @@ export async function handleTeamLayout(
     const stoppedCleanly = ctx.state.peers[p.handle]?.observed.stoppedCleanly ?? null;
     const res = await spawnOne(p, true, "resume");
     if (res.outcome !== "ok") {
-      resumedFailed.push({ sessionId: p.handle, err: res.error?.message ?? "unknown" });
+      resumedFailed.push({ handle: p.handle, err: res.error?.message ?? "unknown" });
       continue;
     }
     await stampTeam(p.handle);
@@ -315,9 +315,9 @@ export async function handleTeamLayout(
   }
 
   const stoppedOk: string[] = [];
-  const stoppedFailed: Array<{ sessionId: string; err: string }> = [];
+  const stoppedFailed: Array<{ handle: string; err: string }> = [];
   /** Asked, still running, still recorded. Not an error — an unfinished ask. */
-  const stoppedRefused: Array<{ sessionId: string; detail: string }> = [];
+  const stoppedRefused: Array<{ handle: string; detail: string }> = [];
   const forgotten: string[] = [];
   if (args.prune) {
     for (const id of toStop) {
@@ -353,9 +353,9 @@ export async function handleTeamLayout(
         // agreed to stop yet. Reported apart from a kill that went wrong,
         // because the two want different things from a reader: this one wants
         // patience or `pruneForce`, the other wants investigating.
-        stoppedRefused.push({ sessionId: id, detail: res.error?.message ?? "no ack" });
+        stoppedRefused.push({ handle: id, detail: res.error?.message ?? "no ack" });
       } else {
-        stoppedFailed.push({ sessionId: id, err: res.error?.message ?? "unknown" });
+        stoppedFailed.push({ handle: id, err: res.error?.message ?? "unknown" });
       }
     }
     // Tombstones outside the spec: drop the record outright. There is no host

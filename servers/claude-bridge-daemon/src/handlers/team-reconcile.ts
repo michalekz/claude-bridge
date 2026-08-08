@@ -96,7 +96,15 @@ export type DriftKind =
 
 export interface DriftEntry {
   kind: DriftKind;
-  sessionId: string | null;
+  /**
+   * WHICH record this is about — the registry key. `null` for drift that
+   * belongs to no record (an unmanaged process, an orphaned dead pane).
+   *
+   * Renamed from `sessionId` in v0.11.22, the pass R3 owed the untyped
+   * surfaces: a drift entry is read by a person deciding what to do, and it
+   * named a handle with the word this release reserved for identities.
+   */
+  handle: string | null;
   name: string | null;
   team: string | null;
   recordedPid: number | null;
@@ -220,7 +228,7 @@ export async function handleTeamReconcile(
     }
 
     const base = {
-      sessionId: rec.handle,
+      handle: rec.handle,
       name: rec.observed.name,
       team: rec.desired.team ?? null,
       recordedPid: rec.observed.pid,
@@ -366,7 +374,7 @@ export async function handleTeamReconcile(
     if (accountedPids.has(proc.pid)) continue;
     drift.push({
       kind: "unmanaged",
-      sessionId: proc.sessionId,
+      handle: proc.sessionId,
       name: null,
       team: null,
       recordedPid: null,
@@ -407,7 +415,7 @@ export async function handleTeamReconcile(
     if (!info) continue;
     drift.push({
       kind: "dead_pane",
-      sessionId: null,
+      handle: null,
       name: info.label,
       team: null,
       recordedPid: null,
@@ -421,7 +429,7 @@ export async function handleTeamReconcile(
 
   const marked: string[] = [];
   if (args.markDead) {
-    const deadIds = drift.filter((d) => d.kind === "dead" && d.sessionId).map((d) => d.sessionId);
+    const deadIds = drift.filter((d) => d.kind === "dead" && d.handle).map((d) => d.handle);
     if (deadIds.length > 0) {
       await applyStateChange(ctx.state, (draft) => {
         for (const id of deadIds) {
@@ -524,7 +532,7 @@ export async function handleTeamReconcile(
         r.desired.windowIndex !== r.observed.windowIndex,
     )
     .map((r) => ({
-      sessionId: r.handle,
+      handle: r.handle,
       name: r.observed.name,
       desired: r.desired.windowIndex,
       observed: r.observed.windowIndex,

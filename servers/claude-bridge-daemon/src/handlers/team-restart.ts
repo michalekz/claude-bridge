@@ -81,7 +81,7 @@ export const TeamRestartArgsSchema = z
 export type TeamRestartArgs = z.infer<typeof TeamRestartArgsSchema>;
 
 interface RestartOutcome {
-  sessionId: string;
+  handle: string;
   name: string;
   outcome: "restarted" | "failed" | "skipped";
   pidBefore: number | null;
@@ -197,7 +197,7 @@ export async function handleTeamRestart(
       "launch_params_missing",
       `${unrestartable.length} of ${ordered.length} peers have no recorded command and would relaunch as a bare 'claude'. Nothing was restarted.`,
       {
-        peers: unrestartable.map((r) => ({ sessionId: r.handle, name: r.observed.name })),
+        peers: unrestartable.map((r) => ({ handle: r.handle, name: r.observed.name })),
         hint: "Records written before v0.10.3 lack launch parameters. Re-spawn those peers, or adopt them again with a daemon that reads /proc.",
       },
     );
@@ -212,7 +212,7 @@ export async function handleTeamRestart(
     force: args.force,
     continueOnError: args.continueOnError,
     order: ordered.map((r) => ({
-      sessionId: r.handle,
+      handle: r.handle,
       name: r.observed.name,
       tmuxTarget: r.observed.tmuxTarget,
       pid: r.observed.pid,
@@ -241,7 +241,7 @@ export async function handleTeamRestart(
   for (const [i, rec] of ordered.entries()) {
     if (stoppedEarly) {
       results.push({
-        sessionId: rec.handle,
+        handle: rec.handle,
         name: rec.observed.name,
         outcome: "skipped",
         pidBefore: rec.observed.pid,
@@ -263,7 +263,7 @@ export async function handleTeamRestart(
 
     if (res.outcome === "error") {
       results.push({
-        sessionId: rec.handle,
+        handle: rec.handle,
         name: rec.observed.name,
         outcome: "failed",
         pidBefore,
@@ -275,7 +275,7 @@ export async function handleTeamRestart(
     }
 
     results.push({
-      sessionId: rec.handle,
+      handle: rec.handle,
       name: rec.observed.name,
       outcome: "restarted",
       pidBefore,
@@ -310,11 +310,11 @@ export async function handleTeamRestart(
   const summary = {
     dryRun: false,
     total: ordered.length,
-    restarted: restarted.map((r) => r.sessionId),
-    failed: failed.map((r) => ({ sessionId: r.sessionId, error: r.error })),
+    restarted: restarted.map((r) => r.handle),
+    failed: failed.map((r) => ({ sessionId: r.handle, error: r.error })),
     // Named, not merely absent from the success list: an operator has to know
     // which peers were never touched so they can finish the roll-out.
-    skipped: skipped.map((r) => r.sessionId),
+    skipped: skipped.map((r) => r.handle),
     stoppedEarly,
     results,
   };
