@@ -42,6 +42,20 @@ const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
 const PLUGIN_MANIFEST = ".claude-plugin/plugin.json";
 const CATALOG = ".claude-plugin/marketplace.json";
+/**
+ * Built artifacts that SHIP — a plugin install is a git checkout, so these files
+ * are the program, not a build input. Each must carry the manifest's version,
+ * which proves it was rebuilt after the bump. Added v0.11.23; see `cmdCheck`.
+ *
+ * Only bundles that inline their own package version belong here. The three
+ * smaller MCP artifacts (statusline, refresh-limits, setup-check) do not read a
+ * version, so a version string in them would be an accident to assert on.
+ */
+const BUILT_ARTIFACTS = [
+  "servers/claude-bridge/dist/bundle.cjs",
+  "servers/claude-bridge-daemon/dist/daemon.cjs",
+];
+
 /** Every package.json whose version must equal the plugin manifest's. */
 const PACKAGES = [
   "servers/claude-bridge/package.json",
@@ -106,6 +120,43 @@ function cmdCheck() {
     const pkg = readJson(rel);
     if (pkg.version !== version) {
       fail(`${rel} version ${pkg.version} != ${PLUGIN_MANIFEST} ${version}`);
+      ok = false;
+    }
+  }
+
+  // THE ARTIFACT IS WHAT SHIPS, and until v0.11.23 nothing checked it.
+  //
+  // `dist/*.cjs` are tracked, because a plugin install is a git checkout — there
+  // is no build step on the installing machine. So the bundle in the repo IS the
+  // program every peer runs, and a release that bumps `package.json` without
+  // rebuilding ships new sources with an old program.
+  //
+  // Measured 2026-08-08: the MCP bundle on `develop` carried 0.11.17 while the
+  // manifest said 0.11.22. Everything the MCP server gained in v0.11.18 through
+  // v0.11.22 — including the whole `sessionId` -> `handle` wire rename — existed
+  // only in `src/`. The daemon side was current only because its binary is
+  // rebuilt by hand before every deploy, which is a habit, and habits are what
+  // this check replaces.
+  //
+  // The version reaches the bundle because `src/mcp/server.ts` reads its own
+  // package.json and esbuild inlines it, so the string below is proof the file
+  // was built AFTER the bump — not merely that it exists.
+  for (const rel of BUILT_ARTIFACTS) {
+    let text;
+    try {
+      text = readFileSync(join(ROOT, rel), "utf-8");
+    } catch {
+      fail(`${rel} is missing — run the package's \`npm run build\` before releasing`);
+      ok = false;
+      continue;
+    }
+    if (!text.includes(`"${version}"`)) {
+      const found = text.match(/"\d+\.\d+\.\d+(?:-[0-9a-z.]+)?"/g) ?? [];
+      fail(
+        `${rel} does not carry ${version} — it was built before the version bump. ` +
+          `Rebuild it (${found.length ? `it looks like ${found[0]}` : "no version string found"}), ` +
+          `or the release ships new sources with an old program.`,
+      );
       ok = false;
     }
   }

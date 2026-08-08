@@ -18243,7 +18243,7 @@ var StdioServerTransport = class {
 // package.json
 var package_default = {
   name: "claude-bridge",
-  version: "0.11.17",
+  version: "0.11.23",
   private: true,
   description: "MCP server for cross-Claude-Code-chat orchestration over local session JSONL files",
   type: "module",
@@ -22083,7 +22083,7 @@ async function controlStatusTool() {
   });
 }
 var PeerStopArgs = external_exports.object({
-  peer: external_exports.string().describe("Peer sessionId or display name"),
+  peer: external_exports.string().describe("Peer handle (registry key) or display name"),
   reason: external_exports.string().optional(),
   force: external_exports.boolean().optional(),
   ackTimeoutMs: external_exports.number().int().positive().max(6e5).optional(),
@@ -22164,7 +22164,12 @@ async function peerStopTool(ctx, args) {
   });
 }
 var PeerSpawnArgs = external_exports.object({
-  sessionId: external_exports.string().min(1),
+  /**
+   * Registry key for the new peer — renamed from `sessionId` in v0.11.21.
+   * BREAKING, without an alias: a peer that has not booted cannot have a
+   * session id, and the old name is what let the key be handed to `--resume`.
+   */
+  handle: external_exports.string().min(1),
   displayName: external_exports.string().min(1),
   cwd: external_exports.string().min(1),
   command: external_exports.string().min(1),
@@ -22179,7 +22184,7 @@ var PeerSpawnArgs = external_exports.object({
 }).strict();
 async function peerSpawnTool(ctx, args) {
   const daemonArgs = {
-    sessionId: args.sessionId,
+    handle: args.handle,
     displayName: args.displayName,
     cwd: args.cwd,
     command: args.command,
@@ -22199,6 +22204,9 @@ var PeerRestartArgs = external_exports.object({
   peer: external_exports.string().min(1),
   reason: external_exports.string().optional(),
   force: external_exports.boolean().optional(),
+  // v0.11.18. `readyPollMs` is deliberately NOT on the wire: it tunes the
+  // daemon's own poll loop and no operator has a reason to reach it.
+  readyTimeoutMs: external_exports.number().int().positive().max(6e5).optional(),
   model: external_exports.string().optional(),
   accountProfile: external_exports.string().optional(),
   wait: external_exports.boolean().optional(),
@@ -22208,6 +22216,7 @@ async function peerRestartTool(ctx, args) {
   const daemonArgs = { peer: args.peer };
   if (args.reason !== void 0) daemonArgs["reason"] = args.reason;
   if (args.force !== void 0) daemonArgs["force"] = args.force;
+  if (args.readyTimeoutMs !== void 0) daemonArgs["readyTimeoutMs"] = args.readyTimeoutMs;
   if (args.model !== void 0) daemonArgs["model"] = args.model;
   if (args.accountProfile !== void 0) daemonArgs["accountProfile"] = args.accountProfile;
   return submitDaemonRequest(ctx, "peer_restart", daemonArgs, {
@@ -22369,6 +22378,8 @@ var TeamRestartArgs = external_exports.object({
   team: external_exports.string().min(1).optional(),
   reason: external_exports.string().optional(),
   settleMs: external_exports.number().int().min(0).max(12e4).optional(),
+  /** v0.11.18 — pass-through to the primitive, applied to every member. */
+  force: external_exports.boolean().optional(),
   continueOnError: external_exports.boolean().optional(),
   /** Defaults to TRUE in the daemon. */
   dryRun: external_exports.boolean().optional(),
@@ -22381,6 +22392,7 @@ async function teamRestartTool(ctx, args) {
   if (args.team !== void 0) daemonArgs["team"] = args.team;
   if (args.reason !== void 0) daemonArgs["reason"] = args.reason;
   if (args.settleMs !== void 0) daemonArgs["settleMs"] = args.settleMs;
+  if (args.force !== void 0) daemonArgs["force"] = args.force;
   if (args.continueOnError !== void 0) daemonArgs["continueOnError"] = args.continueOnError;
   if (args.dryRun !== void 0) daemonArgs["dryRun"] = args.dryRun;
   const peerCount = args.peers?.length ?? 25;
@@ -24158,7 +24170,7 @@ var TOOLS = [
   },
   {
     name: "control_config",
-    description: 'Read and DECLARE peer intent \u2014 the single configuration tool for the control plane (v0.11.0). No args: every peer\'s declared values plus any drift. `peer`: one peer (session id, full name, or short name inside your team). `team`: that team\'s peers. `set`: declare values \u2014 allowed keys are label, role, windowIndex, model, accountProfile. `role: "velitel"` is the one the daemon acts on: that peer is ordered LAST in a team stop or restart, because a coordinator goes down after the peers it coordinates. Undeclared peers fall back to matching the name, and both tools report which source decided \u2014 a name match is a guess (`mic-velitel-zastupce` contains the word and is not the coordinator). `unset: ["windowIndex"]` withdraws a declaration entirely, which is different from setting it empty. `team` is deliberately NOT settable: moving a peer between teams is lifecycle work (window, home session, label) and belongs to team_adopt/team_release. `dryRun:true` shows the change and writes nothing. IMPORTANT: this writes the DESIRED half of the record only; it changes nothing in the world. windowIndex is recorded and drift is reported, but no window is moved in v0.11.0 \u2014 asserting intent lands in v0.11.1 behind an explicit opt-in. Drift entries carry BOTH the declared and the measured value and BOTH ways out: `assert` (make the world match) and `adopt` (accept reality as the new intent). Destructive lifecycle operations are deliberately NOT here \u2014 see peer_stop / peer_restart / team_stop. The same function is reachable from a shell: `claude-bridge-daemon config --help`.',
+    description: 'Read and DECLARE peer intent \u2014 the single configuration tool for the control plane (v0.11.0). No args: every peer\'s declared values plus any drift. `peer`: one peer (session id, full name, or short name inside your team). `team`: that team\'s peers. `set`: declare values \u2014 allowed keys are label, role, windowIndex, model, accountProfile. `role: "velitel"` is the one the daemon acts on: that peer is ordered LAST in a team stop or restart, because a coordinator goes down after the peers it coordinates. Undeclared peers fall back to matching the name, and both tools report which source decided \u2014 a name match is a guess (`mic-velitel-zastupce` contains the word and is not the coordinator). `unset: ["windowIndex"]` withdraws a declaration entirely, which is different from setting it empty. `team` is deliberately NOT settable: moving a peer between teams is lifecycle work (window, home session, label) and belongs to team_adopt/team_release. `dryRun:true` shows the change and writes nothing. IMPORTANT: this writes the DESIRED half of the record only; it changes nothing in the world. windowIndex is recorded and drift is reported, but NO WINDOW IS MOVED: asserting intent is not implemented yet, and will require an explicit opt-in when it is. Drift entries carry BOTH the declared and the measured value and BOTH ways out: `assert` (make the world match) and `adopt` (accept reality as the new intent). Destructive lifecycle operations are deliberately NOT here \u2014 see peer_stop / peer_restart / team_stop. The same function is reachable from a shell: `claude-bridge-daemon config --help`.',
     inputSchema: {
       type: "object",
       properties: {
@@ -24290,9 +24302,9 @@ var TOOLS = [
     inputSchema: {
       type: "object",
       properties: {
-        sessionId: {
+        handle: {
           type: "string",
-          description: "Session UUID for --resume; a stable name for a fresh spawn."
+          description: "Registry key \u2014 the name the control plane will know this peer by. RENAMED from `sessionId` in v0.11.21 (breaking, no alias): a peer that has not booted has no session id. Pass a UUID only to resume that exact transcript; otherwise any stable name."
         },
         displayName: {
           type: "string",
@@ -24344,7 +24356,7 @@ var TOOLS = [
           description: "Wait budget in ms (default 10000)."
         }
       },
-      required: ["sessionId", "displayName", "cwd", "command"],
+      required: ["handle", "displayName", "cwd", "command"],
       additionalProperties: false
     },
     handler: async (args, ctx) => {
@@ -24355,7 +24367,7 @@ var TOOLS = [
   },
   {
     name: "peer_restart",
-    description: "Stop and re-spawn a peer via the daemon, carrying model + account profile from state.peers unless overridden. Uses `--resume` so the session id stays stable. Wait/timeout semantics identical to peer_spawn.",
+    description: 'Restart a peer through the control-plane daemon \u2014 the owner\'s protocol a)-g). **BREAKING in v0.11.18: this is now GRACEFUL by default and can take minutes.** Sequence: the daemon decides WHAT to resume from the peer\'s measured identity, puts a "get ready, you are coming back" request in its inbox, waits for the ack, stops it with the graceful peer_stop primitive, relaunches it with its stored environment and its own transcript, confirms the peer that came back is the one that left, and finally tells the peer what happened and why. If the peer does NOT say it is ready within `readyTimeoutMs` (default 120 s), the call FAILS with `restart_ready_timeout` and **nothing is stopped and nothing is killed** \u2014 the peer is running exactly as before. The request stands: calling again resumes the SAME request, and a late ack still counts. `force:true` is the old behaviour \u2014 no asking, relaunch now; it skips WAITING, never EVIDENCE (the pane archive, the identity check, and the message warning the peer that its anchor may be half-written all still happen). A peer whose identity is UNKNOWN is REFUSED (`restart_identity_unknown`) rather than guessed at, because resuming its handle would relaunch it EMPTY and resuming nothing would drop its context \u2014 run team_reconcile to measure it first. Note the interaction with `wait`: a graceful restart legitimately exceeds the default 10 s, so you get `outcome: "pending"` and collect the verdict with control_result \u2014 that is not a failure. The peer is asked ONCE: a ready-ack is a full agent turn (measured 30 s on a live peer), and asking again for a stop-ack would need a second one. The result reports `resumedSessionId` (did the context survive?), `mode`, `readyWaitedMs`, `stoppedCleanly` and `reported` (did step g reach the peer?).',
     inputSchema: {
       type: "object",
       properties: {
@@ -24369,7 +24381,13 @@ var TOOLS = [
         },
         force: {
           type: "boolean",
-          description: "Kill immediately instead of graceful signal."
+          description: "Skip the asking \u2014 no ready-request, no stop courtesy \u2014 and relaunch now. Skips WAITING, never EVIDENCE: the dead-pane archive, the identity check after the relaunch and the message telling the peer its anchor may be half-written all still happen."
+        },
+        readyTimeoutMs: {
+          type: "number",
+          minimum: 1,
+          maximum: 6e5,
+          description: "How long the peer gets to say it is ready before the restart is reported as failed (default 120000). Ignored when force:true."
         },
         model: {
           type: "string",
@@ -24393,13 +24411,13 @@ var TOOLS = [
   },
   {
     name: "team_status",
-    description: "Read-only view over the daemon's state.peers + host driver liveness. Returns per peer: sessionId, name, status, hostAlive (true when the driver still holds the sessionKey). `verbose:true` adds tmuxTarget, pid, model, account profile, timestamps. Default `wait:true` \u2014 this is a read query, callers expect data not an ack. Telemetry fields (context %, rate limits) land in F2.",
+    description: "Read-only view over the daemon's state.peers + host driver liveness. Returns per peer: handle (the registry key \u2014 RENAMED from sessionId in v0.11.21), name, status, hostAlive (true when the driver still holds the sessionKey). `verbose:true` adds tmuxTarget, pid, model, account profile, timestamps. Default `wait:true` \u2014 this is a read query, callers expect data not an ack. Telemetry (context %, rate limits) is not part of this tool; read it with peer_context_status and rate_limit_status.",
     inputSchema: {
       type: "object",
       properties: {
         team: {
           type: "string",
-          description: "Optional team filter (unused in beta; reserved for F2 multi-team layout)."
+          description: "NOT IMPLEMENTED \u2014 passing this is now REFUSED with `not_implemented`, not ignored. Until v0.11.21 it was accepted and echoed back while the response held the whole fleet, so a filtered-looking answer was not filtered. Omit it and read `peers[].team`."
         },
         verbose: {
           type: "boolean",
@@ -24418,7 +24436,7 @@ var TOOLS = [
   },
   {
     name: "peer_compact",
-    description: "Ask the control-plane daemon to orchestrate `/compact` on a peer (v0.10.0-rc). Sequence: daemon writes a bridge inbox message to the peer requesting a compact anchor \u2192 peer writes `~/.claude-bridge/control/compact-ack/<sessionId>.json` when ready \u2192 daemon `send-keys /compact` into the tmux session \u2192 emits `peer_compacted`. Refuses with `anchor_timeout` if the ack file doesn't appear within `anchorTimeoutMs` (default 30 s). This is the ONLY send-keys path in the daemon (charter \xA78 amendment) \u2014 every inject is audit-logged via `peer_compact_inject`. The AUTO-watchdog framework is present but defaults OFF (`config.compactWatchdog.enabled = false`); operator must flip it explicitly.",
+    description: "Ask the control-plane daemon to orchestrate `/compact` on a peer (v0.10.0-rc). Sequence: daemon writes a bridge inbox message to the peer requesting a compact anchor \u2192 peer writes `~/.claude-bridge/control/compact-ack/<sessionId>.json` when ready \u2192 daemon `send-keys /compact` into the tmux session \u2192 emits `peer_compacted`. Refuses with `anchor_timeout` if the ack file doesn't appear within `anchorTimeoutMs` (default 30 s). This is the ONLY send-keys path in the daemon (charter \xA78 amendment) \u2014 every inject is audit-logged via `peer_compact_inject`. The AUTO-watchdog framework is present but defaults OFF (`config.compactWatchdog.enabled = false`); operator must flip it explicitly. **There is deliberately NO `force` here** (decided v0.11.18): the anchor is the one thing a compact must never skip, so a force could only mean 'do not wait' \u2014 and that already exists as `anchorTimeoutMs`. To not wait, pass a small `anchorTimeoutMs`; the call then reports `anchor_timeout` and injects nothing, which is the honest outcome. A force that can only refuse is not a force.",
     inputSchema: {
       type: "object",
       properties: {
@@ -24454,7 +24472,7 @@ var TOOLS = [
   },
   {
     name: "team_layout",
-    description: "Declarative team reconcile against `~/.claude-bridge/control/teams/<team>.json` (or an inline spec). `apply:true` (default) spawns any peer in the spec that is not already in `state.peers`. `prune:true` also stops any peer in `state.peers` that is not in the spec \u2014 extras are KEPT by default (safe reconcile). Set `apply:false` to preview the diff without changing anything. Response includes spawnedOk / spawnedFailed / stoppedOk / stoppedFailed / keptExtras arrays. Team spec schema documented in docs/SETUP-DAEMON.md.",
+    description: "Declarative team reconcile against `~/.claude-bridge/control/teams/<team>.json` (or an inline spec). **BREAKING in v0.11.21: `apply` now defaults to FALSE \u2014 a bare call PREVIEWS the diff and changes nothing.** It was the only bulk tool that executed unless told not to, while team_restart/team_adopt/team_stop all preview first; a mistyped team name here spawns peers. Pass `apply:true` to spawn every peer in the spec that is not already in `state.peers` (and resume any that are stopped). `prune:true` also stops peers present in state but absent from the spec \u2014 extras are KEPT otherwise, and a pruned peer is ASKED first (pass `pruneForce:true` for the impolite path). Peers are named by `handle`, RENAMED from `sessionId` in v0.11.21: a peer named in a layout has not booted, so it cannot have a session id. Response includes spawnedOk / spawnedFailed / resumedOk / stoppedOk / stoppedFailed / keptExtras. Team spec schema documented in docs/SETUP-DAEMON.md.",
     inputSchema: {
       type: "object",
       properties: {
@@ -24485,7 +24503,7 @@ var TOOLS = [
   },
   {
     name: "team_stop",
-    description: 'Put a whole team to sleep, gracefully. NOT a mass kill: each peer first gets a `stop-request` in its inbox telling it to park its work, flush its anchor and memory, and touch `~/.claude-bridge/control/stop-ack/<sessionId>.json`. Only then is its session killed. A peer that does not ack within `anchorTimeoutMs` (default 120 s PER PEER) KEEPS RUNNING and is reported under `skipped` \u2014 pass `force:true` to kill it anyway (recorded as `stoppedCleanly:false`). Peers whose host session is already gone are cleaned up as `stoppedDead`. Order: members first, anyone marked `role:"velitel"` last. Stopped peers stay in `state.peers` with `status:"stopped"` so `team_layout apply` can resume the SAME session ids later. Use `dryRun:true` to see the order first. A real run can take minutes \u2014 the client timeout scales with the ack window automatically.',
+    description: 'Put a whole team to sleep, gracefully. NOT a mass kill: each peer first gets a `stop-request` in its inbox telling it to park its work, flush its anchor and memory, and touch `~/.claude-bridge/control/stop-ack/<sessionId>.json`. Only then is its session killed. A peer that does not ack within `anchorTimeoutMs` (default 120 s PER PEER) KEEPS RUNNING and is reported under `skipped` \u2014 pass `force:true` to kill it anyway (recorded as `stoppedCleanly:false`). Peers whose host session is already gone are cleaned up as `stoppedDead`. Order: members first, anyone marked `role:"velitel"` last. Stopped peers stay in `state.peers` with `status:"stopped"` so `team_layout apply:true` can resume the SAME transcripts later. Peers are named by `handle` (RENAMED from `sessionId` in v0.11.21). Use `dryRun:true` to see the order first. A real run can take minutes \u2014 the client timeout scales with the ack window automatically.',
     inputSchema: {
       type: "object",
       properties: {
@@ -24507,7 +24525,7 @@ var TOOLS = [
         },
         inline: {
           type: "object",
-          description: "Team spec inline instead of teams/<team>.json \u2014 { team, peers[{sessionId, displayName, role?}] }."
+          description: "Team spec inline instead of teams/<team>.json \u2014 { team, peers[{handle, displayName, role?}] }. `handle` was `sessionId` before v0.11.21."
         },
         wait: { type: "boolean", description: "Default true." },
         timeoutMs: { type: "number", minimum: 1, maximum: 9e5 }
@@ -24542,7 +24560,7 @@ var TOOLS = [
         },
         mapping: {
           type: "object",
-          description: 'manual mode only: { "<hostSessionKey>": "<sessionId>" }.'
+          description: 'manual mode only: { "<hostSessionKey>": "<handle>" }.'
         },
         dryRun: {
           type: "boolean",
@@ -24618,7 +24636,7 @@ var TOOLS = [
   },
   {
     name: "team_restart",
-    description: "Restart a team one peer at a time, stopping at the first failure. A peer picks up an updated plugin bundle when its process restarts, so a rolling restart is how a new version reaches a fleet \u2014 the widest blast radius of any tool here, which is why the defaults are cautious. **`dryRun` defaults to TRUE** and the plan lists the order plus the launch parameters each peer would be relaunched with, so an operator can confirm they exist before anything stops. Peers with no recorded `command` are refused UP FRONT rather than discovered mid-roll \u2014 those relaunch as a bare `claude`, which resolves to nothing under nvm. **The roll stops at the first failure** (`continueOnError` defaults false): half a fleet running beats a whole one broken, and peers never attempted are named in `skipped`. A partial roll returns an ERROR, never ok \u2014 reporting success would leave the caller believing the roll-out finished. Order is array order, or state order for a team, with any peer named velitel deliberately LAST. `settleMs` (default 3000) is the pause after each peer so a rolling restart does not become a simultaneous one.",
+    description: "Restart a team one peer at a time, stopping at the first failure. A peer picks up an updated plugin bundle when its process restarts, so a rolling restart is how a new version reaches a fleet \u2014 the widest blast radius of any tool here, which is why the defaults are cautious. **`dryRun` defaults to TRUE** and the plan lists the order plus the launch parameters each peer would be relaunched with, so an operator can confirm they exist before anything stops. Peers with no recorded `command` are refused UP FRONT rather than discovered mid-roll \u2014 those relaunch as a bare `claude`, which resolves to nothing under nvm. **The roll stops at the first failure** (`continueOnError` defaults false): half a fleet running beats a whole one broken, and peers never attempted are named in `skipped`. A partial roll returns an ERROR, never ok \u2014 reporting success would leave the caller believing the roll-out finished. Order is array order, or state order for a team, with any peer named velitel deliberately LAST. `settleMs` (default 3000) is the pause after each peer so a rolling restart does not become a simultaneous one. **Since v0.11.18 each restart is GRACEFUL**: every member is asked to get ready and acks before it is stopped, so a roll takes minutes per peer rather than seconds \u2014 pass `force:true` for the old behaviour.",
     inputSchema: {
       type: "object",
       properties: {
@@ -24637,6 +24655,10 @@ var TOOLS = [
           minimum: 0,
           maximum: 12e4,
           description: "Pause after each peer before the next (default 3000)."
+        },
+        force: {
+          type: "boolean",
+          description: "Restart every member without asking (v0.11.18). A pass-through to peer_restart, applied to all of them: skips the ready-request and the stop courtesy, never the pane archive, the identity check or the message each peer gets about its anchor. `settleMs` is NOT skipped \u2014 the gap between peers is what stops a rolling restart from becoming a simultaneous one."
         },
         continueOnError: {
           type: "boolean",

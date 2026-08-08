@@ -4320,7 +4320,7 @@ async function resolvePeer(idOrName, root = bridgeRoot(), now = Date.now()) {
 // package.json
 var package_default = {
   name: "claude-bridge-daemon",
-  version: "0.11.21",
+  version: "0.11.23",
   private: true,
   description: "Control-plane daemon for the claude-bridge plugin: peer lifecycle, telemetry, audit. Distributed as opt-in artefact \u2014 see ADR-008.",
   type: "module",
@@ -4721,7 +4721,7 @@ function repairHarvestedEnv(peers) {
     const cleaned = stripHostProvided(env);
     if (Object.keys(cleaned).length === Object.keys(env).length) continue;
     log3.info("spawn_env_repaired", {
-      sessionId: record.handle,
+      handle: record.handle,
       dropped: HOST_PROVIDED_VARS.filter((v) => v in env)
     });
     record.observed.spawnEnv = cleaned;
@@ -4968,7 +4968,7 @@ function viewOf(record) {
     });
   }
   return {
-    sessionId: record.handle,
+    handle: record.handle,
     name: record.observed.name,
     desired: { ...record.desired },
     observed: {
@@ -5060,7 +5060,7 @@ async function handleControlConfig(req, ctx) {
       event: "control_config_preview",
       by: { sessionId: req.requestedBy.sessionId, name: req.requestedBy.name },
       requestId: req.id,
-      details: { sessionId: record.handle, changes, reason: args.reason ?? null }
+      details: { handle: record.handle, changes, reason: args.reason ?? null }
     });
     return okResult(req.id, req.tool, {
       dryRun: true,
@@ -5082,7 +5082,7 @@ async function handleControlConfig(req, ctx) {
     event: "control_config_set",
     by: { sessionId: req.requestedBy.sessionId, name: req.requestedBy.name },
     requestId: req.id,
-    details: { sessionId: record.handle, changes, reason: args.reason ?? null }
+    details: { handle: record.handle, changes, reason: args.reason ?? null }
   });
   const after = ctx.state.peers[record.handle];
   return okResult(req.id, req.tool, {
@@ -6122,14 +6122,14 @@ async function handlePeerSpawn(req, ctx) {
       level: "warn",
       by: { sessionId: req.requestedBy.sessionId, name: req.requestedBy.name },
       requestId: req.id,
-      details: { sessionId: args.handle, sessionKey, ...hit.details, reason: hit.reason }
+      details: { handle: args.handle, sessionKey, ...hit.details, reason: hit.reason }
     });
     return errResult(
       req.id,
       req.tool,
       "session_already_live",
       `Refusing to spawn \u2014 ${hit.reason === "state_live" ? "daemon state" : "host driver"} still holds sessionId '${args.handle}'`,
-      { sessionId: args.handle, ...hit.details }
+      { handle: args.handle, ...hit.details }
     );
   }
   const overrides = { ...args.extraEnv };
@@ -6153,7 +6153,7 @@ async function handlePeerSpawn(req, ctx) {
         by: { sessionId: req.requestedBy.sessionId, name: req.requestedBy.name },
         requestId: req.id,
         details: {
-          sessionId: args.handle,
+          handle: args.handle,
           resumeTarget,
           reason: "resume_transcript_missing",
           cwd: args.cwd,
@@ -6167,7 +6167,7 @@ async function handlePeerSpawn(req, ctx) {
         "resume_transcript_missing",
         elsewhere ? `There is no transcript for ${resumeTarget} under cwd '${args.cwd}' (looked for ${transcript}) \u2014 but one exists at ${elsewhere}. Claude Code finds transcripts by working directory, so this peer would start, fail to find its own history and exit. Spawn it in the directory its transcript belongs to.` : `There is no transcript for ${resumeTarget} anywhere under ~/.claude/projects (looked for ${transcript}). \`--resume\` would print "No conversation found" and exit immediately. Either the session id is wrong, or that session never held a conversation \u2014 a session file is written at boot, a transcript only once something is said.`,
         {
-          sessionId: args.handle,
+          handle: args.handle,
           resumeTarget,
           cwd: args.cwd,
           transcript,
@@ -6276,7 +6276,7 @@ async function handlePeerSpawn(req, ctx) {
         by: { sessionId: req.requestedBy.sessionId, name: req.requestedBy.name },
         requestId: req.id,
         details: {
-          sessionId: args.handle,
+          handle: args.handle,
           sessionKey: canonicalKey,
           reason: "process_exited_after_spawn",
           exitStatus,
@@ -6292,7 +6292,7 @@ async function handlePeerSpawn(req, ctx) {
         "spawn_process_exited",
         `The command started and exited${exitStatus === null ? "" : ` with status ${exitStatus}`}. ${archivePath ? `What the pane was showing is saved at ${archivePath}.` : `The pane could NOT be archived, so it was left standing \u2014 read it with \`tmux capture-pane -p -t ${canonicalKey}\` before removing it.`}`,
         {
-          sessionId: args.handle,
+          handle: args.handle,
           sessionKey: canonicalKey,
           exitStatus,
           archivePath,
@@ -6315,7 +6315,7 @@ async function handlePeerSpawn(req, ctx) {
         by: { sessionId: req.requestedBy.sessionId, name: req.requestedBy.name },
         requestId: req.id,
         details: {
-          sessionId: args.handle,
+          handle: args.handle,
           sessionKey: canonicalKey,
           reason: "pane_pid_unavailable",
           hostSaid: record.probe.raw,
@@ -6330,7 +6330,7 @@ async function handlePeerSpawn(req, ctx) {
         "spawn_unverified",
         `The session was created, but whether anything is running in it could not be determined after ${record.probe.attempts} attempts. Nothing was destroyed: inspect the pane with \`tmux capture-pane -p -t ${canonicalKey}\`, then either \`team_reconcile\` or \`peer_stop\`. The host said: ${record.probe.raw}`,
         {
-          sessionId: args.handle,
+          handle: args.handle,
           sessionKey: canonicalKey,
           probe: record.probe,
           cwd: args.cwd,
@@ -6349,7 +6349,7 @@ async function handlePeerSpawn(req, ctx) {
         by: { sessionId: req.requestedBy.sessionId, name: req.requestedBy.name },
         requestId: req.id,
         details: {
-          sessionId: args.handle,
+          handle: args.handle,
           sessionKey: canonicalKey,
           reason: "no_process_after_spawn",
           cwd: args.cwd,
@@ -6362,7 +6362,7 @@ async function handlePeerSpawn(req, ctx) {
         "spawn_produced_no_process",
         `The session was created and the host reports no such target \u2014 the command exited immediately. Host said: ${record.probe?.kind === "no-such-target" ? record.probe.raw : "(driver reported not-alive without detail)"}`,
         {
-          sessionId: args.handle,
+          handle: args.handle,
           sessionKey: canonicalKey,
           cwd: args.cwd,
           command: args.command
@@ -6412,7 +6412,7 @@ async function handlePeerSpawn(req, ctx) {
       by: { sessionId: req.requestedBy.sessionId, name: req.requestedBy.name },
       requestId: req.id,
       details: {
-        sessionId: args.handle,
+        handle: args.handle,
         sessionKey: canonicalKey,
         rawSessionKey: sessionKey !== canonicalKey ? sessionKey : void 0,
         pid: record.pid,
@@ -6472,10 +6472,10 @@ async function handlePeerSpawn(req, ctx) {
       level: "error",
       by: { sessionId: req.requestedBy.sessionId, name: req.requestedBy.name },
       requestId: req.id,
-      details: { sessionId: args.handle, sessionKey, err: message }
+      details: { handle: args.handle, sessionKey, err: message }
     });
     return errResult(req.id, req.tool, "spawn_failed", message, {
-      sessionId: args.handle,
+      handle: args.handle,
       sessionKey
     });
   }
@@ -7206,7 +7206,7 @@ async function handlePeerRestart(req, ctx) {
       req.tool,
       "restart_in_progress",
       `A restart of '${record.handle}' is already in its ${inFlight.phase} phase (requested at ${inFlight.requestedAt} by ${inFlight.requestId}). Entering it twice would risk two processes behind one record. Wait for it, or check team_reconcile for a restart_pending drift if the caller is gone.`,
-      { sessionId: record.handle, phase: inFlight.phase, since: inFlight.requestedAt }
+      { handle: record.handle, phase: inFlight.phase, since: inFlight.requestedAt }
     );
   }
   const cwd = record.desired.cwd ?? process.cwd();
@@ -7223,7 +7223,7 @@ async function handlePeerRestart(req, ctx) {
       by: { sessionId: req.requestedBy.sessionId, name: req.requestedBy.name },
       requestId: req.id,
       details: {
-        sessionId: record.handle,
+        handle: record.handle,
         missing,
         fallbackCwd: cwd,
         fallbackCommand: command,
@@ -7238,7 +7238,7 @@ async function handlePeerRestart(req, ctx) {
       level: "warn",
       by: { sessionId: req.requestedBy.sessionId, name: req.requestedBy.name },
       requestId: req.id,
-      details: { sessionId: record.handle, reason: resumeDecision.why }
+      details: { handle: record.handle, reason: resumeDecision.why }
     });
     return errResult(
       req.id,
@@ -7246,7 +7246,7 @@ async function handlePeerRestart(req, ctx) {
       "restart_identity_unknown",
       `Refusing to restart '${record.handle}': ${resumeDecision.why}. Resuming the handle would relaunch the peer EMPTY and report success; resuming nothing would drop its context on purpose. Neither is this tool's decision to make. Run team_reconcile to measure the identity, then restart. NOTHING WAS TOUCHED \u2014 the peer is still running.`,
       {
-        sessionId: record.handle,
+        handle: record.handle,
         identity: record.observed.identity ?? null,
         measuredSessionId: record.observed.sessionId ?? null
       }
@@ -7265,7 +7265,7 @@ async function handlePeerRestart(req, ctx) {
         by: { sessionId: req.requestedBy.sessionId, name: req.requestedBy.name },
         requestId: req.id,
         details: {
-          sessionId: record.handle,
+          handle: record.handle,
           tmuxTarget: record.observed.tmuxTarget,
           hint: "The window is not on the host, so its parent session cannot be read. The peer will be relaunched as a session of its own."
         }
@@ -7304,7 +7304,7 @@ async function handlePeerRestart(req, ctx) {
       by: { sessionId: req.requestedBy.sessionId, name: req.requestedBy.name },
       requestId: req.id,
       details: {
-        sessionId: record.handle,
+        handle: record.handle,
         threadId: ready.threadId,
         timeoutMs: ready.timeoutMs,
         waitedMs: ready.waitedMs,
@@ -7318,7 +7318,7 @@ async function handlePeerRestart(req, ctx) {
       "restart_ready_timeout",
       `Peer '${record.handle}' did not say it was ready within ${ready.timeoutMs} ms (waited ${ready.waitedMs} ms, last ack verdict: ${ready.ackVerdict}). NOTHING WAS STOPPED and nothing was killed \u2014 the peer is running exactly as before. The request stands: call peer_restart again to keep waiting on the same thread (a late ack still counts), or peer_restart with force:true to restart it now and lose whatever it had not written down.`,
       {
-        sessionId: record.handle,
+        handle: record.handle,
         threadId: ready.threadId,
         waitedMs: ready.waitedMs,
         stillRunning: true
@@ -7382,7 +7382,7 @@ async function handlePeerRestart(req, ctx) {
       by: { sessionId: req.requestedBy.sessionId, name: req.requestedBy.name },
       requestId: req.id,
       details: {
-        sessionId: record.handle,
+        handle: record.handle,
         code: stopResult.error?.code ?? null,
         readyAcked: ready.kind === "acked"
       }
@@ -7392,7 +7392,7 @@ async function handlePeerRestart(req, ctx) {
       req.tool,
       "restart_stop_failed",
       `${stopResult.error?.message ?? "peer_stop failed"} \u2014 the restart stopped here, and the peer is still running. Retry, or use force:true.`,
-      { stopResult, sessionId: record.handle, stillRunning: true }
+      { stopResult, handle: record.handle, stillRunning: true }
     );
   }
   const stoppedCleanly = stopResult.data?.stoppedCleanly ?? null;
@@ -7488,7 +7488,7 @@ async function handlePeerRestart(req, ctx) {
       by: { sessionId: req.requestedBy.sessionId, name: req.requestedBy.name },
       requestId: req.id,
       details: {
-        sessionId: record.handle,
+        handle: record.handle,
         status: "unknown",
         hint: "The relaunch failed. The record is kept so the peer can be retried or released; nothing is running behind it."
       }
@@ -7527,14 +7527,14 @@ async function handlePeerRestart(req, ctx) {
       level: "error",
       by: { sessionId: req.requestedBy.sessionId, name: req.requestedBy.name },
       requestId: req.id,
-      details: { sessionId: record.handle, pid: newPid, reason: liveness.reason }
+      details: { handle: record.handle, pid: newPid, reason: liveness.reason }
     });
     return errResult(
       req.id,
       req.tool,
       "restart_died_after_spawn",
       `The relaunched peer did not survive: ${liveness.reason}`,
-      { sessionId: record.handle, pid: newPid, reason: liveness.reason }
+      { handle: record.handle, pid: newPid, reason: liveness.reason }
     );
   }
   if (identity.mismatch) {
@@ -7567,7 +7567,7 @@ async function handlePeerRestart(req, ctx) {
     by: { sessionId: req.requestedBy.sessionId, name: req.requestedBy.name },
     requestId: req.id,
     details: {
-      sessionId: record.handle,
+      handle: record.handle,
       reason: args.reason ?? null,
       force: args.force,
       mode: args.force ? "forced" : ready.kind === "acked" ? "graceful" : "no-host",
@@ -7605,7 +7605,7 @@ async function handlePeerRestart(req, ctx) {
     ...ctx.wakeDelayMs !== void 0 ? { wakeDelayMs: ctx.wakeDelayMs } : {}
   });
   return okResult(req.id, req.tool, {
-    sessionId: record.handle,
+    handle: record.handle,
     // TOP LEVEL, all of it. A caller must not have to dig through two nested
     // results to learn whether the peer kept its context, whether it was asked
     // first, or whether it was told what happened.
@@ -8164,7 +8164,7 @@ async function handleTeamLayout(req, ctx) {
       await stampTeam(p.handle);
       spawnedOk.push(p.handle);
     } else {
-      spawnedFailed.push({ sessionId: p.handle, err: res.error?.message ?? "unknown" });
+      spawnedFailed.push({ handle: p.handle, err: res.error?.message ?? "unknown" });
     }
   }
   const resumedOk = [];
@@ -8174,7 +8174,7 @@ async function handleTeamLayout(req, ctx) {
     const stoppedCleanly = ctx.state.peers[p.handle]?.observed.stoppedCleanly ?? null;
     const res = await spawnOne(p, true, "resume");
     if (res.outcome !== "ok") {
-      resumedFailed.push({ sessionId: p.handle, err: res.error?.message ?? "unknown" });
+      resumedFailed.push({ handle: p.handle, err: res.error?.message ?? "unknown" });
       continue;
     }
     await stampTeam(p.handle);
@@ -8229,9 +8229,9 @@ async function handleTeamLayout(req, ctx) {
       if (res.outcome === "ok") {
         stoppedOk.push(id);
       } else if (res.error?.code === "stop_ack_timeout") {
-        stoppedRefused.push({ sessionId: id, detail: res.error?.message ?? "no ack" });
+        stoppedRefused.push({ handle: id, detail: res.error?.message ?? "no ack" });
       } else {
-        stoppedFailed.push({ sessionId: id, err: res.error?.message ?? "unknown" });
+        stoppedFailed.push({ handle: id, err: res.error?.message ?? "unknown" });
       }
     }
     for (const id of toForget) {
@@ -8366,7 +8366,7 @@ async function handleTeamReconcile(req, ctx) {
       continue;
     }
     const base = {
-      sessionId: rec.handle,
+      handle: rec.handle,
       name: rec.observed.name,
       team: rec.desired.team ?? null,
       recordedPid: rec.observed.pid,
@@ -8447,7 +8447,7 @@ async function handleTeamReconcile(req, ctx) {
     if (accountedPids.has(proc.pid)) continue;
     drift.push({
       kind: "unmanaged",
-      sessionId: proc.sessionId,
+      handle: proc.sessionId,
       name: null,
       team: null,
       recordedPid: null,
@@ -8471,7 +8471,7 @@ async function handleTeamReconcile(req, ctx) {
     if (!info) continue;
     drift.push({
       kind: "dead_pane",
-      sessionId: null,
+      handle: null,
       name: info.label,
       team: null,
       recordedPid: null,
@@ -8482,7 +8482,7 @@ async function handleTeamReconcile(req, ctx) {
   }
   const marked = [];
   if (args.markDead) {
-    const deadIds = drift.filter((d) => d.kind === "dead" && d.sessionId).map((d) => d.sessionId);
+    const deadIds = drift.filter((d) => d.kind === "dead" && d.handle).map((d) => d.handle);
     if (deadIds.length > 0) {
       await applyStateChange(ctx.state, (draft) => {
         for (const id of deadIds) {
@@ -8547,7 +8547,7 @@ async function handleTeamReconcile(req, ctx) {
   const windowDrift = Object.values(ctx.state.peers).filter(
     (r) => r.desired.windowIndex !== void 0 && r.observed.windowIndex !== void 0 && r.desired.windowIndex !== r.observed.windowIndex
   ).map((r) => ({
-    sessionId: r.handle,
+    handle: r.handle,
     name: r.observed.name,
     desired: r.desired.windowIndex,
     observed: r.observed.windowIndex
@@ -8606,7 +8606,7 @@ var TeamReleaseArgsSchema = external_exports.object({
 });
 function describe(rec) {
   return {
-    sessionId: rec.handle,
+    handle: rec.handle,
     name: rec.observed.name,
     status: rec.observed.status,
     team: rec.desired.team ?? null,
@@ -8708,7 +8708,7 @@ async function handleTeamRelease(req, ctx) {
       by: { sessionId: req.requestedBy.sessionId, name: req.requestedBy.name },
       requestId: req.id,
       details: {
-        sessionId: rec.handle,
+        handle: rec.handle,
         name: rec.observed.name,
         team: rec.desired.team ?? null,
         pid: rec.observed.pid,
@@ -8865,7 +8865,7 @@ async function handleTeamRestart(req, ctx) {
       "launch_params_missing",
       `${unrestartable.length} of ${ordered.length} peers have no recorded command and would relaunch as a bare 'claude'. Nothing was restarted.`,
       {
-        peers: unrestartable.map((r) => ({ sessionId: r.handle, name: r.observed.name })),
+        peers: unrestartable.map((r) => ({ handle: r.handle, name: r.observed.name })),
         hint: "Records written before v0.10.3 lack launch parameters. Re-spawn those peers, or adopt them again with a daemon that reads /proc."
       }
     );
@@ -8879,7 +8879,7 @@ async function handleTeamRestart(req, ctx) {
     force: args.force,
     continueOnError: args.continueOnError,
     order: ordered.map((r) => ({
-      sessionId: r.handle,
+      handle: r.handle,
       name: r.observed.name,
       tmuxTarget: r.observed.tmuxTarget,
       pid: r.observed.pid,
@@ -8905,7 +8905,7 @@ async function handleTeamRestart(req, ctx) {
   for (const [i, rec] of ordered.entries()) {
     if (stoppedEarly) {
       results.push({
-        sessionId: rec.handle,
+        handle: rec.handle,
         name: rec.observed.name,
         outcome: "skipped",
         pidBefore: rec.observed.pid,
@@ -8925,7 +8925,7 @@ async function handleTeamRestart(req, ctx) {
     const res = await handlePeerRestart(sub, ctx);
     if (res.outcome === "error") {
       results.push({
-        sessionId: rec.handle,
+        handle: rec.handle,
         name: rec.observed.name,
         outcome: "failed",
         pidBefore,
@@ -8936,7 +8936,7 @@ async function handleTeamRestart(req, ctx) {
       continue;
     }
     results.push({
-      sessionId: rec.handle,
+      handle: rec.handle,
       name: rec.observed.name,
       outcome: "restarted",
       pidBefore,
@@ -8965,11 +8965,11 @@ async function handleTeamRestart(req, ctx) {
   const summary = {
     dryRun: false,
     total: ordered.length,
-    restarted: restarted.map((r) => r.sessionId),
-    failed: failed.map((r) => ({ sessionId: r.sessionId, error: r.error })),
+    restarted: restarted.map((r) => r.handle),
+    failed: failed.map((r) => ({ sessionId: r.handle, error: r.error })),
     // Named, not merely absent from the success list: an operator has to know
     // which peers were never touched so they can finish the roll-out.
-    skipped: skipped.map((r) => r.sessionId),
+    skipped: skipped.map((r) => r.handle),
     stoppedEarly,
     results
   };
@@ -9046,7 +9046,7 @@ async function handleTeamStatus(req, ctx) {
       // The HANDLE, not the peer's session identity (v0.11.16, defect N4). It
       // is how you address this peer and it is the registry key; whether it
       // also happens to BE the session id is answered by `identity` below.
-      sessionId: record.handle,
+      handle: record.handle,
       name: record.observed.name,
       hostDriver: record.observed.hostDriver,
       tmuxTarget: record.observed.tmuxTarget,
@@ -9072,8 +9072,8 @@ async function handleTeamStatus(req, ctx) {
     // does not change under a caller that never passed it.
     team: null,
     peerCount: peers.length,
-    peers: args.verbose ? peers : peers.map(({ sessionId, name, status, hostAlive, identity }) => ({
-      sessionId,
+    peers: args.verbose ? peers : peers.map(({ handle, name, status, hostAlive, identity }) => ({
+      handle,
       name,
       status,
       // Surfaced even in the compact listing: a peer whose identity is
@@ -9196,7 +9196,7 @@ async function stopSinglePeer(req, ctx, peer, args, threadId, anchorTimeoutMs, a
     by: { sessionId: req.requestedBy.sessionId, name: req.requestedBy.name },
     requestId: req.id,
     details: {
-      sessionId: peer.handle,
+      handle: peer.handle,
       sessionKey,
       team: args.team,
       threadId,

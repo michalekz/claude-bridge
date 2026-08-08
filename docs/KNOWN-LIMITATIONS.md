@@ -234,8 +234,77 @@ who it is, which is deliberately distinct from dead; `team_reconcile` measures i
 again later. No migration was needed: 25 of 26 keys were already genuine UUIDs,
 because adoption had read them off reality.
 
-**Status:** fixed in v0.11.16 (task #86). The peer that reproduced it is kept
-alive untouched until the fix is verified against it.
+**Status:** fixed in v0.11.16 (task #86), and renamed to say so in v0.11.21 —
+the registry key is now called `handle` everywhere, so `sessionId` means a Claude
+Code session and nothing else. The peer that reproduced it is kept alive
+untouched.
+
+### Still open: the BRIDGE calls a spawned peer something else entirely
+
+The fix above reconciled the daemon's two claims. It did not reach the bridge,
+which derives a peer's display name from its transcript's AI-generated title —
+so a spawned peer ends up named after whatever it happened to talk about.
+
+Measured on the live fleet, 2026-08-08:
+
+| handle (daemon) | name the bridge shows |
+|---|---|
+| `ai-marketing` | `claude-bridge-marketer` |
+| `tst-s1` | `tst-s1-2c` |
+| `tst-r18` | `zapamatov-n-p-stupov-ho-k-du` |
+
+The last one is not a typo. That peer's first conversation was about memorising a
+test code word, Claude Code titled the transcript accordingly, and the bridge
+took the title as the peer's name.
+
+**What breaks.** `peer_ask { to: "ai-marketing" }` does not find it: the daemon
+knows that name, the bridge does not. Anything addressing a peer BY NAME through
+the bridge has to use the derived one, which nobody chose and which can change
+when the conversation moves on. Addressing by session id always works, and every
+lifecycle operation (`peer_stop`, `peer_restart`, `peer_compact`, wake) is
+unaffected — they address the tmux target or the measured identity.
+
+**Adopted peers do not have this problem**, because adoption reads the name off
+the bridge in the first place. It is specific to `peer_spawn`.
+
+**Workaround.** Send the peer `/rename <handle>` after it comes up; the bridge
+then reports the name you chose. Until that runs, address it by session id.
+
+**Status:** open. The fix is a design question — either the bridge reads the
+handle from the daemon's registry for spawned peers, or the daemon writes the
+title Claude Code will derive from. Neither is a patch, so neither was rushed.
+
+---
+
+## Installing a release does not install the program
+
+A plugin install is a **git checkout**, not a build: `servers/*/dist/*.cjs` are
+tracked, and those files are what every peer actually runs. A release that bumps
+`package.json` without rebuilding therefore ships new sources with an old
+program, and nothing about the install looks wrong.
+
+Measured 2026-08-08: the MCP bundle carried `0.11.17` while the manifest said
+`0.11.22`. Everything the MCP server gained across five releases — including a
+breaking wire rename — existed only in `src/`.
+
+**Deployment has three layers, and each one can be stale on its own:**
+
+```
+catalog (marketplace.json)  ->  what an install would fetch
+cache   (~/.claude/plugins) ->  what a RESTART loads
+process (running peer)      ->  what is answering right now
+```
+
+Green in one says nothing about the other two. On the day this was measured all
+three disagreed at once: catalog 0.11.22, cache 0.11.14, running peers 0.11.5.
+
+**A restart does not update the cache** — it reloads whatever is already there.
+Refreshing the cache is `/plugin update`, a separate, explicit action.
+
+**Status:** the artifact half is fixed in v0.11.23 — `release.mjs check` now
+refuses a release whose shipped bundle does not carry the manifest's version, and
+the pre-push hook runs it. The three layers remain three layers; that is how
+plugin installs work, and it is documented rather than worked around.
 
 ---
 

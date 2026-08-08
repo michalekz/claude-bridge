@@ -6,6 +6,73 @@ All notable changes to this project are documented here. Format follows [Keep a 
 
 _Nothing yet._
 
+## [0.11.23] — 2026-08-08
+
+### Installing a release did not install the program
+
+A plugin install is a **git checkout**, not a build. `servers/*/dist/*.cjs` are
+tracked because there is no build step on the installing machine — so those files
+are not a build input, they are the program every peer runs.
+
+Nothing checked them. Measured 2026-08-08, while preparing to roll the fleet:
+
+```
+manifest / catalog          0.11.22
+servers/claude-bridge/dist  0.11.17   <- what peers would actually run
+```
+
+The MCP bundle had last been rebuilt at v0.11.17. Everything the MCP server
+gained in v0.11.18 through v0.11.22 — including the entire `sessionId` ->
+`handle` wire rename, the `team_status` refusal and the corrected tool
+descriptions — existed only in `src/`. A peer installing v0.11.22 would have got
+a v0.11.17 program and no sign that anything was wrong.
+
+The daemon side was current, but only because its binary is rebuilt by hand
+before every deploy. That is a habit, and this release replaces it with a check.
+
+`release.mjs check` now refuses a release whose shipped bundle does not carry the
+manifest's version — the version reaches the bundle because `src/mcp/server.ts`
+reads its own package.json and esbuild inlines it, so the string is proof the
+file was built AFTER the bump rather than merely that it exists. The pre-push
+hook already runs `check`, so the guard applies to every push.
+
+Verified by effect: with the old artifact restored, `check` fails and names the
+version it found.
+
+#### The three layers
+
+This is the second half of a lesson the same afternoon taught in three places.
+Deployment has three layers and each can be stale on its own:
+
+```
+catalog   what an install would fetch
+cache     what a RESTART loads      (~/.claude/plugins/cache)
+process   what is answering now
+```
+
+On the day this was found, all three disagreed at once — catalog 0.11.22, cache
+0.11.14, running peers 0.11.5 — and each had its own cause: a catalog `sha` that
+had not moved (fixed in v0.11.20), a cache nobody had refreshed, and processes
+holding their bundle in memory since boot.
+
+**Green in one layer says nothing about the other two. A restart deploys the
+cache, not the repository.** Both are now written down in
+`docs/KNOWN-LIMITATIONS.md` rather than worked around, because that is how plugin
+installs work.
+
+#### Also documented, not fixed
+
+The bridge names a spawned peer after its transcript's AI-generated title, so a
+peer ends up called whatever it happened to talk about. On the live fleet:
+handle `tst-r18`, bridge name `zapamatov-n-p-stupov-ho-k-du` — that peer's first
+conversation was about memorising a test code word.
+
+`peer_ask { to: <handle> }` does not find such a peer; addressing by session id
+always works, and every lifecycle operation is unaffected. Adopted peers do not
+have this problem, because adoption reads the name off the bridge to begin with.
+Workaround: send the peer `/rename <handle>`. The fix is a design question and
+was not rushed into a patch release.
+
 ## [0.11.22] — 2026-08-08
 
 ### The pass R3 owed the surfaces the compiler cannot see
