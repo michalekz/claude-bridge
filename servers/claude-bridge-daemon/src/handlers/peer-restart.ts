@@ -72,19 +72,55 @@ export async function confirmStillRunning(
   opts: { settleMs?: number; procRoot?: string; command?: string } = {},
 ): Promise<LivenessCheck> {
   if (pid === null) return { ok: false, reason: "no pid was reported by the spawn" };
-  const settleMs = opts.settleMs ?? 2_500;
+  const windowMs = opts.settleMs ?? 2_500;
   const procRoot = opts.procRoot ?? "/proc";
-  await new Promise((r) => setTimeout(r, settleMs));
-  if (!existsSync(join(procRoot, String(pid)))) {
-    return { ok: false, reason: `pid ${pid} exited within ${settleMs} ms of starting` };
-  }
+  const alive = () => existsSync(join(procRoot, String(pid)));
+
   // The session file is the proof a peer got as far as being a peer — but only
   // Claude Code writes one. Requiring it from any other command would fail
   // every legitimate relaunch of something else (a shell in the acceptance
   // suite, a wrapper on a host that uses one), so the rule applies to the
   // process that is actually supposed to register.
   const isClaude = (opts.command ?? "").split("/").pop() === "claude";
-  if (isClaude && isResumableSessionId(expectedSessionId) && identity.actual === null) {
+  const mustRegister = isClaude && isResumableSessionId(expectedSessionId);
+  const registered = identity.actual !== null;
+
+  // WHAT THIS WAIT IS ACTUALLY FOR (corrected v0.11.11).
+  //
+  // It used to be a flat `sleep(2500)` under a comment about giving the process
+  // "time to come up" — which is not what it does. Coming up is already waited
+  // for, by `verifyRestartedIdentity` polling the session file for up to four
+  // seconds; measured 2026-08-08, a heavy peer writes that file in 0.96 s. This
+  // wait is a SURVIVAL OBSERVATION: a failed resume starts, runs for about two
+  // seconds and exits, and without watching for that the tool answers
+  // `restarted: ok` over a corpse (finding G, v0.10.7 re-pilot).
+  //
+  // Two things follow, and the old shape got both wrong:
+  //
+  //   - A process that dies at 300 ms was still waited out for the full 2500,
+  //     and then reported as having "exited within 2500 ms" — a number that was
+  //     the budget, not the measurement. Polling reports when it actually died.
+  //   - A peer that HAS registered its session is already past the failure mode
+  //     this window exists to catch, so holding the whole fleet for another two
+  //     and a half seconds each buys nothing. Eight peers spent ~20 s of a
+  //     restart proving that time passes.
+  const start = Date.now();
+  const pollMs = 100;
+  const budget = registered || !mustRegister ? Math.min(windowMs, 400) : windowMs;
+
+  while (Date.now() - start < budget) {
+    if (!alive()) {
+      return {
+        ok: false,
+        reason: `pid ${pid} exited ${Date.now() - start} ms after starting`,
+      };
+    }
+    await new Promise((r) => setTimeout(r, Math.min(pollMs, budget)));
+  }
+  if (!alive()) {
+    return { ok: false, reason: `pid ${pid} exited ${Date.now() - start} ms after starting` };
+  }
+  if (mustRegister && !registered) {
     return {
       ok: false,
       reason: `pid ${pid} is running but registered no session — ~/.claude/sessions/${pid}.json never appeared`,

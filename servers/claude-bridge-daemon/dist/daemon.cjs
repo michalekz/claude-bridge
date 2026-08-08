@@ -6143,14 +6143,28 @@ function isResumableSessionId(sessionId) {
 }
 async function confirmStillRunning(pid, identity, expectedSessionId, opts = {}) {
   if (pid === null) return { ok: false, reason: "no pid was reported by the spawn" };
-  const settleMs = opts.settleMs ?? 2500;
+  const windowMs = opts.settleMs ?? 2500;
   const procRoot = opts.procRoot ?? "/proc";
-  await new Promise((r) => setTimeout(r, settleMs));
-  if (!(0, import_node_fs2.existsSync)((0, import_node_path8.join)(procRoot, String(pid)))) {
-    return { ok: false, reason: `pid ${pid} exited within ${settleMs} ms of starting` };
-  }
+  const alive = () => (0, import_node_fs2.existsSync)((0, import_node_path8.join)(procRoot, String(pid)));
   const isClaude = (opts.command ?? "").split("/").pop() === "claude";
-  if (isClaude && isResumableSessionId(expectedSessionId) && identity.actual === null) {
+  const mustRegister = isClaude && isResumableSessionId(expectedSessionId);
+  const registered = identity.actual !== null;
+  const start = Date.now();
+  const pollMs = 100;
+  const budget = registered || !mustRegister ? Math.min(windowMs, 400) : windowMs;
+  while (Date.now() - start < budget) {
+    if (!alive()) {
+      return {
+        ok: false,
+        reason: `pid ${pid} exited ${Date.now() - start} ms after starting`
+      };
+    }
+    await new Promise((r) => setTimeout(r, Math.min(pollMs, budget)));
+  }
+  if (!alive()) {
+    return { ok: false, reason: `pid ${pid} exited ${Date.now() - start} ms after starting` };
+  }
+  if (mustRegister && !registered) {
     return {
       ok: false,
       reason: `pid ${pid} is running but registered no session \u2014 ~/.claude/sessions/${pid}.json never appeared`

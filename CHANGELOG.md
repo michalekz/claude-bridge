@@ -6,6 +6,42 @@ All notable changes to this project are documented here. Format follows [Keep a 
 
 _Nothing yet._
 
+## [0.11.11] — 2026-08-08
+
+### The wait after a restart says what it measured
+
+`confirmStillRunning` slept a flat 2500 ms under a comment about giving the
+relaunched process "time to come up". That is not what it does, and finding out
+what it actually does changed the fix.
+
+Coming up is already waited for: `verifyRestartedIdentity` polls the session
+file for up to four seconds, and a heavy peer writes that file in **0.96 s**
+(measured against a real Claude Code boot in a working directory with a large
+CLAUDE.md and MCP servers). This wait is a **survival observation** — a failed
+resume starts, runs for about two seconds and exits, and without watching for
+that the tool answers `restarted: ok` over a corpse.
+
+Two things followed from the flat sleep, and both are now fixed:
+
+- **A death at 300 ms was waited out for the full budget** and then reported as
+  "exited within 2500 ms" — a number that was the budget, not the measurement.
+  It now polls, so it reports when the process actually died and reports it
+  immediately.
+- **A peer that had already registered its session was held anyway**, although
+  registering is precisely what proves it got past the failure mode this window
+  exists to catch. That case now confirms briefly instead. A team restart of
+  eight peers spent about twenty seconds proving that time passes.
+
+An unregistered Claude peer is still observed for the whole window: the
+shortcut must not become a shortcut past the check itself.
+
+**This is not the fix for the batch-restart failures** — those have no
+established mechanism yet, and five hypotheses were refuted on 2026-08-08 (slow
+boot, concurrent boots, colliding with a dying predecessor, resuming a session a
+dying process still holds, harvesting environment from a corpse). It is a defect
+found while looking for that one, and it holds regardless of what the mechanism
+turns out to be.
+
 ## [0.11.10] — 2026-08-08
 
 ### A wait that expires is not a verdict
