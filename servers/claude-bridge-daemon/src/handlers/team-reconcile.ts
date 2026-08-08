@@ -140,12 +140,29 @@ export async function handleTeamReconcile(
   for (const s of sessions)
     if (!hostTargets.has(s.sessionKey)) hostTargets.set(s.sessionKey, s.pid);
 
-  // Windows tmux is holding open because their process exited. Keyed by target
-  // so a record's drift entry can say whether its pane is still there to read.
-  const deadPanes = new Map<string, { exitStatus: number | null; label: string }>();
+  // Windows tmux is holding open because their process exited.
+  //
+  // Indexed under BOTH address forms, because the same pane has two of them and
+  // the record may hold either. A peer spawned as its own session is recorded
+  // as `dead-probe_0118`; `listWindows` reports it as `@2599`. On the first
+  // live run of this feature that mismatch produced two entries for one pane —
+  // the record's saying "its pane is gone" while a `dead_pane` entry for the
+  // very same window said it "belongs to no record". Both untrue, and between
+  // them they hid the one thing an operator needed: there is a pane here, and
+  // it is this peer's.
+  //
+  // A session name is only usable as an address when the session holds exactly
+  // one window; with more, the name does not point at any particular pane.
+  const windowsPerSession = new Map<string, number>();
+  for (const w of windows)
+    windowsPerSession.set(w.session, (windowsPerSession.get(w.session) ?? 0) + 1);
+  const deadPanes = new Map<string, { exitStatus: number | null; label: string; target: string }>();
   for (const w of windows) {
-    if (w.dead)
-      deadPanes.set(w.target, { exitStatus: w.exitStatus, label: w.windowName || w.label });
+    if (w.dead) {
+      const entry = { exitStatus: w.exitStatus, label: w.windowName || w.label, target: w.target };
+      deadPanes.set(w.target, entry);
+      if (windowsPerSession.get(w.session) === 1) deadPanes.set(w.session, entry);
+    }
   }
 
   // Where each window actually sits, so `desired.windowIndex` has something to
@@ -201,7 +218,7 @@ export async function handleTeamReconcile(
             ? `record is '${rec.observed.status}' with no pid at all`
             : `record is '${rec.observed.status}' but pid ${rec.observed.pid} is not running${
                 corpse
-                  ? ` — its pane is still standing and holds exit status ${corpse.exitStatus ?? "unknown"}; read it with \`tmux capture-pane -p -S -2000 -t ${rec.observed.tmuxTarget}\` before removing it`
+                  ? ` — its pane is still standing and holds exit status ${corpse.exitStatus ?? "unknown"}; read it with \`tmux capture-pane -p -S -2000 -t ${corpse.target}\` before removing it`
                   : " and its pane is gone"
               }`,
       });
@@ -287,8 +304,21 @@ export async function handleTeamReconcile(
       .map((r) => r.observed.tmuxTarget)
       .filter((t): t is string => t !== null),
   );
-  for (const [target, info] of deadPanes) {
-    if (recordedTargets.has(target)) continue; // already told as part of its record
+  // `deadPanes` holds each pane under BOTH of its address forms, so gather the
+  // aliases per pane and test all of them against the records. Reading the map
+  // by one form only is what produced the first live run's contradiction: a
+  // pane recorded by session name was reported as orphaned because the lookup
+  // used its window id.
+  const aliasesByPane = new Map<string, Set<string>>();
+  for (const [alias, info] of deadPanes) {
+    const set = aliasesByPane.get(info.target) ?? new Set<string>();
+    set.add(alias);
+    aliasesByPane.set(info.target, set);
+  }
+  for (const [target, aliases] of aliasesByPane) {
+    if ([...aliases].some((a) => recordedTargets.has(a))) continue; // told with its record
+    const info = deadPanes.get(target);
+    if (!info) continue;
     drift.push({
       kind: "dead_pane",
       sessionId: null,

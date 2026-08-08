@@ -6,6 +6,42 @@ All notable changes to this project are documented here. Format follows [Keep a 
 
 _Nothing yet._
 
+## [0.11.9] — 2026-08-08
+
+### One pane, two address forms, two contradictory answers
+
+Found by the verification round minutes after v0.11.8 shipped, which is what
+verification rounds are for.
+
+A peer spawned as its own session is recorded under the session name
+(`dead-probe_0118`); `listWindows` reports the same pane under its window id
+(`@2599`). The graveyard scan read its map by one form only, so the first real
+corpse produced **two entries for one pane**, disagreeing with each other:
+
+```
+dead       … pid 3840148 is not running and its pane is gone
+dead_pane  … window '@2599' … belongs to no record
+```
+
+Neither was true, and between them they hid the one fact an operator needed:
+there is a pane here, it holds exit status 17, and it is this peer's.
+
+Held-open panes are now indexed under both address forms and matched on either,
+so a corpse is reported exactly once — with its record when it has one, as a
+graveyard entry when it does not. The `capture-pane` command in the message uses
+the form tmux will accept, not whichever the record happened to store. A session
+name only counts as an address when the session holds one window; with more it
+does not point at any particular pane.
+
+This is the same family as the identity defect in `docs/KNOWN-LIMITATIONS.md`:
+two names for one thing, and code that reads one of them.
+
+### Also
+
+- `team_reconcile`'s tool description said "four kinds of drift" while the tool
+  had five. Third instance of that defect today, after `peer-compact.ts` and the
+  reconcile header comment — a count written in prose goes stale in silence.
+
 ## [0.11.8] — 2026-08-08
 
 ### The daemon keeps the panes of the peers it spawns

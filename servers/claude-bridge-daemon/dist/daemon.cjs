@@ -4298,7 +4298,7 @@ async function resolvePeer(idOrName, root = bridgeRoot(), now = Date.now()) {
 // package.json
 var package_default = {
   name: "claude-bridge-daemon",
-  version: "0.11.8",
+  version: "0.11.9",
   private: true,
   description: "Control-plane daemon for the claude-bridge plugin: peer lifecycle, telemetry, audit. Distributed as opt-in artefact \u2014 see ADR-008.",
   type: "module",
@@ -7365,10 +7365,16 @@ async function handleTeamReconcile(req, ctx) {
   for (const w of windows) hostTargets.set(w.target, w.pid);
   for (const s of sessions)
     if (!hostTargets.has(s.sessionKey)) hostTargets.set(s.sessionKey, s.pid);
+  const windowsPerSession = /* @__PURE__ */ new Map();
+  for (const w of windows)
+    windowsPerSession.set(w.session, (windowsPerSession.get(w.session) ?? 0) + 1);
   const deadPanes = /* @__PURE__ */ new Map();
   for (const w of windows) {
-    if (w.dead)
-      deadPanes.set(w.target, { exitStatus: w.exitStatus, label: w.windowName || w.label });
+    if (w.dead) {
+      const entry = { exitStatus: w.exitStatus, label: w.windowName || w.label, target: w.target };
+      deadPanes.set(w.target, entry);
+      if (windowsPerSession.get(w.session) === 1) deadPanes.set(w.session, entry);
+    }
   }
   const hostWindowIndex = /* @__PURE__ */ new Map();
   for (const w of windows) {
@@ -7400,7 +7406,7 @@ async function handleTeamReconcile(req, ctx) {
         ...base,
         kind: "dead",
         actualPid: null,
-        detail: rec.observed.pid === null ? `record is '${rec.observed.status}' with no pid at all` : `record is '${rec.observed.status}' but pid ${rec.observed.pid} is not running${corpse ? ` \u2014 its pane is still standing and holds exit status ${corpse.exitStatus ?? "unknown"}; read it with \`tmux capture-pane -p -S -2000 -t ${rec.observed.tmuxTarget}\` before removing it` : " and its pane is gone"}`
+        detail: rec.observed.pid === null ? `record is '${rec.observed.status}' with no pid at all` : `record is '${rec.observed.status}' but pid ${rec.observed.pid} is not running${corpse ? ` \u2014 its pane is still standing and holds exit status ${corpse.exitStatus ?? "unknown"}; read it with \`tmux capture-pane -p -S -2000 -t ${corpse.target}\` before removing it` : " and its pane is gone"}`
       });
       continue;
     }
@@ -7444,8 +7450,16 @@ async function handleTeamReconcile(req, ctx) {
   const recordedTargets = new Set(
     Object.values(ctx.state.peers).map((r) => r.observed.tmuxTarget).filter((t) => t !== null)
   );
-  for (const [target, info] of deadPanes) {
-    if (recordedTargets.has(target)) continue;
+  const aliasesByPane = /* @__PURE__ */ new Map();
+  for (const [alias, info] of deadPanes) {
+    const set = aliasesByPane.get(info.target) ?? /* @__PURE__ */ new Set();
+    set.add(alias);
+    aliasesByPane.set(info.target, set);
+  }
+  for (const [target, aliases] of aliasesByPane) {
+    if ([...aliases].some((a) => recordedTargets.has(a))) continue;
+    const info = deadPanes.get(target);
+    if (!info) continue;
     drift.push({
       kind: "dead_pane",
       sessionId: null,

@@ -254,6 +254,43 @@ describe("team_reconcile makes a corpse readable", () => {
     expect(entry?.detail).toContain("pane is gone");
   });
 
+  it("THE FIRST LIVE RUN'S BUG: one pane, two address forms, one entry", async () => {
+    // Found by the verification round on 2026-08-08, minutes after v0.11.8
+    // shipped. A peer spawned as its own session is recorded as
+    // `dead-probe_0118`; listWindows reports the same pane as `@2599`. Reading
+    // the map by one form only produced TWO contradictory entries for one pane:
+    // the record's said "its pane is gone" while a dead_pane entry for that very
+    // window said it "belongs to no record". Both untrue, and between them they
+    // hid the only useful fact — there is a pane, and it is this peer's.
+    const res = await reconcile(
+      [{ ...corpseWindow, target: "@9", session: "solo-session", windowName: "solo" }],
+      {
+        "peer-3": {
+          sessionId: "peer-3",
+          desired: {},
+          observed: {
+            name: "peer-3",
+            hostDriver: "tmux",
+            // The record holds the SESSION NAME, not the window id.
+            tmuxTarget: "solo-session",
+            pid: 999,
+            status: "live",
+            model: null,
+            startedAt: "2026-08-08T09:00:00.000Z",
+            lastUpdatedAt: "2026-08-08T09:00:00.000Z",
+          },
+        },
+      },
+    );
+    const d = (res.data as { drift: Array<{ kind: string; detail: string }> }).drift;
+    const dead = d.find((x) => x.kind === "dead");
+    expect(dead?.detail).toContain("pane is still standing");
+    // Addressed by the form tmux will accept, not the one the record happens to hold.
+    expect(dead?.detail).toContain("@9");
+    // And NOT reported a second time as an orphan.
+    expect(d.filter((x) => x.kind === "dead_pane")).toHaveLength(0);
+  });
+
   it("THE GRAVEYARD: a corpse belonging to no record is reported anyway", async () => {
     // A dead pane has no process, so the live-process scan cannot find it.
     // Without its own pass it would stand on the host unmentioned by any tool.
