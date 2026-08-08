@@ -59,11 +59,20 @@ import { applyStateChange } from "./state-writer.ts";
  * approval, 2026-08-06 — written here rather than in a meeting note so that
  * whoever reaches for the obvious completion in a month reads the reason.)
  */
-const PEER_SETTABLE = ["label", "windowIndex", "model", "accountProfile"] as const;
+const PEER_SETTABLE = ["label", "windowIndex", "model", "accountProfile", "role"] as const;
 
 const PeerSetSchema = z
   .object({
     label: z.string().min(1).max(64).optional(),
+    /**
+     * Declared role. `velitel` is the only value the daemon acts on today: it
+     * orders that peer LAST in a team stop or restart, because a coordinator
+     * goes down after the peers it coordinates.
+     *
+     * Nullable so a declaration can be withdrawn, which is not the same as
+     * never having declared one — the peer then falls back to name matching.
+     */
+    role: z.string().min(1).max(32).nullable().optional(),
     // A window position is an index, not an opinion. Negative is meaningless
     // and a huge value is a typo, not a request.
     windowIndex: z.number().int().min(0).max(999).optional(),

@@ -6,6 +6,56 @@ All notable changes to this project are documented here. Format follows [Keep a 
 
 _Nothing yet._
 
+## [0.11.13] — 2026-08-08
+
+Phase 0 of the peer-lifecycle redesign (plan ratified by the owner, 2026-08-08).
+Two defects, no new capability.
+
+### "Velitel last" was documented twice, implemented twice, and dead once
+
+Both `team_stop` and `team_restart` promise that a team's coordinator is stopped
+or restarted AFTER the peers it coordinates. They implemented it separately:
+
+```
+team_restart   (r.observed.name ?? "").includes("velitel")   ← a guess
+team_stop      p.role === "velitel"                          ← a field the
+                                                                registry did not
+                                                                have
+```
+
+`PeerRecord` carried no `role`; `team_stop` took one as an optional argument. So
+unless a caller happened to pass it, the filter matched nothing, the order came
+back untouched, and **a team stop put its coordinator down in the middle of the
+team it was coordinating.** Documented, dead, and nobody knew.
+
+Now one shared function, one source of truth, and — this is the part that
+matters — **it reports which authority decided**:
+
+- `desired.role`, declared through `control_config`, always wins. Including a
+  declaration of something else: a peer declared `role: "tester"` is not the
+  coordinator whatever its name says.
+- Otherwise the name, as a fallback, so a fleet that has declared nothing does
+  not lose the ordering it had.
+- Every plan says which one fired, and flags when the order rests on a guess.
+  `mic-velitel-zastupce` contains the word and is not the coordinator; a
+  substring match cannot know that and must not pretend it does.
+
+### "Archive before you destroy" now lives in the throat, not in one caller
+
+The rule went into `peer_spawn` in v0.11.7 and nowhere else, while `peer_stop`
+and `team_reconcile` also tear panes down — measured: one of three destroying
+call sites had it. A rule kept by memory holds until the next caller.
+
+It moves into `TmuxDriver.kill()`, so every caller present and future gets it:
+
+- Only **dead** panes are archived. A live peer stopped on purpose leaves its
+  evidence in its transcript, not on a screen — and an archive that keeps
+  everything is as useless as one that keeps nothing.
+- **`force` does not skip it.** Force skips waiting, never evidence.
+- If the archive cannot be written, the teardown is REFUSED and says why. The
+  spawn failure of 2026-08-07 was never explained because a teardown took the
+  explanation with it; that is not a trade worth repeating for tidiness.
+
 ## [0.11.12] — 2026-08-08
 
 ### `peer_spawn` stops reporting success it has not established

@@ -4320,7 +4320,7 @@ async function resolvePeer(idOrName, root = bridgeRoot(), now = Date.now()) {
 // package.json
 var package_default = {
   name: "claude-bridge-daemon",
-  version: "0.11.12",
+  version: "0.11.13",
   private: true,
   description: "Control-plane daemon for the claude-bridge plugin: peer lifecycle, telemetry, audit. Distributed as opt-in artefact \u2014 see ADR-008.",
   type: "module",
@@ -5026,9 +5026,18 @@ async function applyStateChange(state, mutate) {
 }
 
 // src/handlers/control-config.ts
-var PEER_SETTABLE = ["label", "windowIndex", "model", "accountProfile"];
+var PEER_SETTABLE = ["label", "windowIndex", "model", "accountProfile", "role"];
 var PeerSetSchema = external_exports.object({
   label: external_exports.string().min(1).max(64).optional(),
+  /**
+   * Declared role. `velitel` is the only value the daemon acts on today: it
+   * orders that peer LAST in a team stop or restart, because a coordinator
+   * goes down after the peers it coordinates.
+   *
+   * Nullable so a declaration can be withdrawn, which is not the same as
+   * never having declared one — the peer then falls back to name matching.
+   */
+  role: external_exports.string().min(1).max(32).nullable().optional(),
   // A window position is an index, not an opinion. Negative is meaningless
   // and a huge value is a typo, not a request.
   windowIndex: external_exports.number().int().min(0).max(999).optional(),
@@ -7763,6 +7772,31 @@ async function handleTeamRelease(req, ctx) {
   });
 }
 
+// src/handlers/peer-order.ts
+var COORDINATOR_ROLE = "velitel";
+function readRole(peer) {
+  const name = peer.name ?? null;
+  const declared = peer.role;
+  if (typeof declared === "string" && declared.length > 0) {
+    return { name, isCoordinator: declared === COORDINATOR_ROLE, source: "declared" };
+  }
+  if (name?.includes(COORDINATOR_ROLE)) {
+    return { name, isCoordinator: true, source: "name" };
+  }
+  return { name, isCoordinator: false, source: "none" };
+}
+function orderCoordinatorLast(peers, read) {
+  const verdicts = peers.map((p) => readRole(read(p)));
+  const rest = peers.filter((_, i) => !verdicts[i]?.isCoordinator);
+  const last = peers.filter((_, i) => verdicts[i]?.isCoordinator);
+  const coordinators = verdicts.filter((v) => v.isCoordinator);
+  return {
+    ordered: [...rest, ...last],
+    coordinators,
+    inferred: coordinators.some((v) => v.source === "name")
+  };
+}
+
 // src/handlers/team-restart.ts
 var DEFAULT_SETTLE_MS = 3e3;
 var TeamRestartArgsSchema = external_exports.object({
@@ -7782,8 +7816,10 @@ var TeamRestartArgsSchema = external_exports.object({
   message: "pass exactly one of `peers` or `team`"
 });
 function orderPeers(records) {
-  const isVelitel = (r) => (r.observed.name ?? "").includes("velitel");
-  return [...records.filter((r) => !isVelitel(r)), ...records.filter(isVelitel)];
+  return orderCoordinatorLast(records, (r) => ({
+    role: r.desired.role,
+    name: r.observed.name
+  }));
 }
 var sleep2 = (ms) => new Promise((r) => setTimeout(r, ms));
 function callerTeamOf6(req, ctx) {
@@ -7841,7 +7877,8 @@ async function handleTeamRestart(req, ctx) {
       );
     }
   }
-  const ordered = orderPeers(selected);
+  const ordering = orderPeers(selected);
+  const ordered = ordering.ordered;
   const unrestartable = ordered.filter((r) => !r.desired.command);
   if (unrestartable.length > 0) {
     await writeEvent({
@@ -7874,7 +7911,11 @@ async function handleTeamRestart(req, ctx) {
       pid: r.observed.pid,
       command: r.desired.command ?? null,
       cwd: r.desired.cwd ?? null
-    }))
+    })),
+    // Who was put last, and on whose authority — a name match is a guess and an
+    // operator reading this plan needs to see the difference before trusting it.
+    coordinators: ordering.coordinators,
+    coordinatorInferredFromName: ordering.inferred
   };
   if (args.dryRun) {
     await writeEvent({
@@ -8262,9 +8303,7 @@ async function stopSinglePeer(req, ctx, peer, args, threadId, anchorTimeoutMs, a
   };
 }
 function orderPeersForStop(peers) {
-  const veliteli = peers.filter((p) => p.role === "velitel");
-  const rest = peers.filter((p) => p.role !== "velitel");
-  return veliteli.length > 0 ? [...rest, ...veliteli] : peers.slice();
+  return orderCoordinatorLast(peers, (p) => ({ role: p.role, name: p.displayName ?? null }));
 }
 async function handleTeamStop(req, ctx) {
   const parsed = TeamStopArgsSchema.safeParse(req.args);
@@ -8295,7 +8334,8 @@ async function handleTeamStop(req, ctx) {
       { team: args.team }
     );
   }
-  const ordered = orderPeersForStop(spec.peers);
+  const stopOrder = orderPeersForStop(spec.peers);
+  const ordered = stopOrder.ordered;
   const anchorTimeoutMs = args.anchorTimeoutMs ?? DEFAULT_ANCHOR_TIMEOUT_MS2;
   const ackPollMs = args.ackPollMs ?? DEFAULT_ACK_POLL_MS2;
   const threadId = `team-stop:${spec.team}:${Date.now().toString(36)}`;
@@ -8308,6 +8348,10 @@ async function handleTeamStop(req, ctx) {
         displayName: p.displayName,
         role: p.role ?? null
       })),
+      // Who was put last, and on whose authority — a name match is a guess and an
+      // operator reading this plan needs to see the difference before trusting it.
+      coordinators: stopOrder.coordinators,
+      coordinatorInferredFromName: stopOrder.inferred,
       anchorTimeoutMs,
       force: args.force
     });
@@ -8754,6 +8798,27 @@ var TmuxDriver = class _TmuxDriver {
   async kill(sessionKey, opts = {}) {
     const t = parseHostTarget(sessionKey);
     const canonical = t.kind === "window" ? t.windowId : t.session;
+    const before = await this.probePanePid(canonical, 1);
+    if (before.kind === "dead") {
+      const saved = await this.archivePane(
+        canonical,
+        `pane held exit status ${before.exitStatus ?? "unknown"} before teardown`
+      );
+      if (saved === null) {
+        log8.error("tmux_kill_refused_no_archive", {
+          sessionKey: canonical,
+          exitStatus: before.exitStatus
+        });
+        throw new Error(
+          `Refusing to destroy '${canonical}': its process had already exited (status ${before.exitStatus ?? "unknown"}) and the pane could NOT be archived, so tearing it down would take the only record of why with it. Read it with \`tmux capture-pane -p -S -2000 -t ${canonical}\` and remove it by hand.`
+        );
+      }
+      log8.info("tmux_kill_archived_first", {
+        sessionKey: canonical,
+        archivePath: saved,
+        exitStatus: before.exitStatus
+      });
+    }
     if (!await this.hasSession(canonical)) return;
     const verb = t.kind === "window" ? "kill-window" : "kill-session";
     if (t.kind === "window") {

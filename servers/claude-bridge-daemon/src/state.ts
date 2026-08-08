@@ -55,6 +55,20 @@ export interface PeerDesired {
   /** Team identifier from team_layout apply or team_adopt; undefined for ad-hoc peer_spawn. */
   team?: string;
   /**
+   * What this peer is FOR, as declared — today only `velitel` means anything.
+   *
+   * It lives in `desired` because a role is an intent someone stated, not a
+   * property anyone can measure. Before v0.11.13 it lived nowhere: `team_stop`
+   * read a `role` field the registry did not have (so velitel-last silently
+   * never happened) while `team_restart` guessed from a substring of the name
+   * — one documented rule, two implementations, one of them dead.
+   *
+   * Undeclared peers still fall back to the name, because a fleet that has not
+   * declared anything should not lose the ordering it had. Which source decided
+   * is reported, so nobody has to guess whether the fallback fired.
+   */
+  role?: string;
+  /**
    * Short display name — the tmux window title and what projections show.
    *
    * Separate from `observed.name` (the FQN) on purpose. Until v0.10.20 there

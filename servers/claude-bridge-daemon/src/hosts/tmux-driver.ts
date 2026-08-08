@@ -496,6 +496,44 @@ export class TmuxDriver implements SessionHostDriver {
   async kill(sessionKey: string, opts: { force?: boolean } = {}): Promise<void> {
     const t = parseHostTarget(sessionKey);
     const canonical = t.kind === "window" ? t.windowId : t.session;
+
+    // ARCHIVE BEFORE YOU DESTROY — enforced here, in the throat (v0.11.13).
+    //
+    // The rule was written into `peer_spawn` in v0.11.7 and only there, which
+    // made it a rule each caller had to remember: `peer_stop` and
+    // `team_reconcile` also tear panes down and did not. A rule kept by memory
+    // holds until the next caller, and there is always a next caller.
+    //
+    // Only DEAD panes are archived, and that condition is what keeps this
+    // cheap: a live peer being stopped on purpose leaves its evidence in its
+    // transcript, not on a screen. A pane that already died is the only place
+    // its last words exist.
+    //
+    // `force` does NOT skip this. Force skips WAITING, never EVIDENCE — an
+    // archive is not a courtesy to the process, it is the record of what
+    // happened, and the whole reason the failure of 2026-08-07 could never be
+    // explained was that a teardown took it away.
+    const before = await this.probePanePid(canonical, 1);
+    if (before.kind === "dead") {
+      const saved = await this.archivePane(
+        canonical,
+        `pane held exit status ${before.exitStatus ?? "unknown"} before teardown`,
+      );
+      if (saved === null) {
+        log.error("tmux_kill_refused_no_archive", {
+          sessionKey: canonical,
+          exitStatus: before.exitStatus,
+        });
+        throw new Error(
+          `Refusing to destroy '${canonical}': its process had already exited (status ${before.exitStatus ?? "unknown"}) and the pane could NOT be archived, so tearing it down would take the only record of why with it. Read it with \`tmux capture-pane -p -S -2000 -t ${canonical}\` and remove it by hand.`,
+        );
+      }
+      log.info("tmux_kill_archived_first", {
+        sessionKey: canonical,
+        archivePath: saved,
+        exitStatus: before.exitStatus,
+      });
+    }
     // Idempotent — the caller may not know whether the session is still
     // there (v0.10.0-rc.2 fix for T2 „stopping without host" reconcile).
     if (!(await this.hasSession(canonical))) return;

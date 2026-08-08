@@ -4,6 +4,7 @@ import type { RequestEnvelope, ResultEnvelope } from "../rpc.ts";
 import { errResult, okResult } from "../rpc.ts";
 import type { PeerRecord } from "../state.ts";
 import type { HandlerContext } from "./context.ts";
+import { type OrderResult, orderCoordinatorLast } from "./peer-order.ts";
 import { type PeerRefCandidate, ambiguousPeerMessage, resolvePeerRef } from "./peer-ref.ts";
 import { handlePeerRestart } from "./peer-restart.ts";
 
@@ -74,10 +75,18 @@ interface RestartOutcome {
   error?: string;
 }
 
-/** Velitel last — the coordinator goes down after the peers it coordinates. */
-function orderPeers(records: PeerRecord[]): PeerRecord[] {
-  const isVelitel = (r: PeerRecord) => (r.observed.name ?? "").includes("velitel");
-  return [...records.filter((r) => !isVelitel(r)), ...records.filter(isVelitel)];
+/**
+ * Velitel last — the coordinator goes down after the peers it coordinates.
+ *
+ * Shared with `team_stop` since v0.11.13. It used to be written here as a
+ * substring match and there as a lookup of a field the registry did not have,
+ * so both tools documented the same rule and only one of them followed it.
+ */
+function orderPeers(records: PeerRecord[]): OrderResult<PeerRecord> {
+  return orderCoordinatorLast(records, (r) => ({
+    role: r.desired.role,
+    name: r.observed.name,
+  }));
 }
 
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
@@ -148,7 +157,8 @@ export async function handleTeamRestart(
     }
   }
 
-  const ordered = orderPeers(selected);
+  const ordering = orderPeers(selected);
+  const ordered = ordering.ordered;
 
   // Refuse up front, not halfway through. A peer with no recorded command
   // relaunches as a bare `claude`, which under nvm resolves to nothing.
@@ -186,6 +196,10 @@ export async function handleTeamRestart(
       command: r.desired.command ?? null,
       cwd: r.desired.cwd ?? null,
     })),
+    // Who was put last, and on whose authority — a name match is a guess and an
+    // operator reading this plan needs to see the difference before trusting it.
+    coordinators: ordering.coordinators,
+    coordinatorInferredFromName: ordering.inferred,
   };
 
   if (args.dryRun) {

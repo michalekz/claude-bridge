@@ -8,6 +8,7 @@ import { writeEvent } from "../events.ts";
 import type { RequestEnvelope, ResultEnvelope } from "../rpc.ts";
 import { errResult, okResult } from "../rpc.ts";
 import type { HandlerContext } from "./context.ts";
+import { type OrderResult, orderCoordinatorLast } from "./peer-order.ts";
 import { handlePeerStop } from "./peer-stop.ts";
 
 /**
@@ -293,10 +294,17 @@ async function stopSinglePeer(
   };
 }
 
-function orderPeersForStop<T extends { role?: string | undefined }>(peers: T[]): T[] {
-  const veliteli = peers.filter((p) => p.role === "velitel");
-  const rest = peers.filter((p) => p.role !== "velitel");
-  return veliteli.length > 0 ? [...rest, ...veliteli] : peers.slice();
+/**
+ * Velitel last — one shared rule with `team_restart` since v0.11.13.
+ *
+ * This used to filter on `p.role === "velitel"` against records that carried no
+ * `role` at all, so unless a caller passed one the filter matched nothing and
+ * the order came back untouched. The rule was documented, dead, and nobody knew.
+ */
+function orderPeersForStop<T extends { role?: string | undefined; displayName?: string }>(
+  peers: T[],
+): OrderResult<T> {
+  return orderCoordinatorLast(peers, (p) => ({ role: p.role, name: p.displayName ?? null }));
 }
 
 export async function handleTeamStop(
@@ -332,7 +340,8 @@ export async function handleTeamStop(
     );
   }
 
-  const ordered = orderPeersForStop(spec.peers);
+  const stopOrder = orderPeersForStop(spec.peers);
+  const ordered = stopOrder.ordered;
   const anchorTimeoutMs = args.anchorTimeoutMs ?? DEFAULT_ANCHOR_TIMEOUT_MS;
   const ackPollMs = args.ackPollMs ?? DEFAULT_ACK_POLL_MS;
   const threadId = `team-stop:${spec.team}:${Date.now().toString(36)}`;
@@ -346,6 +355,10 @@ export async function handleTeamStop(
         displayName: p.displayName,
         role: p.role ?? null,
       })),
+      // Who was put last, and on whose authority — a name match is a guess and an
+      // operator reading this plan needs to see the difference before trusting it.
+      coordinators: stopOrder.coordinators,
+      coordinatorInferredFromName: stopOrder.inferred,
       anchorTimeoutMs,
       force: args.force,
     });
