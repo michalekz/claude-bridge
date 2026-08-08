@@ -140,6 +140,65 @@ correct recovery when the two have diverged.
 
 ---
 
+## A spawned peer has two identities, and they never meet
+
+**What happens.** `peer_spawn` takes the peer's `sessionId` as an argument. For
+a resume that is a real Claude Code session UUID. For a fresh spawn the schema
+says "stable name for a new spawn" — so the caller invents a string, and the
+daemon keys its whole registry on it.
+
+Meanwhile the Claude Code process that starts inside that pane mints its own
+session id, and the daemon never learns it. The two identities coexist for the
+life of the peer:
+
+| Who is asked | Answer for the same running process |
+|---|---|
+| `team_status` (daemon registry) | `tst-c` |
+| `peer_list` (bridge) | `tst-c-3e`, id `e8197b26-f873-40fb-afec-4e370b5c0997` |
+| tmux | session `tst-c`, window `@2226`, pane pid 2249670 |
+
+Both are "right". Nothing reconciles them, and nothing can: the daemon's key was
+never a measurement, it was a wish.
+
+**Measured on the live fleet** (2026-08-08): 25 of 26 registry keys are genuine
+session UUIDs. The one that is not is the only peer created by `peer_spawn`
+rather than adopted. Adoption reads identity off reality, so it cannot get this
+wrong; spawn is the only path that invents one.
+
+**Why it is usually invisible.** Lifecycle operations address a peer by its tmux
+target, which is correct either way, so `peer_compact`, `wake`, `peer_stop` and
+`peer_restart` all work on such a peer. What fails is anything that has to
+cross-reference the two sides — reading a spawned peer's context, matching a
+daemon record to a bridge message, or a human comparing two tool outputs and
+concluding one of them is broken.
+
+**A second, independent cause made it visible.** The peer's name, `tst-c-3e`, is
+not the bridge's invention either. Claude Code derived it: its session file
+records `"nameSource": "derived"`, and the shape is the working directory's
+basename plus two opaque characters. That derived name is present for every
+session nobody has renamed — 2 of 26 here — but it is normally hidden, because
+the bridge prefers the transcript title. This peer has no transcript at all
+(no project directory exists for its working directory), because nothing has
+ever spoken to it. So the fallback name surfaced.
+
+Put together: the identity was wrong from the moment of spawn, and it took a
+peer that had never held a conversation for anyone to see it.
+
+**The shape of the defect.** `PeerRecord` was split into `desired` and
+`observed` in v0.11.0 precisely because intent and measurement are different
+kinds of claim. `sessionId` was left outside that split, and it belongs on the
+`observed` side: **only the peer can mint its own session id.** Accepting it as
+an argument is the same confusion, one level up from where it was fixed.
+
+**Until it is fixed:** address spawned peers by their tmux target, and do not
+expect `team_status` and `peer_list` to agree about them. `team_adopt` rebuilds
+the registry from reality and will replace an invented key with the real one.
+
+**Status:** open (task #86). The peer that reproduces it is being kept alive
+untouched.
+
+---
+
 ## Injected payloads are one line and at most 800 characters
 
 Anything the control plane types into a pane — `/compact`, a wake prompt, a
