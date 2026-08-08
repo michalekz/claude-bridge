@@ -62,11 +62,19 @@ export async function handleTeamStatus(
     const key = record.observed.tmuxTarget ?? record.observed.name;
     const host = hostByKey.get(key);
     return {
+      // The HANDLE, not the peer's session identity (v0.11.16, defect N4). It
+      // is how you address this peer and it is the registry key; whether it
+      // also happens to BE the session id is answered by `identity` below.
       sessionId: record.sessionId,
       name: record.observed.name,
       hostDriver: record.observed.hostDriver,
       tmuxTarget: record.observed.tmuxTarget,
       status: record.observed.status,
+      // The measured Claude session id, and how much of a claim it is.
+      // `unknown` means the process is RUNNING and we cannot yet say who it is
+      // — a live peer, not a dead one, and never to be shown as the latter.
+      measuredSessionId: record.observed.sessionId ?? null,
+      identity: record.observed.identity ?? null,
       model: record.observed.model,
       accountProfile: record.desired.accountProfile,
       pid: record.observed.pid,
@@ -84,10 +92,14 @@ export async function handleTeamStatus(
     peerCount: peers.length,
     peers: args.verbose
       ? peers
-      : peers.map(({ sessionId, name, status, hostAlive }) => ({
+      : peers.map(({ sessionId, name, status, hostAlive, identity }) => ({
           sessionId,
           name,
           status,
+          // Surfaced even in the compact listing: a peer whose identity is
+          // unknown cannot be cross-referenced with peer_list, and finding that
+          // out from a `verbose` flag is finding it out too late.
+          ...(identity === "unknown" ? { identity } : {}),
           hostAlive,
         })),
   });

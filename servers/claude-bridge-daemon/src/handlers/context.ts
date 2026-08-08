@@ -35,4 +35,10 @@ export interface HandlerContext {
    * Tests set 0 to skip it; the default is half a second (N9, 2026-08-08).
    */
   spawnConfirmMs?: number;
+  /**
+   * Ceiling on the post-spawn identity measurement (v0.11.16, defect N4).
+   * Production uses 5 s — 5x the 960 ms measured for the session file to
+   * appear. Tests set a small value so the suite does not pay it per case.
+   */
+  identityTimeoutMs?: number;
 }

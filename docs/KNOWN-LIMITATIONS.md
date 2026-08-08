@@ -200,16 +200,36 @@ peer that had never held a conversation for anyone to see it.
 
 **The shape of the defect.** `PeerRecord` was split into `desired` and
 `observed` in v0.11.0 precisely because intent and measurement are different
-kinds of claim. `sessionId` was left outside that split, and it belongs on the
-`observed` side: **only the peer can mint its own session id.** Accepting it as
-an argument is the same confusion, one level up from where it was fixed.
+kinds of claim. That split never reached the KEY, and the key is where two
+different things had been living under one name:
 
-**Until it is fixed:** address spawned peers by their tmux target, and do not
-expect `team_status` and `peer_list` to agree about them. `team_adopt` rebuilds
-the registry from reality and will replace an invented key with the real one.
+| | Who decides it | When it exists | What it is for |
+|---|---|---|---|
+| **handle** | a person, or a team spec | before the peer exists | naming, addressing, declaring intent |
+| **identity** | Claude Code | only after boot | matching the record to a session and to the bridge |
 
-**Status:** open (task #86). The peer that reproduces it is being kept alive
-untouched.
+So the defect is not "the daemon invents an identity". It is **"the handle and
+the identity share one name, so the handle passes itself off as a measurement"**.
+
+The distinction is load-bearing, and an earlier draft of this section got it
+wrong in a way that would have caused damage. It concluded only that `sessionId`
+belongs in `observed` — which reads as "stop accepting it as an argument". Doing
+that breaks `team_layout`: a declarative layout **must** be able to name a peer
+that has not been started yet (`team-layout.ts` passes the spec's `sessionId`
+straight into `peer_spawn`). The caller inventing a string there is not the bug.
+The bug is that the string was then treated as knowledge.
+
+**Fixed in v0.11.16.** The handle stays the registry key and stops pretending to
+be anything else; the identity is measured after spawn from
+`~/.claude/sessions/<pid>.json` — the same file the peer's own MCP server reads —
+and lands in `observed.sessionId` with `observed.identity` saying whether it is
+knowledge. `identity: "unknown"` means the process is running and we do not know
+who it is, which is deliberately distinct from dead; `team_reconcile` measures it
+again later. No migration was needed: 25 of 26 keys were already genuine UUIDs,
+because adoption had read them off reality.
+
+**Status:** fixed in v0.11.16 (task #86). The peer that reproduced it is kept
+alive untouched until the fix is verified against it.
 
 ---
 

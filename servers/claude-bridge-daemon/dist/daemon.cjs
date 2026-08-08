@@ -4320,7 +4320,7 @@ async function resolvePeer(idOrName, root = bridgeRoot(), now = Date.now()) {
 // package.json
 var package_default = {
   name: "claude-bridge-daemon",
-  version: "0.11.15",
+  version: "0.11.16",
   private: true,
   description: "Control-plane daemon for the claude-bridge plugin: peer lifecycle, telemetry, audit. Distributed as opt-in artefact \u2014 see ADR-008.",
   type: "module",
@@ -5655,10 +5655,10 @@ async function handlePeerCompact(req, ctx) {
 }
 
 // src/handlers/peer-restart.ts
-var import_node_fs3 = require("node:fs");
-var import_promises12 = require("node:fs/promises");
-var import_node_os3 = require("node:os");
-var import_node_path9 = require("node:path");
+var import_node_fs5 = require("node:fs");
+var import_promises13 = require("node:fs/promises");
+var import_node_os4 = require("node:os");
+var import_node_path11 = require("node:path");
 
 // src/hosts/driver.ts
 var WINDOW_ID = /^@\d+$/;
@@ -5679,8 +5679,8 @@ function sanitizeSessionKey(rawName) {
 }
 
 // src/handlers/peer-spawn.ts
-var import_node_fs2 = require("node:fs");
-var import_node_path8 = require("node:path");
+var import_node_fs4 = require("node:fs");
+var import_node_path10 = require("node:path");
 
 // src/handlers/fork-guard.ts
 async function forkGuard(state, driver, opts) {
@@ -5705,6 +5705,216 @@ async function forkGuard(state, driver, opts) {
     };
   }
   return null;
+}
+
+// src/handlers/peer-identity.ts
+var import_node_fs3 = require("node:fs");
+var import_node_path9 = require("node:path");
+
+// src/hosts/process-inspector.ts
+var import_node_fs2 = require("node:fs");
+var import_promises11 = require("node:fs/promises");
+var import_node_os3 = require("node:os");
+var import_node_path8 = require("node:path");
+var DEFAULT_MAX_DEPTH = 8;
+var UUID_RE = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i;
+function parsePpidFromStat(stat4) {
+  const close = stat4.lastIndexOf(")");
+  if (close === -1) return null;
+  const fields = stat4.slice(close + 1).trim().split(/\s+/);
+  const ppid = Number.parseInt(fields[1] ?? "", 10);
+  return Number.isNaN(ppid) ? null : ppid;
+}
+function sessionIdFromCmdline(cmdline) {
+  const idx = cmdline.indexOf("--resume");
+  if (idx === -1) return null;
+  const rest = cmdline.slice(idx + "--resume".length).trim();
+  const token = rest.split(/\s+/)[0] ?? "";
+  const match = UUID_RE.exec((0, import_node_path8.basename)(token));
+  return match ? match[0] : null;
+}
+var LinuxProcessInspector = class {
+  procRoot;
+  sessionsDir;
+  constructor(opts = {}) {
+    this.procRoot = opts.procRoot ?? "/proc";
+    this.sessionsDir = opts.sessionsDir ?? (0, import_node_path8.join)((0, import_node_os3.homedir)(), ".claude", "sessions");
+  }
+  async listClaudePeers() {
+    let entries;
+    try {
+      entries = await (0, import_promises11.readdir)(this.procRoot);
+    } catch {
+      return [];
+    }
+    const out = [];
+    for (const entry of entries) {
+      const pid = Number.parseInt(entry, 10);
+      if (Number.isNaN(pid) || String(pid) !== entry) continue;
+      const comm = await this.readProcFile(pid, "comm");
+      if (comm?.trim() !== "claude") continue;
+      const stat4 = await this.readProcFile(pid, "stat");
+      const ppid = stat4 ? parsePpidFromStat(stat4) : null;
+      const raw = await this.readProcFile(pid, "cmdline");
+      const argv = (raw ?? "").split("\0").filter((a) => a.length > 0);
+      const cmdline = argv.join(" ").trim();
+      const cwd = await this.readProcCwd(pid);
+      const resolvedCommand = await this.resolveViaProcessPath(pid, argv[0] ?? "");
+      const environ = await this.readProcEnviron(pid);
+      const { sessionId, source } = await this.resolveSessionId(pid, cmdline);
+      out.push({
+        pid,
+        ppid: ppid ?? 0,
+        sessionId,
+        sessionIdSource: source,
+        cmdline,
+        argv,
+        cwd,
+        resolvedCommand,
+        environ
+      });
+    }
+    return out;
+  }
+  /** Every `KEY=value` pair in `/proc/<pid>/environ`, unfiltered. */
+  async readProcEnviron(pid) {
+    const raw = await this.readProcFile(pid, "environ");
+    if (!raw) return {};
+    const out = {};
+    for (const entry of raw.split("\0")) {
+      const eq = entry.indexOf("=");
+      if (eq <= 0) continue;
+      out[entry.slice(0, eq)] = entry.slice(eq + 1);
+    }
+    return out;
+  }
+  /**
+   * Turn a bare command into an absolute path, using the process's own `PATH`.
+   *
+   * Only the owning process knows where its binary came from — under nvm the
+   * directory is not on any system path. An already-absolute command is
+   * returned unchanged; anything unresolvable returns null so the caller keeps
+   * what it was given instead of guessing.
+   */
+  async resolveViaProcessPath(pid, command) {
+    if (command.length === 0) return null;
+    if (command.startsWith("/")) return command;
+    const environ = await this.readProcFile(pid, "environ");
+    if (!environ) return null;
+    const pathVar = environ.split("\0").find((e) => e.startsWith("PATH="))?.slice("PATH=".length);
+    if (!pathVar) return null;
+    for (const dir of pathVar.split(":")) {
+      if (dir.length === 0) continue;
+      const candidate = (0, import_node_path8.join)(dir, command);
+      try {
+        await (0, import_promises11.access)(candidate, import_node_fs2.constants.X_OK);
+        return candidate;
+      } catch {
+      }
+    }
+    return null;
+  }
+  async readProcCwd(pid) {
+    try {
+      return await (0, import_promises11.readlink)((0, import_node_path8.join)(this.procRoot, String(pid), "cwd"));
+    } catch {
+      return null;
+    }
+  }
+  async ancestorsOf(pid, maxDepth = DEFAULT_MAX_DEPTH) {
+    const chain = [];
+    let current = pid;
+    for (let i = 0; i < maxDepth; i++) {
+      const stat4 = await this.readProcFile(current, "stat");
+      if (!stat4) break;
+      const ppid = parsePpidFromStat(stat4);
+      if (ppid === null || ppid <= 1) break;
+      chain.push(ppid);
+      current = ppid;
+    }
+    return chain;
+  }
+  /**
+   * `~/.claude/sessions/<pid>.json` is authoritative — it is the same file the
+   * MCP server reads to learn its own identity, so it exists for every peer
+   * including ones started without `--resume`. The command line is only a
+   * fallback for the window where that file is missing.
+   */
+  async resolveSessionId(pid, cmdline) {
+    try {
+      const raw = await (0, import_promises11.readFile)((0, import_node_path8.join)(this.sessionsDir, `${pid}.json`), "utf-8");
+      const parsed = JSON.parse(raw);
+      if (parsed.sessionId) return { sessionId: parsed.sessionId, source: "sessions-json" };
+    } catch {
+    }
+    const fromArgs = sessionIdFromCmdline(cmdline);
+    if (fromArgs) return { sessionId: fromArgs, source: "resume-arg" };
+    return { sessionId: null, source: "none" };
+  }
+  async readProcFile(pid, name) {
+    try {
+      return await (0, import_promises11.readFile)((0, import_node_path8.join)(this.procRoot, String(pid), name), "utf-8");
+    } catch {
+      return null;
+    }
+  }
+};
+function defaultProcessInspector() {
+  return new LinuxProcessInspector();
+}
+
+// src/handlers/peer-identity.ts
+var IDENTITY_MEASURE_TIMEOUT_MS = 5e3;
+var IDENTITY_POLL_MS = 150;
+function pidExists(pid, procRoot) {
+  return (0, import_node_fs3.existsSync)((0, import_node_path9.join)(procRoot, String(pid)));
+}
+async function probeOnce(panePid, inspector) {
+  const claudes = await inspector.listClaudePeers().catch(() => []);
+  let sawOurs = false;
+  for (const proc of claudes) {
+    if (proc.pid !== panePid) {
+      const chain = [proc.ppid, ...await inspector.ancestorsOf(proc.pid).catch(() => [])];
+      if (!chain.includes(panePid)) continue;
+    }
+    sawOurs = true;
+    if (proc.sessionId && proc.sessionIdSource !== "none") {
+      return {
+        sessionId: proc.sessionId,
+        source: proc.sessionIdSource,
+        pid: proc.pid,
+        measuredAt: (/* @__PURE__ */ new Date()).toISOString()
+      };
+    }
+  }
+  return { kind: sawOurs ? "no-session-id" : "no-claude-under-pane" };
+}
+async function measureIdentity(panePid, opts = {}) {
+  const inspector = opts.inspector ?? defaultProcessInspector();
+  const timeoutMs = opts.timeoutMs ?? IDENTITY_MEASURE_TIMEOUT_MS;
+  const pollMs = opts.pollMs ?? IDENTITY_POLL_MS;
+  const procRoot = opts.procRoot ?? "/proc";
+  const started = Date.now();
+  const deadline = started + timeoutMs;
+  let attempts = 0;
+  let lastReason = "no-claude-under-pane";
+  if (!pidExists(panePid, procRoot)) {
+    return { kind: "unknown", reason: "pane-pid-gone", waitedMs: 0, attempts: 0 };
+  }
+  for (; ; ) {
+    attempts++;
+    if (attempts > 1 && !pidExists(panePid, procRoot)) {
+      return { kind: "unknown", reason: "pane-pid-gone", waitedMs: Date.now() - started, attempts };
+    }
+    const probe = await probeOnce(panePid, inspector);
+    if ("sessionId" in probe) {
+      return { kind: "measured", measurement: probe, waitedMs: Date.now() - started, attempts };
+    }
+    lastReason = probe.kind;
+    if (Date.now() >= deadline) break;
+    await new Promise((r) => setTimeout(r, pollMs));
+  }
+  return { kind: "unknown", reason: lastReason, waitedMs: Date.now() - started, attempts };
 }
 
 // src/handlers/peer-spawn.ts
@@ -5756,11 +5966,11 @@ var PeerSpawnArgsSchema = external_exports.object({
 }).strict();
 function findTranscriptElsewhere(sessionId, cwd) {
   try {
-    const here = (0, import_node_path8.dirname)(sessionFile(cwd, sessionId));
-    for (const dir of (0, import_node_fs2.readdirSync)(projectsRoot())) {
-      const candidate = (0, import_node_path8.join)(projectsRoot(), dir, `${sessionId}.jsonl`);
-      if ((0, import_node_path8.basename)((0, import_node_path8.join)(projectsRoot(), dir)) === (0, import_node_path8.basename)(here)) continue;
-      if ((0, import_node_fs2.existsSync)(candidate)) return candidate;
+    const here = (0, import_node_path10.dirname)(sessionFile(cwd, sessionId));
+    for (const dir of (0, import_node_fs4.readdirSync)(projectsRoot())) {
+      const candidate = (0, import_node_path10.join)(projectsRoot(), dir, `${sessionId}.jsonl`);
+      if ((0, import_node_path10.basename)((0, import_node_path10.join)(projectsRoot(), dir)) === (0, import_node_path10.basename)(here)) continue;
+      if ((0, import_node_fs4.existsSync)(candidate)) return candidate;
     }
   } catch {
   }
@@ -5811,10 +6021,10 @@ async function handlePeerSpawn(req, ctx) {
     overrides
   });
   const spawnArgs = [...args.args];
+  const isClaude = args.command.split("/").pop() === "claude";
   if (args.resume) {
-    const isClaude = args.command.split("/").pop() === "claude";
     const transcript = sessionFile(args.cwd, args.sessionId);
-    if (isClaude && isResumableSessionId(args.sessionId) && !(0, import_node_fs2.existsSync)(transcript)) {
+    if (isClaude && isResumableSessionId(args.sessionId) && !(0, import_node_fs4.existsSync)(transcript)) {
       const elsewhere = findTranscriptElsewhere(args.sessionId, args.cwd);
       await writeEvent({
         event: "peer_spawn_refused",
@@ -6020,13 +6230,43 @@ async function handlePeerSpawn(req, ctx) {
         }
       );
     }
+    const identity = isClaude ? await measureIdentity(record.pid, {
+      ...ctx.identityTimeoutMs !== void 0 ? { timeoutMs: ctx.identityTimeoutMs } : {},
+      ...ctx.processInspector ? { inspector: ctx.processInspector } : {},
+      ...ctx.procRoot ? { procRoot: ctx.procRoot } : {}
+    }) : { kind: "unknown", reason: "not-a-claude-peer", waitedMs: 0, attempts: 0 };
+    const measured = identity.kind === "measured" ? identity.measurement : null;
     await applyStateChange(ctx.state, (draft) => {
       const rec = draft.peers[args.sessionId];
       if (!rec) return;
       rec.observed.pid = record.pid;
       rec.observed.status = "live";
       rec.observed.tmuxTarget = canonicalKey;
+      rec.observed.sessionId = measured?.sessionId ?? null;
+      rec.observed.identity = measured ? "measured" : "unknown";
+      rec.observed.identityAt = measured?.measuredAt ?? null;
+      rec.observed.identitySource = measured?.source ?? null;
       rec.observed.lastUpdatedAt = (/* @__PURE__ */ new Date()).toISOString();
+    });
+    await writeEvent({
+      event: measured ? "peer_identity_measured" : "peer_identity_unmeasured",
+      ...measured ? {} : { level: "warn" },
+      by: { sessionId: req.requestedBy.sessionId, name: req.requestedBy.name },
+      requestId: req.id,
+      details: {
+        handle: args.sessionId,
+        sessionKey: canonicalKey,
+        pid: record.pid,
+        measuredSessionId: measured?.sessionId ?? null,
+        source: measured?.source ?? null,
+        // The MEASURED wait, not the budget.
+        waitedMs: identity.waitedMs,
+        attempts: identity.attempts,
+        ...identity.kind === "unknown" ? {
+          reason: identity.reason,
+          note: "The peer is RUNNING; only its identity is unknown. team_reconcile can measure it later."
+        } : {}
+      }
     });
     await writeEvent({
       event: "peer_started",
@@ -6055,10 +6295,21 @@ async function handlePeerSpawn(req, ctx) {
       }
     });
     return okResult(req.id, req.tool, {
+      // The handle the caller chose — still the registry key, still how you
+      // address this peer. `sessionId` keeps the name so this release is about
+      // behaviour rather than renaming; the rename to `handle` is its own item.
       sessionId: args.sessionId,
       sessionKey: canonicalKey,
       pid: record.pid,
-      hostDriver: hostDriverName
+      hostDriver: hostDriverName,
+      // TOP LEVEL on purpose. A caller must not have to dig for the difference
+      // between "we know who this is" and "something is running in there".
+      identity: measured ? "measured" : "unknown",
+      measuredSessionId: measured?.sessionId ?? null,
+      identityWaitedMs: identity.waitedMs,
+      ...measured ? {} : {
+        identityNote: "The peer is running, but its Claude session id could not be read within the window. This is NOT a failed spawn. Cross-referencing it against peer_list will not work until team_reconcile measures it."
+      }
     });
   } catch (e) {
     await applyStateChange(ctx.state, (draft) => {
@@ -6080,7 +6331,7 @@ async function handlePeerSpawn(req, ctx) {
 }
 
 // src/handlers/peer-stop.ts
-var import_promises11 = require("node:fs/promises");
+var import_promises12 = require("node:fs/promises");
 
 // src/handlers/stop-protocol.ts
 var DEFAULT_STOP_ACK_TIMEOUT_MS = 12e4;
@@ -6173,7 +6424,7 @@ async function runCourtesyPhase(req, ctx, target, args) {
   if (!alive) return { kind: "no-host" };
   const timeoutMs = args.ackTimeoutMs ?? DEFAULT_STOP_ACK_TIMEOUT_MS;
   const pollMs = args.ackPollMs ?? DEFAULT_STOP_ACK_POLL_MS;
-  await (0, import_promises11.mkdir)(stopAcks.dir(), { recursive: true });
+  await (0, import_promises12.mkdir)(stopAcks.dir(), { recursive: true });
   const pending = record.observed.stopRequest ?? null;
   const resumed = pending !== null;
   let threadId;
@@ -6433,15 +6684,15 @@ var PeerRestartArgsSchema = external_exports.object({
   model: external_exports.string().optional(),
   accountProfile: external_exports.string().optional()
 }).strict();
-var UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+var UUID_RE2 = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 function isResumableSessionId(sessionId) {
-  return UUID_RE.test(sessionId);
+  return UUID_RE2.test(sessionId);
 }
 async function confirmStillRunning(pid, identity, expectedSessionId, opts = {}) {
   if (pid === null) return { ok: false, reason: "no pid was reported by the spawn" };
   const windowMs = opts.settleMs ?? 2500;
   const procRoot = opts.procRoot ?? "/proc";
-  const alive = () => (0, import_node_fs3.existsSync)((0, import_node_path9.join)(procRoot, String(pid)));
+  const alive = () => (0, import_node_fs5.existsSync)((0, import_node_path11.join)(procRoot, String(pid)));
   const isClaude = (opts.command ?? "").split("/").pop() === "claude";
   const mustRegister = isClaude && isResumableSessionId(expectedSessionId);
   const registered = identity.actual !== null;
@@ -6472,11 +6723,11 @@ async function verifyRestartedIdentity(expected, pid, opts = {}) {
   if (pid === null || !isResumableSessionId(expected)) return { mismatch: false, actual: null };
   const attempts = opts.attempts ?? 8;
   const delayMs = opts.delayMs ?? 500;
-  const home = opts.homeDir ?? (0, import_node_os3.homedir)();
-  const path = (0, import_node_path9.join)(home, ".claude", "sessions", `${pid}.json`);
+  const home = opts.homeDir ?? (0, import_node_os4.homedir)();
+  const path = (0, import_node_path11.join)(home, ".claude", "sessions", `${pid}.json`);
   for (let i = 0; i < attempts; i++) {
     try {
-      const raw = JSON.parse(await (0, import_promises12.readFile)(path, "utf-8"));
+      const raw = JSON.parse(await (0, import_promises13.readFile)(path, "utf-8"));
       const actual = typeof raw.sessionId === "string" ? raw.sessionId : null;
       if (actual) return { mismatch: actual !== expected, actual };
     } catch {
@@ -6786,158 +7037,6 @@ async function handlePeerRestart(req, ctx) {
     stop: stopResult.data,
     spawn: spawnResult.data
   });
-}
-
-// src/hosts/process-inspector.ts
-var import_node_fs4 = require("node:fs");
-var import_promises13 = require("node:fs/promises");
-var import_node_os4 = require("node:os");
-var import_node_path10 = require("node:path");
-var DEFAULT_MAX_DEPTH = 8;
-var UUID_RE2 = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i;
-function parsePpidFromStat(stat4) {
-  const close = stat4.lastIndexOf(")");
-  if (close === -1) return null;
-  const fields = stat4.slice(close + 1).trim().split(/\s+/);
-  const ppid = Number.parseInt(fields[1] ?? "", 10);
-  return Number.isNaN(ppid) ? null : ppid;
-}
-function sessionIdFromCmdline(cmdline) {
-  const idx = cmdline.indexOf("--resume");
-  if (idx === -1) return null;
-  const rest = cmdline.slice(idx + "--resume".length).trim();
-  const token = rest.split(/\s+/)[0] ?? "";
-  const match = UUID_RE2.exec((0, import_node_path10.basename)(token));
-  return match ? match[0] : null;
-}
-var LinuxProcessInspector = class {
-  procRoot;
-  sessionsDir;
-  constructor(opts = {}) {
-    this.procRoot = opts.procRoot ?? "/proc";
-    this.sessionsDir = opts.sessionsDir ?? (0, import_node_path10.join)((0, import_node_os4.homedir)(), ".claude", "sessions");
-  }
-  async listClaudePeers() {
-    let entries;
-    try {
-      entries = await (0, import_promises13.readdir)(this.procRoot);
-    } catch {
-      return [];
-    }
-    const out = [];
-    for (const entry of entries) {
-      const pid = Number.parseInt(entry, 10);
-      if (Number.isNaN(pid) || String(pid) !== entry) continue;
-      const comm = await this.readProcFile(pid, "comm");
-      if (comm?.trim() !== "claude") continue;
-      const stat4 = await this.readProcFile(pid, "stat");
-      const ppid = stat4 ? parsePpidFromStat(stat4) : null;
-      const raw = await this.readProcFile(pid, "cmdline");
-      const argv = (raw ?? "").split("\0").filter((a) => a.length > 0);
-      const cmdline = argv.join(" ").trim();
-      const cwd = await this.readProcCwd(pid);
-      const resolvedCommand = await this.resolveViaProcessPath(pid, argv[0] ?? "");
-      const environ = await this.readProcEnviron(pid);
-      const { sessionId, source } = await this.resolveSessionId(pid, cmdline);
-      out.push({
-        pid,
-        ppid: ppid ?? 0,
-        sessionId,
-        sessionIdSource: source,
-        cmdline,
-        argv,
-        cwd,
-        resolvedCommand,
-        environ
-      });
-    }
-    return out;
-  }
-  /** Every `KEY=value` pair in `/proc/<pid>/environ`, unfiltered. */
-  async readProcEnviron(pid) {
-    const raw = await this.readProcFile(pid, "environ");
-    if (!raw) return {};
-    const out = {};
-    for (const entry of raw.split("\0")) {
-      const eq = entry.indexOf("=");
-      if (eq <= 0) continue;
-      out[entry.slice(0, eq)] = entry.slice(eq + 1);
-    }
-    return out;
-  }
-  /**
-   * Turn a bare command into an absolute path, using the process's own `PATH`.
-   *
-   * Only the owning process knows where its binary came from — under nvm the
-   * directory is not on any system path. An already-absolute command is
-   * returned unchanged; anything unresolvable returns null so the caller keeps
-   * what it was given instead of guessing.
-   */
-  async resolveViaProcessPath(pid, command) {
-    if (command.length === 0) return null;
-    if (command.startsWith("/")) return command;
-    const environ = await this.readProcFile(pid, "environ");
-    if (!environ) return null;
-    const pathVar = environ.split("\0").find((e) => e.startsWith("PATH="))?.slice("PATH=".length);
-    if (!pathVar) return null;
-    for (const dir of pathVar.split(":")) {
-      if (dir.length === 0) continue;
-      const candidate = (0, import_node_path10.join)(dir, command);
-      try {
-        await (0, import_promises13.access)(candidate, import_node_fs4.constants.X_OK);
-        return candidate;
-      } catch {
-      }
-    }
-    return null;
-  }
-  async readProcCwd(pid) {
-    try {
-      return await (0, import_promises13.readlink)((0, import_node_path10.join)(this.procRoot, String(pid), "cwd"));
-    } catch {
-      return null;
-    }
-  }
-  async ancestorsOf(pid, maxDepth = DEFAULT_MAX_DEPTH) {
-    const chain = [];
-    let current = pid;
-    for (let i = 0; i < maxDepth; i++) {
-      const stat4 = await this.readProcFile(current, "stat");
-      if (!stat4) break;
-      const ppid = parsePpidFromStat(stat4);
-      if (ppid === null || ppid <= 1) break;
-      chain.push(ppid);
-      current = ppid;
-    }
-    return chain;
-  }
-  /**
-   * `~/.claude/sessions/<pid>.json` is authoritative — it is the same file the
-   * MCP server reads to learn its own identity, so it exists for every peer
-   * including ones started without `--resume`. The command line is only a
-   * fallback for the window where that file is missing.
-   */
-  async resolveSessionId(pid, cmdline) {
-    try {
-      const raw = await (0, import_promises13.readFile)((0, import_node_path10.join)(this.sessionsDir, `${pid}.json`), "utf-8");
-      const parsed = JSON.parse(raw);
-      if (parsed.sessionId) return { sessionId: parsed.sessionId, source: "sessions-json" };
-    } catch {
-    }
-    const fromArgs = sessionIdFromCmdline(cmdline);
-    if (fromArgs) return { sessionId: fromArgs, source: "resume-arg" };
-    return { sessionId: null, source: "none" };
-  }
-  async readProcFile(pid, name) {
-    try {
-      return await (0, import_promises13.readFile)((0, import_node_path10.join)(this.procRoot, String(pid), name), "utf-8");
-    } catch {
-      return null;
-    }
-  }
-};
-function defaultProcessInspector() {
-  return new LinuxProcessInspector();
 }
 
 // src/handlers/team-adopt.ts
@@ -7271,7 +7370,7 @@ async function handleTeamAdopt(req, ctx) {
 
 // src/handlers/team-layout.ts
 var import_promises14 = require("node:fs/promises");
-var import_node_path11 = require("node:path");
+var import_node_path12 = require("node:path");
 
 // src/handlers/wake.ts
 var import_node_crypto5 = require("node:crypto");
@@ -7435,7 +7534,7 @@ var TeamLayoutArgsSchema = external_exports.object({
   wakeDelayMs: external_exports.number().int().min(0).max(12e4).optional()
 }).strict();
 function teamFilePath(team) {
-  return (0, import_node_path11.join)(teamsDir(), `${team}.json`);
+  return (0, import_node_path12.join)(teamsDir(), `${team}.json`);
 }
 async function loadTeamSpec(team) {
   try {
@@ -7670,8 +7769,8 @@ async function handleTeamLayout(req, ctx) {
 }
 
 // src/handlers/team-reconcile.ts
-var import_node_fs5 = require("node:fs");
-var import_node_path12 = require("node:path");
+var import_node_fs6 = require("node:fs");
+var import_node_path13 = require("node:path");
 var TeamReconcileArgsSchema = external_exports.object({
   /** Restrict the report to one team. Unmanaged processes are still listed. */
   team: external_exports.string().min(1).optional(),
@@ -7682,7 +7781,7 @@ var TeamReconcileArgsSchema = external_exports.object({
   markDead: external_exports.boolean().default(false)
 }).strict();
 function pidAlive(pid, procRoot) {
-  return (0, import_node_fs5.existsSync)((0, import_node_path12.join)(procRoot, String(pid)));
+  return (0, import_node_fs6.existsSync)((0, import_node_path13.join)(procRoot, String(pid)));
 }
 async function ownsProcess(inspector, panePid, childPid) {
   if (panePid === childPid) return true;
@@ -7841,6 +7940,44 @@ async function handleTeamReconcile(req, ctx) {
       measured.push(rec.sessionId);
     }
   });
+  const identified = [];
+  for (const rec of Object.values(ctx.state.peers)) {
+    if (rec.observed.identity === "measured") continue;
+    if (rec.observed.pid === null || !pidAlive(rec.observed.pid, procRoot)) continue;
+    const outcome = await measureIdentity(rec.observed.pid, {
+      // Short: this is a sweep over the whole fleet, not a spawn waiting on one
+      // peer, and an unmeasurable identity here simply waits for the next pass.
+      timeoutMs: 400,
+      ...ctx.processInspector ? { inspector: ctx.processInspector } : {},
+      procRoot
+    });
+    if (outcome.kind !== "measured") continue;
+    const m = outcome.measurement;
+    await applyStateChange(ctx.state, (draft) => {
+      const target = draft.peers[rec.sessionId];
+      if (!target) return;
+      target.observed.sessionId = m.sessionId;
+      target.observed.identity = "measured";
+      target.observed.identityAt = m.measuredAt;
+      target.observed.identitySource = m.source;
+      target.observed.lastUpdatedAt = (/* @__PURE__ */ new Date()).toISOString();
+    });
+    identified.push({ handle: rec.sessionId, sessionId: m.sessionId, source: m.source });
+    await writeEvent({
+      event: "peer_identity_measured",
+      by: { sessionId: req.requestedBy.sessionId, name: req.requestedBy.name },
+      requestId: req.id,
+      details: {
+        handle: rec.sessionId,
+        sessionKey: rec.observed.tmuxTarget,
+        pid: m.pid,
+        measuredSessionId: m.sessionId,
+        source: m.source,
+        by: "team_reconcile",
+        note: "Identity was unknown since spawn and has now been read from the running process."
+      }
+    });
+  }
   const windowDrift = Object.values(ctx.state.peers).filter(
     (r) => r.desired.windowIndex !== void 0 && r.observed.windowIndex !== void 0 && r.desired.windowIndex !== r.observed.windowIndex
   ).map((r) => ({
@@ -7870,6 +8007,11 @@ async function handleTeamReconcile(req, ctx) {
     // train an operator to ignore both.
     windowIndexDrift: windowDrift,
     windowIndexMeasured: measured.length,
+    // Peers whose identity was unknown since spawn and has now been read.
+    identitiesMeasured: identified,
+    // Still unknown after this pass — running, but not yet cross-referenceable
+    // with the bridge. NOT dead, and must not be read as such.
+    identityUnknown: Object.values(ctx.state.peers).filter((r) => r.observed.identity === "unknown").map((r) => ({ handle: r.sessionId, name: r.observed.name, pid: r.observed.pid })),
     readOnly: !args.markDead
   };
   await writeEvent({
@@ -8295,11 +8437,19 @@ async function handleTeamStatus(req, ctx) {
     const key = record.observed.tmuxTarget ?? record.observed.name;
     const host = hostByKey.get(key);
     return {
+      // The HANDLE, not the peer's session identity (v0.11.16, defect N4). It
+      // is how you address this peer and it is the registry key; whether it
+      // also happens to BE the session id is answered by `identity` below.
       sessionId: record.sessionId,
       name: record.observed.name,
       hostDriver: record.observed.hostDriver,
       tmuxTarget: record.observed.tmuxTarget,
       status: record.observed.status,
+      // The measured Claude session id, and how much of a claim it is.
+      // `unknown` means the process is RUNNING and we cannot yet say who it is
+      // — a live peer, not a dead one, and never to be shown as the latter.
+      measuredSessionId: record.observed.sessionId ?? null,
+      identity: record.observed.identity ?? null,
       model: record.observed.model,
       accountProfile: record.desired.accountProfile,
       pid: record.observed.pid,
@@ -8314,10 +8464,14 @@ async function handleTeamStatus(req, ctx) {
     hostDriver: ctx.hostDriver.name,
     team: args.team ?? null,
     peerCount: peers.length,
-    peers: args.verbose ? peers : peers.map(({ sessionId, name, status, hostAlive }) => ({
+    peers: args.verbose ? peers : peers.map(({ sessionId, name, status, hostAlive, identity }) => ({
       sessionId,
       name,
       status,
+      // Surfaced even in the compact listing: a peer whose identity is
+      // unknown cannot be cross-referenced with peer_list, and finding that
+      // out from a `verbose` flag is finding it out too late.
+      ...identity === "unknown" ? { identity } : {},
       hostAlive
     }))
   });
@@ -8325,7 +8479,7 @@ async function handleTeamStatus(req, ctx) {
 
 // src/handlers/team-stop.ts
 var import_promises15 = require("node:fs/promises");
-var import_node_path13 = require("node:path");
+var import_node_path14 = require("node:path");
 var DEFAULT_ANCHOR_TIMEOUT_MS2 = 12e4;
 var DEFAULT_ACK_POLL_MS2 = 500;
 var PeerOrderableSchema = external_exports.object({
@@ -8346,7 +8500,7 @@ var TeamStopArgsSchema = external_exports.object({
   inline: TeamStopFileSchema.optional()
 }).strict();
 function teamFilePath2(team) {
-  return (0, import_node_path13.join)(teamsDir(), `${team}.json`);
+  return (0, import_node_path14.join)(teamsDir(), `${team}.json`);
 }
 async function loadTeamOrder(team) {
   try {
@@ -8677,9 +8831,9 @@ function stopHeartbeat() {
 
 // src/hosts/tmux-driver.ts
 var import_node_child_process = require("node:child_process");
-var import_node_fs6 = require("node:fs");
+var import_node_fs7 = require("node:fs");
 var import_promises17 = require("node:fs/promises");
-var import_node_path14 = require("node:path");
+var import_node_path15 = require("node:path");
 var import_node_util = require("node:util");
 
 // src/hosts/input-line.ts
@@ -8765,7 +8919,7 @@ function shQuote(value) {
   return `'${value.replaceAll("'", `'\\''`)}'`;
 }
 function paneCommand(env, command, args) {
-  const envBin = (0, import_node_fs6.existsSync)("/usr/bin/env") ? "/usr/bin/env" : "env";
+  const envBin = (0, import_node_fs7.existsSync)("/usr/bin/env") ? "/usr/bin/env" : "env";
   const assignments = Object.entries(env).filter(([k]) => !TMUX_OWNED_VARS.includes(k) && k !== "TERM").map(([k, v]) => `${k}=${shQuote(v)}`);
   const script = [
     "exec",
@@ -9334,10 +9488,10 @@ var TmuxDriver = class _TmuxDriver {
     const content = await this.capturePaneWithHistory(canonical);
     if (content.trim().length === 0) return null;
     try {
-      const dir = (0, import_node_path14.join)(controlDir(), "archive");
+      const dir = (0, import_node_path15.join)(controlDir(), "archive");
       await (0, import_promises17.mkdir)(dir, { recursive: true });
       const stamp = (/* @__PURE__ */ new Date()).toISOString().replace(/[:.]/g, "-");
-      const path = (0, import_node_path14.join)(dir, `pane-${canonical}-${stamp}.log`);
+      const path = (0, import_node_path15.join)(dir, `pane-${canonical}-${stamp}.log`);
       await (0, import_promises17.appendFile)(
         path,
         `# archived ${(/* @__PURE__ */ new Date()).toISOString()} \u2014 target ${canonical} \u2014 ${reason}
@@ -9378,10 +9532,10 @@ ${content}`,
   }
   async logSendKeys(sessionKey, entry) {
     try {
-      const dir = (0, import_node_path14.join)(controlDir(), "logs");
+      const dir = (0, import_node_path15.join)(controlDir(), "logs");
       await (0, import_promises17.mkdir)(dir, { recursive: true });
       const line = JSON.stringify({ ts: (/* @__PURE__ */ new Date()).toISOString(), sessionKey, ...entry });
-      await (0, import_promises17.appendFile)((0, import_node_path14.join)(dir, `sendkeys-${sessionKey}.log`), `${line}
+      await (0, import_promises17.appendFile)((0, import_node_path15.join)(dir, `sendkeys-${sessionKey}.log`), `${line}
 `, "utf-8");
     } catch {
     }
@@ -9625,14 +9779,14 @@ async function runDaemon(opts) {
 var import_node_child_process2 = require("node:child_process");
 var import_promises18 = require("node:fs/promises");
 var import_node_os5 = require("node:os");
-var import_node_path15 = require("node:path");
+var import_node_path16 = require("node:path");
 var log11 = makeLogger("daemon.install");
 var UNIT_NAME = "claude-bridge-daemon.service";
 function systemdUserDir() {
-  return (0, import_node_path15.join)((0, import_node_os5.homedir)(), ".config", "systemd", "user");
+  return (0, import_node_path16.join)((0, import_node_os5.homedir)(), ".config", "systemd", "user");
 }
 function unitPath() {
-  return (0, import_node_path15.join)(systemdUserDir(), UNIT_NAME);
+  return (0, import_node_path16.join)(systemdUserDir(), UNIT_NAME);
 }
 function assertLinux() {
   if (process.platform !== "linux") {
@@ -9644,15 +9798,15 @@ function assertLinux() {
 function resolveDaemonBin() {
   const argv1 = process.argv[1];
   if (!argv1) throw new Error("process.argv[1] missing \u2014 cannot determine daemon binary path");
-  if (!argv1.startsWith("/")) return (0, import_node_path15.resolve)(process.cwd(), argv1);
+  if (!argv1.startsWith("/")) return (0, import_node_path16.resolve)(process.cwd(), argv1);
   return argv1;
 }
 async function readTemplate() {
   const anchor = resolveDaemonBin();
-  const anchorDir = (0, import_node_path15.dirname)(anchor);
+  const anchorDir = (0, import_node_path16.dirname)(anchor);
   const candidates = [
-    (0, import_node_path15.resolve)(anchorDir, "..", "templates", UNIT_NAME),
-    (0, import_node_path15.resolve)(anchorDir, "templates", UNIT_NAME)
+    (0, import_node_path16.resolve)(anchorDir, "..", "templates", UNIT_NAME),
+    (0, import_node_path16.resolve)(anchorDir, "templates", UNIT_NAME)
   ];
   for (const candidate of candidates) {
     try {
@@ -9666,24 +9820,24 @@ function findNodeBin() {
   return process.execPath;
 }
 function deployedDaemonPath() {
-  return (0, import_node_path15.join)((0, import_node_os5.homedir)(), ".claude-bridge", "bin", "claude-bridge-daemon.cjs");
+  return (0, import_node_path16.join)((0, import_node_os5.homedir)(), ".claude-bridge", "bin", "claude-bridge-daemon.cjs");
 }
 function deployMetaPath() {
-  return (0, import_node_path15.join)((0, import_node_path15.dirname)(deployedDaemonPath()), "deployed-from.json");
+  return (0, import_node_path16.join)((0, import_node_path16.dirname)(deployedDaemonPath()), "deployed-from.json");
 }
 async function deployDaemonBinary(sourceBin) {
   const target = deployedDaemonPath();
-  if ((0, import_node_path15.resolve)(sourceBin) === (0, import_node_path15.resolve)(target)) {
+  if ((0, import_node_path16.resolve)(sourceBin) === (0, import_node_path16.resolve)(target)) {
     log11.info("deploy_skipped_same_path", { path: target });
     return target;
   }
-  await (0, import_promises18.mkdir)((0, import_node_path15.dirname)(target), { recursive: true });
+  await (0, import_promises18.mkdir)((0, import_node_path16.dirname)(target), { recursive: true });
   await (0, import_promises18.copyFile)(sourceBin, target);
   await (0, import_promises18.chmod)(target, 493);
   try {
     const templateSource = await readTemplate();
-    const templateTarget = (0, import_node_path15.join)((0, import_node_path15.dirname)(target), "templates", UNIT_NAME);
-    await (0, import_promises18.mkdir)((0, import_node_path15.dirname)(templateTarget), { recursive: true });
+    const templateTarget = (0, import_node_path16.join)((0, import_node_path16.dirname)(target), "templates", UNIT_NAME);
+    await (0, import_promises18.mkdir)((0, import_node_path16.dirname)(templateTarget), { recursive: true });
     await (0, import_promises18.writeFile)(templateTarget, templateSource, "utf-8");
   } catch (e) {
     log11.warn("template_deploy_failed", { err: String(e) });
@@ -9691,14 +9845,14 @@ async function deployDaemonBinary(sourceBin) {
   let version = "unknown";
   try {
     const pkg = JSON.parse(
-      await (0, import_promises18.readFile)((0, import_node_path15.resolve)((0, import_node_path15.dirname)(sourceBin), "..", "package.json"), "utf-8")
+      await (0, import_promises18.readFile)((0, import_node_path16.resolve)((0, import_node_path16.dirname)(sourceBin), "..", "package.json"), "utf-8")
     );
     version = pkg.version ?? "unknown";
   } catch {
   }
   await (0, import_promises18.writeFile)(
     deployMetaPath(),
-    `${JSON.stringify({ source: (0, import_node_path15.resolve)(sourceBin), version, deployedAt: (/* @__PURE__ */ new Date()).toISOString() }, null, 2)}
+    `${JSON.stringify({ source: (0, import_node_path16.resolve)(sourceBin), version, deployedAt: (/* @__PURE__ */ new Date()).toISOString() }, null, 2)}
 `,
     "utf-8"
   );

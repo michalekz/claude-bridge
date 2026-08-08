@@ -6,6 +6,96 @@ All notable changes to this project are documented here. Format follows [Keep a 
 
 _Nothing yet._
 
+## [0.11.16] — 2026-08-08
+
+### The handle stopped pretending to be the identity (defect N4)
+
+`peer_spawn` took `sessionId` as an argument and keyed the whole registry on it.
+For a fresh spawn the caller invents that string, while the Claude Code process
+inside the pane mints its own session id that the daemon never learns. The
+registry said `tst-c`, the bridge said `tst-c-3e`, both were right, and nothing
+could reconcile them — because the key had never been a measurement.
+
+Measured on the live fleet: **25 of 26 registry keys were genuine session
+UUIDs**. The one that was not belonged to the only peer created by spawn rather
+than adoption. Adoption reads identity off reality, so it cannot get this wrong.
+
+### The diagnosis that made the fix small
+
+The obvious reading — "`sessionId` belongs in `observed`, stop accepting it as
+an argument" — breaks `team_layout`. A declarative layout **must** be able to
+name a peer that has not been started yet; the spec's `sessionId` goes straight
+into `peer_spawn`. The caller inventing a string there is not the bug.
+
+Two different things had been living under one name:
+
+| | Who decides it | When it exists | What it is for |
+|---|---|---|---|
+| **handle** | a person, or a team spec | before the peer exists | naming, addressing, declaring intent |
+| **identity** | Claude Code | only after boot | matching the record to a session and the bridge |
+
+So the defect is **"the handle and the identity share one name, so the handle
+passes itself off as a measurement"** — the same confusion `desired`/`observed`
+removed in v0.11.0, one storey lower, at the key itself.
+
+The handle stays the registry key and stops pretending. The identity is measured
+after spawn from `~/.claude/sessions/<pid>.json` — the same file the peer's own
+MCP server reads — into `observed.sessionId`, with `observed.identity` saying
+whether it is knowledge.
+
+**No migration.** The 25 UUID keys are unchanged byte for byte; only the claim
+about them changed.
+
+### "Running, and we do not know who it is" is an answer
+
+`identity: "unknown"` means the process is up and unidentified. That is
+deliberately distinct from dead, and a spawn that ends there still succeeds: the
+peer is running either way, and failing a spawn because a file was slow would be
+this campaign's defect class inverted. The flag is on the TOP level of the
+result, so a caller cannot dig past it.
+
+`team_reconcile` measures again — for records that are `unknown` AND for records
+written before this release, which have no `identity` at all. Those could have
+been back-filled as `measured` from the key, since the key is a real UUID. That
+would have been inventing a measurement, so they are measured for real like
+everyone else. Every transition emits `peer_identity_measured`, because
+"temporary" and "never measured" must not read alike afterwards.
+
+Four honest reasons for not knowing, and they are different situations:
+`pane-pid-gone`, `no-claude-under-pane`, `no-session-id`, `not-a-claude-peer`.
+
+### A timer that measured elapsed time instead of reality — third instance
+
+The first cut of the measurement polled for the full five seconds whenever the
+identity could not appear. The daemon test suite went from **42 s to 262 s with
+42 timeouts**, because a peer started as `/bin/sleep` has no session id and never
+will, and the poll dutifully waited for one.
+
+Same family as `confirmStillRunning` in v0.11.11, from the other side: there a
+timer waited 2500 ms for something ready in 960 ms; here one waited 5000 ms for
+something that never arrives.
+
+Two fixes, both of which improve production rather than just the suite:
+
+- **liveness precondition** — no process behind the pane pid, no waiting; and if
+  the pane dies mid-poll, stop rather than report a death as a timeout;
+- **the `claude` gate** — identity is measured only where one can exist, the same
+  gate the transcript check already used, now defined once instead of twice.
+
+The ceiling is 5 s: 5× the 960 ms measured for the session file to appear, with
+the derivation written at the constant and a test asserting it.
+
+**It was found by watching the suite's DURATION, not its pass count.** Had only
+failures been read, the tests would have been "fixed" and production left waiting
+five seconds on every non-Claude spawn until the first fleet roll.
+
+### Also
+
+- `KNOWN-LIMITATIONS.md`'s N4 section named its own earlier conclusion as a trap,
+  so the next reader meets the warning instead of the trap.
+- `team_status` reports `identity` even in the compact listing — learning that a
+  peer cannot be cross-referenced should not require `verbose`.
+
 ## [0.11.15] — 2026-08-08
 
 ### Phase 1 of the lifecycle redesign: a peer gets asked before it is killed

@@ -156,6 +156,35 @@ export interface PeerObserved {
   tmuxTarget: string | null;
   pid: number | null;
   status: PeerLifecycleStatus;
+  /**
+   * The Claude Code session UUID — MEASURED (v0.11.16, defect N4).
+   *
+   * The key of `state.peers` is a HANDLE: a string a person or a team spec
+   * chose before the peer existed. That is legitimate and cannot be taken away
+   * — a declarative layout has to name a peer that has not been started yet.
+   * What was wrong is that the handle also passed itself off as the identity.
+   *
+   * Only the peer can mint its session id, and only after it boots. So it lives
+   * here, on the measurement side, and `peer_spawn` reads it off the running
+   * process instead of accepting it as an argument.
+   *
+   * For adopted peers the handle and this value coincide, because adoption read
+   * identity off reality in the first place. That is why the fix needed no
+   * migration: 25 of 26 keys were already genuine UUIDs.
+   */
+  sessionId?: string | null;
+  /**
+   * Whether `sessionId` above is knowledge.
+   *
+   * `unknown` means THE PROCESS IS RUNNING AND WE DO NOT KNOW WHO IT IS — a
+   * different thing from a dead peer, and it must never be displayed as one.
+   * `team_reconcile` can measure again later and complete it.
+   */
+  identity?: "measured" | "unknown";
+  /** When the identity was measured. Absent while it is unknown. */
+  identityAt?: string | null;
+  /** How it was read — `sessions-json` is authoritative, `resume-arg` is a fallback. */
+  identitySource?: "sessions-json" | "resume-arg" | null;
   /** Where the window actually sits. Compared against `desired.windowIndex` to report drift. */
   windowIndex?: number;
   /** The model actually running, as last measured. `desired.model` is what was asked for. */

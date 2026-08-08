@@ -10,6 +10,7 @@ import { errResult, okResult } from "../rpc.ts";
 import type { PeerHostDriver, PeerRecord } from "../state.ts";
 import type { HandlerContext } from "./context.ts";
 import { forkGuard } from "./fork-guard.ts";
+import { measureIdentity } from "./peer-identity.ts";
 import { isResumableSessionId } from "./peer-restart.ts";
 import { applyStateChange } from "./state-writer.ts";
 
@@ -213,6 +214,14 @@ export async function handlePeerSpawn(
   });
 
   const spawnArgs = [...args.args];
+  // Is this peer a Claude Code process at all?
+  //
+  // Two separate checks depend on the answer — the transcript check below (N10)
+  // and the identity measurement after the spawn (N4) — and both mean the same
+  // thing by it, so it is decided once. A shell or a wrapper has no transcript
+  // and no session id; asking about either would be this handler inventing a
+  // rule for a command it knows nothing about.
+  const isClaude = args.command.split("/").pop() === "claude";
   if (args.resume) {
     // Is there anything to resume? (N10, 2026-08-08)
     //
@@ -237,7 +246,6 @@ export async function handlePeerSpawn(
     // or a wrapper with `resume` set means something else to that program, and
     // refusing it here would be this handler inventing a rule for a command it
     // knows nothing about.
-    const isClaude = args.command.split("/").pop() === "claude";
     const transcript = sessionFile(args.cwd, args.sessionId);
     if (isClaude && isResumableSessionId(args.sessionId) && !existsSync(transcript)) {
       const elsewhere = findTranscriptElsewhere(args.sessionId, args.cwd);
@@ -518,13 +526,69 @@ export async function handlePeerSpawn(
         },
       );
     }
+    // WHO did we just start? (v0.11.16, defect N4.)
+    //
+    // `args.sessionId` is a HANDLE — a name the caller chose before this peer
+    // existed. It is not, and never was, the peer's identity. The identity is
+    // minted by the process inside the pane, and until now the daemon never
+    // learned it: the registry said `tst-c`, the bridge said `tst-c-3e`, both
+    // were right, and nothing could reconcile them.
+    //
+    // So measure it, from the same file the peer's own MCP server reads. An
+    // identity that cannot be measured in time is reported as UNKNOWN and the
+    // spawn still succeeds — the process is running either way, and failing a
+    // spawn over a slow file would be this campaign's defect class inverted.
+    //
+    // Gated on the command being `claude`, the same gate N10 uses above. A peer
+    // started as `/bin/sleep` has no Claude session id and never will, so
+    // polling for one would spend the whole ceiling proving that — five seconds
+    // per spawn, on a daemon that serialises its requests. Measured when this
+    // gate was missing: the test suite went from 42 s to 262 s.
+    //
+    // "Cannot have one" and "has not written one yet" are different answers and
+    // the record says which.
+    const identity = isClaude
+      ? await measureIdentity(record.pid, {
+          ...(ctx.identityTimeoutMs !== undefined ? { timeoutMs: ctx.identityTimeoutMs } : {}),
+          ...(ctx.processInspector ? { inspector: ctx.processInspector } : {}),
+          ...(ctx.procRoot ? { procRoot: ctx.procRoot } : {}),
+        })
+      : ({ kind: "unknown", reason: "not-a-claude-peer", waitedMs: 0, attempts: 0 } as const);
+    const measured = identity.kind === "measured" ? identity.measurement : null;
+
     await applyStateChange(ctx.state, (draft) => {
       const rec = draft.peers[args.sessionId];
       if (!rec) return;
       rec.observed.pid = record.pid;
       rec.observed.status = "live";
       rec.observed.tmuxTarget = canonicalKey;
+      rec.observed.sessionId = measured?.sessionId ?? null;
+      rec.observed.identity = measured ? "measured" : "unknown";
+      rec.observed.identityAt = measured?.measuredAt ?? null;
+      rec.observed.identitySource = measured?.source ?? null;
       rec.observed.lastUpdatedAt = new Date().toISOString();
+    });
+    await writeEvent({
+      event: measured ? "peer_identity_measured" : "peer_identity_unmeasured",
+      ...(measured ? {} : { level: "warn" as const }),
+      by: { sessionId: req.requestedBy.sessionId, name: req.requestedBy.name },
+      requestId: req.id,
+      details: {
+        handle: args.sessionId,
+        sessionKey: canonicalKey,
+        pid: record.pid,
+        measuredSessionId: measured?.sessionId ?? null,
+        source: measured?.source ?? null,
+        // The MEASURED wait, not the budget.
+        waitedMs: identity.waitedMs,
+        attempts: identity.attempts,
+        ...(identity.kind === "unknown"
+          ? {
+              reason: identity.reason,
+              note: "The peer is RUNNING; only its identity is unknown. team_reconcile can measure it later.",
+            }
+          : {}),
+      },
     });
     await writeEvent({
       event: "peer_started",
@@ -553,10 +617,24 @@ export async function handlePeerSpawn(
       },
     });
     return okResult(req.id, req.tool, {
+      // The handle the caller chose — still the registry key, still how you
+      // address this peer. `sessionId` keeps the name so this release is about
+      // behaviour rather than renaming; the rename to `handle` is its own item.
       sessionId: args.sessionId,
       sessionKey: canonicalKey,
       pid: record.pid,
       hostDriver: hostDriverName,
+      // TOP LEVEL on purpose. A caller must not have to dig for the difference
+      // between "we know who this is" and "something is running in there".
+      identity: measured ? "measured" : "unknown",
+      measuredSessionId: measured?.sessionId ?? null,
+      identityWaitedMs: identity.waitedMs,
+      ...(measured
+        ? {}
+        : {
+            identityNote:
+              "The peer is running, but its Claude session id could not be read within the window. This is NOT a failed spawn. Cross-referencing it against peer_list will not work until team_reconcile measures it.",
+          }),
     });
   } catch (e) {
     await applyStateChange(ctx.state, (draft) => {

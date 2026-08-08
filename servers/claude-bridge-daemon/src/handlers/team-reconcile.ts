@@ -6,6 +6,7 @@ import { defaultProcessInspector } from "../hosts/process-inspector.ts";
 import type { RequestEnvelope, ResultEnvelope } from "../rpc.ts";
 import { errResult, okResult } from "../rpc.ts";
 import type { HandlerContext } from "./context.ts";
+import { measureIdentity } from "./peer-identity.ts";
 import { applyStateChange } from "./state-writer.ts";
 
 /**
@@ -370,6 +371,66 @@ export async function handleTeamReconcile(
     }
   });
 
+  // Finish the identity measurement `peer_spawn` could not complete.
+  //
+  // This is what makes `identity: "unknown"` a temporary state rather than a
+  // permanent scar. A spawn gets a few seconds; this pass can look again at
+  // leisure, and a peer that was merely slow to write its session file gets
+  // reconciled with the bridge on the next sweep.
+  //
+  // Writes under `readOnly` for the same reason `windowIndex` does: it corrects
+  // no drift, it RECORDS a measurement. Refusing to write what you measured is
+  // how a record stays wrong forever.
+  const identified: Array<{ handle: string; sessionId: string; source: string }> = [];
+  for (const rec of Object.values(ctx.state.peers)) {
+    // `unknown` — a spawn that could not measure in time.
+    // `undefined` — a record written before v0.11.16, which never had the field.
+    //
+    // Both get measured, and the second one deliberately: those 25 records are
+    // keyed by genuine UUIDs because adoption read them off reality, and it
+    // would be tempting to back-fill `identity: "measured"` from the key alone.
+    // That would be INVENTING a measurement — the precise move this release
+    // exists to stop. So they are measured for real, like everyone else.
+    if (rec.observed.identity === "measured") continue;
+    if (rec.observed.pid === null || !pidAlive(rec.observed.pid, procRoot)) continue;
+    const outcome = await measureIdentity(rec.observed.pid, {
+      // Short: this is a sweep over the whole fleet, not a spawn waiting on one
+      // peer, and an unmeasurable identity here simply waits for the next pass.
+      timeoutMs: 400,
+      ...(ctx.processInspector ? { inspector: ctx.processInspector } : {}),
+      procRoot,
+    });
+    if (outcome.kind !== "measured") continue;
+    const m = outcome.measurement;
+    await applyStateChange(ctx.state, (draft) => {
+      const target = draft.peers[rec.sessionId];
+      if (!target) return;
+      target.observed.sessionId = m.sessionId;
+      target.observed.identity = "measured";
+      target.observed.identityAt = m.measuredAt;
+      target.observed.identitySource = m.source;
+      target.observed.lastUpdatedAt = new Date().toISOString();
+    });
+    identified.push({ handle: rec.sessionId, sessionId: m.sessionId, source: m.source });
+    // The transition unknown → measured has to be visible in the audit trail.
+    // Without it, "temporary" and "never measured" look identical to anyone
+    // reading events afterwards.
+    await writeEvent({
+      event: "peer_identity_measured",
+      by: { sessionId: req.requestedBy.sessionId, name: req.requestedBy.name },
+      requestId: req.id,
+      details: {
+        handle: rec.sessionId,
+        sessionKey: rec.observed.tmuxTarget,
+        pid: m.pid,
+        measuredSessionId: m.sessionId,
+        source: m.source,
+        by: "team_reconcile",
+        note: "Identity was unknown since spawn and has now been read from the running process.",
+      },
+    });
+  }
+
   const windowDrift = Object.values(ctx.state.peers)
     .filter(
       (r) =>
@@ -406,6 +467,13 @@ export async function handleTeamReconcile(
     // train an operator to ignore both.
     windowIndexDrift: windowDrift,
     windowIndexMeasured: measured.length,
+    // Peers whose identity was unknown since spawn and has now been read.
+    identitiesMeasured: identified,
+    // Still unknown after this pass — running, but not yet cross-referenceable
+    // with the bridge. NOT dead, and must not be read as such.
+    identityUnknown: Object.values(ctx.state.peers)
+      .filter((r) => r.observed.identity === "unknown")
+      .map((r) => ({ handle: r.sessionId, name: r.observed.name, pid: r.observed.pid })),
     readOnly: !args.markDead,
   };
 

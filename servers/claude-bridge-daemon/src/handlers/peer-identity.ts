@@ -1,0 +1,179 @@
+import { existsSync } from "node:fs";
+import { join } from "node:path";
+import { type ProcessInspector, defaultProcessInspector } from "../hosts/process-inspector.ts";
+
+/**
+ * Who is actually running in that pane.
+ *
+ * THE DISTINCTION THIS MODULE EXISTS FOR — two different things wore one name
+ * until v0.11.16, and that is the whole of defect N4:
+ *
+ *   HANDLE    chosen by a person or a team spec, BEFORE the peer exists.
+ *             `state.peers` is keyed by it. A declarative layout cannot work
+ *             without one: it has to name a peer that has not been started yet.
+ *             Legitimate. Not a measurement.
+ *
+ *   IDENTITY  the Claude Code session UUID. Only the peer can mint it, and only
+ *             after it boots. A measurement, and nothing else may produce it.
+ *
+ * `peer_spawn` took the handle as an argument and treated it as the identity.
+ * Meanwhile the process inside the pane minted its own, which the daemon never
+ * learned. Measured on the live fleet 2026-08-08: 25 of 26 registry keys were
+ * genuine session UUIDs, and the one that was not belonged to the only peer
+ * created by spawn rather than adoption. Adoption reads identity off reality,
+ * so it cannot get this wrong.
+ *
+ * Both sides were "right" and nothing could reconcile them, because the key had
+ * never been a measurement — it was a wish.
+ *
+ * So: the handle stays the key, and stops pretending. The identity is measured
+ * HERE, by the same code and from the same file adoption already uses.
+ */
+
+/** How the peer's own MCP server learns its identity — so it is authoritative. */
+export interface IdentityMeasurement {
+  sessionId: string;
+  source: "sessions-json" | "resume-arg";
+  pid: number;
+  measuredAt: string;
+}
+
+export type IdentityUnknownReason =
+  /** Nothing is running behind the pane pid — there is nobody to ask. */
+  | "pane-pid-gone"
+  /** Claude processes exist, but none of them lives under our pane. */
+  | "no-claude-under-pane"
+  /** Ours is running and has not written its session file yet. */
+  | "no-session-id"
+  /**
+   * The peer is not a Claude process, so there is no session id to measure.
+   * Not a gap in our knowledge — a category that does not apply.
+   */
+  | "not-a-claude-peer";
+
+export type IdentityOutcome =
+  | { kind: "measured"; measurement: IdentityMeasurement; waitedMs: number; attempts: number }
+  /** The process is running. We just do not know who it is yet. NOT a failure. */
+  | { kind: "unknown"; reason: IdentityUnknownReason; waitedMs: number; attempts: number };
+
+/**
+ * Five seconds, and the number is derived rather than chosen.
+ *
+ * `~/.claude/sessions/<pid>.json` was measured appearing **960 ms** after spawn
+ * on this host (experiment A, 2026-08-08). The cap is 5× that, which leaves
+ * room for a loaded host without turning a spawn into a wait.
+ *
+ * It is a CEILING on a readiness poll, not a sleep. The v0.11.11 lesson: a
+ * timer that is needlessly long is the same defect as one that is too short,
+ * only it disguises itself as caution.
+ */
+export const IDENTITY_MEASURE_TIMEOUT_MS = 5_000;
+export const IDENTITY_POLL_MS = 150;
+
+export interface MeasureOptions {
+  timeoutMs?: number;
+  pollMs?: number;
+  inspector?: ProcessInspector;
+  /** Where to check that the pane process exists. Tests point it at a fixture. */
+  procRoot?: string;
+}
+
+/**
+ * Is there a process at all behind this pid?
+ *
+ * The precondition, and it earns its place twice over.
+ *
+ * Correctness: waiting for the identity of a process that does not exist is
+ * waiting for nothing. The poll would run out its whole ceiling and report
+ * `unknown` — which is true, but arrived at by spending five seconds proving
+ * something a single `stat` answers.
+ *
+ * Cost: without it, EVERY spawn pays the full ceiling whenever the peer is not
+ * discoverable. Measured when this was missing: the daemon test suite went from
+ * 42 s to 262 s and 42 cases timed out, because each mock spawn reports a pid
+ * that never existed and the measurement dutifully waited for it.
+ */
+function pidExists(pid: number, procRoot: string): boolean {
+  return existsSync(join(procRoot, String(pid)));
+}
+
+/**
+ * Find the Claude process living under `panePid` and read its session id.
+ *
+ * The pane's own pid is a shell — the daemon starts peers through `/bin/sh -c`
+ * with an environment prefix — so the peer is a DESCENDANT, not the pane
+ * process itself. `ancestorsOf` walks up from each candidate; if our pane pid is
+ * anywhere in that chain, that process is ours.
+ */
+async function probeOnce(
+  panePid: number,
+  inspector: ProcessInspector,
+): Promise<IdentityMeasurement | { kind: "no-claude-under-pane" | "no-session-id" }> {
+  const claudes = await inspector.listClaudePeers().catch(() => []);
+  let sawOurs = false;
+  for (const proc of claudes) {
+    if (proc.pid !== panePid) {
+      const chain = [proc.ppid, ...(await inspector.ancestorsOf(proc.pid).catch(() => []))];
+      if (!chain.includes(panePid)) continue;
+    }
+    sawOurs = true;
+    if (proc.sessionId && proc.sessionIdSource !== "none") {
+      return {
+        sessionId: proc.sessionId,
+        source: proc.sessionIdSource,
+        pid: proc.pid,
+        measuredAt: new Date().toISOString(),
+      };
+    }
+  }
+  // The two are different situations and the caller reports them differently:
+  // nothing of ours is running yet, versus it is running and has not written
+  // its session file. Collapsing them would hide a boot failure inside a
+  // timeout.
+  return { kind: sawOurs ? "no-session-id" : "no-claude-under-pane" };
+}
+
+/**
+ * Poll until the peer says who it is, or the ceiling is reached.
+ *
+ * Returning `unknown` is a legitimate answer, not an error: the process is
+ * running either way, and a spawn that reported failure because a file was slow
+ * would be exactly the class of lie this campaign has spent two days closing —
+ * only inverted.
+ */
+export async function measureIdentity(
+  panePid: number,
+  opts: MeasureOptions = {},
+): Promise<IdentityOutcome> {
+  const inspector = opts.inspector ?? defaultProcessInspector();
+  const timeoutMs = opts.timeoutMs ?? IDENTITY_MEASURE_TIMEOUT_MS;
+  const pollMs = opts.pollMs ?? IDENTITY_POLL_MS;
+  const procRoot = opts.procRoot ?? "/proc";
+  const started = Date.now();
+  const deadline = started + timeoutMs;
+  let attempts = 0;
+  let lastReason: IdentityUnknownReason = "no-claude-under-pane";
+
+  if (!pidExists(panePid, procRoot)) {
+    return { kind: "unknown", reason: "pane-pid-gone", waitedMs: 0, attempts: 0 };
+  }
+
+  for (;;) {
+    attempts++;
+    // Stop the moment the pane process goes: whatever we were waiting for is
+    // not coming, and continuing would report a timeout for a death.
+    if (attempts > 1 && !pidExists(panePid, procRoot)) {
+      return { kind: "unknown", reason: "pane-pid-gone", waitedMs: Date.now() - started, attempts };
+    }
+    const probe = await probeOnce(panePid, inspector);
+    if ("sessionId" in probe) {
+      // The MEASURED elapsed time, never the budget. A handler that reports its
+      // own timeout as a duration is reporting a decision, not an observation.
+      return { kind: "measured", measurement: probe, waitedMs: Date.now() - started, attempts };
+    }
+    lastReason = probe.kind;
+    if (Date.now() >= deadline) break;
+    await new Promise((r) => setTimeout(r, pollMs));
+  }
+  return { kind: "unknown", reason: lastReason, waitedMs: Date.now() - started, attempts };
+}
