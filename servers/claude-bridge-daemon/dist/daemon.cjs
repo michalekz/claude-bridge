@@ -112,6 +112,28 @@ function makeLogger(component) {
 // ../../packages/shared/src/paths.ts
 var import_node_os2 = require("node:os");
 var import_node_path2 = require("node:path");
+function currentPlatform() {
+  const p = (0, import_node_os2.platform)();
+  if (p === "linux" || p === "darwin" || p === "win32") return p;
+  throw new Error(`Unsupported platform: ${p}`);
+}
+function claudeHome() {
+  return (0, import_node_path2.join)((0, import_node_os2.homedir)(), ".claude");
+}
+function projectsRoot() {
+  return (0, import_node_path2.join)(claudeHome(), "projects");
+}
+function encodeProjectDir(absoluteCwd, plat = currentPlatform()) {
+  const dropColon = plat === "win32" ? absoluteCwd.replace(/:/g, "-") : absoluteCwd;
+  const collapseSeparators = plat === "win32" ? dropColon.replace(/[\\/]+/g, "-") : dropColon.replace(/\/+/g, "-");
+  return collapseSeparators.replace(/[^a-zA-Z0-9-]/g, "-");
+}
+function projectDir(absoluteCwd) {
+  return (0, import_node_path2.join)(projectsRoot(), encodeProjectDir((0, import_node_path2.resolve)(absoluteCwd)));
+}
+function sessionFile(absoluteCwd, sessionId) {
+  return (0, import_node_path2.join)(projectDir(absoluteCwd), `${sessionId}.jsonl`);
+}
 function bridgeRoot() {
   return (0, import_node_path2.join)((0, import_node_os2.homedir)(), ".claude-bridge");
 }
@@ -4298,7 +4320,7 @@ async function resolvePeer(idOrName, root = bridgeRoot(), now = Date.now()) {
 // package.json
 var package_default = {
   name: "claude-bridge-daemon",
-  version: "0.11.10",
+  version: "0.11.12",
   private: true,
   description: "Control-plane daemon for the claude-bridge plugin: peer lifecycle, telemetry, audit. Distributed as opt-in artefact \u2014 see ADR-008.",
   type: "module",
@@ -5611,10 +5633,10 @@ async function handlePeerCompact(req, ctx) {
 }
 
 // src/handlers/peer-restart.ts
-var import_node_fs2 = require("node:fs");
+var import_node_fs3 = require("node:fs");
 var import_promises10 = require("node:fs/promises");
 var import_node_os3 = require("node:os");
-var import_node_path8 = require("node:path");
+var import_node_path9 = require("node:path");
 
 // src/hosts/driver.ts
 var WINDOW_ID = /^@\d+$/;
@@ -5633,6 +5655,10 @@ function sanitizeSessionKey(rawName) {
   }
   return sanitized;
 }
+
+// src/handlers/peer-spawn.ts
+var import_node_fs2 = require("node:fs");
+var import_node_path8 = require("node:path");
 
 // src/handlers/fork-guard.ts
 async function forkGuard(state, driver, opts) {
@@ -5706,6 +5732,18 @@ var PeerSpawnArgsSchema = external_exports.object({
    */
   envHarvestedAt: external_exports.string().nullable().optional()
 }).strict();
+function findTranscriptElsewhere(sessionId, cwd) {
+  try {
+    const here = (0, import_node_path8.dirname)(sessionFile(cwd, sessionId));
+    for (const dir of (0, import_node_fs2.readdirSync)(projectsRoot())) {
+      const candidate = (0, import_node_path8.join)(projectsRoot(), dir, `${sessionId}.jsonl`);
+      if ((0, import_node_path8.basename)((0, import_node_path8.join)(projectsRoot(), dir)) === (0, import_node_path8.basename)(here)) continue;
+      if ((0, import_node_fs2.existsSync)(candidate)) return candidate;
+    }
+  } catch {
+  }
+  return null;
+}
 function windowLabelFor(displayName, team) {
   if (!team) return displayName;
   const prefix = `${team}-`;
@@ -5752,6 +5790,31 @@ async function handlePeerSpawn(req, ctx) {
   });
   const spawnArgs = [...args.args];
   if (args.resume) {
+    const isClaude = args.command.split("/").pop() === "claude";
+    const transcript = sessionFile(args.cwd, args.sessionId);
+    if (isClaude && isResumableSessionId(args.sessionId) && !(0, import_node_fs2.existsSync)(transcript)) {
+      const elsewhere = findTranscriptElsewhere(args.sessionId, args.cwd);
+      await writeEvent({
+        event: "peer_spawn_refused",
+        level: "warn",
+        by: { sessionId: req.requestedBy.sessionId, name: req.requestedBy.name },
+        requestId: req.id,
+        details: {
+          sessionId: args.sessionId,
+          reason: "resume_transcript_missing",
+          cwd: args.cwd,
+          transcript,
+          elsewhere
+        }
+      });
+      return errResult(
+        req.id,
+        req.tool,
+        "resume_transcript_missing",
+        elsewhere ? `There is no transcript for ${args.sessionId} under cwd '${args.cwd}' (looked for ${transcript}) \u2014 but one exists at ${elsewhere}. Claude Code finds transcripts by working directory, so this peer would start, fail to find its own history and exit. Spawn it in the directory its transcript belongs to.` : `There is no transcript for ${args.sessionId} anywhere under ~/.claude/projects (looked for ${transcript}). \`--resume\` would print "No conversation found" and exit immediately. Either the session id is wrong, or that session never held a conversation \u2014 a session file is written at boot, a transcript only once something is said.`,
+        { sessionId: args.sessionId, cwd: args.cwd, transcript, foundElsewhere: elsewhere }
+      );
+    }
     spawnArgs.push("--resume", args.sessionId);
   }
   if (args.model) {
@@ -5820,6 +5883,15 @@ async function handlePeerSpawn(req, ctx) {
       env
     });
     const canonicalKey = record.sessionKey;
+    if (record.probe?.kind === "pid" && ctx.hostDriver.probePane) {
+      await new Promise((r) => setTimeout(r, ctx.spawnConfirmMs ?? 500));
+      const again = await ctx.hostDriver.probePane(canonicalKey);
+      if (again.kind === "dead" || again.kind === "no-such-target") {
+        record.probe = again.kind === "dead" ? again : record.probe;
+        record.alive = false;
+        if (again.kind === "dead") record.pid = again.pid;
+      }
+    }
     if (record.probe?.kind === "dead") {
       const { exitStatus } = record.probe;
       const archivePath = await ctx.hostDriver.archivePane?.(canonicalKey, `spawn produced a process that exited ${exitStatus ?? "?"}`).catch(() => null) ?? null;
@@ -6145,7 +6217,7 @@ async function confirmStillRunning(pid, identity, expectedSessionId, opts = {}) 
   if (pid === null) return { ok: false, reason: "no pid was reported by the spawn" };
   const windowMs = opts.settleMs ?? 2500;
   const procRoot = opts.procRoot ?? "/proc";
-  const alive = () => (0, import_node_fs2.existsSync)((0, import_node_path8.join)(procRoot, String(pid)));
+  const alive = () => (0, import_node_fs3.existsSync)((0, import_node_path9.join)(procRoot, String(pid)));
   const isClaude = (opts.command ?? "").split("/").pop() === "claude";
   const mustRegister = isClaude && isResumableSessionId(expectedSessionId);
   const registered = identity.actual !== null;
@@ -6177,7 +6249,7 @@ async function verifyRestartedIdentity(expected, pid, opts = {}) {
   const attempts = opts.attempts ?? 8;
   const delayMs = opts.delayMs ?? 500;
   const home = opts.homeDir ?? (0, import_node_os3.homedir)();
-  const path = (0, import_node_path8.join)(home, ".claude", "sessions", `${pid}.json`);
+  const path = (0, import_node_path9.join)(home, ".claude", "sessions", `${pid}.json`);
   for (let i = 0; i < attempts; i++) {
     try {
       const raw = JSON.parse(await (0, import_promises10.readFile)(path, "utf-8"));
@@ -6473,10 +6545,10 @@ async function handlePeerRestart(req, ctx) {
 }
 
 // src/hosts/process-inspector.ts
-var import_node_fs3 = require("node:fs");
+var import_node_fs4 = require("node:fs");
 var import_promises11 = require("node:fs/promises");
 var import_node_os4 = require("node:os");
-var import_node_path9 = require("node:path");
+var import_node_path10 = require("node:path");
 var DEFAULT_MAX_DEPTH = 8;
 var UUID_RE2 = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i;
 function parsePpidFromStat(stat4) {
@@ -6491,7 +6563,7 @@ function sessionIdFromCmdline(cmdline) {
   if (idx === -1) return null;
   const rest = cmdline.slice(idx + "--resume".length).trim();
   const token = rest.split(/\s+/)[0] ?? "";
-  const match = UUID_RE2.exec((0, import_node_path9.basename)(token));
+  const match = UUID_RE2.exec((0, import_node_path10.basename)(token));
   return match ? match[0] : null;
 }
 var LinuxProcessInspector = class {
@@ -6499,7 +6571,7 @@ var LinuxProcessInspector = class {
   sessionsDir;
   constructor(opts = {}) {
     this.procRoot = opts.procRoot ?? "/proc";
-    this.sessionsDir = opts.sessionsDir ?? (0, import_node_path9.join)((0, import_node_os4.homedir)(), ".claude", "sessions");
+    this.sessionsDir = opts.sessionsDir ?? (0, import_node_path10.join)((0, import_node_os4.homedir)(), ".claude", "sessions");
   }
   async listClaudePeers() {
     let entries;
@@ -6566,9 +6638,9 @@ var LinuxProcessInspector = class {
     if (!pathVar) return null;
     for (const dir of pathVar.split(":")) {
       if (dir.length === 0) continue;
-      const candidate = (0, import_node_path9.join)(dir, command);
+      const candidate = (0, import_node_path10.join)(dir, command);
       try {
-        await (0, import_promises11.access)(candidate, import_node_fs3.constants.X_OK);
+        await (0, import_promises11.access)(candidate, import_node_fs4.constants.X_OK);
         return candidate;
       } catch {
       }
@@ -6577,7 +6649,7 @@ var LinuxProcessInspector = class {
   }
   async readProcCwd(pid) {
     try {
-      return await (0, import_promises11.readlink)((0, import_node_path9.join)(this.procRoot, String(pid), "cwd"));
+      return await (0, import_promises11.readlink)((0, import_node_path10.join)(this.procRoot, String(pid), "cwd"));
     } catch {
       return null;
     }
@@ -6603,7 +6675,7 @@ var LinuxProcessInspector = class {
    */
   async resolveSessionId(pid, cmdline) {
     try {
-      const raw = await (0, import_promises11.readFile)((0, import_node_path9.join)(this.sessionsDir, `${pid}.json`), "utf-8");
+      const raw = await (0, import_promises11.readFile)((0, import_node_path10.join)(this.sessionsDir, `${pid}.json`), "utf-8");
       const parsed = JSON.parse(raw);
       if (parsed.sessionId) return { sessionId: parsed.sessionId, source: "sessions-json" };
     } catch {
@@ -6614,7 +6686,7 @@ var LinuxProcessInspector = class {
   }
   async readProcFile(pid, name) {
     try {
-      return await (0, import_promises11.readFile)((0, import_node_path9.join)(this.procRoot, String(pid), name), "utf-8");
+      return await (0, import_promises11.readFile)((0, import_node_path10.join)(this.procRoot, String(pid), name), "utf-8");
     } catch {
       return null;
     }
@@ -6955,7 +7027,7 @@ async function handleTeamAdopt(req, ctx) {
 
 // src/handlers/team-layout.ts
 var import_promises12 = require("node:fs/promises");
-var import_node_path10 = require("node:path");
+var import_node_path11 = require("node:path");
 
 // src/handlers/wake.ts
 var import_node_crypto6 = require("node:crypto");
@@ -7119,7 +7191,7 @@ var TeamLayoutArgsSchema = external_exports.object({
   wakeDelayMs: external_exports.number().int().min(0).max(12e4).optional()
 }).strict();
 function teamFilePath(team) {
-  return (0, import_node_path10.join)(teamsDir(), `${team}.json`);
+  return (0, import_node_path11.join)(teamsDir(), `${team}.json`);
 }
 async function loadTeamSpec(team) {
   try {
@@ -7340,8 +7412,8 @@ async function handleTeamLayout(req, ctx) {
 }
 
 // src/handlers/team-reconcile.ts
-var import_node_fs4 = require("node:fs");
-var import_node_path11 = require("node:path");
+var import_node_fs5 = require("node:fs");
+var import_node_path12 = require("node:path");
 var TeamReconcileArgsSchema = external_exports.object({
   /** Restrict the report to one team. Unmanaged processes are still listed. */
   team: external_exports.string().min(1).optional(),
@@ -7352,7 +7424,7 @@ var TeamReconcileArgsSchema = external_exports.object({
   markDead: external_exports.boolean().default(false)
 }).strict();
 function pidAlive(pid, procRoot) {
-  return (0, import_node_fs4.existsSync)((0, import_node_path11.join)(procRoot, String(pid)));
+  return (0, import_node_fs5.existsSync)((0, import_node_path12.join)(procRoot, String(pid)));
 }
 async function ownsProcess(inspector, panePid, childPid) {
   if (panePid === childPid) return true;
@@ -7964,7 +8036,7 @@ async function handleTeamStatus(req, ctx) {
 // src/handlers/team-stop.ts
 var import_node_crypto7 = require("node:crypto");
 var import_promises13 = require("node:fs/promises");
-var import_node_path12 = require("node:path");
+var import_node_path13 = require("node:path");
 var DEFAULT_ANCHOR_TIMEOUT_MS2 = 12e4;
 var DEFAULT_ACK_POLL_MS2 = 500;
 var STOP_ACK_FILENAME_EXTENSION = ".json";
@@ -7986,7 +8058,7 @@ var TeamStopArgsSchema = external_exports.object({
   inline: TeamStopFileSchema.optional()
 }).strict();
 function teamFilePath2(team) {
-  return (0, import_node_path12.join)(teamsDir(), `${team}.json`);
+  return (0, import_node_path13.join)(teamsDir(), `${team}.json`);
 }
 async function loadTeamOrder(team) {
   try {
@@ -8002,13 +8074,13 @@ async function loadTeamOrder(team) {
   }
 }
 function stopAckDir() {
-  return (0, import_node_path12.join)(controlDir(), "stop-ack");
+  return (0, import_node_path13.join)(controlDir(), "stop-ack");
 }
 function stopAckPath(sessionId) {
-  return (0, import_node_path12.join)(stopAckDir(), `${sessionId}${STOP_ACK_FILENAME_EXTENSION}`);
+  return (0, import_node_path13.join)(stopAckDir(), `${sessionId}${STOP_ACK_FILENAME_EXTENSION}`);
 }
 function inboxPendingDir3(peerId) {
-  return (0, import_node_path12.join)(bridgeRoot(), "inbox", peerId, "pending");
+  return (0, import_node_path13.join)(bridgeRoot(), "inbox", peerId, "pending");
 }
 function generateMsgId4() {
   const ms = Date.now().toString(36);
@@ -8033,10 +8105,10 @@ async function pollForAck2(sessionId, deadline, pollMs) {
 }
 async function consumeAckFile2(sessionId) {
   const src = stopAckPath(sessionId);
-  const done = (0, import_node_path12.join)(stopAckDir(), "done");
+  const done = (0, import_node_path13.join)(stopAckDir(), "done");
   try {
     await (0, import_promises13.mkdir)(done, { recursive: true });
-    await (0, import_promises13.rename)(src, (0, import_node_path12.join)(done, `${sessionId}-${Date.now()}.json`));
+    await (0, import_promises13.rename)(src, (0, import_node_path13.join)(done, `${sessionId}-${Date.now()}.json`));
   } catch {
     await (0, import_promises13.unlink)(src).catch(() => void 0);
   }
@@ -8055,7 +8127,7 @@ async function writeStopRequestMsg(peerId, threadId, reason) {
       reason
     }
   };
-  const path = (0, import_node_path12.join)(inboxPendingDir3(peerId), `${msgId}.json`);
+  const path = (0, import_node_path13.join)(inboxPendingDir3(peerId), `${msgId}.json`);
   await atomicWriteJson(path, envelope);
   return msgId;
 }
@@ -8349,9 +8421,9 @@ function stopHeartbeat() {
 
 // src/hosts/tmux-driver.ts
 var import_node_child_process = require("node:child_process");
-var import_node_fs5 = require("node:fs");
+var import_node_fs6 = require("node:fs");
 var import_promises15 = require("node:fs/promises");
-var import_node_path13 = require("node:path");
+var import_node_path14 = require("node:path");
 var import_node_util = require("node:util");
 
 // src/hosts/input-line.ts
@@ -8437,7 +8509,7 @@ function shQuote(value) {
   return `'${value.replaceAll("'", `'\\''`)}'`;
 }
 function paneCommand(env, command, args) {
-  const envBin = (0, import_node_fs5.existsSync)("/usr/bin/env") ? "/usr/bin/env" : "env";
+  const envBin = (0, import_node_fs6.existsSync)("/usr/bin/env") ? "/usr/bin/env" : "env";
   const assignments = Object.entries(env).filter(([k]) => !TMUX_OWNED_VARS.includes(k) && k !== "TERM").map(([k, v]) => `${k}=${shQuote(v)}`);
   const script = [
     "exec",
@@ -8985,10 +9057,10 @@ var TmuxDriver = class _TmuxDriver {
     const content = await this.capturePaneWithHistory(canonical);
     if (content.trim().length === 0) return null;
     try {
-      const dir = (0, import_node_path13.join)(controlDir(), "archive");
+      const dir = (0, import_node_path14.join)(controlDir(), "archive");
       await (0, import_promises15.mkdir)(dir, { recursive: true });
       const stamp = (/* @__PURE__ */ new Date()).toISOString().replace(/[:.]/g, "-");
-      const path = (0, import_node_path13.join)(dir, `pane-${canonical}-${stamp}.log`);
+      const path = (0, import_node_path14.join)(dir, `pane-${canonical}-${stamp}.log`);
       await (0, import_promises15.appendFile)(
         path,
         `# archived ${(/* @__PURE__ */ new Date()).toISOString()} \u2014 target ${canonical} \u2014 ${reason}
@@ -9029,10 +9101,10 @@ ${content}`,
   }
   async logSendKeys(sessionKey, entry) {
     try {
-      const dir = (0, import_node_path13.join)(controlDir(), "logs");
+      const dir = (0, import_node_path14.join)(controlDir(), "logs");
       await (0, import_promises15.mkdir)(dir, { recursive: true });
       const line = JSON.stringify({ ts: (/* @__PURE__ */ new Date()).toISOString(), sessionKey, ...entry });
-      await (0, import_promises15.appendFile)((0, import_node_path13.join)(dir, `sendkeys-${sessionKey}.log`), `${line}
+      await (0, import_promises15.appendFile)((0, import_node_path14.join)(dir, `sendkeys-${sessionKey}.log`), `${line}
 `, "utf-8");
     } catch {
     }
@@ -9075,6 +9147,10 @@ ${content}`,
    *    can be invisible for a moment. Death, by contrast, returns immediately:
    *    a pane does not come back to life.
    */
+  /** Public second look — see `SessionHostDriver.probePane`. */
+  async probePane(sessionKey) {
+    return this.probePanePid(formatHostTarget(parseHostTarget(sessionKey)));
+  }
   async probePanePid(sessionKey, attempts = 3) {
     let last = "";
     let sawEmpty = false;
@@ -9272,14 +9348,14 @@ async function runDaemon(opts) {
 var import_node_child_process2 = require("node:child_process");
 var import_promises16 = require("node:fs/promises");
 var import_node_os5 = require("node:os");
-var import_node_path14 = require("node:path");
+var import_node_path15 = require("node:path");
 var log11 = makeLogger("daemon.install");
 var UNIT_NAME = "claude-bridge-daemon.service";
 function systemdUserDir() {
-  return (0, import_node_path14.join)((0, import_node_os5.homedir)(), ".config", "systemd", "user");
+  return (0, import_node_path15.join)((0, import_node_os5.homedir)(), ".config", "systemd", "user");
 }
 function unitPath() {
-  return (0, import_node_path14.join)(systemdUserDir(), UNIT_NAME);
+  return (0, import_node_path15.join)(systemdUserDir(), UNIT_NAME);
 }
 function assertLinux() {
   if (process.platform !== "linux") {
@@ -9291,15 +9367,15 @@ function assertLinux() {
 function resolveDaemonBin() {
   const argv1 = process.argv[1];
   if (!argv1) throw new Error("process.argv[1] missing \u2014 cannot determine daemon binary path");
-  if (!argv1.startsWith("/")) return (0, import_node_path14.resolve)(process.cwd(), argv1);
+  if (!argv1.startsWith("/")) return (0, import_node_path15.resolve)(process.cwd(), argv1);
   return argv1;
 }
 async function readTemplate() {
   const anchor = resolveDaemonBin();
-  const anchorDir = (0, import_node_path14.dirname)(anchor);
+  const anchorDir = (0, import_node_path15.dirname)(anchor);
   const candidates = [
-    (0, import_node_path14.resolve)(anchorDir, "..", "templates", UNIT_NAME),
-    (0, import_node_path14.resolve)(anchorDir, "templates", UNIT_NAME)
+    (0, import_node_path15.resolve)(anchorDir, "..", "templates", UNIT_NAME),
+    (0, import_node_path15.resolve)(anchorDir, "templates", UNIT_NAME)
   ];
   for (const candidate of candidates) {
     try {
@@ -9313,24 +9389,24 @@ function findNodeBin() {
   return process.execPath;
 }
 function deployedDaemonPath() {
-  return (0, import_node_path14.join)((0, import_node_os5.homedir)(), ".claude-bridge", "bin", "claude-bridge-daemon.cjs");
+  return (0, import_node_path15.join)((0, import_node_os5.homedir)(), ".claude-bridge", "bin", "claude-bridge-daemon.cjs");
 }
 function deployMetaPath() {
-  return (0, import_node_path14.join)((0, import_node_path14.dirname)(deployedDaemonPath()), "deployed-from.json");
+  return (0, import_node_path15.join)((0, import_node_path15.dirname)(deployedDaemonPath()), "deployed-from.json");
 }
 async function deployDaemonBinary(sourceBin) {
   const target = deployedDaemonPath();
-  if ((0, import_node_path14.resolve)(sourceBin) === (0, import_node_path14.resolve)(target)) {
+  if ((0, import_node_path15.resolve)(sourceBin) === (0, import_node_path15.resolve)(target)) {
     log11.info("deploy_skipped_same_path", { path: target });
     return target;
   }
-  await (0, import_promises16.mkdir)((0, import_node_path14.dirname)(target), { recursive: true });
+  await (0, import_promises16.mkdir)((0, import_node_path15.dirname)(target), { recursive: true });
   await (0, import_promises16.copyFile)(sourceBin, target);
   await (0, import_promises16.chmod)(target, 493);
   try {
     const templateSource = await readTemplate();
-    const templateTarget = (0, import_node_path14.join)((0, import_node_path14.dirname)(target), "templates", UNIT_NAME);
-    await (0, import_promises16.mkdir)((0, import_node_path14.dirname)(templateTarget), { recursive: true });
+    const templateTarget = (0, import_node_path15.join)((0, import_node_path15.dirname)(target), "templates", UNIT_NAME);
+    await (0, import_promises16.mkdir)((0, import_node_path15.dirname)(templateTarget), { recursive: true });
     await (0, import_promises16.writeFile)(templateTarget, templateSource, "utf-8");
   } catch (e) {
     log11.warn("template_deploy_failed", { err: String(e) });
@@ -9338,14 +9414,14 @@ async function deployDaemonBinary(sourceBin) {
   let version = "unknown";
   try {
     const pkg = JSON.parse(
-      await (0, import_promises16.readFile)((0, import_node_path14.resolve)((0, import_node_path14.dirname)(sourceBin), "..", "package.json"), "utf-8")
+      await (0, import_promises16.readFile)((0, import_node_path15.resolve)((0, import_node_path15.dirname)(sourceBin), "..", "package.json"), "utf-8")
     );
     version = pkg.version ?? "unknown";
   } catch {
   }
   await (0, import_promises16.writeFile)(
     deployMetaPath(),
-    `${JSON.stringify({ source: (0, import_node_path14.resolve)(sourceBin), version, deployedAt: (/* @__PURE__ */ new Date()).toISOString() }, null, 2)}
+    `${JSON.stringify({ source: (0, import_node_path15.resolve)(sourceBin), version, deployedAt: (/* @__PURE__ */ new Date()).toISOString() }, null, 2)}
 `,
     "utf-8"
   );

@@ -953,6 +953,11 @@ export class TmuxDriver implements SessionHostDriver {
    *    can be invisible for a moment. Death, by contrast, returns immediately:
    *    a pane does not come back to life.
    */
+  /** Public second look — see `SessionHostDriver.probePane`. */
+  async probePane(sessionKey: string): Promise<PaneProbe> {
+    return this.probePanePid(formatHostTarget(parseHostTarget(sessionKey)));
+  }
+
   private async probePanePid(sessionKey: string, attempts = 3): Promise<PaneProbe> {
     let last = "";
     let sawEmpty = false;

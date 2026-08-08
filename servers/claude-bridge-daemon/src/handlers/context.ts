@@ -30,4 +30,9 @@ export interface HandlerContext {
    * exit. Tests set 0 so the suite does not pay it per case.
    */
   restartSettleMs?: number;
+  /**
+   * How long `peer_spawn` looks again before calling a spawn a success.
+   * Tests set 0 to skip it; the default is half a second (N9, 2026-08-08).
+   */
+  spawnConfirmMs?: number;
 }

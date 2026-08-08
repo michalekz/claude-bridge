@@ -6,6 +6,54 @@ All notable changes to this project are documented here. Format follows [Keep a 
 
 _Nothing yet._
 
+## [0.11.12] — 2026-08-08
+
+### `peer_spawn` stops reporting success it has not established
+
+Both defects were reproduced while building a trap for a different bug, and both
+are the same shape as everything else fixed today: an answer given from a source
+that knows nothing about the actual effect.
+
+#### A spawn that did not last is not a spawn that succeeded
+
+Three peers were spawned with `resume`. All three returned `ok` with a pid. All
+three processes were dead within the second, and the registry held
+`status: "live"` for all three — because the driver probes for a pid the instant
+the host command returns, and a process about to exit is still a live pid at
+that instant.
+
+The handler now looks again half a second later, and a pane that has become a
+corpse takes the existing `spawn_process_exited` path: archive first, then tear
+down, exit status in the error. The deaths this catches are immediate by nature
+— a refused resume, a missing binary, a working directory that is not there —
+so anything surviving that half second has got past them.
+
+#### Nothing checked whether there was a transcript to resume
+
+The reason those three died was one line in the pane: `No conversation found
+with session ID: …`. `peer_spawn(resume: true)` took a session id and went.
+
+It now checks first, and **separates the two causes**, because they need
+different fixes and produce the identical error from Claude Code:
+
+- **no transcript anywhere** — the session id is wrong, or that session never
+  held a conversation. A session file is written at boot; a transcript only once
+  something is said, and the difference is easy to miss.
+- **a transcript under a different working directory** — Claude Code finds
+  transcripts by `cwd`, so a peer relaunched elsewhere cannot see its own
+  history. That was a real defect on 2026-08-04. The error names the path where
+  the transcript actually is.
+
+Only asked of Claude Code: `resume` means something else to another program, and
+this handler has no business inventing a rule for a command it knows nothing
+about.
+
+### Also
+
+- `SessionHostDriver` gains an optional `probePane` — a second look at a pane
+  after the fact, which is what the survival check above needs and what the
+  spawn-time probe cannot provide.
+
 ## [0.11.11] — 2026-08-08
 
 ### The wait after a restart says what it measured

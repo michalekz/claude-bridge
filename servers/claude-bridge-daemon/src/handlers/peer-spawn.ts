@@ -1,3 +1,6 @@
+import { existsSync, readdirSync } from "node:fs";
+import { basename, dirname, join } from "node:path";
+import { projectsRoot, sessionFile } from "@claude-bridge/shared";
 import { z } from "zod";
 import { harvestEnv, sanitizeEnv } from "../env-whitelist.ts";
 import { publishLifecycleEvent } from "../event-subscribers.ts";
@@ -7,6 +10,7 @@ import { errResult, okResult } from "../rpc.ts";
 import type { PeerHostDriver, PeerRecord } from "../state.ts";
 import type { HandlerContext } from "./context.ts";
 import { forkGuard } from "./fork-guard.ts";
+import { isResumableSessionId } from "./peer-restart.ts";
 import { applyStateChange } from "./state-writer.ts";
 
 /**
@@ -107,6 +111,32 @@ export const PeerSpawnArgsSchema = z
 export type PeerSpawnArgs = z.infer<typeof PeerSpawnArgsSchema>;
 
 /**
+ * Does this session's transcript live under some OTHER working directory?
+ *
+ * Claude Code stores transcripts under a directory derived from `cwd`, so the
+ * same session id is present or absent depending on where you stand. Telling a
+ * caller "not here, but there" turns a dead end into an instruction; the 4 August
+ * defect was exactly a peer relaunched in the wrong directory, and it produced
+ * the same "No conversation found" as a transcript that never existed.
+ *
+ * Best effort and deliberately cheap: one directory listing, no recursion, and
+ * any error means "cannot say", never "does not exist".
+ */
+function findTranscriptElsewhere(sessionId: string, cwd: string): string | null {
+  try {
+    const here = dirname(sessionFile(cwd, sessionId));
+    for (const dir of readdirSync(projectsRoot())) {
+      const candidate = join(projectsRoot(), dir, `${sessionId}.jsonl`);
+      if (basename(join(projectsRoot(), dir)) === basename(here)) continue;
+      if (existsSync(candidate)) return candidate;
+    }
+  } catch {
+    // No projects directory, no permission — cannot say.
+  }
+  return null;
+}
+
+/**
  * The tmux window label for a peer.
  *
  * The window carries the SHORT form and the record carries the full name —
@@ -184,6 +214,56 @@ export async function handlePeerSpawn(
 
   const spawnArgs = [...args.args];
   if (args.resume) {
+    // Is there anything to resume? (N10, 2026-08-08)
+    //
+    // `claude --resume <uuid>` with no matching transcript prints
+    // "No conversation found with session ID: <uuid>" and exits 1 — instantly,
+    // before any probe can catch it. The peer then reads as a spawn that
+    // "did not survive", which is a shrug where a diagnosis was available for
+    // the cost of one `existsSync`.
+    //
+    // A missing transcript has TWO causes and they need different fixes, so the
+    // check reports which one it is rather than merging them:
+    //
+    //   - it does not exist at all — the session id is wrong, or the peer never
+    //     held a conversation (a session file is written at boot; a TRANSCRIPT
+    //     only once something is said);
+    //   - it exists under a DIFFERENT working directory. Claude Code looks for
+    //     transcripts under a directory derived from `cwd`, so relaunching a
+    //     peer somewhere else hides its own history from it. That was a real
+    //     defect on 2026-08-04, and it produces this identical error message.
+    // Only Claude Code keeps transcripts, so only Claude Code is asked about
+    // one — the same rule the registration check follows. A relaunch of a shell
+    // or a wrapper with `resume` set means something else to that program, and
+    // refusing it here would be this handler inventing a rule for a command it
+    // knows nothing about.
+    const isClaude = args.command.split("/").pop() === "claude";
+    const transcript = sessionFile(args.cwd, args.sessionId);
+    if (isClaude && isResumableSessionId(args.sessionId) && !existsSync(transcript)) {
+      const elsewhere = findTranscriptElsewhere(args.sessionId, args.cwd);
+      await writeEvent({
+        event: "peer_spawn_refused",
+        level: "warn",
+        by: { sessionId: req.requestedBy.sessionId, name: req.requestedBy.name },
+        requestId: req.id,
+        details: {
+          sessionId: args.sessionId,
+          reason: "resume_transcript_missing",
+          cwd: args.cwd,
+          transcript,
+          elsewhere,
+        },
+      });
+      return errResult(
+        req.id,
+        req.tool,
+        "resume_transcript_missing",
+        elsewhere
+          ? `There is no transcript for ${args.sessionId} under cwd '${args.cwd}' (looked for ${transcript}) — but one exists at ${elsewhere}. Claude Code finds transcripts by working directory, so this peer would start, fail to find its own history and exit. Spawn it in the directory its transcript belongs to.`
+          : `There is no transcript for ${args.sessionId} anywhere under ~/.claude/projects (looked for ${transcript}). \`--resume\` would print "No conversation found" and exit immediately. Either the session id is wrong, or that session never held a conversation — a session file is written at boot, a transcript only once something is said.`,
+        { sessionId: args.sessionId, cwd: args.cwd, transcript, foundElsewhere: elsewhere },
+      );
+    }
     spawnArgs.push("--resume", args.sessionId);
   }
   if (args.model) {
@@ -263,6 +343,29 @@ export async function handlePeerSpawn(
     // persist that so every subsequent host op receives the exact same
     // target the driver already owns (T1 fix, v0.10.0-rc.2).
     const canonicalKey = record.sessionKey;
+
+    // Was it still there a moment later? (N9, 2026-08-08)
+    //
+    // The driver probes for a pid the instant the host command returns, and a
+    // process that is about to exit is still a live pid at that instant. So
+    // this handler answered `ok` over three peers that were dead within the
+    // second — measured 3 of 3, and the registry then held `status: "live"` for
+    // all three. The same shape as the phantom-live record below, one storey
+    // later: not "the spawn produced nothing", but "the spawn produced
+    // something that did not last".
+    //
+    // A short second look is enough, because the deaths this catches are
+    // immediate by nature: a refused `--resume`, a missing binary, a cwd that
+    // does not exist. Anything that survives half a second has got past them.
+    if (record.probe?.kind === "pid" && ctx.hostDriver.probePane) {
+      await new Promise((r) => setTimeout(r, ctx.spawnConfirmMs ?? 500));
+      const again = await ctx.hostDriver.probePane(canonicalKey);
+      if (again.kind === "dead" || again.kind === "no-such-target") {
+        record.probe = again.kind === "dead" ? again : record.probe;
+        record.alive = false;
+        if (again.kind === "dead") record.pid = again.pid;
+      }
+    }
 
     // A spawn that produced no running process is a FAILURE, however
     // cleanly the host command exited (fix, 2026-08-04).

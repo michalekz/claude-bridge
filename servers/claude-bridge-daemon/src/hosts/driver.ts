@@ -202,6 +202,16 @@ export interface SessionHostDriver {
    * for exactly that reason.
    */
   archivePane?(sessionKey: string, reason: string): Promise<string | null>;
+
+  /**
+   * Ask again what is in a pane, after the fact.
+   *
+   * `spawn` probes once, the instant the host command returns — and a process
+   * that is about to exit is still a live pid at that instant. Callers that need
+   * to know whether a spawn LASTED use this for a second look. Optional so a
+   * driver that cannot probe stays valid; callers must guard.
+   */
+  probePane?(sessionKey: string): Promise<PaneProbe>;
 }
 
 export class NotSupportedByDriverError extends Error {
