@@ -4298,7 +4298,7 @@ async function resolvePeer(idOrName, root = bridgeRoot(), now = Date.now()) {
 // package.json
 var package_default = {
   name: "claude-bridge-daemon",
-  version: "0.11.6",
+  version: "0.11.7",
   private: true,
   description: "Control-plane daemon for the claude-bridge plugin: peer lifecycle, telemetry, audit. Distributed as opt-in artefact \u2014 see ADR-008.",
   type: "module",
@@ -5820,6 +5820,45 @@ async function handlePeerSpawn(req, ctx) {
       env
     });
     const canonicalKey = record.sessionKey;
+    if (record.probe?.kind === "dead") {
+      const { exitStatus } = record.probe;
+      const archivePath = await ctx.hostDriver.archivePane?.(canonicalKey, `spawn produced a process that exited ${exitStatus ?? "?"}`).catch(() => null) ?? null;
+      await applyStateChange(ctx.state, (draft) => {
+        delete draft.peers[args.sessionId];
+      });
+      if (archivePath) await ctx.hostDriver.kill(canonicalKey).catch(() => void 0);
+      await writeEvent({
+        event: "peer_spawn_failed",
+        level: "error",
+        by: { sessionId: req.requestedBy.sessionId, name: req.requestedBy.name },
+        requestId: req.id,
+        details: {
+          sessionId: args.sessionId,
+          sessionKey: canonicalKey,
+          reason: "process_exited_after_spawn",
+          exitStatus,
+          archivePath,
+          paneKept: archivePath === null,
+          cwd: args.cwd,
+          command: args.command
+        }
+      });
+      return errResult(
+        req.id,
+        req.tool,
+        "spawn_process_exited",
+        `The command started and exited${exitStatus === null ? "" : ` with status ${exitStatus}`}. ${archivePath ? `What the pane was showing is saved at ${archivePath}.` : `The pane could NOT be archived, so it was left standing \u2014 read it with \`tmux capture-pane -p -t ${canonicalKey}\` before removing it.`}`,
+        {
+          sessionId: args.sessionId,
+          sessionKey: canonicalKey,
+          exitStatus,
+          archivePath,
+          probe: record.probe,
+          cwd: args.cwd,
+          command: args.command
+        }
+      );
+    }
     if (record.probe?.kind === "unavailable") {
       await applyStateChange(ctx.state, (draft) => {
         const rec = draft.peers[args.sessionId];
@@ -6572,6 +6611,7 @@ function defaultProcessInspector() {
 }
 
 // src/handlers/team-adopt.ts
+var log6 = makeLogger("daemon.adopt");
 var TeamAdoptArgsSchema = external_exports.object({
   team: external_exports.string().min(1),
   mode: external_exports.enum(["auto", "manual"]).default("auto"),
@@ -6707,12 +6747,20 @@ async function handleTeamAdopt(req, ctx) {
     const rx = sessionFilter.startsWith("/") && sessionFilter.lastIndexOf("/") > 0 ? new RegExp(sessionFilter.slice(1, sessionFilter.lastIndexOf("/"))) : null;
     windows = windows.filter((w) => rx ? rx.test(w.session) : w.session === sessionFilter);
   }
+  const deadWindows = windows.filter((w) => w.dead);
+  if (deadWindows.length > 0) {
+    windows = windows.filter((w) => !w.dead);
+    log6.warn("adopt_skipped_dead_panes", {
+      count: deadWindows.length,
+      targets: deadWindows.map((w) => ({ target: w.target, exitStatus: w.exitStatus }))
+    });
+  }
   const hostSessions = windows.length > 0 ? windows.map((w) => ({
     sessionKey: w.target,
     label: w.windowName || w.label,
     homeSession: w.session,
     pid: w.pid
-  })) : (await ctx.hostDriver.listSessions()).filter((s) => sessionFilter === void 0 || s.sessionKey === sessionFilter).map((s) => ({
+  })) : (await ctx.hostDriver.listSessions()).filter((s) => sessionFilter === void 0 || s.sessionKey === sessionFilter).filter((s) => s.alive).map((s) => ({
     sessionKey: s.sessionKey,
     label: s.sessionKey,
     pid: s.pid
@@ -8220,7 +8268,7 @@ async function dispatch(req, ctx) {
 
 // src/heartbeat.ts
 var import_promises14 = require("node:fs/promises");
-var log6 = makeLogger("daemon.heartbeat");
+var log7 = makeLogger("daemon.heartbeat");
 var timer = null;
 async function touch() {
   const now = /* @__PURE__ */ new Date();
@@ -8231,7 +8279,7 @@ async function touch() {
     if (code === "ENOENT") {
       await (0, import_promises14.writeFile)(heartbeatPath(), "");
     } else {
-      log6.warn("heartbeat_touch_failed", { err: String(e) });
+      log7.warn("heartbeat_touch_failed", { err: String(e) });
     }
   }
 }
@@ -8326,7 +8374,7 @@ function displacedDraftNotice() {
 
 // src/hosts/tmux-driver.ts
 var execFileAsync = (0, import_node_util.promisify)(import_node_child_process.execFile);
-var log7 = makeLogger("daemon.host.tmux");
+var log8 = makeLogger("daemon.host.tmux");
 var EXEC_DEFAULTS = { killSignal: "SIGKILL" };
 var TMUX_OWNED_VARS = ["TMUX", "TMUX_PANE"];
 var PANE_SELF_DESCRIBING = [
@@ -8405,7 +8453,7 @@ var TmuxDriver = class _TmuxDriver {
           "list-panes",
           "-a",
           "-F",
-          "#{window_id}	#{session_name}	#{window_index}	#{window_name}	#{pane_pid}"
+          "#{window_id}	#{session_name}	#{window_index}	#{window_name}	#{pane_pid}	#{pane_dead}	#{pane_dead_status}"
         ],
         { ...EXEC_DEFAULTS, timeout: QUERY_TIMEOUT_MS }
       );
@@ -8414,7 +8462,7 @@ var TmuxDriver = class _TmuxDriver {
       for (const line of stdout.split("\n")) {
         const trimmed = line.trim();
         if (!trimmed) continue;
-        const [windowId, session, idxStr, windowName, pidStr] = trimmed.split("	");
+        const [windowId, session, idxStr, windowName, pidStr, deadStr, exitStr] = trimmed.split("	");
         if (!windowId || !session || idxStr === void 0) continue;
         const window = Number.parseInt(idxStr, 10);
         if (Number.isNaN(window)) continue;
@@ -8422,13 +8470,17 @@ var TmuxDriver = class _TmuxDriver {
         if (seen.has(target)) continue;
         seen.add(target);
         const pid = pidStr ? Number.parseInt(pidStr, 10) : Number.NaN;
+        const exitStatus = exitStr ? Number.parseInt(exitStr, 10) : Number.NaN;
         out.push({
           target,
           label: `${session}:${window}`,
           session,
           window,
           windowName: windowName ?? "",
-          pid: Number.isNaN(pid) ? null : pid
+          // Still the corpse's pid when `dead` is set — see HostWindowRecord.
+          pid: Number.isNaN(pid) ? null : pid,
+          dead: deadStr === "1",
+          exitStatus: Number.isNaN(exitStatus) ? null : exitStatus
         });
       }
       return out;
@@ -8498,7 +8550,7 @@ var TmuxDriver = class _TmuxDriver {
     let effectiveArgs = args;
     let recreatedHome = false;
     if (asWindow && parentSession !== null && !await this.rawHasSession(parentSession)) {
-      log7.info("tmux_home_session_recreated", { session: parentSession });
+      log8.info("tmux_home_session_recreated", { session: parentSession });
       effectiveArgs = [
         "new-session",
         "-d",
@@ -8530,7 +8582,7 @@ var TmuxDriver = class _TmuxDriver {
       });
       if (asWindow) createdWindowId = stdout.trim() || null;
     } catch (e) {
-      log7.error("tmux_spawn_failed", {
+      log8.error("tmux_spawn_failed", {
         sessionKey: opts.sessionKey,
         canonicalKey,
         err: e instanceof Error ? e.message : String(e)
@@ -8538,7 +8590,7 @@ var TmuxDriver = class _TmuxDriver {
       throw e;
     }
     if (canonicalKey !== opts.sessionKey) {
-      log7.info("session_key_canonicalized", {
+      log8.info("session_key_canonicalized", {
         raw: opts.sessionKey,
         canonical: canonicalKey
       });
@@ -8546,14 +8598,14 @@ var TmuxDriver = class _TmuxDriver {
     const effectiveKey = createdWindowId ?? canonicalKey;
     const probe = await this.probePanePid(effectiveKey);
     if (probe.kind === "no-such-target") {
-      log7.error("tmux_spawn_target_gone", {
+      log8.error("tmux_spawn_target_gone", {
         sessionKey: opts.sessionKey,
         canonicalKey: effectiveKey,
         raw: probe.raw,
         note: "tmux says the target does not exist \u2014 the command exited immediately"
       });
     } else if (probe.kind === "unavailable") {
-      log7.error("tmux_spawn_pid_unavailable", {
+      log8.error("tmux_spawn_pid_unavailable", {
         sessionKey: opts.sessionKey,
         canonicalKey: effectiveKey,
         raw: probe.raw,
@@ -8576,7 +8628,7 @@ var TmuxDriver = class _TmuxDriver {
     if (t.kind === "window") {
       const linked = await this.linkedElsewhere(t.windowId);
       if (linked.length > 0) {
-        log7.warn("tmux_window_linked_unlinking", { target: t.windowId, linkedSessions: linked });
+        log8.warn("tmux_window_linked_unlinking", { target: t.windowId, linkedSessions: linked });
         await execFileAsync(this.tmuxBin, ["unlink-window", "-t", t.windowId], {
           ...EXEC_DEFAULTS,
           timeout: MUTATE_TIMEOUT_MS
@@ -8598,7 +8650,7 @@ var TmuxDriver = class _TmuxDriver {
     const budget = opts.force === true ? this.verifyTimeoutMs / 2 : this.verifyTimeoutMs;
     const respawned = !await this.verifyKilled(canonical, budget);
     if (respawned) {
-      log7.error("tmux_kill_respawn_detected", { sessionKey: canonical });
+      log8.error("tmux_kill_respawn_detected", { sessionKey: canonical });
       throw new Error(
         `Session '${canonical}' respawned within ${budget}ms after kill \u2014 investigate supervisor (bg-pty-host?)`
       );
@@ -8608,20 +8660,31 @@ var TmuxDriver = class _TmuxDriver {
     try {
       const { stdout } = await execFileAsync(
         this.tmuxBin,
-        ["list-sessions", "-F", "#{session_name}	#{pane_pid}"],
+        ["list-sessions", "-F", "#{session_name}	#{pane_pid}	#{pane_dead}	#{pane_dead_status}"],
         { ...EXEC_DEFAULTS, timeout: QUERY_TIMEOUT_MS }
       );
       const records = [];
       for (const line of stdout.split("\n")) {
         const trimmed = line.trim();
         if (!trimmed) continue;
-        const [name, pidStr] = trimmed.split("	");
+        const [name, pidStr, deadStr, exitStr] = trimmed.split("	");
         if (!name) continue;
         const parsedPid = pidStr ? Number.parseInt(pidStr, 10) : Number.NaN;
+        const pid = Number.isNaN(parsedPid) ? null : parsedPid;
+        const dead = deadStr === "1";
+        const exitStatus = exitStr ? Number.parseInt(exitStr, 10) : Number.NaN;
         records.push({
           sessionKey: name,
-          alive: true,
-          pid: Number.isNaN(parsedPid) ? null : parsedPid
+          alive: !dead,
+          pid,
+          ...dead && pid !== null ? {
+            probe: {
+              kind: "dead",
+              pid,
+              exitStatus: Number.isNaN(exitStatus) ? null : exitStatus,
+              raw: trimmed
+            }
+          } : {}
         });
       }
       return records;
@@ -8675,7 +8738,7 @@ var TmuxDriver = class _TmuxDriver {
   async sendKeys(sessionKey, keys) {
     const refusal = refusePayload(keys);
     if (refusal) {
-      log7.error("tmux_send_keys_refused", { sessionKey, reason: refusal.reason });
+      log8.error("tmux_send_keys_refused", { sessionKey, reason: refusal.reason });
       throw new Error(`send-keys to '${sessionKey}' refused \u2014 ${refusal.message}`);
     }
     const canonical = formatHostTarget(parseHostTarget(sessionKey));
@@ -8693,7 +8756,7 @@ var TmuxDriver = class _TmuxDriver {
         strokes: cleared.strokes,
         draftChars: cleared.draft.length
       });
-      log7.error("tmux_send_keys_input_stuck", { sessionKey: canonical, strokes: cleared.strokes });
+      log8.error("tmux_send_keys_input_stuck", { sessionKey: canonical, strokes: cleared.strokes });
       throw new Error(
         `send-keys to '${canonical}' refused \u2014 the input line still holds ${cleared.draft.length} characters after ${cleared.strokes} clear strokes, and typing onto a person's unsent text is not an option. Look at the pane: tmux capture-pane -p -t ${canonical}`
       );
@@ -8726,7 +8789,7 @@ var TmuxDriver = class _TmuxDriver {
       capturedTail: capturedTail.slice(-240)
     });
     if (!delivered) {
-      log7.error("tmux_send_keys_unverified", {
+      log8.error("tmux_send_keys_unverified", {
         sessionKey: canonical,
         attempts: attempts - 1,
         err: lastError
@@ -8847,6 +8910,64 @@ var TmuxDriver = class _TmuxDriver {
       return "";
     }
   }
+  /**
+   * Copy what a pane is showing into `control/archive/` and return the path.
+   *
+   * The order this exists to enforce: ARCHIVE, THEN DESTROY — never the other
+   * way, and never destroy without archiving. A tidy-up that deletes takes the
+   * explanation with it, which is how the spawn failure of 2026-08-07 became
+   * unreproducible: the handler killed the session holding the reason.
+   *
+   * Returns null if nothing could be captured. A failure to archive is a reason
+   * to keep the pane, not a reason to press on.
+   */
+  async archivePane(sessionKey, reason) {
+    const canonical = formatHostTarget(parseHostTarget(sessionKey));
+    const content = await this.capturePaneWithHistory(canonical);
+    if (content.trim().length === 0) return null;
+    try {
+      const dir = (0, import_node_path13.join)(controlDir(), "archive");
+      await (0, import_promises15.mkdir)(dir, { recursive: true });
+      const stamp = (/* @__PURE__ */ new Date()).toISOString().replace(/[:.]/g, "-");
+      const path = (0, import_node_path13.join)(dir, `pane-${canonical}-${stamp}.log`);
+      await (0, import_promises15.appendFile)(
+        path,
+        `# archived ${(/* @__PURE__ */ new Date()).toISOString()} \u2014 target ${canonical} \u2014 ${reason}
+${content}`,
+        "utf-8"
+      );
+      log8.info("pane_archived", { sessionKey: canonical, path, reason });
+      return path;
+    } catch (e) {
+      log8.error("pane_archive_failed", {
+        sessionKey: canonical,
+        err: e instanceof Error ? e.message : String(e)
+      });
+      return null;
+    }
+  }
+  /**
+   * The pane plus its scrollback, bounded.
+   *
+   * `capturePane` deliberately stays visible-only — it answers "is the text I
+   * just typed on the screen", and history would let a stale copy of the same
+   * payload satisfy that check. Archiving wants the opposite: whatever came
+   * before, because that is where a failure explains itself.
+   *
+   * 2000 lines is a compromise. Unbounded (`-S -`) is a peer's entire session
+   * and can be enormous; the visible screen alone is routinely empty.
+   */
+  async capturePaneWithHistory(sessionKey) {
+    try {
+      const { stdout } = await this.tmux(
+        ["capture-pane", "-p", "-S", "-2000", "-t", sessionKey],
+        QUERY_TIMEOUT_MS
+      );
+      return stdout;
+    } catch {
+      return "";
+    }
+  }
   async logSendKeys(sessionKey, entry) {
     try {
       const dir = (0, import_node_path13.join)(controlDir(), "logs");
@@ -8871,19 +8992,67 @@ var TmuxDriver = class _TmuxDriver {
    * pane costs a live peer.
    */
   static NO_SUCH_TARGET = /can't find|no such|not found|no current/i;
+  /**
+   * Ask the pane what is running in it — and whether anything still is.
+   *
+   * Three measurements shape this, all taken 2026-08-08 and none of them
+   * guessable from the tmux manual:
+   *
+   * 1. **A dead pane keeps reporting its corpse's pid.** With `remain-on-exit`
+   *    a pane whose command exited 42 answered `pane_pid=3791183` while
+   *    `/proc/3791183` was already gone. `pane_dead` and `pane_dead_status` are
+   *    the honest fields, so all three are read in ONE query — asking
+   *    separately would let the pane die between two answers.
+   *
+   * 2. **`display-message` does not fail on a missing target.** A missing
+   *    session and a missing window id both return exit 0, empty stdout, empty
+   *    stderr. The `NO_SUCH_TARGET` pattern below therefore almost never fires
+   *    on this path: it was written expecting an error message that tmux does
+   *    not send. Absence has to be read off the EMPTY ANSWER instead — a live
+   *    pane always has a pid, so nothing to say means nothing is there.
+   *
+   * 3. Absence is still confirmed across retries rather than on the first
+   *    empty answer, because a pane queried microseconds after `new-session`
+   *    can be invisible for a moment. Death, by contrast, returns immediately:
+   *    a pane does not come back to life.
+   */
   async probePanePid(sessionKey, attempts = 3) {
     let last = "";
+    let sawEmpty = false;
     for (let attempt = 1; attempt <= attempts; attempt++) {
       try {
         const { stdout } = await execFileAsync(
           this.tmuxBin,
-          ["display-message", "-p", "-t", sessionKey, "#{pane_pid}"],
+          [
+            "display-message",
+            "-p",
+            "-t",
+            sessionKey,
+            "#{pane_pid}	#{pane_dead}	#{pane_dead_status}"
+          ],
           { ...EXEC_DEFAULTS, timeout: QUERY_TIMEOUT_MS }
         );
         const raw = stdout.trim();
-        const parsed = Number.parseInt(raw, 10);
-        if (!Number.isNaN(parsed)) return { kind: "pid", pid: parsed, raw };
-        last = `unparseable pane_pid: ${JSON.stringify(raw)}`;
+        if (raw.length === 0) {
+          sawEmpty = true;
+          last = "tmux answered with nothing \u2014 the target does not exist";
+        } else {
+          const [pidStr, deadStr, statusStr] = raw.split("	");
+          const parsed = Number.parseInt(pidStr ?? "", 10);
+          if (!Number.isNaN(parsed)) {
+            if (deadStr === "1") {
+              const status = Number.parseInt(statusStr ?? "", 10);
+              return {
+                kind: "dead",
+                pid: parsed,
+                exitStatus: Number.isNaN(status) ? null : status,
+                raw
+              };
+            }
+            return { kind: "pid", pid: parsed, raw };
+          }
+          last = `unparseable pane_pid: ${JSON.stringify(raw)}`;
+        }
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e);
         const stderr = e.stderr ?? "";
@@ -8892,6 +9061,7 @@ var TmuxDriver = class _TmuxDriver {
       }
       if (attempt < attempts) await new Promise((r) => setTimeout(r, 200));
     }
+    if (sawEmpty) return { kind: "no-such-target", raw: last };
     return { kind: "unavailable", raw: last, attempts };
   }
   async readSessionPid(sessionKey) {
@@ -8909,7 +9079,7 @@ var TmuxDriver = class _TmuxDriver {
 };
 
 // src/hosts/mock-driver.ts
-var log8 = makeLogger("daemon.host.mock");
+var log9 = makeLogger("daemon.host.mock");
 
 // src/hosts/index.ts
 function defaultHostDriver() {
@@ -8920,14 +9090,14 @@ function defaultHostDriver() {
 }
 
 // src/daemon.ts
-var log9 = makeLogger("daemon");
+var log10 = makeLogger("daemon");
 var POLL_INTERVAL_MS = 250;
 async function runDaemon(opts) {
   try {
     await acquireLock();
   } catch (e) {
     if (e instanceof LockAcquireError) {
-      log9.error("lock_held_by_another_daemon", {
+      log10.error("lock_held_by_another_daemon", {
         heldBy: e.heldBy
       });
       process.exitCode = 3;
@@ -8963,7 +9133,7 @@ async function runDaemon(opts) {
   process.on("SIGINT", () => void shutdown("SIGINT"));
   process.on("SIGTERM", () => void shutdown("SIGTERM"));
   process.on("SIGHUP", () => {
-    log9.info("sighup_reload_stub", { note: "config reload lands in v0.10.0-beta" });
+    log10.info("sighup_reload_stub", { note: "config reload lands in v0.10.0-beta" });
   });
   process.on("SIGPIPE", () => void 0);
   const drainQueue = async () => {
@@ -8983,7 +9153,7 @@ async function runDaemon(opts) {
         continue;
       }
       if (req.id !== fileId) {
-        log9.warn("request_id_filename_mismatch", { fileId, envelopeId: req.id });
+        log10.warn("request_id_filename_mismatch", { fileId, envelopeId: req.id });
       }
       if (!await markRequestDone(fileId)) {
         await writeEvent({
@@ -9024,9 +9194,9 @@ async function runDaemon(opts) {
       // Log on a doubling curve — a 120 s handler drops ~480 ticks and the
       // journal must show the stall without 4 lines per second.
       onSkip: (skipped) => {
-        if (isPowerOfTwo(skipped)) log9.debug("queue_tick_skipped_busy", { skipped });
+        if (isPowerOfTwo(skipped)) log10.debug("queue_tick_skipped_busy", { skipped });
       },
-      onError: (e) => log9.error("queue_error", { err: String(e) })
+      onError: (e) => log10.error("queue_error", { err: String(e) })
     }
   );
   if (opts.once) {
@@ -9044,7 +9214,7 @@ var import_node_child_process2 = require("node:child_process");
 var import_promises16 = require("node:fs/promises");
 var import_node_os5 = require("node:os");
 var import_node_path14 = require("node:path");
-var log10 = makeLogger("daemon.install");
+var log11 = makeLogger("daemon.install");
 var UNIT_NAME = "claude-bridge-daemon.service";
 function systemdUserDir() {
   return (0, import_node_path14.join)((0, import_node_os5.homedir)(), ".config", "systemd", "user");
@@ -9092,7 +9262,7 @@ function deployMetaPath() {
 async function deployDaemonBinary(sourceBin) {
   const target = deployedDaemonPath();
   if ((0, import_node_path14.resolve)(sourceBin) === (0, import_node_path14.resolve)(target)) {
-    log10.info("deploy_skipped_same_path", { path: target });
+    log11.info("deploy_skipped_same_path", { path: target });
     return target;
   }
   await (0, import_promises16.mkdir)((0, import_node_path14.dirname)(target), { recursive: true });
@@ -9104,7 +9274,7 @@ async function deployDaemonBinary(sourceBin) {
     await (0, import_promises16.mkdir)((0, import_node_path14.dirname)(templateTarget), { recursive: true });
     await (0, import_promises16.writeFile)(templateTarget, templateSource, "utf-8");
   } catch (e) {
-    log10.warn("template_deploy_failed", { err: String(e) });
+    log11.warn("template_deploy_failed", { err: String(e) });
   }
   let version = "unknown";
   try {
@@ -9120,7 +9290,7 @@ async function deployDaemonBinary(sourceBin) {
 `,
     "utf-8"
   );
-  log10.info("daemon_binary_deployed", { source: sourceBin, target, version });
+  log11.info("daemon_binary_deployed", { source: sourceBin, target, version });
   return target;
 }
 async function installSystemd() {
@@ -9133,40 +9303,40 @@ async function installSystemd() {
   const rendered = template.replace(/__NODE_BIN__/g, nodeBin).replace(/__DAEMON_BIN__/g, daemonBin);
   await (0, import_promises16.mkdir)(systemdUserDir(), { recursive: true });
   await (0, import_promises16.writeFile)(unitPath(), rendered, "utf-8");
-  log10.info("unit_written", { path: unitPath(), execStart: daemonBin });
+  log11.info("unit_written", { path: unitPath(), execStart: daemonBin });
   runSystemctl("daemon-reload");
   runSystemctl("enable", UNIT_NAME);
   runSystemctl("restart", UNIT_NAME);
-  log10.info("daemon_started_via_systemd");
+  log11.info("daemon_started_via_systemd");
 }
 async function uninstallSystemd() {
   assertLinux();
   try {
     runSystemctl("stop", UNIT_NAME);
   } catch (e) {
-    log10.warn("systemd_stop_failed", { err: String(e) });
+    log11.warn("systemd_stop_failed", { err: String(e) });
   }
   try {
     runSystemctl("disable", UNIT_NAME);
   } catch (e) {
-    log10.warn("systemd_disable_failed", { err: String(e) });
+    log11.warn("systemd_disable_failed", { err: String(e) });
   }
   try {
     await (0, import_promises16.unlink)(unitPath());
   } catch (e) {
     const code = e.code;
-    if (code !== "ENOENT") log10.warn("unit_unlink_failed", { err: String(e) });
+    if (code !== "ENOENT") log11.warn("unit_unlink_failed", { err: String(e) });
   }
   for (const path of [deployedDaemonPath(), deployMetaPath()]) {
     try {
       await (0, import_promises16.unlink)(path);
     } catch (e) {
       const code = e.code;
-      if (code !== "ENOENT") log10.warn("deployed_binary_unlink_failed", { path, err: String(e) });
+      if (code !== "ENOENT") log11.warn("deployed_binary_unlink_failed", { path, err: String(e) });
     }
   }
   runSystemctl("daemon-reload");
-  log10.info("uninstalled");
+  log11.info("uninstalled");
 }
 function runSystemctl(...args) {
   (0, import_node_child_process2.execFileSync)("systemctl", ["--user", ...args], { stdio: "inherit" });
@@ -9337,7 +9507,7 @@ ${SEND_HELP}` };
 }
 
 // src/index.ts
-var log11 = makeLogger("daemon.cli");
+var log12 = makeLogger("daemon.cli");
 var DAEMON_VERSION = package_default.version;
 var HELP = `claude-bridge-daemon ${DAEMON_VERSION}
 
@@ -9438,6 +9608,6 @@ ${HELP}`);
   }
 }
 main(process.argv.slice(2)).catch((e) => {
-  log11.error("cli_fatal", { err: String(e) });
+  log12.error("cli_fatal", { err: String(e) });
   process.exitCode = 1;
 });

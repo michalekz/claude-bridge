@@ -288,6 +288,62 @@ export async function handlePeerSpawn(
     // `team_reconcile` — which can measure repeatedly and at leisure — decide.
     // The same rule the drift report follows for `windowIndex`: when you are
     // not sure, mark it and hand it to the layer that can look again.
+    // The pane is there and tmux says the process in it has ALREADY EXITED —
+    // with a status, which is the most informative failure this handler can
+    // report. It only occurs where `remain-on-exit` is set; without it the pane
+    // vanishes and the probe answers `no-such-target` instead.
+    //
+    // This is a fact, so the session goes. But the pane goes to the archive
+    // FIRST: it holds the command's own output, which is the difference between
+    // "exited 127" and "exited 127 because the binary is not on the peer's
+    // PATH". If the archive cannot be written, the pane STAYS — evidence
+    // outranks tidiness.
+    if (record.probe?.kind === "dead") {
+      const { exitStatus } = record.probe;
+      const archivePath =
+        (await ctx.hostDriver
+          .archivePane?.(canonicalKey, `spawn produced a process that exited ${exitStatus ?? "?"}`)
+          .catch(() => null)) ?? null;
+      await applyStateChange(ctx.state, (draft) => {
+        delete draft.peers[args.sessionId];
+      });
+      if (archivePath) await ctx.hostDriver.kill(canonicalKey).catch(() => undefined);
+      await writeEvent({
+        event: "peer_spawn_failed",
+        level: "error",
+        by: { sessionId: req.requestedBy.sessionId, name: req.requestedBy.name },
+        requestId: req.id,
+        details: {
+          sessionId: args.sessionId,
+          sessionKey: canonicalKey,
+          reason: "process_exited_after_spawn",
+          exitStatus,
+          archivePath,
+          paneKept: archivePath === null,
+          cwd: args.cwd,
+          command: args.command,
+        },
+      });
+      return errResult(
+        req.id,
+        req.tool,
+        "spawn_process_exited",
+        `The command started and exited${exitStatus === null ? "" : ` with status ${exitStatus}`}. ${
+          archivePath
+            ? `What the pane was showing is saved at ${archivePath}.`
+            : `The pane could NOT be archived, so it was left standing — read it with \`tmux capture-pane -p -t ${canonicalKey}\` before removing it.`
+        }`,
+        {
+          sessionId: args.sessionId,
+          sessionKey: canonicalKey,
+          exitStatus,
+          archivePath,
+          probe: record.probe,
+          cwd: args.cwd,
+          command: args.command,
+        },
+      );
+    }
     if (record.probe?.kind === "unavailable") {
       await applyStateChange(ctx.state, (draft) => {
         const rec = draft.peers[args.sessionId];

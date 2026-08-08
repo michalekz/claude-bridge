@@ -1,4 +1,4 @@
-import { resolvePeer } from "@claude-bridge/shared";
+import { makeLogger, resolvePeer } from "@claude-bridge/shared";
 import { z } from "zod";
 import { harvestEnv } from "../env-whitelist.ts";
 import { writeEvent } from "../events.ts";
@@ -10,6 +10,8 @@ import type { PeerHostDriver, PeerRecord } from "../state.ts";
 import type { HandlerContext } from "./context.ts";
 import { windowLabelFor } from "./peer-spawn.ts";
 import { applyStateChange } from "./state-writer.ts";
+
+const log = makeLogger("daemon.adopt");
 
 /**
  * team_adopt — take ownership of peers the daemon did not spawn (§5.2, v0.10.1).
@@ -339,6 +341,24 @@ export async function handleTeamAdopt(
   }
   // `sessionKey` is the ADDRESS (a `@id` for a window, a name for a session);
   // `label` is what a human reads in the plan and what the peer gets named.
+  // A dead pane is not a peer. Under `remain-on-exit` tmux keeps the window
+  // and keeps quoting the exited process's pid, so adoption — which matches
+  // processes to panes BY PID — would happily enrol a corpse and the registry
+  // would gain a peer that has never been alive. Measured 2026-08-08: a pane
+  // whose command exited 42 still reported `pane_pid` for a `/proc` entry that
+  // no longer existed.
+  //
+  // Dropped here rather than reported as a skip: adoption's job is to read the
+  // fleet off reality, and a dead pane is not part of the fleet. It is not lost
+  // either — `pane_dead` is in the host listing for anyone who looks.
+  const deadWindows = windows.filter((w) => w.dead);
+  if (deadWindows.length > 0) {
+    windows = windows.filter((w) => !w.dead);
+    log.warn("adopt_skipped_dead_panes", {
+      count: deadWindows.length,
+      targets: deadWindows.map((w) => ({ target: w.target, exitStatus: w.exitStatus })),
+    });
+  }
   const hostSessions: Array<{
     sessionKey: string;
     label: string;
@@ -354,6 +374,7 @@ export async function handleTeamAdopt(
         }))
       : (await ctx.hostDriver.listSessions())
           .filter((s) => sessionFilter === undefined || s.sessionKey === sessionFilter)
+          .filter((s) => s.alive)
           .map((s) => ({
             sessionKey: s.sessionKey,
             label: s.sessionKey,

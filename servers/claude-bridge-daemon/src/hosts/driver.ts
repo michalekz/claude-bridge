@@ -63,6 +63,7 @@ export interface SessionHostSpawnOptions {
  */
 export type PaneProbe =
   | { kind: "pid"; pid: number; raw: string }
+  | { kind: "dead"; pid: number; exitStatus: number | null; raw: string }
   | { kind: "no-such-target"; raw: string }
   | { kind: "unavailable"; raw: string; attempts: number };
 
@@ -100,6 +101,16 @@ export interface SessionHostRecord {
  *
  * `@` is a safe discriminator: `sanitizeSessionKey` does not produce it and
  * tmux reserves it for exactly this.
+ *
+ * That rule now has a measurement behind it rather than an argument, which is
+ * what lets it survive a refactor. Asked about a window index that does not
+ * exist, tmux does not complain — it answers about a DIFFERENT window:
+ *
+ *     $ tmux display-message -p -t <session>:99 '#{pane_pid}'
+ *     3791183          # exit 0, no stderr — the pid of window 1
+ *
+ * A stale `session:index` therefore does not fail; it silently reports someone
+ * else's process as yours.
  */
 export type HostTarget =
   | { kind: "session"; session: string }
@@ -128,6 +139,20 @@ export interface HostWindowRecord {
   window: number;
   windowName: string;
   pid: number | null;
+  /**
+   * The pane's process has exited and tmux is holding the window open
+   * (`remain-on-exit`). `pid` STILL CARRIES THE CORPSE'S ID — measured
+   * 2026-08-08: a pane whose command exited 42 reported `pane_pid=3791183`
+   * while `/proc/3791183` no longer existed.
+   *
+   * So anything deciding liveness from `pid` alone is wrong here, and the two
+   * callers that do it — `team_adopt` matching processes to panes, and
+   * `team_reconcile` comparing recorded pids to host pids — would respectively
+   * adopt a corpse and report it healthy.
+   */
+  dead: boolean;
+  /** The exited process's status, when tmux knows it. */
+  exitStatus: number | null;
 }
 
 export interface SessionHostDriver {
@@ -166,6 +191,17 @@ export interface SessionHostDriver {
    * can throw NotSupportedError; callers must guard.
    */
   sendKeys?(sessionKey: string, keys: string): Promise<void>;
+
+  /**
+   * Save what a pane is showing, and return where it was saved.
+   *
+   * Optional so a driver without a screen stays valid. Where it exists, the
+   * rule for callers is absolute: **archive before you destroy, and if the
+   * archive fails, do not destroy.** Cleanup that deletes first takes the
+   * explanation with it — the spawn failure of 2026-08-07 was unreproducible
+   * for exactly that reason.
+   */
+  archivePane?(sessionKey: string, reason: string): Promise<string | null>;
 }
 
 export class NotSupportedByDriverError extends Error {

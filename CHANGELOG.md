@@ -6,6 +6,67 @@ All notable changes to this project are documented here. Format follows [Keep a 
 
 _Nothing yet._
 
+## [0.11.7] — 2026-08-08
+
+### A pane keeps answering for a process that has already exited
+
+With `remain-on-exit` set, tmux holds a window open after its command dies —
+and keeps quoting the dead process's pid to anyone who asks. Measured
+2026-08-08: a pane whose command exited 42 reported `pane_pid=3791183` while
+`/proc/3791183` no longer existed.
+
+Three consumers read that pid, and each would have been wrong in its own way:
+`team_adopt` matches processes to panes by pid and would have enrolled the
+corpse as a peer; `team_reconcile` compares recorded pids to host pids and
+would have called it healthy; `peer_spawn` would have called the spawn a
+success. So the consumers were fixed BEFORE anything starts producing dead
+panes, not after.
+
+- `PaneProbe` gains a `dead` variant carrying the process's exit status. All
+  three fields are read in one query, because asking separately lets the pane
+  die between two answers.
+- `listWindows` and `listSessions` carry `dead` / `exitStatus`, and a session
+  holding only a corpse no longer reports `alive: true`.
+- `team_adopt` drops dead windows. Adoption reads the fleet off reality, and a
+  dead pane is not part of the fleet.
+- `peer_spawn` answers `spawn_process_exited` with the status — "exited 127" is
+  a diagnosis where "spawn produced no process" was a shrug.
+
+### Fixed: the probe promised three answers and could only give two
+
+`display-message` **does not fail on a missing target**. A missing session and a
+missing window id both return exit 0, empty stdout, empty stderr. The probe's
+`no-such-target` branch matched on `can't find` in an error message tmux never
+sends, so absence was unreachable and everything fell through to `unavailable`.
+
+Safe, but dishonest: v0.11.5 documented a three-way distinction the path could
+not make. Absence is now read off the empty answer — a live pane always has a
+pid, so nothing to say means nothing is there — and still only after retries,
+since a pane queried microseconds after `new-session` can be briefly invisible.
+
+### Archive before you destroy, and if the archive fails, do not destroy
+
+The spawn failure of 2026-08-07 was never reproduced because the handler killed
+the session holding the explanation. `TmuxDriver.archivePane` now saves a pane
+to `control/archive/` and returns the path; a teardown that could not archive
+leaves the pane standing and says so.
+
+It captures the scrollback, not just the visible screen. Measured: a pane whose
+command printed a message and exited showed an **empty** screen — the message
+was one line up in the history. An archive of the visible screen would have
+faithfully preserved nothing, which is worse than not archiving, because it
+looks like evidence.
+
+### Also
+
+- The rule "a window is addressed by its id, never `session:index`" now carries
+  its measurement: asked about window index 99 of a session that has two
+  windows, tmux does not complain — it answers with window 1's pid, exit 0, no
+  stderr. A stale `session:index` does not fail, it silently reports someone
+  else's process as yours.
+- `remain-on-exit` is deliberately **not** enabled by this release. Teaching the
+  consumers comes first; producing dead panes comes after.
+
 ## [0.11.6] — 2026-08-08
 
 ### Typing into a terminal that belongs to a person

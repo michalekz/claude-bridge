@@ -245,7 +245,7 @@ export class TmuxDriver implements SessionHostDriver {
           "list-panes",
           "-a",
           "-F",
-          "#{window_id}\t#{session_name}\t#{window_index}\t#{window_name}\t#{pane_pid}",
+          "#{window_id}\t#{session_name}\t#{window_index}\t#{window_name}\t#{pane_pid}\t#{pane_dead}\t#{pane_dead_status}",
         ],
         { ...EXEC_DEFAULTS, timeout: QUERY_TIMEOUT_MS },
       );
@@ -254,7 +254,8 @@ export class TmuxDriver implements SessionHostDriver {
       for (const line of stdout.split("\n")) {
         const trimmed = line.trim();
         if (!trimmed) continue;
-        const [windowId, session, idxStr, windowName, pidStr] = trimmed.split("\t");
+        const [windowId, session, idxStr, windowName, pidStr, deadStr, exitStr] =
+          trimmed.split("\t");
         if (!windowId || !session || idxStr === undefined) continue;
         const window = Number.parseInt(idxStr, 10);
         if (Number.isNaN(window)) continue;
@@ -265,13 +266,17 @@ export class TmuxDriver implements SessionHostDriver {
         if (seen.has(target)) continue;
         seen.add(target);
         const pid = pidStr ? Number.parseInt(pidStr, 10) : Number.NaN;
+        const exitStatus = exitStr ? Number.parseInt(exitStr, 10) : Number.NaN;
         out.push({
           target,
           label: `${session}:${window}`,
           session,
           window,
           windowName: windowName ?? "",
+          // Still the corpse's pid when `dead` is set — see HostWindowRecord.
           pid: Number.isNaN(pid) ? null : pid,
+          dead: deadStr === "1",
+          exitStatus: Number.isNaN(exitStatus) ? null : exitStatus,
         });
       }
       return out;
@@ -510,20 +515,36 @@ export class TmuxDriver implements SessionHostDriver {
     try {
       const { stdout } = await execFileAsync(
         this.tmuxBin,
-        ["list-sessions", "-F", "#{session_name}\t#{pane_pid}"],
+        ["list-sessions", "-F", "#{session_name}\t#{pane_pid}\t#{pane_dead}\t#{pane_dead_status}"],
         { ...EXEC_DEFAULTS, timeout: QUERY_TIMEOUT_MS },
       );
       const records: SessionHostRecord[] = [];
       for (const line of stdout.split("\n")) {
         const trimmed = line.trim();
         if (!trimmed) continue;
-        const [name, pidStr] = trimmed.split("\t");
+        const [name, pidStr, deadStr, exitStr] = trimmed.split("\t");
         if (!name) continue;
         const parsedPid = pidStr ? Number.parseInt(pidStr, 10) : Number.NaN;
+        const pid = Number.isNaN(parsedPid) ? null : parsedPid;
+        // `alive: true` used to be unconditional: the session was listed, so it
+        // was assumed to hold a running process. With `remain-on-exit` a listed
+        // session can hold nothing but a dead pane still quoting its pid.
+        const dead = deadStr === "1";
+        const exitStatus = exitStr ? Number.parseInt(exitStr, 10) : Number.NaN;
         records.push({
           sessionKey: name,
-          alive: true,
-          pid: Number.isNaN(parsedPid) ? null : parsedPid,
+          alive: !dead,
+          pid,
+          ...(dead && pid !== null
+            ? {
+                probe: {
+                  kind: "dead" as const,
+                  pid,
+                  exitStatus: Number.isNaN(exitStatus) ? null : exitStatus,
+                  raw: trimmed,
+                },
+              }
+            : {}),
         });
       }
       return records;
@@ -787,6 +808,71 @@ export class TmuxDriver implements SessionHostDriver {
     }
   }
 
+  /**
+   * Copy what a pane is showing into `control/archive/` and return the path.
+   *
+   * The order this exists to enforce: ARCHIVE, THEN DESTROY — never the other
+   * way, and never destroy without archiving. A tidy-up that deletes takes the
+   * explanation with it, which is how the spawn failure of 2026-08-07 became
+   * unreproducible: the handler killed the session holding the reason.
+   *
+   * Returns null if nothing could be captured. A failure to archive is a reason
+   * to keep the pane, not a reason to press on.
+   */
+  async archivePane(sessionKey: string, reason: string): Promise<string | null> {
+    const canonical = formatHostTarget(parseHostTarget(sessionKey));
+    // WITH HISTORY, not just the visible screen. Measured 2026-08-08: a pane
+    // whose command printed a message and exited showed an EMPTY screen —
+    // `capture-pane -p` returned blank lines while the message sat in the
+    // scrollback one line up. An archive of the visible screen would have
+    // faithfully preserved nothing, which is worse than not archiving, because
+    // it looks like evidence.
+    const content = await this.capturePaneWithHistory(canonical);
+    if (content.trim().length === 0) return null;
+    try {
+      const dir = join(controlDir(), "archive");
+      await mkdir(dir, { recursive: true });
+      const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+      const path = join(dir, `pane-${canonical}-${stamp}.log`);
+      await appendFile(
+        path,
+        `# archived ${new Date().toISOString()} — target ${canonical} — ${reason}\n${content}`,
+        "utf-8",
+      );
+      log.info("pane_archived", { sessionKey: canonical, path, reason });
+      return path;
+    } catch (e) {
+      log.error("pane_archive_failed", {
+        sessionKey: canonical,
+        err: e instanceof Error ? e.message : String(e),
+      });
+      return null;
+    }
+  }
+
+  /**
+   * The pane plus its scrollback, bounded.
+   *
+   * `capturePane` deliberately stays visible-only — it answers "is the text I
+   * just typed on the screen", and history would let a stale copy of the same
+   * payload satisfy that check. Archiving wants the opposite: whatever came
+   * before, because that is where a failure explains itself.
+   *
+   * 2000 lines is a compromise. Unbounded (`-S -`) is a peer's entire session
+   * and can be enormous; the visible screen alone is routinely empty.
+   */
+  private async capturePaneWithHistory(sessionKey: string): Promise<string> {
+    try {
+      const { stdout } = await this.tmux(
+        ["capture-pane", "-p", "-S", "-2000", "-t", sessionKey],
+        QUERY_TIMEOUT_MS,
+      );
+      return stdout;
+    } catch {
+      return "";
+    }
+  }
+
   private async logSendKeys(sessionKey: string, entry: Record<string, unknown>): Promise<void> {
     try {
       const dir = join(controlDir(), "logs");
@@ -814,20 +900,69 @@ export class TmuxDriver implements SessionHostDriver {
    */
   private static readonly NO_SUCH_TARGET = /can't find|no such|not found|no current/i;
 
+  /**
+   * Ask the pane what is running in it — and whether anything still is.
+   *
+   * Three measurements shape this, all taken 2026-08-08 and none of them
+   * guessable from the tmux manual:
+   *
+   * 1. **A dead pane keeps reporting its corpse's pid.** With `remain-on-exit`
+   *    a pane whose command exited 42 answered `pane_pid=3791183` while
+   *    `/proc/3791183` was already gone. `pane_dead` and `pane_dead_status` are
+   *    the honest fields, so all three are read in ONE query — asking
+   *    separately would let the pane die between two answers.
+   *
+   * 2. **`display-message` does not fail on a missing target.** A missing
+   *    session and a missing window id both return exit 0, empty stdout, empty
+   *    stderr. The `NO_SUCH_TARGET` pattern below therefore almost never fires
+   *    on this path: it was written expecting an error message that tmux does
+   *    not send. Absence has to be read off the EMPTY ANSWER instead — a live
+   *    pane always has a pid, so nothing to say means nothing is there.
+   *
+   * 3. Absence is still confirmed across retries rather than on the first
+   *    empty answer, because a pane queried microseconds after `new-session`
+   *    can be invisible for a moment. Death, by contrast, returns immediately:
+   *    a pane does not come back to life.
+   */
   private async probePanePid(sessionKey: string, attempts = 3): Promise<PaneProbe> {
     let last = "";
+    let sawEmpty = false;
     for (let attempt = 1; attempt <= attempts; attempt++) {
       try {
         const { stdout } = await execFileAsync(
           this.tmuxBin,
-          ["display-message", "-p", "-t", sessionKey, "#{pane_pid}"],
+          [
+            "display-message",
+            "-p",
+            "-t",
+            sessionKey,
+            "#{pane_pid}\t#{pane_dead}\t#{pane_dead_status}",
+          ],
           { ...EXEC_DEFAULTS, timeout: QUERY_TIMEOUT_MS },
         );
         const raw = stdout.trim();
-        const parsed = Number.parseInt(raw, 10);
-        if (!Number.isNaN(parsed)) return { kind: "pid", pid: parsed, raw };
-        // Answered, but with something that is not a pid. Not absence either.
-        last = `unparseable pane_pid: ${JSON.stringify(raw)}`;
+        if (raw.length === 0) {
+          // Measurement 2: this is what "no such target" looks like here.
+          sawEmpty = true;
+          last = "tmux answered with nothing — the target does not exist";
+        } else {
+          const [pidStr, deadStr, statusStr] = raw.split("\t");
+          const parsed = Number.parseInt(pidStr ?? "", 10);
+          if (!Number.isNaN(parsed)) {
+            if (deadStr === "1") {
+              const status = Number.parseInt(statusStr ?? "", 10);
+              return {
+                kind: "dead",
+                pid: parsed,
+                exitStatus: Number.isNaN(status) ? null : status,
+                raw,
+              };
+            }
+            return { kind: "pid", pid: parsed, raw };
+          }
+          // Answered, but with something that is not a pid. Not absence either.
+          last = `unparseable pane_pid: ${JSON.stringify(raw)}`;
+        }
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e);
         const stderr = (e as { stderr?: string }).stderr ?? "";
@@ -840,6 +975,11 @@ export class TmuxDriver implements SessionHostDriver {
       // this answer, and used to decide it on a single attempt.
       if (attempt < attempts) await new Promise((r) => setTimeout(r, 200));
     }
+    // Empty every time is absence, and absence is a fact. Anything else —
+    // timeouts, unparseable output, a tmux that would not run — is ignorance,
+    // and ignorance must not be reported as a fact: mistaking an unreachable
+    // pane for a dead one costs a live peer.
+    if (sawEmpty) return { kind: "no-such-target", raw: last };
     return { kind: "unavailable", raw: last, attempts };
   }
 
