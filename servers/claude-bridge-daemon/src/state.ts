@@ -17,7 +17,20 @@ const log = makeLogger("daemon.state");
 
 export const STATE_VERSION = 2;
 
-export type PeerLifecycleStatus = "unknown" | "starting" | "live" | "stopping" | "stopped";
+export type PeerLifecycleStatus =
+  | "unknown"
+  | "starting"
+  | "live"
+  | "stopping"
+  | "stopped"
+  /**
+   * A restart is underway (v0.11.18). Distinct from `stopping`: the peer is
+   * meant to come BACK, so a reader must not treat it as leaving. Every
+   * consumer of this enum has to answer for it — the `stopping` hole that
+   * v0.11.17 closed with `stop_pending` existed because a status was added and
+   * the readers were not.
+   */
+  | "restarting";
 export type PeerHostDriver = "tmux" | "bg-pty" | "mock" | "unknown";
 
 /**
@@ -218,6 +231,40 @@ export interface PeerObserved {
     msgId: string;
     requestedAt: string;
     timeoutMs: number;
+  } | null;
+  /**
+   * A restart that is UNDERWAY (v0.11.18) — the same idea as `stopRequest`, one
+   * level up, and it carries one field the stop does not need: `phase`.
+   *
+   * A restart is four operations, and abandoning it means something different
+   * in each. Abandoned while waiting for the ready-ack, nothing has happened
+   * and the peer is untouched. Abandoned during the spawn, a PROCESS MAY EXIST
+   * THAT NO RECORD NAMES — the only phase that can leave an orphan. A drift
+   * report that said only "a restart was abandoned" would put those two on the
+   * same line, and the remedy for one is dangerous for the other: relaunching
+   * over an orphan is how a fork happens.
+   *
+   * Which is also why this is written BEFORE the spawn rather than after. A
+   * mark that appears once the action succeeded knows nothing about the action
+   * that did not.
+   *
+   * `msgId` is null in the force branch: nobody was asked, and recording a
+   * message id there would invent a conversation.
+   *
+   * Cleared when the restart finishes, when the peer is stopped, and when the
+   * record is released. Never cleared by elapsed time — a timeout is not
+   * evidence that nothing is happening.
+   */
+  restartRequest?: {
+    threadId: string;
+    msgId: string | null;
+    requestedAt: string;
+    timeoutMs: number;
+    /** The request that owns this restart, so a second caller can name it. */
+    requestId: string;
+    phase: "ready-ack" | "stopping" | "spawning" | "verifying";
+    /** What `--resume` will be given. Null when the peer starts fresh. */
+    resumeSessionId?: string | null;
   } | null;
   /**
    * True when the daemon took over a process it did not start (team_adopt).

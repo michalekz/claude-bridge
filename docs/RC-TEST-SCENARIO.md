@@ -92,6 +92,21 @@ Live demo of the control-plane daemon on a **test peer** that is completely sepa
    Expect `outcome:"error"`, code `stop_ack_timeout`, and — the point of the
    check — `tmux list-sessions` still showing `rc-test:alice`. A stop that did
    not happen must not read like one that did. Run this BEFORE step 9.
+9c. **Optional — the restart refuses just as honestly (v0.11.18).** Before
+   step 9, with the peer still up:
+   ```json
+   { "peer": "rc-test-alice", "readyTimeoutMs": 3000, "wait": true, "timeoutMs": 10000 }
+   ```
+   Expect `outcome:"error"`, code `restart_ready_timeout`, and `tmux
+   list-sessions` **still showing** `rc-test:alice` — a restart that did not
+   happen must not leave a stopped peer behind. `team_reconcile` then reports a
+   `restart_pending` drift with phase `ready-ack`; that is the mark doing its
+   job, not a fault. Clear it by running step 9.
+
+   A `/bin/sleep` peer has no identity to measure, which is why this reaches the
+   ready phase at all. A real Claude peer with an unknown identity would be
+   refused earlier, with `restart_identity_unknown`.
+
 10. **`team_status`** — `peerCount:0`, matching the baseline from step 2. Test done.
 
 ## What we're checking (checklist for Owner)

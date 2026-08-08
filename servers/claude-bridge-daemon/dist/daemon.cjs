@@ -4320,7 +4320,7 @@ async function resolvePeer(idOrName, root = bridgeRoot(), now = Date.now()) {
 // package.json
 var package_default = {
   name: "claude-bridge-daemon",
-  version: "0.11.17",
+  version: "0.11.18",
   private: true,
   description: "Control-plane daemon for the claude-bridge plugin: peer lifecycle, telemetry, audit. Distributed as opt-in artefact \u2014 see ADR-008.",
   type: "module",
@@ -5456,6 +5456,8 @@ async function requestFromPeer(peerId, threadId, content) {
 }
 var compactAcks = createAckChannel("compact-ack");
 var stopAcks = createAckChannel("stop-ack");
+var restartAcks = createAckChannel("restart-ack");
+var ALL_ACK_CHANNELS = [compactAcks, stopAcks, restartAcks];
 
 // src/handlers/peer-compact.ts
 var DEFAULT_ANCHOR_TIMEOUT_MS = 3e5;
@@ -5469,7 +5471,9 @@ var PeerCompactArgsSchema = external_exports.object({
   reason: external_exports.string().optional()
 }).strict();
 async function sweepAllAcksAtStartup() {
-  return compactAcks.sweepAllAtStartup();
+  let swept = 0;
+  for (const channel of ALL_ACK_CHANNELS) swept += await channel.sweepAllAtStartup();
+  return swept;
 }
 async function writeAnchorRequestMsg(peerId, threadId) {
   return requestFromPeer(
@@ -5657,7 +5661,6 @@ async function handlePeerCompact(req, ctx) {
 // src/handlers/peer-restart.ts
 var import_node_fs5 = require("node:fs");
 var import_promises13 = require("node:fs/promises");
-var import_node_os4 = require("node:os");
 var import_node_path11 = require("node:path");
 
 // src/hosts/driver.ts
@@ -5676,35 +5679,6 @@ function sanitizeSessionKey(rawName) {
     throw new Error(`Cannot derive a tmux target from '${rawName}' \u2014 nothing safe remained`);
   }
   return sanitized;
-}
-
-// src/handlers/peer-spawn.ts
-var import_node_fs4 = require("node:fs");
-var import_node_path10 = require("node:path");
-
-// src/handlers/fork-guard.ts
-async function forkGuard(state, driver, opts) {
-  const record = state.peers[opts.sessionId];
-  if (record && (record.observed.status === "live" || record.observed.status === "starting")) {
-    return {
-      reason: "state_live",
-      details: {
-        sessionId: opts.sessionId,
-        recordedStatus: record.observed.status,
-        tmuxTarget: record.observed.tmuxTarget
-      }
-    };
-  }
-  if (await driver.hasSession(opts.sessionKey)) {
-    return {
-      reason: "host_alive",
-      details: {
-        sessionKey: opts.sessionKey,
-        hostDriver: driver.name
-      }
-    };
-  }
-  return null;
 }
 
 // src/handlers/peer-identity.ts
@@ -5864,6 +5838,9 @@ function defaultProcessInspector() {
 }
 
 // src/handlers/peer-identity.ts
+function bridgeIdOf(record) {
+  return record.observed.sessionId ?? record.sessionId;
+}
 var IDENTITY_MEASURE_TIMEOUT_MS = 5e3;
 var IDENTITY_POLL_MS = 150;
 function pidExists(pid, procRoot) {
@@ -5918,6 +5895,35 @@ async function measureIdentity(panePid, opts = {}) {
 }
 
 // src/handlers/peer-spawn.ts
+var import_node_fs4 = require("node:fs");
+var import_node_path10 = require("node:path");
+
+// src/handlers/fork-guard.ts
+async function forkGuard(state, driver, opts) {
+  const record = state.peers[opts.sessionId];
+  if (record && (record.observed.status === "live" || record.observed.status === "starting" || record.observed.status === "restarting")) {
+    return {
+      reason: "state_live",
+      details: {
+        sessionId: opts.sessionId,
+        recordedStatus: record.observed.status,
+        tmuxTarget: record.observed.tmuxTarget
+      }
+    };
+  }
+  if (await driver.hasSession(opts.sessionKey)) {
+    return {
+      reason: "host_alive",
+      details: {
+        sessionKey: opts.sessionKey,
+        hostDriver: driver.name
+      }
+    };
+  }
+  return null;
+}
+
+// src/handlers/peer-spawn.ts
 var PeerSpawnArgsSchema = external_exports.object({
   sessionId: external_exports.string().min(1).describe("Peer sessionId (UUID for resume; stable name for a new spawn)"),
   displayName: external_exports.string().min(1).describe("Human-visible peer name (also becomes the tmux session name)"),
@@ -5925,6 +5931,24 @@ var PeerSpawnArgsSchema = external_exports.object({
   command: external_exports.string().min(1).describe("Absolute path to `claude` (or another executable for tests)"),
   args: external_exports.array(external_exports.string()).default([]),
   resume: external_exports.boolean().default(false),
+  /**
+   * WHICH transcript to resume, when it is not the same string as the key.
+   *
+   * `sessionId` above is a HANDLE — the registry key, chosen before the peer
+   * existed (see peer-identity.ts). Until v0.11.18 it was also handed to
+   * `--resume`, and for a handle-keyed peer that is a string no transcript is
+   * named after: `isResumableSessionId("tst-c")` is false, so `resume` came
+   * out false and the peer was relaunched EMPTY. A new session under the old
+   * name, reported as a successful restart — the quietest way to lose a
+   * context there is, because the pid is fresh, the window is right and the
+   * name matches.
+   *
+   * So the identity travels separately from the handle here too. Omitted
+   * means "the handle is also the identity", which is true for every adopted
+   * peer and was true for 24 of the 25 records on the fleet the day this was
+   * measured. It stops being true the moment `team_layout` names a peer.
+   */
+  resumeSessionId: external_exports.string().min(1).optional(),
   /**
    * Create the peer as a window inside this existing tmux session rather than
    * as a session of its own. `peer_restart` sets it for adopted peers, whose
@@ -6022,10 +6046,11 @@ async function handlePeerSpawn(req, ctx) {
   });
   const spawnArgs = [...args.args];
   const isClaude = args.command.split("/").pop() === "claude";
+  const resumeTarget = args.resumeSessionId ?? args.sessionId;
   if (args.resume) {
-    const transcript = sessionFile(args.cwd, args.sessionId);
-    if (isClaude && isResumableSessionId(args.sessionId) && !(0, import_node_fs4.existsSync)(transcript)) {
-      const elsewhere = findTranscriptElsewhere(args.sessionId, args.cwd);
+    const transcript = sessionFile(args.cwd, resumeTarget);
+    if (isClaude && isResumableSessionId(resumeTarget) && !(0, import_node_fs4.existsSync)(transcript)) {
+      const elsewhere = findTranscriptElsewhere(resumeTarget, args.cwd);
       await writeEvent({
         event: "peer_spawn_refused",
         level: "warn",
@@ -6033,6 +6058,7 @@ async function handlePeerSpawn(req, ctx) {
         requestId: req.id,
         details: {
           sessionId: args.sessionId,
+          resumeTarget,
           reason: "resume_transcript_missing",
           cwd: args.cwd,
           transcript,
@@ -6043,16 +6069,23 @@ async function handlePeerSpawn(req, ctx) {
         req.id,
         req.tool,
         "resume_transcript_missing",
-        elsewhere ? `There is no transcript for ${args.sessionId} under cwd '${args.cwd}' (looked for ${transcript}) \u2014 but one exists at ${elsewhere}. Claude Code finds transcripts by working directory, so this peer would start, fail to find its own history and exit. Spawn it in the directory its transcript belongs to.` : `There is no transcript for ${args.sessionId} anywhere under ~/.claude/projects (looked for ${transcript}). \`--resume\` would print "No conversation found" and exit immediately. Either the session id is wrong, or that session never held a conversation \u2014 a session file is written at boot, a transcript only once something is said.`,
-        { sessionId: args.sessionId, cwd: args.cwd, transcript, foundElsewhere: elsewhere }
+        elsewhere ? `There is no transcript for ${resumeTarget} under cwd '${args.cwd}' (looked for ${transcript}) \u2014 but one exists at ${elsewhere}. Claude Code finds transcripts by working directory, so this peer would start, fail to find its own history and exit. Spawn it in the directory its transcript belongs to.` : `There is no transcript for ${resumeTarget} anywhere under ~/.claude/projects (looked for ${transcript}). \`--resume\` would print "No conversation found" and exit immediately. Either the session id is wrong, or that session never held a conversation \u2014 a session file is written at boot, a transcript only once something is said.`,
+        {
+          sessionId: args.sessionId,
+          resumeTarget,
+          cwd: args.cwd,
+          transcript,
+          foundElsewhere: elsewhere
+        }
       );
     }
-    spawnArgs.push("--resume", args.sessionId);
+    spawnArgs.push("--resume", resumeTarget);
   }
   if (args.model) {
     spawnArgs.push("--model", args.model);
   }
   const hostDriverName = ctx.hostDriver.name;
+  const existingRestartRequest = ctx.state.peers[args.sessionId]?.observed.restartRequest ?? null;
   await applyStateChange(ctx.state, (draft) => {
     draft.peers[args.sessionId] = {
       sessionId: args.sessionId,
@@ -6095,6 +6128,16 @@ async function handlePeerSpawn(req, ctx) {
           ...args.envHarvestedAt === void 0 ? { harvestedAt: (/* @__PURE__ */ new Date()).toISOString() } : args.envHarvestedAt !== null ? { harvestedAt: args.envHarvestedAt } : {}
         } : {},
         model: args.model ?? null,
+        // A restart that is UNDERWAY is not ours to erase (v0.11.18).
+        //
+        // This write replaces the record wholesale, which is right for a spawn:
+        // there was no peer, so there is nothing to preserve. During a RESTART
+        // there is — the marker `peer_restart` wrote before calling us, and its
+        // whole reason to exist is the window we are standing in. Abandoned
+        // here, the restart may leave a process no record names; a marker
+        // clobbered by the spawn would go missing in exactly the phase it was
+        // put there for.
+        ...existingRestartRequest ? { restartRequest: existingRestartRequest } : {},
         startedAt: (/* @__PURE__ */ new Date()).toISOString(),
         lastUpdatedAt: (/* @__PURE__ */ new Date()).toISOString()
       }
@@ -6279,6 +6322,10 @@ async function handlePeerSpawn(req, ctx) {
         pid: record.pid,
         hostDriver: hostDriverName,
         resume: args.resume,
+        // WHAT was resumed, not just whether. A restart that resumed the wrong
+        // string is indistinguishable from one that resumed nothing unless the
+        // audit trail says which id went on the command line.
+        resumedSessionId: args.resume ? resumeTarget : null,
         model: args.model ?? null,
         accountProfile: args.accountProfile ?? null
       }
@@ -6307,6 +6354,7 @@ async function handlePeerSpawn(req, ctx) {
       identity: measured ? "measured" : "unknown",
       measuredSessionId: measured?.sessionId ?? null,
       identityWaitedMs: identity.waitedMs,
+      resumedSessionId: args.resume ? resumeTarget : null,
       ...measured ? {} : {
         identityNote: "The peer is running, but its Claude session id could not be read within the window. This is NOT a failed spawn. Cross-referencing it against peer_list will not work until team_reconcile measures it."
       }
@@ -6422,6 +6470,7 @@ async function runCourtesyPhase(req, ctx, target, args) {
   const { sessionId, sessionKey, record } = target;
   const alive = record.observed.tmuxTarget ? await ctx.hostDriver.hasSession(sessionKey).catch(() => false) : false;
   if (!alive) return { kind: "no-host" };
+  const bridgeId = bridgeIdOf(record);
   const timeoutMs = args.ackTimeoutMs ?? DEFAULT_STOP_ACK_TIMEOUT_MS;
   const pollMs = args.ackPollMs ?? DEFAULT_STOP_ACK_POLL_MS;
   await (0, import_promises12.mkdir)(stopAcks.dir(), { recursive: true });
@@ -6446,7 +6495,7 @@ async function runCourtesyPhase(req, ctx, target, args) {
       }
     });
   } else {
-    const swept = await stopAcks.sweepStale(sessionId, "stale");
+    const swept = await stopAcks.sweepStale(bridgeId, "stale");
     if (swept) {
       await writeEvent({
         event: "peer_stop_stale_ack_swept",
@@ -6458,7 +6507,7 @@ async function runCourtesyPhase(req, ctx, target, args) {
     }
     requestedAtMs = Date.now();
     threadId = stopThreadId(sessionId, requestedAtMs);
-    const msgId = await requestStop(sessionId, threadId, args.reason ?? null);
+    const msgId = await requestStop(bridgeId, threadId, args.reason ?? null);
     await applyStateChange(ctx.state, (draft) => {
       const rec = draft.peers[sessionId];
       if (rec) {
@@ -6481,7 +6530,7 @@ async function runCourtesyPhase(req, ctx, target, args) {
   }
   const startedWaitingAt = Date.now();
   const verdict = await stopAcks.poll(
-    sessionId,
+    bridgeId,
     startedWaitingAt + timeoutMs,
     pollMs,
     requestedAtMs,
@@ -6499,7 +6548,7 @@ async function runCourtesyPhase(req, ctx, target, args) {
       resumed
     };
   }
-  await stopAcks.consume(sessionId);
+  await stopAcks.consume(bridgeId);
   return { kind: "acked", threadId, waitedMs, resumed };
 }
 async function handlePeerStop(req, ctx) {
@@ -6631,6 +6680,7 @@ async function handlePeerStop(req, ctx) {
         rec.observed.stoppedCleanly = stoppedCleanly ?? null;
         rec.observed.pid = null;
         rec.observed.stopRequest = null;
+        rec.observed.restartRequest = null;
         rec.observed.lastUpdatedAt = (/* @__PURE__ */ new Date()).toISOString();
       }
     } else {
@@ -6676,11 +6726,190 @@ async function handlePeerStop(req, ctx) {
   });
 }
 
+// src/handlers/restart-protocol.ts
+var DEFAULT_RESTART_READY_TIMEOUT_MS = 12e4;
+var DEFAULT_RESTART_READY_POLL_MS = 500;
+function restartThreadId(sessionId, now = Date.now()) {
+  return `restart:${sessionId}:${now.toString(36)}`;
+}
+async function requestRestartReady(peerId, threadId, reason) {
+  return requestFromPeer(
+    peerId,
+    threadId,
+    [
+      "Restart requested by the control plane. You are COMING BACK \u2014 your session is",
+      "resumed with its transcript, so park your work where you will find it again",
+      "rather than winding it down.",
+      "",
+      "Finish or park the current turn, flush your anchor and memory, then write",
+      "~/.claude-bridge/control/restart-ack/<sessionId>.json containing:",
+      "",
+      `    {"threadId": "${threadId}"}`,
+      "",
+      "Nothing is stopped until that file appears. If you do NOT ack, nothing is",
+      "stopped either: the restart is reported as failed and you keep running,",
+      "untouched. So take the time you need \u2014 do not ack before your work is durable.",
+      "",
+      "The `threadId` matters: an ack that answers a DIFFERENT request is refused.",
+      "An empty `touch` still works \u2014 it is accepted on freshness alone.",
+      reason ? `
+Reason given: ${reason}` : ""
+    ].join("\n").trimEnd()
+  );
+}
+
+// src/handlers/wake.ts
+var import_node_crypto5 = require("node:crypto");
+var DEFAULT_WAKE_DELAY_MS = 8e3;
+var DEFAULT_WAKE_PROMPT = "[daemon] Wake \u2014 you were resumed from a stopped state. Re-onboard from your anchor, read your inbox (peer_inbox_read) and report to whoever woke you.";
+var RESTART_WAKE_PROMPT = "[daemon] Restart complete \u2014 same session, new process. Re-onboard from your anchor, read your inbox (peer_inbox_read) and report to whoever restarted you.";
+function generateMsgId2() {
+  const ms = Date.now().toString(36);
+  const rand = (0, import_node_crypto5.randomBytes)(4).toString("hex");
+  return `${ms}-${rand}`;
+}
+async function writeWakeMsg(opts, threadId) {
+  const msgId = generateMsgId2();
+  const dirty = opts.stoppedCleanly === false;
+  const restarted = opts.event === "restarted";
+  const lines = restarted ? [
+    "Your restart is complete \u2014 same session, same transcript, new process.",
+    "Re-onboard from your anchor before doing anything else, then report to",
+    "whoever restarted you.",
+    "",
+    `Reason: ${opts.reason}`
+  ] : [
+    "You were resumed from a stopped state. Re-onboard from your anchor before",
+    "doing anything else, then report to whoever woke you.",
+    "",
+    `Reason: ${opts.reason}`
+  ];
+  if (dirty) {
+    lines.push(
+      "",
+      restarted ? "\u26A0 This restart was FORCED \u2014 you were not asked to get ready, so whatever you" : "\u26A0 Your previous stop was FORCED \u2014 you did not complete the stop-ack cycle,",
+      restarted ? "had not written down at that moment is gone. YOUR ANCHOR MAY BE MID-WRITE OR" : "so your anchor and memory may be incomplete or mid-write. Verify them",
+      restarted ? "STALE \u2014 verify it against reality before you build on it." : "before trusting them."
+    );
+  } else if (opts.stoppedCleanly === true) {
+    lines.push(
+      "",
+      restarted ? "You acknowledged the restart request, so your anchor should be whole." : "Your previous stop completed its ack cycle, so your anchor should be whole."
+    );
+  }
+  await writeEnvelope({
+    id: msgId,
+    from: syntheticSenderId("control-plane-daemon"),
+    fromName: "control-plane-daemon",
+    to: opts.sessionId,
+    kind: "ask",
+    sentAt: (/* @__PURE__ */ new Date()).toISOString(),
+    threadId,
+    content: lines.join("\n")
+  });
+  return msgId;
+}
+async function wakePeer(req, ctx, opts) {
+  const threadId = `wake:${opts.sessionId}:${Date.now().toString(36)}`;
+  let wakeMsgId = null;
+  try {
+    wakeMsgId = await writeWakeMsg(opts, threadId);
+  } catch (e) {
+    const err = e instanceof Error ? e.message : String(e);
+    await writeEvent({
+      event: "peer_wake_failed",
+      level: "warn",
+      by: { sessionId: req.requestedBy.sessionId, name: req.requestedBy.name },
+      requestId: req.id,
+      details: { sessionId: opts.sessionId, stage: "inbox_write", err }
+    });
+    return { sessionId: opts.sessionId, wakeMsgId: null, injected: false, error: err };
+  }
+  const sendKeys = ctx.hostDriver.sendKeys?.bind(ctx.hostDriver);
+  if (!sendKeys) {
+    await writeEvent({
+      event: "peer_wake_not_injected",
+      level: "warn",
+      by: { sessionId: req.requestedBy.sessionId, name: req.requestedBy.name },
+      requestId: req.id,
+      details: {
+        sessionId: opts.sessionId,
+        wakeMsgId,
+        hostDriver: ctx.hostDriver.name,
+        note: "driver has no send-keys \u2014 peer stays silent until a turn is triggered by hand"
+      }
+    });
+    return { sessionId: opts.sessionId, wakeMsgId, injected: false };
+  }
+  const delay = opts.wakeDelayMs ?? DEFAULT_WAKE_DELAY_MS;
+  if (delay > 0) await new Promise((r) => setTimeout(r, delay));
+  const prompt = opts.wakePrompt ?? DEFAULT_WAKE_PROMPT;
+  await writeEvent({
+    event: "peer_wake_inject",
+    by: { sessionId: req.requestedBy.sessionId, name: req.requestedBy.name },
+    requestId: req.id,
+    details: {
+      sessionId: opts.sessionId,
+      sessionKey: opts.sessionKey,
+      threadId,
+      wakeMsgId,
+      injectedKeys: prompt,
+      delayMs: delay
+    }
+  });
+  try {
+    await sendKeys(opts.sessionKey, prompt);
+  } catch (e) {
+    const err = e instanceof Error ? e.message : String(e);
+    await writeEvent({
+      event: "peer_wake_failed",
+      level: "warn",
+      by: { sessionId: req.requestedBy.sessionId, name: req.requestedBy.name },
+      requestId: req.id,
+      details: { sessionId: opts.sessionId, sessionKey: opts.sessionKey, stage: "send_keys", err }
+    });
+    return { sessionId: opts.sessionId, wakeMsgId, injected: false, error: err };
+  }
+  await writeEvent({
+    event: "peer_woken",
+    by: { sessionId: req.requestedBy.sessionId, name: req.requestedBy.name },
+    requestId: req.id,
+    details: {
+      sessionId: opts.sessionId,
+      sessionKey: opts.sessionKey,
+      threadId,
+      wakeMsgId,
+      reason: opts.reason,
+      stoppedCleanly: opts.stoppedCleanly ?? null,
+      wakeKind: opts.event ?? "resumed"
+    }
+  });
+  await publishLifecycleEvent({
+    event: "peer_woken",
+    sessionId: opts.sessionId,
+    sessionKey: opts.sessionKey,
+    details: { reason: opts.reason, stoppedCleanly: opts.stoppedCleanly ?? null }
+  });
+  return { sessionId: opts.sessionId, wakeMsgId, injected: true };
+}
+
 // src/handlers/peer-restart.ts
 var PeerRestartArgsSchema = external_exports.object({
   peer: external_exports.string().min(1),
   reason: external_exports.string().optional(),
+  /**
+   * Skip the asking — both of it: no ready-request, no stop courtesy.
+   *
+   * FORCE SKIPS WAITING, NEVER EVIDENCE. It does not skip the dead-pane
+   * archive, the identity check after the relaunch, or step g) — and step g)
+   * is the one that matters most here, because a peer that was never asked to
+   * tidy up is the peer most likely to be holding a half-written anchor. It
+   * gets told so.
+   */
   force: external_exports.boolean().default(false),
+  /** How long the peer gets to say it is ready. Ignored when `force`. */
+  readyTimeoutMs: external_exports.number().int().positive().max(6e5).optional(),
+  readyPollMs: external_exports.number().int().positive().max(1e4).optional(),
   model: external_exports.string().optional(),
   accountProfile: external_exports.string().optional()
 }).strict();
@@ -6719,22 +6948,34 @@ async function confirmStillRunning(pid, identity, expectedSessionId, opts = {}) 
   }
   return { ok: true, reason: "alive and registered" };
 }
-async function verifyRestartedIdentity(expected, pid, opts = {}) {
-  if (pid === null || !isResumableSessionId(expected)) return { mismatch: false, actual: null };
-  const attempts = opts.attempts ?? 8;
-  const delayMs = opts.delayMs ?? 500;
-  const home = opts.homeDir ?? (0, import_node_os4.homedir)();
-  const path = (0, import_node_path11.join)(home, ".claude", "sessions", `${pid}.json`);
-  for (let i = 0; i < attempts; i++) {
-    try {
-      const raw = JSON.parse(await (0, import_promises13.readFile)(path, "utf-8"));
-      const actual = typeof raw.sessionId === "string" ? raw.sessionId : null;
-      if (actual) return { mismatch: actual !== expected, actual };
-    } catch {
-    }
-    await new Promise((r) => setTimeout(r, delayMs));
+function identityVerdict(intendedSessionId, measuredSessionId) {
+  if (intendedSessionId === null || !isResumableSessionId(intendedSessionId)) {
+    return { mismatch: false, actual: measuredSessionId };
   }
-  return { mismatch: false, actual: null };
+  if (measuredSessionId === null) return { mismatch: false, actual: null };
+  return { mismatch: measuredSessionId !== intendedSessionId, actual: measuredSessionId };
+}
+function decideResume(record) {
+  const handle = record.sessionId;
+  const measured = record.observed.sessionId ?? null;
+  const identity = record.observed.identity;
+  const canHaveIdentity = (record.desired.command ?? "claude").split("/").pop() === "claude";
+  if (isResumableSessionId(handle) && (measured === null || measured === handle)) {
+    return { kind: "resume", sessionId: handle, source: "handle" };
+  }
+  if (identity === "measured" && measured !== null && isResumableSessionId(measured)) {
+    return { kind: "resume", sessionId: measured, source: "measured-identity" };
+  }
+  if (canHaveIdentity && (identity === "unknown" || identity === void 0 && measured === null)) {
+    return {
+      kind: "refuse",
+      why: identity === "unknown" ? "the peer's identity is UNKNOWN \u2014 it is running, but the daemon has not been able to read its session id" : "this record predates identity measurement (v0.11.16) and its key is not a session id"
+    };
+  }
+  return {
+    kind: "fresh",
+    why: `handle '${handle}' is not a session id and no identity was measured \u2014 the peer starts fresh`
+  };
 }
 async function markNotRunning(ctx, sessionId) {
   await applyStateChange(ctx.state, (draft) => {
@@ -6747,6 +6988,90 @@ async function markNotRunning(ctx, sessionId) {
 }
 function callerTeamOf4(req, ctx) {
   return ctx.state.peers[req.requestedBy.sessionId]?.desired.team ?? null;
+}
+async function markRestart(ctx, sessionId, phase, fields) {
+  await applyStateChange(ctx.state, (draft) => {
+    const rec = draft.peers[sessionId];
+    if (!rec) return;
+    rec.observed.restartRequest = { ...fields, phase };
+    if (phase === "ready-ack") rec.observed.status = "restarting";
+    rec.observed.lastUpdatedAt = (/* @__PURE__ */ new Date()).toISOString();
+  });
+}
+async function clearRestartMark(ctx, sessionId) {
+  await applyStateChange(ctx.state, (draft) => {
+    const rec = draft.peers[sessionId];
+    if (!rec?.observed.restartRequest) return;
+    rec.observed.restartRequest = null;
+    rec.observed.lastUpdatedAt = (/* @__PURE__ */ new Date()).toISOString();
+  });
+}
+async function runReadyPhase(req, ctx, target, args, resumeSessionId) {
+  const { sessionId, sessionKey, record } = target;
+  if (args.force) return { kind: "skipped" };
+  const alive = record.observed.tmuxTarget ? await ctx.hostDriver.hasSession(sessionKey).catch(() => false) : false;
+  if (!alive) return { kind: "no-host" };
+  const bridgeId = bridgeIdOf(record);
+  const timeoutMs = args.readyTimeoutMs ?? DEFAULT_RESTART_READY_TIMEOUT_MS;
+  const pollMs = args.readyPollMs ?? DEFAULT_RESTART_READY_POLL_MS;
+  await (0, import_promises13.mkdir)(restartAcks.dir(), { recursive: true });
+  const pending = record.observed.restartRequest ?? null;
+  const resumable = pending !== null && pending.phase === "ready-ack";
+  let threadId;
+  let msgId;
+  let requestedAtMs;
+  if (resumable && pending) {
+    threadId = pending.threadId;
+    msgId = pending.msgId;
+    requestedAtMs = Date.parse(pending.requestedAt);
+    await writeEvent({
+      event: "peer_restart_ready_resumed",
+      by: { sessionId: req.requestedBy.sessionId, name: req.requestedBy.name },
+      requestId: req.id,
+      details: { sessionId, threadId, requestedAt: pending.requestedAt, note: "no second request" }
+    });
+  } else {
+    await restartAcks.sweepStale(bridgeId, "pre-request");
+    threadId = restartThreadId(sessionId);
+    requestedAtMs = Date.now();
+    msgId = await requestRestartReady(bridgeId, threadId, args.reason ?? null);
+    await markRestart(ctx, sessionId, "ready-ack", {
+      threadId,
+      msgId,
+      requestedAt: new Date(requestedAtMs).toISOString(),
+      timeoutMs,
+      requestId: req.id,
+      resumeSessionId
+    });
+    await writeEvent({
+      event: "peer_restart_requested",
+      by: { sessionId: req.requestedBy.sessionId, name: req.requestedBy.name },
+      requestId: req.id,
+      details: { sessionId, bridgeId, sessionKey, threadId, msgId, timeoutMs, resumeSessionId }
+    });
+  }
+  const started = Date.now();
+  const verdict = await restartAcks.poll(
+    bridgeId,
+    requestedAtMs + timeoutMs,
+    pollMs,
+    requestedAtMs,
+    threadId
+  );
+  const waitedMs = Date.now() - started;
+  if (verdict.accepted) {
+    await restartAcks.consume(bridgeId);
+    return { kind: "acked", threadId, msgId, waitedMs, resumed: resumable };
+  }
+  return {
+    kind: "no-ack",
+    threadId,
+    msgId,
+    timeoutMs,
+    waitedMs,
+    ackVerdict: verdict.reason,
+    resumed: resumable
+  };
 }
 async function handlePeerRestart(req, ctx) {
   const parsed = PeerRestartArgsSchema.safeParse(req.args);
@@ -6776,6 +7101,61 @@ async function handlePeerRestart(req, ctx) {
       { peer: args.peer }
     );
   }
+  const inFlight = record.observed.restartRequest ?? null;
+  if (inFlight && inFlight.phase !== "ready-ack") {
+    return errResult(
+      req.id,
+      req.tool,
+      "restart_in_progress",
+      `A restart of '${record.sessionId}' is already in its ${inFlight.phase} phase (requested at ${inFlight.requestedAt} by ${inFlight.requestId}). Entering it twice would risk two processes behind one record. Wait for it, or check team_reconcile for a restart_pending drift if the caller is gone.`,
+      { sessionId: record.sessionId, phase: inFlight.phase, since: inFlight.requestedAt }
+    );
+  }
+  const cwd = record.desired.cwd ?? process.cwd();
+  const command = record.desired.command ?? "claude";
+  const commandArgs = record.desired.spawnArgs ?? [];
+  const missing = [
+    record.desired.cwd ? null : "cwd",
+    record.desired.command ? null : "command"
+  ].filter((f) => f !== null);
+  if (missing.length > 0) {
+    await writeEvent({
+      event: "peer_restart_launch_params_unknown",
+      level: "warn",
+      by: { sessionId: req.requestedBy.sessionId, name: req.requestedBy.name },
+      requestId: req.id,
+      details: {
+        sessionId: record.sessionId,
+        missing,
+        fallbackCwd: cwd,
+        fallbackCommand: command,
+        hint: "Peer record predates launch-parameter persistence (v0.10.3). The restart uses the daemon's cwd and a bare `claude`, which fails on installs where claude is not on the daemon's PATH (nvm). Re-spawn the peer to record its real parameters."
+      }
+    });
+  }
+  const resumeDecision = decideResume(record);
+  if (resumeDecision.kind === "refuse") {
+    await writeEvent({
+      event: "peer_restart_refused",
+      level: "warn",
+      by: { sessionId: req.requestedBy.sessionId, name: req.requestedBy.name },
+      requestId: req.id,
+      details: { sessionId: record.sessionId, reason: resumeDecision.why }
+    });
+    return errResult(
+      req.id,
+      req.tool,
+      "restart_identity_unknown",
+      `Refusing to restart '${record.sessionId}': ${resumeDecision.why}. Resuming the handle would relaunch the peer EMPTY and report success; resuming nothing would drop its context on purpose. Neither is this tool's decision to make. Run team_reconcile to measure the identity, then restart. NOTHING WAS TOUCHED \u2014 the peer is still running.`,
+      {
+        sessionId: record.sessionId,
+        identity: record.observed.identity ?? null,
+        measuredSessionId: record.observed.sessionId ?? null
+      }
+    );
+  }
+  const resumeSessionId = resumeDecision.kind === "resume" ? resumeDecision.sessionId : null;
+  const sessionKey = record.observed.tmuxTarget ?? record.observed.name;
   let inSession = record.desired.homeSession ?? null;
   if (inSession === null && record.observed.tmuxTarget && parseHostTarget(record.observed.tmuxTarget).kind === "window") {
     const windows = ctx.hostDriver.listWindows ? await ctx.hostDriver.listWindows() : [];
@@ -6812,6 +7192,51 @@ async function handlePeerRestart(req, ctx) {
     // provenance, which is the precise move this release exists to stop.
     ...record.observed.harvestedAt !== void 0 ? { harvestedAt: record.observed.harvestedAt } : {}
   };
+  const ready = await runReadyPhase(
+    req,
+    ctx,
+    { sessionId: record.sessionId, sessionKey, record },
+    args,
+    resumeSessionId
+  );
+  if (ready.kind === "no-ack") {
+    await writeEvent({
+      event: "peer_restart_ready_timeout",
+      level: "warn",
+      by: { sessionId: req.requestedBy.sessionId, name: req.requestedBy.name },
+      requestId: req.id,
+      details: {
+        sessionId: record.sessionId,
+        threadId: ready.threadId,
+        timeoutMs: ready.timeoutMs,
+        waitedMs: ready.waitedMs,
+        ackVerdict: ready.ackVerdict,
+        resumed: ready.resumed
+      }
+    });
+    return errResult(
+      req.id,
+      req.tool,
+      "restart_ready_timeout",
+      `Peer '${record.sessionId}' did not say it was ready within ${ready.timeoutMs} ms (waited ${ready.waitedMs} ms, last ack verdict: ${ready.ackVerdict}). NOTHING WAS STOPPED and nothing was killed \u2014 the peer is running exactly as before. The request stands: call peer_restart again to keep waiting on the same thread (a late ack still counts), or peer_restart with force:true to restart it now and lose whatever it had not written down.`,
+      {
+        sessionId: record.sessionId,
+        threadId: ready.threadId,
+        waitedMs: ready.waitedMs,
+        stillRunning: true
+      }
+    );
+  }
+  const readyThreadId = ready.kind === "acked" ? ready.threadId : restartThreadId(record.sessionId);
+  const restartMarkFields = {
+    threadId: readyThreadId,
+    msgId: ready.kind === "acked" ? ready.msgId : null,
+    requestedAt: (/* @__PURE__ */ new Date()).toISOString(),
+    timeoutMs: args.readyTimeoutMs ?? DEFAULT_RESTART_READY_TIMEOUT_MS,
+    requestId: req.id,
+    resumeSessionId
+  };
+  await markRestart(ctx, record.sessionId, "stopping", restartMarkFields);
   const stopArgs = {
     schemaVersion: req.schemaVersion,
     id: `${req.id}:stop`,
@@ -6820,62 +7245,59 @@ async function handlePeerRestart(req, ctx) {
     args: {
       peer: record.sessionId,
       reason: args.reason ?? "peer_restart",
-      // PINNED to v0.11.14 semantics (v0.11.15 phase 1).
+      // 🔴 ONE ASK, NOT TWO — corrected by the acceptance run.
       //
-      // `peer_stop` became graceful by default in this release, and inheriting
-      // that here would have been the most expensive line in it: a restart
-      // sends no stop-request, so no peer would ever ack one. Every restart
-      // would wait out the full 120 s window and then REFUSE to stop anything,
-      // and since `team_restart` is a thin wrapper over this handler, an
-      // eight-peer roll would hold the daemon's single-threaded request loop
-      // for sixteen minutes and fail eight times at the end of it.
+      // The design had step c) run the primitive's own courtesy on a short
+      // window, so that `stoppedCleanly` stayed a measurement taken by
+      // `peer_stop` rather than a claim made here. Measured on a live peer
+      // 2026-08-08: the ready-ack took 30 s (a full agent turn — read the
+      // inbox, park the work, write the file), and the stop-request that
+      // followed asked the SAME peer the SAME question, needing another whole
+      // turn. It timed out, and the restart failed on a peer that had done
+      // everything right.
       //
-      // `skipCourtesy` rather than `force: true`, deliberately. Forcing would
-      // also halve the driver's post-kill verify budget, and that verify is
-      // what catches a supervised process respawning behind us — a change
-      // nobody asked for, bought as a side effect of pinning. `args.force`
-      // passes through untouched, so this call behaves exactly as it did.
+      // The estimate was not merely low. The second ask is the wrong SHAPE:
+      // what `stoppedCleanly` is supposed to record is "the peer had a chance
+      // to save its work before it died", and the ready-ack IS that
+      // measurement. A stop-ack would only add "…and it was still ready
+      // fifteen seconds later", for the price of doubling the restart.
       //
-      // A gentle RESTART — ask, wait, relaunch — is the owner's protocol a)–f)
-      // and lands in a later phase, where the request is actually sent. Until
-      // then a restart is a hard stop followed by a spawn, and it says so.
-      skipCourtesy: true,
+      // So the measurement moves rather than disappearing: `skipCourtesy`
+      // because the asking already happened HERE, and `stoppedCleanly: true`
+      // because this handler measured it — the ack file existed, was fresh, and
+      // matched the thread. That is not a caller's opinion.
+      ...ready.kind === "acked" ? { skipCourtesy: true, stoppedCleanly: true } : {},
+      // Keep the record through the stop. The restart mark lives on it, and the
+      // mark's whole job is to survive the window where the peer is neither the
+      // old process nor the new one.
+      keepInState: true,
       force: args.force
     },
     requestedBy: req.requestedBy
   };
   const stopResult = await handlePeerStop(stopArgs, ctx);
   if (stopResult.outcome === "error") {
-    return errResult(
-      req.id,
-      req.tool,
-      "restart_stop_failed",
-      stopResult.error?.message ?? "peer_stop failed",
-      { stopResult }
-    );
-  }
-  const cwd = record.desired.cwd ?? process.cwd();
-  const command = record.desired.command ?? "claude";
-  const commandArgs = record.desired.spawnArgs ?? [];
-  const missing = [
-    record.desired.cwd ? null : "cwd",
-    record.desired.command ? null : "command"
-  ].filter((f) => f !== null);
-  if (missing.length > 0) {
+    await clearRestartMark(ctx, record.sessionId);
     await writeEvent({
-      event: "peer_restart_launch_params_unknown",
+      event: "peer_restart_stop_failed",
       level: "warn",
       by: { sessionId: req.requestedBy.sessionId, name: req.requestedBy.name },
       requestId: req.id,
       details: {
         sessionId: record.sessionId,
-        missing,
-        fallbackCwd: cwd,
-        fallbackCommand: command,
-        hint: "Peer record predates launch-parameter persistence (v0.10.3). The restart uses the daemon's cwd and a bare `claude`, which fails on installs where claude is not on the daemon's PATH (nvm). Re-spawn the peer to record its real parameters."
+        code: stopResult.error?.code ?? null,
+        readyAcked: ready.kind === "acked"
       }
     });
+    return errResult(
+      req.id,
+      req.tool,
+      "restart_stop_failed",
+      `${stopResult.error?.message ?? "peer_stop failed"} \u2014 the restart stopped here, and the peer is still running. Retry, or use force:true.`,
+      { stopResult, sessionId: record.sessionId, stillRunning: true }
+    );
   }
+  const stoppedCleanly = stopResult.data?.stoppedCleanly ?? null;
   const spawnArgs = {
     schemaVersion: req.schemaVersion,
     id: `${req.id}:spawn`,
@@ -6923,7 +7345,12 @@ async function handlePeerRestart(req, ctx) {
       // is orphaned: the pid matches, so `team_status` still reads "live".
       // Found by plt-designer in the v0.10.6 pilot; the restart reported `ok`
       // over it, which is this release's own defect wearing a new hat.
-      resume: isResumableSessionId(record.sessionId),
+      // The DECISION from step a), not a re-derivation of it. Handing
+      // `record.sessionId` to `--resume` is the defect this release fixes: for a
+      // handle-keyed peer that is a string no transcript is named after, so
+      // `resume` came out false and the peer came back empty under its own name.
+      resume: resumeSessionId !== null,
+      ...resumeSessionId !== null ? { resumeSessionId } : {},
       // Intent first, measurement only as a fallback. A peer whose model was
       // switched at runtime has no `desired.model` recording that choice, and
       // relaunching it on the older declared model would be a silent downgrade
@@ -6936,6 +7363,7 @@ async function handlePeerRestart(req, ctx) {
     },
     requestedBy: req.requestedBy
   };
+  await markRestart(ctx, record.sessionId, "spawning", restartMarkFields);
   const spawnResult = await handlePeerSpawn(spawnArgs, ctx);
   if (spawnResult.outcome === "error") {
     await applyStateChange(ctx.state, (draft) => {
@@ -6948,6 +7376,10 @@ async function handlePeerRestart(req, ctx) {
           ...record.observed,
           status: "unknown",
           pid: null,
+          // The restart is over — it failed. Leaving the mark would make the
+          // next call refuse as `restart_in_progress` and `team_reconcile`
+          // report an abandoned restart, for something that finished and said so.
+          restartRequest: null,
           lastUpdatedAt: (/* @__PURE__ */ new Date()).toISOString()
         }
       };
@@ -6980,15 +7412,23 @@ async function handlePeerRestart(req, ctx) {
       Object.assign(rec.observed, provenanceObserved);
     });
   }
-  const newPid = spawnResult.data?.pid ?? null;
-  const identity = await verifyRestartedIdentity(record.sessionId, newPid);
-  const liveness = await confirmStillRunning(newPid, identity, record.sessionId, {
-    ...ctx.restartSettleMs !== void 0 ? { settleMs: ctx.restartSettleMs } : {},
-    ...ctx.procRoot ? { procRoot: ctx.procRoot } : {},
-    command
-  });
+  await markRestart(ctx, record.sessionId, "verifying", restartMarkFields);
+  const spawnData = spawnResult.data;
+  const newPid = spawnData?.pid ?? null;
+  const identity = identityVerdict(resumeSessionId, spawnData?.measuredSessionId ?? null);
+  const liveness = await confirmStillRunning(
+    newPid,
+    identity,
+    resumeSessionId ?? record.sessionId,
+    {
+      ...ctx.restartSettleMs !== void 0 ? { settleMs: ctx.restartSettleMs } : {},
+      ...ctx.procRoot ? { procRoot: ctx.procRoot } : {},
+      command
+    }
+  );
   if (!liveness.ok) {
     await markNotRunning(ctx, record.sessionId);
+    await clearRestartMark(ctx, record.sessionId);
     await writeEvent({
       event: "peer_restart_died_after_spawn",
       level: "error",
@@ -7006,13 +7446,15 @@ async function handlePeerRestart(req, ctx) {
   }
   if (identity.mismatch) {
     await markNotRunning(ctx, record.sessionId);
+    await clearRestartMark(ctx, record.sessionId);
     await writeEvent({
       event: "peer_restart_identity_mismatch",
       level: "error",
       by: { sessionId: req.requestedBy.sessionId, name: req.requestedBy.name },
       requestId: req.id,
       details: {
-        expected: record.sessionId,
+        expected: resumeSessionId,
+        handle: record.sessionId,
         actual: identity.actual,
         pid: newPid,
         hint: "The peer is running but under a different session id \u2014 the record now points at an identity that no longer exists. Adopt the new id or stop the peer; do not trust lifecycle calls on this record."
@@ -7022,18 +7464,69 @@ async function handlePeerRestart(req, ctx) {
       req.id,
       req.tool,
       "restart_identity_mismatch",
-      `Peer restarted as '${identity.actual ?? "unknown"}', not '${record.sessionId}' \u2014 the record is now orphaned.`,
-      { expected: record.sessionId, actual: identity.actual, pid: newPid }
+      `Peer restarted as '${identity.actual ?? "unknown"}', not '${resumeSessionId}' \u2014 the resume did not take and the record now names an identity that is not running.`,
+      { expected: resumeSessionId, handle: record.sessionId, actual: identity.actual, pid: newPid }
     );
   }
+  await clearRestartMark(ctx, record.sessionId);
   await writeEvent({
     event: "peer_restarted",
     by: { sessionId: req.requestedBy.sessionId, name: req.requestedBy.name },
     requestId: req.id,
-    details: { sessionId: record.sessionId, reason: args.reason ?? null, force: args.force }
+    details: {
+      sessionId: record.sessionId,
+      reason: args.reason ?? null,
+      force: args.force,
+      mode: args.force ? "forced" : ready.kind === "acked" ? "graceful" : "no-host",
+      resumedSessionId: resumeSessionId,
+      resumeSource: resumeDecision.kind === "resume" ? resumeDecision.source : null,
+      readyWaitedMs: ready.kind === "acked" ? ready.waitedMs : null,
+      stoppedCleanly,
+      measuredSessionId: identity.actual,
+      envSource: record.observed.spawnEnv ? "stored" : "daemon",
+      envHarvestedAt: record.observed.harvestedAt ?? null
+    }
+  });
+  const wake = await wakePeer(req, ctx, {
+    sessionId: record.sessionId,
+    sessionKey: spawnData?.sessionKey ?? sessionKey,
+    reason: args.reason ?? "peer_restart",
+    // WAS THE PEER ASKED? — not "did the stop report itself clean".
+    //
+    // Found by the acceptance run, in this release's own code. A forced stop
+    // skips the courtesy, so `peer_stop` has nothing to measure and returns
+    // `stoppedCleanly: null` — and the wake only warns on `false`. The forced
+    // restart therefore produced the most reassuring possible message for the
+    // peer least entitled to it: no warning at all, after being killed
+    // mid-sentence.
+    //
+    // This is not the caller overriding a measurement. Whether we asked is a
+    // fact this handler owns, and from the peer's side an unasked stop IS an
+    // unclean one: whatever it had not written down at that moment is gone.
+    stoppedCleanly: ready.kind === "acked" ? stoppedCleanly : false,
+    event: "restarted",
+    wakePrompt: RESTART_WAKE_PROMPT,
+    ...ctx.wakeDelayMs !== void 0 ? { wakeDelayMs: ctx.wakeDelayMs } : {}
   });
   return okResult(req.id, req.tool, {
     sessionId: record.sessionId,
+    // TOP LEVEL, all of it. A caller must not have to dig through two nested
+    // results to learn whether the peer kept its context, whether it was asked
+    // first, or whether it was told what happened.
+    restarted: true,
+    mode: args.force ? "forced" : ready.kind === "acked" ? "graceful" : "no-host",
+    // Did the context survive? This is the question the whole release is about.
+    resumedSessionId: resumeSessionId,
+    resumeSource: resumeDecision.kind === "resume" ? resumeDecision.source : null,
+    ...resumeDecision.kind === "fresh" ? { resumeSkipped: resumeDecision.why } : {},
+    // MEASURED waits, never budgets.
+    readyWaitedMs: ready.kind === "acked" ? ready.waitedMs : null,
+    stoppedCleanly,
+    measuredSessionId: identity.actual,
+    // Step g). `false` means the peer is running and does not know why it
+    // restarted — not fatal, and not something to leave unsaid either.
+    reported: wake.injected,
+    ...wake.injected ? {} : { reportNote: wake.error ?? "the wake was not injected" },
     stop: stopResult.data,
     spawn: spawnResult.data
   });
@@ -7371,131 +7864,6 @@ async function handleTeamAdopt(req, ctx) {
 // src/handlers/team-layout.ts
 var import_promises14 = require("node:fs/promises");
 var import_node_path12 = require("node:path");
-
-// src/handlers/wake.ts
-var import_node_crypto5 = require("node:crypto");
-var DEFAULT_WAKE_DELAY_MS = 8e3;
-var DEFAULT_WAKE_PROMPT = "[daemon] Wake \u2014 you were resumed from a stopped state. Re-onboard from your anchor, read your inbox (peer_inbox_read) and report to whoever woke you.";
-function generateMsgId2() {
-  const ms = Date.now().toString(36);
-  const rand = (0, import_node_crypto5.randomBytes)(4).toString("hex");
-  return `${ms}-${rand}`;
-}
-async function writeWakeMsg(opts, threadId) {
-  const msgId = generateMsgId2();
-  const dirty = opts.stoppedCleanly === false;
-  const lines = [
-    "You were resumed from a stopped state. Re-onboard from your anchor before",
-    "doing anything else, then report to whoever woke you.",
-    "",
-    `Reason: ${opts.reason}`
-  ];
-  if (dirty) {
-    lines.push(
-      "",
-      "\u26A0 Your previous stop was FORCED \u2014 you did not complete the stop-ack cycle,",
-      "so your anchor and memory may be incomplete or mid-write. Verify them",
-      "before trusting them."
-    );
-  } else if (opts.stoppedCleanly === true) {
-    lines.push("", "Your previous stop completed its ack cycle, so your anchor should be whole.");
-  }
-  await writeEnvelope({
-    id: msgId,
-    from: syntheticSenderId("control-plane-daemon"),
-    fromName: "control-plane-daemon",
-    to: opts.sessionId,
-    kind: "ask",
-    sentAt: (/* @__PURE__ */ new Date()).toISOString(),
-    threadId,
-    content: lines.join("\n")
-  });
-  return msgId;
-}
-async function wakePeer(req, ctx, opts) {
-  const threadId = `wake:${opts.sessionId}:${Date.now().toString(36)}`;
-  let wakeMsgId = null;
-  try {
-    wakeMsgId = await writeWakeMsg(opts, threadId);
-  } catch (e) {
-    const err = e instanceof Error ? e.message : String(e);
-    await writeEvent({
-      event: "peer_wake_failed",
-      level: "warn",
-      by: { sessionId: req.requestedBy.sessionId, name: req.requestedBy.name },
-      requestId: req.id,
-      details: { sessionId: opts.sessionId, stage: "inbox_write", err }
-    });
-    return { sessionId: opts.sessionId, wakeMsgId: null, injected: false, error: err };
-  }
-  const sendKeys = ctx.hostDriver.sendKeys?.bind(ctx.hostDriver);
-  if (!sendKeys) {
-    await writeEvent({
-      event: "peer_wake_not_injected",
-      level: "warn",
-      by: { sessionId: req.requestedBy.sessionId, name: req.requestedBy.name },
-      requestId: req.id,
-      details: {
-        sessionId: opts.sessionId,
-        wakeMsgId,
-        hostDriver: ctx.hostDriver.name,
-        note: "driver has no send-keys \u2014 peer stays silent until a turn is triggered by hand"
-      }
-    });
-    return { sessionId: opts.sessionId, wakeMsgId, injected: false };
-  }
-  const delay = opts.wakeDelayMs ?? DEFAULT_WAKE_DELAY_MS;
-  if (delay > 0) await new Promise((r) => setTimeout(r, delay));
-  const prompt = opts.wakePrompt ?? DEFAULT_WAKE_PROMPT;
-  await writeEvent({
-    event: "peer_wake_inject",
-    by: { sessionId: req.requestedBy.sessionId, name: req.requestedBy.name },
-    requestId: req.id,
-    details: {
-      sessionId: opts.sessionId,
-      sessionKey: opts.sessionKey,
-      threadId,
-      wakeMsgId,
-      injectedKeys: prompt,
-      delayMs: delay
-    }
-  });
-  try {
-    await sendKeys(opts.sessionKey, prompt);
-  } catch (e) {
-    const err = e instanceof Error ? e.message : String(e);
-    await writeEvent({
-      event: "peer_wake_failed",
-      level: "warn",
-      by: { sessionId: req.requestedBy.sessionId, name: req.requestedBy.name },
-      requestId: req.id,
-      details: { sessionId: opts.sessionId, sessionKey: opts.sessionKey, stage: "send_keys", err }
-    });
-    return { sessionId: opts.sessionId, wakeMsgId, injected: false, error: err };
-  }
-  await writeEvent({
-    event: "peer_woken",
-    by: { sessionId: req.requestedBy.sessionId, name: req.requestedBy.name },
-    requestId: req.id,
-    details: {
-      sessionId: opts.sessionId,
-      sessionKey: opts.sessionKey,
-      threadId,
-      wakeMsgId,
-      reason: opts.reason,
-      stoppedCleanly: opts.stoppedCleanly ?? null
-    }
-  });
-  await publishLifecycleEvent({
-    event: "peer_woken",
-    sessionId: opts.sessionId,
-    sessionKey: opts.sessionKey,
-    details: { reason: opts.reason, stoppedCleanly: opts.stoppedCleanly ?? null }
-  });
-  return { sessionId: opts.sessionId, wakeMsgId, injected: true };
-}
-
-// src/handlers/team-layout.ts
 var PeerSpecSchema = external_exports.object({
   sessionId: external_exports.string().min(1),
   displayName: external_exports.string().min(1),
@@ -7873,7 +8241,13 @@ async function handleTeamReconcile(req, ctx) {
         ...base,
         kind: "dead",
         actualPid: null,
-        detail: rec.observed.pid === null ? `record is '${rec.observed.status}' with no pid at all` : `record is '${rec.observed.status}' but pid ${rec.observed.pid} is not running${corpse ? ` \u2014 its pane is still standing and holds exit status ${corpse.exitStatus ?? "unknown"}; read it with \`tmux capture-pane -p -S -2000 -t ${corpse.target}\` before removing it` : " and its pane is gone"}`
+        detail: rec.observed.pid === null ? `record is '${rec.observed.status}' with no pid at all` : `record is '${rec.observed.status}' but pid ${rec.observed.pid} is not running${corpse ? ` \u2014 its pane is still standing and holds exit status ${corpse.exitStatus ?? "unknown"}; read it with \`tmux capture-pane -p -S -2000 -t ${corpse.target}\` before removing it` : " and its pane is gone"}${// A dead peer with a restart mark on it is not simply dead: a
+        // restart was in flight when it stopped being observable, and
+        // the obvious remedy for "dead" — relaunch it — is the
+        // dangerous one if that restart was inside its spawn. Reported
+        // here rather than as its own entry, because `dead` is the
+        // measured fact and this is what it means.
+        rec.observed.restartRequest ? `. \u{1F534} A RESTART WAS UNDERWAY (phase '${rec.observed.restartRequest.phase}', requested at ${rec.observed.restartRequest.requestedAt}) \u2014 check the host for a process this record does not name before relaunching anything` : ""}`
       });
       continue;
     }
@@ -7886,6 +8260,24 @@ async function handleTeamReconcile(req, ctx) {
         kind: "stop_pending",
         actualPid: rec.observed.pid,
         detail: `a stop was requested at ${pending.requestedAt}${ageMs === null ? "" : ` (${Math.round(ageMs / 1e3)}s ago)`} and never resolved \u2014 the peer is STILL RUNNING. Call peer_stop again to keep waiting on the same request (a late ack still counts), peer_stop with force:true to end it now, or leave it be.`
+      });
+      continue;
+    }
+    const restarting = rec.observed.restartRequest;
+    if (restarting) {
+      const askedAt = Date.parse(restarting.requestedAt);
+      const ageMs = Number.isNaN(askedAt) ? null : Date.now() - askedAt;
+      const remedy = {
+        "ready-ack": "the peer was asked to get ready and is UNTOUCHED \u2014 call peer_restart again to resume the same request, or leave it be",
+        stopping: "the stop may or may not have completed \u2014 run team_reconcile against the host first, then peer_restart",
+        spawning: "\u{1F534} a process may exist that no record names \u2014 CHECK THE HOST before relaunching anything, or you risk a second peer behind this handle",
+        verifying: "a process is running and its identity was never confirmed \u2014 measure it (team_reconcile) before trusting lifecycle calls on this record"
+      };
+      drift.push({
+        ...base,
+        kind: "restart_pending",
+        actualPid: rec.observed.pid,
+        detail: `a restart was requested at ${restarting.requestedAt}${ageMs === null ? "" : ` (${Math.round(ageMs / 1e3)}s ago)`} by ${restarting.requestId} and never resolved \u2014 abandoned in the '${restarting.phase}' phase. ${remedy[restarting.phase] ?? "check the host before acting"}.`
       });
       continue;
     }
@@ -8236,6 +8628,20 @@ var TeamRestartArgsSchema = external_exports.object({
    * simultaneous one.
    */
   settleMs: external_exports.number().int().min(0).max(12e4).default(DEFAULT_SETTLE_MS),
+  /**
+   * Restart every member without asking (v0.11.18).
+   *
+   * A pass-through to the primitive, not a second mechanism: `peer_restart`
+   * decides what force means, and this only carries the word. Same rule
+   * applies to every member — force skips WAITING (the ready-ack, the stop
+   * courtesy) and never EVIDENCE (the pane archive, the identity check after
+   * the relaunch, and the message telling each peer its anchor may be
+   * half-written).
+   *
+   * `settleMs` is NOT skipped. The gap between peers is not a courtesy — it
+   * is what stops a rolling restart from becoming a simultaneous one.
+   */
+  force: external_exports.boolean().default(false),
   /** Keep going after a peer fails to restart. Off, deliberately. */
   continueOnError: external_exports.boolean().default(false),
   dryRun: external_exports.boolean().default(true)
@@ -8330,6 +8736,9 @@ async function handleTeamRestart(req, ctx) {
     dryRun: args.dryRun,
     reason: args.reason ?? null,
     settleMs: args.settleMs,
+    // In the PLAN, because a dry run whose preview omits `force` would show an
+    // operator a gentle roll and then perform a forced one.
+    force: args.force,
     continueOnError: args.continueOnError,
     order: ordered.map((r) => ({
       sessionId: r.sessionId,
@@ -8372,7 +8781,7 @@ async function handleTeamRestart(req, ctx) {
       id: `${req.id}:restart:${i}`,
       ts: req.ts,
       tool: "peer_restart",
-      args: { peer: rec.sessionId, reason: args.reason ?? "team_restart" },
+      args: { peer: rec.sessionId, reason: args.reason ?? "team_restart", force: args.force },
       requestedBy: req.requestedBy
     };
     const res = await handlePeerRestart(sub, ctx);
@@ -8595,7 +9004,8 @@ async function stopSinglePeer(req, ctx, peer, args, threadId, anchorTimeoutMs, a
     return { sessionId: peer.sessionId, displayName: peer.displayName, outcome: "dead" };
   }
   await (0, import_promises15.mkdir)(stopAcks.dir(), { recursive: true });
-  const swept = await stopAcks.sweepStale(peer.sessionId, "stale");
+  const bridgeId = bridgeIdOf(record);
+  const swept = await stopAcks.sweepStale(bridgeId, "stale");
   if (swept) {
     await writeEvent({
       event: "peer_stop_stale_ack_swept",
@@ -8608,7 +9018,7 @@ async function stopSinglePeer(req, ctx, peer, args, threadId, anchorTimeoutMs, a
   const requestedAtMs = Date.now();
   let stopReqMsgId;
   try {
-    stopReqMsgId = await requestStop(peer.sessionId, threadId, args.force ? "force:true" : null);
+    stopReqMsgId = await requestStop(bridgeId, threadId, args.force ? "force:true" : null);
   } catch (e) {
     return {
       sessionId: peer.sessionId,
@@ -8631,7 +9041,7 @@ async function stopSinglePeer(req, ctx, peer, args, threadId, anchorTimeoutMs, a
     }
   });
   const deadline = Date.now() + anchorTimeoutMs;
-  const verdict = await stopAcks.poll(peer.sessionId, deadline, ackPollMs, requestedAtMs, threadId);
+  const verdict = await stopAcks.poll(bridgeId, deadline, ackPollMs, requestedAtMs, threadId);
   const acked = verdict.accepted;
   if (!acked && !args.force) {
     await writeEvent({
@@ -8655,7 +9065,7 @@ async function stopSinglePeer(req, ctx, peer, args, threadId, anchorTimeoutMs, a
     return { sessionId: peer.sessionId, displayName: peer.displayName, outcome: "skipped" };
   }
   if (acked) {
-    await stopAcks.consume(peer.sessionId);
+    await stopAcks.consume(bridgeId);
   }
   const stopReq = {
     schemaVersion: req.schemaVersion,
@@ -9814,12 +10224,12 @@ async function runDaemon(opts) {
 // src/install.ts
 var import_node_child_process2 = require("node:child_process");
 var import_promises18 = require("node:fs/promises");
-var import_node_os5 = require("node:os");
+var import_node_os4 = require("node:os");
 var import_node_path16 = require("node:path");
 var log11 = makeLogger("daemon.install");
 var UNIT_NAME = "claude-bridge-daemon.service";
 function systemdUserDir() {
-  return (0, import_node_path16.join)((0, import_node_os5.homedir)(), ".config", "systemd", "user");
+  return (0, import_node_path16.join)((0, import_node_os4.homedir)(), ".config", "systemd", "user");
 }
 function unitPath() {
   return (0, import_node_path16.join)(systemdUserDir(), UNIT_NAME);
@@ -9856,7 +10266,7 @@ function findNodeBin() {
   return process.execPath;
 }
 function deployedDaemonPath() {
-  return (0, import_node_path16.join)((0, import_node_os5.homedir)(), ".claude-bridge", "bin", "claude-bridge-daemon.cjs");
+  return (0, import_node_path16.join)((0, import_node_os4.homedir)(), ".claude-bridge", "bin", "claude-bridge-daemon.cjs");
 }
 function deployMetaPath() {
   return (0, import_node_path16.join)((0, import_node_path16.dirname)(deployedDaemonPath()), "deployed-from.json");

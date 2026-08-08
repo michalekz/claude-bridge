@@ -30,6 +30,36 @@ import { type ProcessInspector, defaultProcessInspector } from "../hosts/process
  * HERE, by the same code and from the same file adoption already uses.
  */
 
+/**
+ * The address the BRIDGE knows this peer by (v0.11.18, found by acceptance).
+ *
+ * The daemon keys its registry by handle. The bridge — inboxes, acks, replies —
+ * keys everything by the peer's own session id, because that is the only name a
+ * peer knows itself by. For 24 of the 25 records on the fleet those are the same
+ * string, so nothing ever noticed.
+ *
+ * For a handle-keyed peer they are not, and the consequence is silent: the
+ * daemon writes its stop / compact / restart request into
+ * `inbox/<handle>/pending/`, a directory NOBODY DRAINS, and then waits out the
+ * full window for an ack from a peer that was never asked. Measured on
+ * `tst-r18`, 2026-08-08: request in `inbox/tst-r18/pending/` (1 file), peer
+ * draining `inbox/bbcaed51-…/pending/` (0 files), peer reporting "my inbox is
+ * empty" while the daemon reported a timeout.
+ *
+ * The same defect family as N4 one storey up, and the same shape as the three
+ * hand-built envelopes: written, addressed wrong, dropped without a word. It
+ * would have hit `peer_compact` and `peer_stop` too — this is not new to the
+ * restart, it is newly REACHABLE, because `team_layout` names peers by handle.
+ *
+ * So: the key addresses the RECORD, this addresses the PEER. Never mix them.
+ */
+export function bridgeIdOf(record: {
+  sessionId: string;
+  observed: { sessionId?: string | null };
+}): string {
+  return record.observed.sessionId ?? record.sessionId;
+}
+
 /** How the peer's own MCP server learns its identity — so it is authoritative. */
 export interface IdentityMeasurement {
   sessionId: string;

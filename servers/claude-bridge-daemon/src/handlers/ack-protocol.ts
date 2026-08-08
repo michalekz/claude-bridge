@@ -259,6 +259,21 @@ export async function requestFromPeer(
   return msgId;
 }
 
-/** The daemon's two ack conversations. Add a third here, not a copy elsewhere. */
+/** The daemon's ack conversations. Add the next one here, not a copy elsewhere. */
 export const compactAcks = createAckChannel("compact-ack");
 export const stopAcks = createAckChannel("stop-ack");
+export const restartAcks = createAckChannel("restart-ack");
+
+/**
+ * Every channel, for the operations that must not miss one.
+ *
+ * The startup sweep swept only `compact-ack` from v0.10.0 to v0.11.17: two
+ * channels were added and neither reached that call site. A hand-written list
+ * at the call site would have the same fault, so the list lives with the
+ * channels — a fourth is swept because it is declared here, not because
+ * somebody remembered to go and add it.
+ *
+ * (The fifth instance in three days of "a list written somewhere else goes
+ * stale in silence". The fix is always the same: derive it.)
+ */
+export const ALL_ACK_CHANNELS: readonly AckChannel[] = [compactAcks, stopAcks, restartAcks];

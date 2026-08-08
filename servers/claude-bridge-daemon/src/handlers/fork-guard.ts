@@ -31,7 +31,17 @@ export async function forkGuard(
   opts: ForkGuardOptions,
 ): Promise<ForkGuardHit | null> {
   const record = state.peers[opts.sessionId];
-  if (record && (record.observed.status === "live" || record.observed.status === "starting")) {
+  // `restarting` blocks too (v0.11.18): a peer between "get ready" and its stop
+  // is still running, and a spawn onto that handle would be a fork with the
+  // paperwork in order. `peer_restart` does not block itself on this — by the
+  // time it spawns, its own stop has moved the record to `stopped`, which is the
+  // honest reading: nothing is running.
+  if (
+    record &&
+    (record.observed.status === "live" ||
+      record.observed.status === "starting" ||
+      record.observed.status === "restarting")
+  ) {
     return {
       reason: "state_live",
       details: {

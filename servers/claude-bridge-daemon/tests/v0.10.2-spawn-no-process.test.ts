@@ -65,6 +65,17 @@ async function harness() {
   };
 }
 
+/*
+ * `force: true` on every peer_restart below (added v0.11.18).
+ *
+ * These tests are about the RELAUNCH — which directory, which command, which
+ * arguments. From v0.11.18 a plain restart first asks the peer to get ready and
+ * waits up to two minutes for an ack no `/bin/sh` peer will ever write, so
+ * without this they would each spend the whole window proving nothing. `force`
+ * reproduces the pre-v0.11.18 path exactly and leaves what they assert
+ * untouched: force skips the asking, never the relaunch.
+ */
+
 describe("a spawn that starts nothing must not report success", () => {
   beforeEach(() => {
     homeHolder.current = `/tmp/cbd-nospawn-${process.hrtime.bigint()}`;
@@ -142,7 +153,10 @@ describe("a spawn that starts nothing must not report success", () => {
       expect(ctx.state.peers["moving-0804"]?.desired.cwd).toBe(peerCwd);
 
       process.env["CLAUDE_BRIDGE_TEST_COMMAND"] = "/bin/sh";
-      await dispatch(makeRequest("peer_restart", { peer: "moving-0804" }, "req-restart"), ctx);
+      await dispatch(
+        makeRequest("peer_restart", { peer: "moving-0804", force: true }, "req-restart"),
+        ctx,
+      );
 
       // Before the fix the second spawn used process.cwd() — the daemon's
       // directory. Whether the relaunch then succeeds is beside the point;
@@ -235,7 +249,7 @@ describe("a restart relaunches the peer the way it was launched", () => {
     expect(ctx.state.peers["nvm-shaped-0804"]?.desired.spawnArgs).toEqual(["-c", "sleep 30"]);
 
     const res = await dispatch(
-      makeRequest("peer_restart", { peer: "nvm-shaped-0804" }, "req-relaunch"),
+      makeRequest("peer_restart", { peer: "nvm-shaped-0804", force: true }, "req-relaunch"),
       ctx,
     );
 
@@ -275,7 +289,7 @@ describe("a restart relaunches the peer the way it was launched", () => {
       }),
       ctx,
     );
-    await dispatch(makeRequest("peer_restart", { peer: UUID }, "req-args"), ctx);
+    await dispatch(makeRequest("peer_restart", { peer: UUID, force: true }, "req-args"), ctx);
 
     // The record stores the CALLER's list; peer_spawn appends --resume itself.
     // Storing the computed list instead would append it again on every restart.
@@ -305,7 +319,10 @@ describe("a restart relaunches the peer the way it was launched", () => {
       }),
       ctx,
     );
-    await dispatch(makeRequest("peer_restart", { peer: "obetni-w3" }, "req-wedge"), ctx);
+    await dispatch(
+      makeRequest("peer_restart", { peer: "obetni-w3", force: true }, "req-wedge"),
+      ctx,
+    );
 
     // Passing it would hand Claude Code an id no transcript answers to, which
     // opens the picker instead of failing — a wedged peer with a fresh session
@@ -339,7 +356,7 @@ describe("a restart relaunches the peer the way it was launched", () => {
     process.env["CLAUDE_BRIDGE_TEST_COMMAND"] = "/bin/sh";
     try {
       await dispatch(
-        makeRequest("peer_restart", { peer: "legacy-record-0804" }, "req-legacy"),
+        makeRequest("peer_restart", { peer: "legacy-record-0804", force: true }, "req-legacy"),
         ctx,
       );
       const raw = await readFile(

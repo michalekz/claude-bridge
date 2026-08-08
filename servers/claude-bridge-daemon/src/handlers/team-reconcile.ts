@@ -79,7 +79,19 @@ export type DriftKind =
    * Reported, never corrected. Finishing the stop is `peer_stop` (retry, or
    * `force`), and deciding to leave the peer alone is a person's call.
    */
-  | "stop_pending";
+  | "stop_pending"
+  /**
+   * A RESTART was asked for and never resolved (v0.11.18).
+   *
+   * `stop_pending` one storey up, and it carries the PHASE because the phases
+   * are not equally harmless. Abandoned waiting for the ready-ack, the peer was
+   * never touched. Abandoned during the spawn, a process may exist that no
+   * record names — and the natural remedy for the first case, "just run it
+   * again", is how the second becomes a fork.
+   *
+   * Reported, never corrected, for the same reason as `stop_pending`.
+   */
+  | "restart_pending";
 
 export interface DriftEntry {
   kind: DriftKind;
@@ -228,6 +240,16 @@ export async function handleTeamReconcile(
                 corpse
                   ? ` — its pane is still standing and holds exit status ${corpse.exitStatus ?? "unknown"}; read it with \`tmux capture-pane -p -S -2000 -t ${corpse.target}\` before removing it`
                   : " and its pane is gone"
+              }${
+                // A dead peer with a restart mark on it is not simply dead: a
+                // restart was in flight when it stopped being observable, and
+                // the obvious remedy for "dead" — relaunch it — is the
+                // dangerous one if that restart was inside its spawn. Reported
+                // here rather than as its own entry, because `dead` is the
+                // measured fact and this is what it means.
+                rec.observed.restartRequest
+                  ? `. 🔴 A RESTART WAS UNDERWAY (phase '${rec.observed.restartRequest.phase}', requested at ${rec.observed.restartRequest.requestedAt}) — check the host for a process this record does not name before relaunching anything`
+                  : ""
               }`,
       });
       continue;
@@ -243,6 +265,39 @@ export async function handleTeamReconcile(
         kind: "stop_pending",
         actualPid: rec.observed.pid,
         detail: `a stop was requested at ${pending.requestedAt}${ageMs === null ? "" : ` (${Math.round(ageMs / 1000)}s ago)`} and never resolved — the peer is STILL RUNNING. Call peer_stop again to keep waiting on the same request (a late ack still counts), peer_stop with force:true to end it now, or leave it be.`,
+      });
+      continue;
+    }
+
+    // A RESTART that nobody came back for (v0.11.18).
+    //
+    // Symmetric to `stop_pending`, with one thing added: the phase. A restart is
+    // four operations and abandoning it means something different in each, so a
+    // single "a restart was abandoned" would put an untouched peer and a
+    // possible orphan process on the same line — and the remedy for the first is
+    // dangerous for the second. Relaunching over an orphan is a fork.
+    //
+    // Reported, never corrected. Finishing a restart is `peer_restart`'s job;
+    // deciding not to is a person's.
+    const restarting = rec.observed.restartRequest;
+    if (restarting) {
+      const askedAt = Date.parse(restarting.requestedAt);
+      const ageMs = Number.isNaN(askedAt) ? null : Date.now() - askedAt;
+      const remedy: Record<string, string> = {
+        "ready-ack":
+          "the peer was asked to get ready and is UNTOUCHED — call peer_restart again to resume the same request, or leave it be",
+        stopping:
+          "the stop may or may not have completed — run team_reconcile against the host first, then peer_restart",
+        spawning:
+          "🔴 a process may exist that no record names — CHECK THE HOST before relaunching anything, or you risk a second peer behind this handle",
+        verifying:
+          "a process is running and its identity was never confirmed — measure it (team_reconcile) before trusting lifecycle calls on this record",
+      };
+      drift.push({
+        ...base,
+        kind: "restart_pending",
+        actualPid: rec.observed.pid,
+        detail: `a restart was requested at ${restarting.requestedAt}${ageMs === null ? "" : ` (${Math.round(ageMs / 1000)}s ago)`} by ${restarting.requestId} and never resolved — abandoned in the '${restarting.phase}' phase. ${remedy[restarting.phase] ?? "check the host before acting"}.`,
       });
       continue;
     }

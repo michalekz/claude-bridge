@@ -32,12 +32,30 @@ import type { HandlerContext } from "./context.ts";
  * in a shell that is about to be replaced, or in a CC that is not accepting
  * input, and are silently lost. This is the same class of failure as the
  * team-stop.sh `/exit` that never arrived on 2026-08-02.
+ *
+ * 🔴 AND THIS IS WHY `force` DOES NOT SKIP IT (v0.11.18). The ratified force
+ * inventory lists this delay as something force may skip, and that reading does
+ * not survive contact with what the delay is for. It is not a courtesy wait —
+ * it is the condition under which the injection LANDS. Skipping it does not buy
+ * time, it buys a message that was written, logged as injected, and never seen.
+ *
+ * Force skips waiting, never evidence. A wake that arrives nowhere is the
+ * absence of evidence, and it matters most in exactly the case force is used:
+ * after a forced restart, this message is what tells the peer its anchor may be
+ * half-written.
  */
 export const DEFAULT_WAKE_DELAY_MS = 8_000;
 
 /** Default text injected into the pane. Deliberately short — it is typed. */
 export const DEFAULT_WAKE_PROMPT =
   "[daemon] Wake — you were resumed from a stopped state. Re-onboard from your anchor, read your inbox (peer_inbox_read) and report to whoever woke you.";
+
+/**
+ * The injected text after a restart. The inbox message carries the detail —
+ * this only has to make the peer take a turn and know which detail to look for.
+ */
+export const RESTART_WAKE_PROMPT =
+  "[daemon] Restart complete — same session, new process. Re-onboard from your anchor, read your inbox (peer_inbox_read) and report to whoever restarted you.";
 
 export interface WakePeerOptions {
   sessionId: string;
@@ -50,6 +68,18 @@ export interface WakePeerOptions {
    * message says so explicitly instead of letting it resume blind.
    */
   stoppedCleanly?: boolean | null;
+  /**
+   * What happened to this peer, so the message can say it (v0.11.18, step g).
+   *
+   * `"resumed"` — it was stopped, and later started again by something else.
+   * `"restarted"` — one operation took it down and brought it back, and it
+   * knows that because it was ASKED first (or, under force, was not).
+   *
+   * The distinction is not decoration. A peer that reads "you were resumed from
+   * a stopped state" after a restart it acked has to work out what happened; a
+   * peer told plainly that its restart is finished can just carry on.
+   */
+  event?: "resumed" | "restarted";
   /** Override the injected text. */
   wakePrompt?: string;
   /** Override the post-spawn settle delay. `0` disables the wait (tests). */
@@ -93,21 +123,41 @@ function generateMsgId(): string {
 async function writeWakeMsg(opts: WakePeerOptions, threadId: string): Promise<string> {
   const msgId = generateMsgId();
   const dirty = opts.stoppedCleanly === false;
-  const lines = [
-    "You were resumed from a stopped state. Re-onboard from your anchor before",
-    "doing anything else, then report to whoever woke you.",
-    "",
-    `Reason: ${opts.reason}`,
-  ];
+  const restarted = opts.event === "restarted";
+  const lines = restarted
+    ? [
+        "Your restart is complete — same session, same transcript, new process.",
+        "Re-onboard from your anchor before doing anything else, then report to",
+        "whoever restarted you.",
+        "",
+        `Reason: ${opts.reason}`,
+      ]
+    : [
+        "You were resumed from a stopped state. Re-onboard from your anchor before",
+        "doing anything else, then report to whoever woke you.",
+        "",
+        `Reason: ${opts.reason}`,
+      ];
   if (dirty) {
     lines.push(
       "",
-      "⚠ Your previous stop was FORCED — you did not complete the stop-ack cycle,",
-      "so your anchor and memory may be incomplete or mid-write. Verify them",
-      "before trusting them.",
+      restarted
+        ? "⚠ This restart was FORCED — you were not asked to get ready, so whatever you"
+        : "⚠ Your previous stop was FORCED — you did not complete the stop-ack cycle,",
+      restarted
+        ? "had not written down at that moment is gone. YOUR ANCHOR MAY BE MID-WRITE OR"
+        : "so your anchor and memory may be incomplete or mid-write. Verify them",
+      restarted
+        ? "STALE — verify it against reality before you build on it."
+        : "before trusting them.",
     );
   } else if (opts.stoppedCleanly === true) {
-    lines.push("", "Your previous stop completed its ack cycle, so your anchor should be whole.");
+    lines.push(
+      "",
+      restarted
+        ? "You acknowledged the restart request, so your anchor should be whole."
+        : "Your previous stop completed its ack cycle, so your anchor should be whole.",
+    );
   }
   await writeEnvelope({
     id: msgId,
@@ -214,6 +264,7 @@ export async function wakePeer(
       wakeMsgId,
       reason: opts.reason,
       stoppedCleanly: opts.stoppedCleanly ?? null,
+      wakeKind: opts.event ?? "resumed",
     },
   });
   await publishLifecycleEvent({

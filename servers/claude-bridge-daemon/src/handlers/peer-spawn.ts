@@ -50,6 +50,24 @@ export const PeerSpawnArgsSchema = z
     args: z.array(z.string()).default([]),
     resume: z.boolean().default(false),
     /**
+     * WHICH transcript to resume, when it is not the same string as the key.
+     *
+     * `sessionId` above is a HANDLE — the registry key, chosen before the peer
+     * existed (see peer-identity.ts). Until v0.11.18 it was also handed to
+     * `--resume`, and for a handle-keyed peer that is a string no transcript is
+     * named after: `isResumableSessionId("tst-c")` is false, so `resume` came
+     * out false and the peer was relaunched EMPTY. A new session under the old
+     * name, reported as a successful restart — the quietest way to lose a
+     * context there is, because the pid is fresh, the window is right and the
+     * name matches.
+     *
+     * So the identity travels separately from the handle here too. Omitted
+     * means "the handle is also the identity", which is true for every adopted
+     * peer and was true for 24 of the 25 records on the fleet the day this was
+     * measured. It stops being true the moment `team_layout` names a peer.
+     */
+    resumeSessionId: z.string().min(1).optional(),
+    /**
      * Create the peer as a window inside this existing tmux session rather than
      * as a session of its own. `peer_restart` sets it for adopted peers, whose
      * home is a window of a shared session.
@@ -222,6 +240,14 @@ export async function handlePeerSpawn(
   // and no session id; asking about either would be this handler inventing a
   // rule for a command it knows nothing about.
   const isClaude = args.command.split("/").pop() === "claude";
+  // WHAT gets resumed — the identity, falling back to the handle.
+  //
+  // Every use below is about the transcript, so every one of them takes this
+  // and not `args.sessionId`: the file that must exist, the id printed in the
+  // refusal, and the `--resume` argument itself. Missing one would leave the
+  // check and the launch disagreeing about which session is being restored,
+  // which is worse than either mistake alone.
+  const resumeTarget = args.resumeSessionId ?? args.sessionId;
   if (args.resume) {
     // Is there anything to resume? (N10, 2026-08-08)
     //
@@ -246,9 +272,9 @@ export async function handlePeerSpawn(
     // or a wrapper with `resume` set means something else to that program, and
     // refusing it here would be this handler inventing a rule for a command it
     // knows nothing about.
-    const transcript = sessionFile(args.cwd, args.sessionId);
-    if (isClaude && isResumableSessionId(args.sessionId) && !existsSync(transcript)) {
-      const elsewhere = findTranscriptElsewhere(args.sessionId, args.cwd);
+    const transcript = sessionFile(args.cwd, resumeTarget);
+    if (isClaude && isResumableSessionId(resumeTarget) && !existsSync(transcript)) {
+      const elsewhere = findTranscriptElsewhere(resumeTarget, args.cwd);
       await writeEvent({
         event: "peer_spawn_refused",
         level: "warn",
@@ -256,6 +282,7 @@ export async function handlePeerSpawn(
         requestId: req.id,
         details: {
           sessionId: args.sessionId,
+          resumeTarget,
           reason: "resume_transcript_missing",
           cwd: args.cwd,
           transcript,
@@ -267,18 +294,25 @@ export async function handlePeerSpawn(
         req.tool,
         "resume_transcript_missing",
         elsewhere
-          ? `There is no transcript for ${args.sessionId} under cwd '${args.cwd}' (looked for ${transcript}) — but one exists at ${elsewhere}. Claude Code finds transcripts by working directory, so this peer would start, fail to find its own history and exit. Spawn it in the directory its transcript belongs to.`
-          : `There is no transcript for ${args.sessionId} anywhere under ~/.claude/projects (looked for ${transcript}). \`--resume\` would print "No conversation found" and exit immediately. Either the session id is wrong, or that session never held a conversation — a session file is written at boot, a transcript only once something is said.`,
-        { sessionId: args.sessionId, cwd: args.cwd, transcript, foundElsewhere: elsewhere },
+          ? `There is no transcript for ${resumeTarget} under cwd '${args.cwd}' (looked for ${transcript}) — but one exists at ${elsewhere}. Claude Code finds transcripts by working directory, so this peer would start, fail to find its own history and exit. Spawn it in the directory its transcript belongs to.`
+          : `There is no transcript for ${resumeTarget} anywhere under ~/.claude/projects (looked for ${transcript}). \`--resume\` would print "No conversation found" and exit immediately. Either the session id is wrong, or that session never held a conversation — a session file is written at boot, a transcript only once something is said.`,
+        {
+          sessionId: args.sessionId,
+          resumeTarget,
+          cwd: args.cwd,
+          transcript,
+          foundElsewhere: elsewhere,
+        },
       );
     }
-    spawnArgs.push("--resume", args.sessionId);
+    spawnArgs.push("--resume", resumeTarget);
   }
   if (args.model) {
     spawnArgs.push("--model", args.model);
   }
 
   const hostDriverName = ctx.hostDriver.name;
+  const existingRestartRequest = ctx.state.peers[args.sessionId]?.observed.restartRequest ?? null;
   await applyStateChange(ctx.state, (draft) => {
     draft.peers[args.sessionId] = {
       sessionId: args.sessionId,
@@ -327,6 +361,16 @@ export async function handlePeerSpawn(
             }
           : {}),
         model: args.model ?? null,
+        // A restart that is UNDERWAY is not ours to erase (v0.11.18).
+        //
+        // This write replaces the record wholesale, which is right for a spawn:
+        // there was no peer, so there is nothing to preserve. During a RESTART
+        // there is — the marker `peer_restart` wrote before calling us, and its
+        // whole reason to exist is the window we are standing in. Abandoned
+        // here, the restart may leave a process no record names; a marker
+        // clobbered by the spawn would go missing in exactly the phase it was
+        // put there for.
+        ...(existingRestartRequest ? { restartRequest: existingRestartRequest } : {}),
         startedAt: new Date().toISOString(),
         lastUpdatedAt: new Date().toISOString(),
       },
@@ -601,6 +645,10 @@ export async function handlePeerSpawn(
         pid: record.pid,
         hostDriver: hostDriverName,
         resume: args.resume,
+        // WHAT was resumed, not just whether. A restart that resumed the wrong
+        // string is indistinguishable from one that resumed nothing unless the
+        // audit trail says which id went on the command line.
+        resumedSessionId: args.resume ? resumeTarget : null,
         model: args.model ?? null,
         accountProfile: args.accountProfile ?? null,
       },
@@ -629,6 +677,7 @@ export async function handlePeerSpawn(
       identity: measured ? "measured" : "unknown",
       measuredSessionId: measured?.sessionId ?? null,
       identityWaitedMs: identity.waitedMs,
+      resumedSessionId: args.resume ? resumeTarget : null,
       ...(measured
         ? {}
         : {

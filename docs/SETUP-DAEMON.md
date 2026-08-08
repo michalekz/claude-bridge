@@ -184,6 +184,7 @@ Canonical events:
 - Request pipeline: `request_received`, `request_completed`, `request_unknown_tool`, `request_malformed`
 - Peer lifecycle: `peer_started`, `peer_stopped`, `peer_restarted`, `peer_stop_rejected`, `peer_stop_failed`, `peer_stop_respawn_detected`, `peer_spawn_rejected`, `peer_spawn_failed`
 - Graceful stop (v0.11.15): `peer_stop_requested`, `peer_stop_request_resumed`, `peer_stop_stale_ack_swept`, `stop_ack_timeout`
+- Gentle restart (v0.11.18): `peer_restart_requested`, `peer_restart_ready_resumed`, `peer_restart_ready_timeout`, `peer_restart_refused`, `peer_restart_stop_failed`, `peer_restart_died_after_spawn`, `peer_restart_identity_mismatch`
 - Compact: `peer_compact_anchor_requested`, `peer_compact_anchor_timeout`, `peer_compact_inject`, `peer_compacted`, `peer_compact_failed`
 - Team layout: `team_layout_reconciling`, `team_layout_applied`
 
@@ -214,6 +215,46 @@ A future setup-check hook (v0.10.0 F2) will do this automatically.
 1. Check the lock file: `cat ~/.claude-bridge/control/daemon.lock` — if missing, service is down.
 2. `systemctl --user status claude-bridge-daemon.service` — journal will show the last error.
 3. Re-run `install --systemd` — the bundled path may point at an outdated plugin cache after an update.
+
+### `restart_ready_timeout` from `peer_restart` (v0.11.18)
+
+**The peer is still running, and nothing was stopped.** A restart asks the peer
+to get ready — park its work so it will find it again after the resume — and
+without that acknowledgement it does not begin.
+
+Same three ways forward as `stop_ack_timeout` below, with one difference worth
+knowing: calling `peer_restart` again resumes the SAME request, so a peer that
+acks two minutes late is answering a question that was asked once.
+
+`force: true` restarts it now. It skips the asking and nothing else — the pane is
+still archived, the identity is still checked after the relaunch, and the peer is
+still told what happened, including that its anchor may be half-written.
+
+### `restart_identity_unknown` from `peer_restart` (v0.11.18)
+
+**Refused on purpose, and nothing was touched.** The daemon knows the peer is
+running but has not been able to read its Claude session id, so it cannot tell
+which transcript to resume. Both guesses lose something:
+
+- resume the registry key → for a handle-keyed peer that matches no transcript,
+  and the peer comes back **empty under its own name**;
+- resume nothing → the context is dropped on purpose.
+
+Run `team_reconcile`; it measures identities it does not have and fills them in.
+Then restart.
+
+### `restart_in_progress` from `peer_restart` (v0.11.18)
+
+Another restart is past the point where a second one can safely join it. If the
+caller is gone, `team_reconcile` reports it as `restart_pending` **with the phase
+it was abandoned in** — and the phase decides what is safe:
+
+| phase | what it means | what to do |
+|---|---|---|
+| `ready-ack` | the peer was asked and is untouched | call `peer_restart` again — it resumes the same request |
+| `stopping` | the stop may or may not have completed | `team_reconcile` first, then restart |
+| `spawning` | 🔴 a process may exist that no record names | **check the host before launching anything**, or the retry is a fork |
+| `verifying` | running, identity unconfirmed | `team_reconcile` to measure it, then trust the record |
 
 ### `stop_ack_timeout` from `peer_stop` (v0.11.15)
 

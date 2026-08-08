@@ -6,6 +6,7 @@ import type { RequestEnvelope, ResultEnvelope } from "../rpc.ts";
 import { errResult, okResult } from "../rpc.ts";
 import type { PeerRecord } from "../state.ts";
 import type { HandlerContext } from "./context.ts";
+import { bridgeIdOf } from "./peer-identity.ts";
 import { ambiguousPeerMessage, resolvePeerRef } from "./peer-ref.ts";
 import { applyStateChange } from "./state-writer.ts";
 import {
@@ -153,6 +154,9 @@ async function runCourtesyPhase(
     : false;
   if (!alive) return { kind: "no-host" };
 
+  // The BRIDGE address, not the registry key (v0.11.18). For a handle-keyed
+  // peer these differ and the request lands in an inbox nobody drains.
+  const bridgeId = bridgeIdOf(record);
   const timeoutMs = args.ackTimeoutMs ?? DEFAULT_STOP_ACK_TIMEOUT_MS;
   const pollMs = args.ackPollMs ?? DEFAULT_STOP_ACK_POLL_MS;
   await mkdir(stopAcks.dir(), { recursive: true });
@@ -181,7 +185,7 @@ async function runCourtesyPhase(
   } else {
     // Clear the ground first. Everything after this point is an answer to THIS
     // request, without anyone having to reason about clocks.
-    const swept = await stopAcks.sweepStale(sessionId, "stale");
+    const swept = await stopAcks.sweepStale(bridgeId, "stale");
     if (swept) {
       await writeEvent({
         event: "peer_stop_stale_ack_swept",
@@ -195,7 +199,7 @@ async function runCourtesyPhase(
     // instant it reads the message still counts.
     requestedAtMs = Date.now();
     threadId = stopThreadId(sessionId, requestedAtMs);
-    const msgId = await requestStop(sessionId, threadId, args.reason ?? null);
+    const msgId = await requestStop(bridgeId, threadId, args.reason ?? null);
     await applyStateChange(ctx.state, (draft) => {
       const rec = draft.peers[sessionId];
       if (rec) {
@@ -219,7 +223,7 @@ async function runCourtesyPhase(
 
   const startedWaitingAt = Date.now();
   const verdict = await stopAcks.poll(
-    sessionId,
+    bridgeId,
     startedWaitingAt + timeoutMs,
     pollMs,
     requestedAtMs,
@@ -237,7 +241,7 @@ async function runCourtesyPhase(
       resumed,
     };
   }
-  await stopAcks.consume(sessionId);
+  await stopAcks.consume(bridgeId);
   return { kind: "acked", threadId, waitedMs, resumed };
 }
 
@@ -411,6 +415,11 @@ export async function handlePeerStop(
         // The stop resolved: the pending request is history, not state. Leaving
         // it would make the next call resume a thread that is already answered.
         rec.observed.stopRequest = null;
+        // And a stopped peer has no restart underway (v0.11.18). This is also
+        // the operator's way out of a mark left by a daemon that died mid
+        // restart: stop the peer, and the control plane stops claiming an
+        // operation is in flight behind it.
+        rec.observed.restartRequest = null;
         rec.observed.lastUpdatedAt = new Date().toISOString();
       }
     } else {

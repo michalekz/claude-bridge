@@ -4,7 +4,13 @@ import { publishLifecycleEvent } from "../event-subscribers.ts";
 import { writeEvent } from "../events.ts";
 import type { RequestEnvelope, ResultEnvelope } from "../rpc.ts";
 import { errResult, okResult } from "../rpc.ts";
-import { type AckVerdict, compactAcks, requestFromPeer, verifyAckFile } from "./ack-protocol.ts";
+import {
+  ALL_ACK_CHANNELS,
+  type AckVerdict,
+  compactAcks,
+  requestFromPeer,
+  verifyAckFile,
+} from "./ack-protocol.ts";
 import type { HandlerContext } from "./context.ts";
 import { ambiguousPeerMessage, resolvePeerRef } from "./peer-ref.ts";
 
@@ -98,9 +104,23 @@ export type PeerCompactArgs = z.infer<typeof PeerCompactArgsSchema>;
  * the v0.11.3 regression tests are the referee for that claim.
  */
 
-/** Public name kept for `daemon.ts` and the v0.11.3 stale-ack regression tests. */
+/**
+ * Public name kept for `daemon.ts` and the v0.11.3 stale-ack regression tests.
+ *
+ * It swept ONE channel until v0.11.18 — compact's — because compact was the
+ * only channel when it was written, and each later channel was added to the
+ * per-request sweep without anybody coming back here. A daemon that died
+ * mid-stop therefore left a stop-ack lying in wait, which is the very case this
+ * function exists for.
+ *
+ * Enumerating the channels here has the same shape as the defect it fixes, so
+ * the list comes from `ALL_ACK_CHANNELS` in `ack-protocol.ts`: a fourth channel
+ * is swept because it exists, not because somebody remembered.
+ */
 export async function sweepAllAcksAtStartup(): Promise<number> {
-  return compactAcks.sweepAllAtStartup();
+  let swept = 0;
+  for (const channel of ALL_ACK_CHANNELS) swept += await channel.sweepAllAtStartup();
+  return swept;
 }
 
 /** Public name kept for the v0.11.3 stale-ack regression tests. */

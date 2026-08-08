@@ -55,6 +55,20 @@ export const TeamRestartArgsSchema = z
      * simultaneous one.
      */
     settleMs: z.number().int().min(0).max(120_000).default(DEFAULT_SETTLE_MS),
+    /**
+     * Restart every member without asking (v0.11.18).
+     *
+     * A pass-through to the primitive, not a second mechanism: `peer_restart`
+     * decides what force means, and this only carries the word. Same rule
+     * applies to every member — force skips WAITING (the ready-ack, the stop
+     * courtesy) and never EVIDENCE (the pane archive, the identity check after
+     * the relaunch, and the message telling each peer its anchor may be
+     * half-written).
+     *
+     * `settleMs` is NOT skipped. The gap between peers is not a courtesy — it
+     * is what stops a rolling restart from becoming a simultaneous one.
+     */
+    force: z.boolean().default(false),
     /** Keep going after a peer fails to restart. Off, deliberately. */
     continueOnError: z.boolean().default(false),
     dryRun: z.boolean().default(true),
@@ -187,6 +201,9 @@ export async function handleTeamRestart(
     dryRun: args.dryRun,
     reason: args.reason ?? null,
     settleMs: args.settleMs,
+    // In the PLAN, because a dry run whose preview omits `force` would show an
+    // operator a gentle roll and then perform a forced one.
+    force: args.force,
     continueOnError: args.continueOnError,
     order: ordered.map((r) => ({
       sessionId: r.sessionId,
@@ -233,7 +250,7 @@ export async function handleTeamRestart(
       id: `${req.id}:restart:${i}`,
       ts: req.ts,
       tool: "peer_restart",
-      args: { peer: rec.sessionId, reason: args.reason ?? "team_restart" },
+      args: { peer: rec.sessionId, reason: args.reason ?? "team_restart", force: args.force },
       requestedBy: req.requestedBy,
     };
     const res = await handlePeerRestart(sub, ctx);

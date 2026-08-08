@@ -107,6 +107,13 @@ describe("L — a failed restart keeps the record", () => {
         tmuxTarget: "p",
         pid: 500,
         status: "live",
+        // v0.11.18: step a) refuses to restart a peer whose identity is
+        // unknown, so a record that predates identity measurement never
+        // reaches the spawn. This record carries one, which is what every
+        // record on the live fleet carries — the finding under test is what
+        // happens when the SPAWN fails, not what happens before it.
+        sessionId: "3fbc0f4d-2222-4222-8222-222222222222",
+        identity: "measured",
         adopted: true,
         model: null,
         startedAt: "2026-08-04T10:00:00.000Z",

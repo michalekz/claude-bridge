@@ -7,6 +7,7 @@ import { writeEvent } from "../events.ts";
 import type { RequestEnvelope, ResultEnvelope } from "../rpc.ts";
 import { errResult, okResult } from "../rpc.ts";
 import type { HandlerContext } from "./context.ts";
+import { bridgeIdOf } from "./peer-identity.ts";
 import { type OrderResult, orderCoordinatorLast } from "./peer-order.ts";
 import { handlePeerStop } from "./peer-stop.ts";
 import { requestStop, stopAcks } from "./stop-protocol.ts";
@@ -164,7 +165,10 @@ async function stopSinglePeer(
   // Clear the ground before asking, so every ack that appears afterwards is
   // fresh by construction rather than by comparison (the v0.11.3 lesson, which
   // this handler's private copy never received).
-  const swept = await stopAcks.sweepStale(peer.sessionId, "stale");
+  // `peer` here is the team spec entry, not the record — and the record is the
+  // one that knows the bridge address.
+  const bridgeId = bridgeIdOf(record);
+  const swept = await stopAcks.sweepStale(bridgeId, "stale");
   if (swept) {
     await writeEvent({
       event: "peer_stop_stale_ack_swept",
@@ -179,7 +183,7 @@ async function stopSinglePeer(
   const requestedAtMs = Date.now();
   let stopReqMsgId: string;
   try {
-    stopReqMsgId = await requestStop(peer.sessionId, threadId, args.force ? "force:true" : null);
+    stopReqMsgId = await requestStop(bridgeId, threadId, args.force ? "force:true" : null);
   } catch (e) {
     return {
       sessionId: peer.sessionId,
@@ -202,7 +206,7 @@ async function stopSinglePeer(
     },
   });
   const deadline = Date.now() + anchorTimeoutMs;
-  const verdict = await stopAcks.poll(peer.sessionId, deadline, ackPollMs, requestedAtMs, threadId);
+  const verdict = await stopAcks.poll(bridgeId, deadline, ackPollMs, requestedAtMs, threadId);
   const acked = verdict.accepted;
   if (!acked && !args.force) {
     await writeEvent({
@@ -226,7 +230,7 @@ async function stopSinglePeer(
     return { sessionId: peer.sessionId, displayName: peer.displayName, outcome: "skipped" };
   }
   if (acked) {
-    await stopAcks.consume(peer.sessionId);
+    await stopAcks.consume(bridgeId);
   }
   const stopReq = {
     schemaVersion: req.schemaVersion,

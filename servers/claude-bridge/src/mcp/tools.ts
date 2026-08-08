@@ -2763,7 +2763,7 @@ export const TOOLS: ToolSpec[] = [
   {
     name: "peer_restart",
     description:
-      "Stop and re-spawn a peer via the daemon, carrying model + account profile from state.peers unless overridden. Uses `--resume` so the session id stays stable. Wait/timeout semantics identical to peer_spawn.",
+      'Restart a peer through the control-plane daemon — the owner\'s protocol a)-g). **BREAKING in v0.11.18: this is now GRACEFUL by default and can take minutes.** Sequence: the daemon decides WHAT to resume from the peer\'s measured identity, puts a "get ready, you are coming back" request in its inbox, waits for the ack, stops it with the graceful peer_stop primitive, relaunches it with its stored environment and its own transcript, confirms the peer that came back is the one that left, and finally tells the peer what happened and why. If the peer does NOT say it is ready within `readyTimeoutMs` (default 120 s), the call FAILS with `restart_ready_timeout` and **nothing is stopped and nothing is killed** — the peer is running exactly as before. The request stands: calling again resumes the SAME request, and a late ack still counts. `force:true` is the old behaviour — no asking, relaunch now; it skips WAITING, never EVIDENCE (the pane archive, the identity check, and the message warning the peer that its anchor may be half-written all still happen). A peer whose identity is UNKNOWN is REFUSED (`restart_identity_unknown`) rather than guessed at, because resuming its handle would relaunch it EMPTY and resuming nothing would drop its context — run team_reconcile to measure it first. Note the interaction with `wait`: a graceful restart legitimately exceeds the default 10 s, so you get `outcome: "pending"` and collect the verdict with control_result — that is not a failure. The peer is asked ONCE: a ready-ack is a full agent turn (measured 30 s on a live peer), and asking again for a stop-ack would need a second one. The result reports `resumedSessionId` (did the context survive?), `mode`, `readyWaitedMs`, `stoppedCleanly` and `reported` (did step g reach the peer?).',
     inputSchema: {
       type: "object",
       properties: {
@@ -2777,7 +2777,15 @@ export const TOOLS: ToolSpec[] = [
         },
         force: {
           type: "boolean",
-          description: "Kill immediately instead of graceful signal.",
+          description:
+            "Skip the asking — no ready-request, no stop courtesy — and relaunch now. Skips WAITING, never EVIDENCE: the dead-pane archive, the identity check after the relaunch and the message telling the peer its anchor may be half-written all still happen.",
+        },
+        readyTimeoutMs: {
+          type: "number",
+          minimum: 1,
+          maximum: 600000,
+          description:
+            "How long the peer gets to say it is ready before the restart is reported as failed (default 120000). Ignored when force:true.",
         },
         model: {
           type: "string",
@@ -2828,7 +2836,7 @@ export const TOOLS: ToolSpec[] = [
   {
     name: "peer_compact",
     description:
-      "Ask the control-plane daemon to orchestrate `/compact` on a peer (v0.10.0-rc). Sequence: daemon writes a bridge inbox message to the peer requesting a compact anchor → peer writes `~/.claude-bridge/control/compact-ack/<sessionId>.json` when ready → daemon `send-keys /compact` into the tmux session → emits `peer_compacted`. Refuses with `anchor_timeout` if the ack file doesn't appear within `anchorTimeoutMs` (default 30 s). This is the ONLY send-keys path in the daemon (charter §8 amendment) — every inject is audit-logged via `peer_compact_inject`. The AUTO-watchdog framework is present but defaults OFF (`config.compactWatchdog.enabled = false`); operator must flip it explicitly.",
+      "Ask the control-plane daemon to orchestrate `/compact` on a peer (v0.10.0-rc). Sequence: daemon writes a bridge inbox message to the peer requesting a compact anchor → peer writes `~/.claude-bridge/control/compact-ack/<sessionId>.json` when ready → daemon `send-keys /compact` into the tmux session → emits `peer_compacted`. Refuses with `anchor_timeout` if the ack file doesn't appear within `anchorTimeoutMs` (default 30 s). This is the ONLY send-keys path in the daemon (charter §8 amendment) — every inject is audit-logged via `peer_compact_inject`. The AUTO-watchdog framework is present but defaults OFF (`config.compactWatchdog.enabled = false`); operator must flip it explicitly. **There is deliberately NO `force` here** (decided v0.11.18): the anchor is the one thing a compact must never skip, so a force could only mean 'do not wait' — and that already exists as `anchorTimeoutMs`. To not wait, pass a small `anchorTimeoutMs`; the call then reports `anchor_timeout` and injects nothing, which is the honest outcome. A force that can only refuse is not a force.",
     inputSchema: {
       type: "object",
       properties: {
@@ -3044,7 +3052,7 @@ export const TOOLS: ToolSpec[] = [
   {
     name: "team_restart",
     description:
-      "Restart a team one peer at a time, stopping at the first failure. A peer picks up an updated plugin bundle when its process restarts, so a rolling restart is how a new version reaches a fleet — the widest blast radius of any tool here, which is why the defaults are cautious. **`dryRun` defaults to TRUE** and the plan lists the order plus the launch parameters each peer would be relaunched with, so an operator can confirm they exist before anything stops. Peers with no recorded `command` are refused UP FRONT rather than discovered mid-roll — those relaunch as a bare `claude`, which resolves to nothing under nvm. **The roll stops at the first failure** (`continueOnError` defaults false): half a fleet running beats a whole one broken, and peers never attempted are named in `skipped`. A partial roll returns an ERROR, never ok — reporting success would leave the caller believing the roll-out finished. Order is array order, or state order for a team, with any peer named velitel deliberately LAST. `settleMs` (default 3000) is the pause after each peer so a rolling restart does not become a simultaneous one.",
+      "Restart a team one peer at a time, stopping at the first failure. A peer picks up an updated plugin bundle when its process restarts, so a rolling restart is how a new version reaches a fleet — the widest blast radius of any tool here, which is why the defaults are cautious. **`dryRun` defaults to TRUE** and the plan lists the order plus the launch parameters each peer would be relaunched with, so an operator can confirm they exist before anything stops. Peers with no recorded `command` are refused UP FRONT rather than discovered mid-roll — those relaunch as a bare `claude`, which resolves to nothing under nvm. **The roll stops at the first failure** (`continueOnError` defaults false): half a fleet running beats a whole one broken, and peers never attempted are named in `skipped`. A partial roll returns an ERROR, never ok — reporting success would leave the caller believing the roll-out finished. Order is array order, or state order for a team, with any peer named velitel deliberately LAST. `settleMs` (default 3000) is the pause after each peer so a rolling restart does not become a simultaneous one. **Since v0.11.18 each restart is GRACEFUL**: every member is asked to get ready and acks before it is stopped, so a roll takes minutes per peer rather than seconds — pass `force:true` for the old behaviour.",
     inputSchema: {
       type: "object",
       properties: {
@@ -3063,6 +3071,11 @@ export const TOOLS: ToolSpec[] = [
           minimum: 0,
           maximum: 120000,
           description: "Pause after each peer before the next (default 3000).",
+        },
+        force: {
+          type: "boolean",
+          description:
+            "Restart every member without asking (v0.11.18). A pass-through to peer_restart, applied to all of them: skips the ready-request and the stop courtesy, never the pane archive, the identity check or the message each peer gets about its anchor. `settleMs` is NOT skipped — the gap between peers is what stops a rolling restart from becoming a simultaneous one.",
         },
         continueOnError: {
           type: "boolean",

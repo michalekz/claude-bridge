@@ -6,6 +6,153 @@ All notable changes to this project are documented here. Format follows [Keep a 
 
 _Nothing yet._
 
+## [0.11.18] — 2026-08-08
+
+### The gentle restart — protocol a)–g), and the context it was quietly losing
+
+`peer_restart` was a hard kill followed by a spawn. It is now the owner's
+protocol: decide what to resume, ask the peer to get ready, wait for it, stop it
+gracefully, relaunch it with its own transcript, confirm it came back as itself,
+and tell it what happened.
+
+**🔴 BREAKING — a restart now ASKS FIRST and can take minutes.** The same break
+`peer_stop` took in v0.11.15. For the old behaviour pass `force: true`.
+
+#### The defect measuring it found
+
+`peer_restart` handed the **registry key** to `--resume`. The key is a HANDLE — a
+name chosen before the peer existed (v0.11.16) — and for a handle-keyed peer it
+names no transcript, so `isResumableSessionId` returned false, `--resume` was
+never passed, and the peer came back **empty under its own name**, reported as a
+successful restart.
+
+The quietest failure in this campaign: fresh pid, right window, matching name,
+no memory. Nothing downstream could tell the difference.
+
+Measured on the fleet: 25 records, 24 keyed by a genuine session id, one not. The
+one is not the point — `team_layout` names peers by handle **by design**, so every
+peer deployed declaratively would have been one.
+
+- `peer_spawn` gains `resumeSessionId`, separate from `sessionId`. Additive;
+  omitted means "the handle is also the identity", which is what every adopted
+  peer has.
+- `peer_restart` resumes `observed.sessionId` when it differs from the key, and
+  reports `resumedSessionId` + `resumeSource` at the top level of its result.
+- Step f) now compares against **what was resumed**, not the key — the check used
+  to switch itself off for exactly the peers that needed it, and shrink the
+  survival window from 2500 ms to 400 while doing so.
+
+#### The protocol
+
+| step | what it does |
+|---|---|
+| a) | decides what to resume; **REFUSES** (`restart_identity_unknown`) when the identity is unknown, rather than guessing — both guesses lose something |
+| b) | `restart-ack` channel: asks the peer to get ready, over the shared `ack-protocol.ts`. Delivered as an envelope through `writeEnvelope`, not built by hand |
+| c) | the graceful `peer_stop` primitive from v0.11.15, with its `skipCourtesy` pin removed |
+| d) | unchanged — the pane archive already sits in the driver's `kill()` throat |
+| e) | unchanged, except for `resumeSessionId`; environment is still the **stored** `spawnEnv` (owner decision O-1) |
+| f) | uses the spawn's own measurement instead of a second mechanism of its own |
+| g) | **new** — calls `wakePeer`, which `peer_restart` never did. Every restarted peer used to sit silently at its prompt |
+
+- No ack inside `readyTimeoutMs` (default 120 s) → `restart_ready_timeout`, and
+  **nothing is stopped and nothing is killed**. The request stands on the record;
+  calling again resumes the same thread and a late ack still counts.
+- The stop that follows a ready-ack gets a shorter window (`stopAckTimeoutMs`,
+  default 15 s): the peer has just said it is ready, so this is a confirmation.
+- ⚠ Both new windows are **estimates, and labelled as such in the code**. The
+  acceptance runs measure them.
+
+#### Idempotence, and abandonment
+
+- New lifecycle status `restarting`, and `observed.restartRequest` carrying a
+  **phase**. Written BEFORE each phase — a mark that appears after a phase
+  succeeds is silent about the phase that did not.
+- A second caller resumes a `ready-ack`, and is refused (`restart_in_progress`)
+  anywhere past the stop. Entering a spawn already in flight is how one handle
+  ends up with two processes.
+- New `team_reconcile` drift `restart_pending`, reported with its **phase and
+  age**, never corrected. The phase is the point: abandoned at `ready-ack` the
+  peer is untouched; abandoned at `spawning` a process may exist that no record
+  names, and "just run it again" is then a fork.
+- A **dead** peer carrying a restart mark says so in its `dead` detail, for the
+  same reason.
+
+#### Force
+
+- `team_restart` gains `force` (pass-through to the primitive; `settleMs` is NOT
+  skipped — the gap between peers is what stops a roll becoming simultaneous).
+- `peer_restart` force skips the asking and nothing else: the archive, the
+  identity check and step g) all still happen. **Step g) matters most under
+  force** — the peer that was never asked to tidy up is the one most likely to be
+  holding a half-written anchor, and it now gets told so in those words.
+- **`peer_compact` deliberately gets NO force.** The anchor is the one thing a
+  compact must never skip, so a force could only mean "do not wait" — and that
+  already exists as `anchorTimeoutMs`. *A force that can only refuse is not a
+  force.* The tool description now names `anchorTimeoutMs` as its not-waiting
+  path. (Deviation from the ratified force inventory, agreed with the reviewer.)
+- The 8 s wake delay is **not** skippable by force either. It is not a courtesy
+  wait — it is the condition under which the injection lands, and skipping it
+  would buy a warning that never arrives.
+
+#### Also
+
+- The startup ack sweep swept only `compact-ack` from v0.10.0 to v0.11.17: two
+  channels were added and neither reached that call site. It now iterates
+  `ALL_ACK_CHANNELS`, so a fourth channel is swept because it is declared, not
+  because somebody remembered.
+- `verifyRestartedIdentity` is gone. `peer_spawn` already measured identity one
+  call up; two mechanisms answering one question is the duplication the owner put
+  first. Its four regression findings survive as `identityVerdict`.
+- The launch-parameter warning is emitted **before** step a) can refuse, so an old
+  record yields the whole diagnosis rather than half of it.
+- The fork guard treats `restarting` as live.
+
+#### 🔴 What the acceptance runs found — three defects, in this release's own code
+
+The runs were not a formality. Each of these was live-only; none would have been
+caught by the suite, because each needed a peer with a handle key and a real
+transcript.
+
+1. **The request was posted to an inbox nobody drains.** The daemon keys its
+   registry by handle; the bridge keys inboxes by the peer's own session id.
+   Measured: the request sat in `inbox/tst-r18/pending/` (1 file) while the peer
+   drained `inbox/bbcaed51-…/pending/` (0 files). The peer reported "my inbox is
+   empty", the daemon reported a timeout, and both were telling the truth. Fixed
+   with `bridgeIdOf` — **and it applied to `peer_compact` and `peer_stop` too**,
+   so this is not new to the restart, it was newly reachable.
+2. **A forced restart sent no warning.** `peer_stop` skips the courtesy under
+   force, so it has nothing to measure and returns `stoppedCleanly: null` — and
+   the wake only warns on `false`. The peer least entitled to reassurance got the
+   most reassuring message there is: none. Whether we asked is a fact this
+   handler owns, so it now says so.
+3. **A failure that returned left its mark, and blocked the retry.** The restart
+   errored, the operator retried, and the retry was refused as
+   `restart_in_progress` for an operation that had already finished failing.
+   Only `ready-ack` keeps its mark now — there the mark IS the resumable
+   request. `peer_stop` also clears it, which is the way out of a mark left by a
+   daemon that died mid-restart.
+
+#### The estimate that measurement killed
+
+The design gave the stop following a ready-ack a short window of its own (15 s),
+labelled as an estimate for the acceptance runs to replace. It did not survive
+the first run — but not because the number was low. **Measured: a ready-ack is a
+full agent turn (30 s, then 12 s on a warm peer), and the stop-request asked the
+same peer the same question, needing another one.**
+
+So the second ask is gone. `stoppedCleanly` stays a measurement — of the
+ready-ack, which is the thing it was always meant to record: the peer had a
+chance to save its work. `stopAckTimeoutMs` never reached a release.
+
+#### Acceptance (O-2), four runs on a live scratch peer
+
+| run | result |
+|---|---|
+| soft | `mode: graceful`, `readyWaitedMs: 12009`, `stoppedCleanly: true`, `reported: true`, 21.8 s end to end |
+| hard | `mode: forced`, resumed the measured identity, `identityWaitedMs: 212` |
+| deliberately failed | `restart_ready_timeout` after 3005 ms, **peer untouched and still running**, mark left at `ready-ack`, `team_reconcile` drift `restart_pending (13s ago)` |
+| **context proof** | the peer was told a fact before the restart and asked for it after: **`LOSOS-4711`** — answered from a context that only existed before its process was replaced |
+
 ## [0.11.17] — 2026-08-08
 
 ### Prune asks now, and an abandoned stop is no longer invisible

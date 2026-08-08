@@ -81,35 +81,27 @@ describe("C — a restart must not resume something that is not a transcript", (
 });
 
 describe("C — identity is verified after the restart, not assumed", () => {
-  let home: string;
-
-  beforeEach(async () => {
-    home = await mkdtemp(join(tmpdir(), "cb-ident-"));
-    await mkdir(join(home, ".claude", "sessions"), { recursive: true });
-  });
-
-  afterEach(async () => {
-    await rm(home, { recursive: true, force: true });
-  });
-
+  /**
+   * REWRITTEN v0.11.18 — same four findings, one mechanism less.
+   *
+   * These used to drive `verifyRestartedIdentity`, which polled
+   * `~/.claude/sessions/<pid>.json` from inside `peer-restart.ts`. That function
+   * is gone: `peer_spawn` already measures identity on every spawn (v0.11.16,
+   * via `measureIdentity`) and `peer_restart` calls `peer_spawn` one line
+   * earlier, so the file was being read twice by two different mechanisms to
+   * answer one question. The owner's priority is that we do not debug the same
+   * thing twice.
+   *
+   * What survives is the DECISION, and the four rules it encodes are the pilot
+   * findings verbatim. The fixtures moved from a temp `$HOME` to two arguments,
+   * which is the point: a verdict is a pure function of what we intended and
+   * what was measured.
+   */
   const EXPECTED = "fb749bc6-c2f6-404c-8af4-422dfc2eb42e";
-
-  async function sessionFile(pid: number, sessionId: string) {
-    await writeFile(
-      join(home, ".claude", "sessions", `${pid}.json`),
-      JSON.stringify({ sessionId }),
-      "utf-8",
-    );
-  }
 
   it("same id back = no mismatch", async () => {
     const { restart } = await importAll();
-    await sessionFile(4242, EXPECTED);
-    const r = await restart.verifyRestartedIdentity(EXPECTED, 4242, {
-      attempts: 1,
-      delayMs: 0,
-      homeDir: home,
-    });
+    const r = restart.identityVerdict(EXPECTED, EXPECTED);
     expect(r.mismatch).toBe(false);
     expect(r.actual).toBe(EXPECTED);
   });
@@ -119,36 +111,87 @@ describe("C — identity is verified after the restart, not assumed", () => {
     // The pilot's case: the resume did not take, Claude Code started fresh, the
     // pid matched the record, and everything downstream kept saying "live"
     // about an identity that had moved.
-    await sessionFile(4242, "7b885aad-1111-4111-8111-111111111111");
-    const r = await restart.verifyRestartedIdentity(EXPECTED, 4242, {
-      attempts: 1,
-      delayMs: 0,
-      homeDir: home,
-    });
+    const r = restart.identityVerdict(EXPECTED, "7b885aad-1111-4111-8111-111111111111");
     expect(r.mismatch).toBe(true);
     expect(r.actual).toBe("7b885aad-1111-4111-8111-111111111111");
   });
 
-  it("an unreadable file is NOT a mismatch — silence is not evidence", async () => {
+  it("an unmeasured identity is NOT a mismatch — silence is not evidence", async () => {
     const { restart } = await importAll();
-    const r = await restart.verifyRestartedIdentity(EXPECTED, 9999, {
-      attempts: 1,
-      delayMs: 0,
-      homeDir: home,
-    });
+    const r = restart.identityVerdict(EXPECTED, null);
     expect(r.mismatch).toBe(false);
     expect(r.actual).toBeNull();
   });
 
   it("a non-resumable id is not checked at all — there is nothing to compare", async () => {
     const { restart } = await importAll();
-    await sessionFile(4242, "anything-at-all");
-    const r = await restart.verifyRestartedIdentity("obetni-w3", 4242, {
-      attempts: 1,
-      delayMs: 0,
-      homeDir: home,
-    });
-    expect(r.mismatch).toBe(false);
+    expect(restart.identityVerdict("obetni-w3", "anything-at-all").mismatch).toBe(false);
+    // And nothing resumed at all: a fresh session has no expectation to violate.
+    expect(restart.identityVerdict(null, "anything-at-all").mismatch).toBe(false);
+  });
+});
+
+describe("C2 — WHAT gets resumed: the handle, or the measured identity (v0.11.18)", () => {
+  /**
+   * The defect this release found by measuring rather than by reading the plan.
+   *
+   * `peer_restart` handed the REGISTRY KEY to `--resume`. For a peer keyed by a
+   * handle — which `team_layout` produces by design — that key names no
+   * transcript, so `resume` came out false and the peer was relaunched EMPTY and
+   * reported as a successful restart. The quietest possible way to lose a
+   * context: fresh pid, right window, matching name, no memory.
+   */
+  const UUID = "fb749bc6-c2f6-404c-8af4-422dfc2eb42e";
+  const OTHER = "e8197b26-f873-40fb-afec-4e370b5c0997";
+
+  function rec(over: Record<string, unknown>, desired: Record<string, unknown> = {}) {
+    return {
+      sessionId: (over["key"] as string) ?? UUID,
+      desired: { command: "/usr/bin/claude", ...desired },
+      observed: {
+        name: "peer",
+        hostDriver: "tmux",
+        tmuxTarget: "t:1",
+        pid: 1,
+        status: "live",
+        model: null,
+        startedAt: new Date().toISOString(),
+        lastUpdatedAt: new Date().toISOString(),
+        ...over,
+      },
+      // biome-ignore lint/suspicious/noExplicitAny: hand-built minimal record
+    } as any;
+  }
+
+  it("key is a session id and nothing contradicts it — resume the key", async () => {
+    const { restart } = await importAll();
+    const d = restart.decideResume(rec({ sessionId: UUID, identity: "measured" }));
+    expect(d).toEqual({ kind: "resume", sessionId: UUID, source: "handle" });
+  });
+
+  it("THE FIX: handle key + measured identity — resume the IDENTITY", async () => {
+    const { restart } = await importAll();
+    const d = restart.decideResume(rec({ key: "tst-c", sessionId: OTHER, identity: "measured" }));
+    // Before v0.11.18 this produced `resume: false` and a peer with no memory.
+    expect(d).toEqual({ kind: "resume", sessionId: OTHER, source: "measured-identity" });
+  });
+
+  it("identity UNKNOWN — refuse, do not guess", async () => {
+    const { restart } = await importAll();
+    const d = restart.decideResume(rec({ key: "tst-c", sessionId: null, identity: "unknown" }));
+    // Both guesses are bad: the handle resumes nothing, and skipping the resume
+    // drops the context on purpose. Neither is a tool's decision to make.
+    expect(d.kind).toBe("refuse");
+  });
+
+  it("not Claude Code — no identity to have, and that is not ignorance", async () => {
+    const { restart } = await importAll();
+    // Without this the whole acceptance suite (peers running /bin/sleep) would
+    // be refused for an unknown identity — a category that does not apply.
+    const d = restart.decideResume(
+      rec({ key: "probe", sessionId: null, identity: "unknown" }, { command: "/bin/sleep" }),
+    );
+    expect(d.kind).toBe("fresh");
   });
 });
 

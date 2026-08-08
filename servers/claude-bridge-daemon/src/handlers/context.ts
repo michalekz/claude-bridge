@@ -41,4 +41,15 @@ export interface HandlerContext {
    * appear. Tests set a small value so the suite does not pay it per case.
    */
   identityTimeoutMs?: number;
+  /**
+   * How long step g) settles before injecting the wake keys (v0.11.18).
+   *
+   * Production uses 8 s — the window in which a booting Claude Code silently
+   * drops keys. Tests set 0, because there is no real pane to lose them in.
+   *
+   * ⚠ This is a TEST knob, not a force knob. `force` does not skip this wait:
+   * the delay is what makes the injection land, and after a forced restart that
+   * injection is the peer's only warning that its anchor may be half-written.
+   */
+  wakeDelayMs?: number;
 }

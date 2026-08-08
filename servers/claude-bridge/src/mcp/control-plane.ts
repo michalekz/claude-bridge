@@ -500,6 +500,9 @@ export const PeerRestartArgs = z
     peer: z.string().min(1),
     reason: z.string().optional(),
     force: z.boolean().optional(),
+    // v0.11.18. `readyPollMs` is deliberately NOT on the wire: it tunes the
+    // daemon's own poll loop and no operator has a reason to reach it.
+    readyTimeoutMs: z.number().int().positive().max(600_000).optional(),
     model: z.string().optional(),
     accountProfile: z.string().optional(),
     wait: z.boolean().optional(),
@@ -514,6 +517,7 @@ export async function peerRestartTool(
   const daemonArgs: Record<string, unknown> = { peer: args.peer };
   if (args.reason !== undefined) daemonArgs["reason"] = args.reason;
   if (args.force !== undefined) daemonArgs["force"] = args.force;
+  if (args.readyTimeoutMs !== undefined) daemonArgs["readyTimeoutMs"] = args.readyTimeoutMs;
   if (args.model !== undefined) daemonArgs["model"] = args.model;
   if (args.accountProfile !== undefined) daemonArgs["accountProfile"] = args.accountProfile;
   return submitDaemonRequest(ctx, "peer_restart", daemonArgs, {
@@ -759,6 +763,8 @@ export const TeamRestartArgs = z
     team: z.string().min(1).optional(),
     reason: z.string().optional(),
     settleMs: z.number().int().min(0).max(120_000).optional(),
+    /** v0.11.18 — pass-through to the primitive, applied to every member. */
+    force: z.boolean().optional(),
     continueOnError: z.boolean().optional(),
     /** Defaults to TRUE in the daemon. */
     dryRun: z.boolean().optional(),
@@ -776,6 +782,7 @@ export async function teamRestartTool(
   if (args.team !== undefined) daemonArgs["team"] = args.team;
   if (args.reason !== undefined) daemonArgs["reason"] = args.reason;
   if (args.settleMs !== undefined) daemonArgs["settleMs"] = args.settleMs;
+  if (args.force !== undefined) daemonArgs["force"] = args.force;
   if (args.continueOnError !== undefined) daemonArgs["continueOnError"] = args.continueOnError;
   if (args.dryRun !== undefined) daemonArgs["dryRun"] = args.dryRun;
 
