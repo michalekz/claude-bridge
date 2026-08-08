@@ -6,6 +6,54 @@ All notable changes to this project are documented here. Format follows [Keep a 
 
 _Nothing yet._
 
+## [0.11.20] — 2026-08-08
+
+### One wait loop — for the waits that are actually waiting
+
+R5 of the lifecycle plan asks for "one wait loop for all seven places". The
+measurement found **ten** `setTimeout` sites, and they are not seven of a kind.
+Merging them all would have repeated the defect the rule exists to prevent.
+
+**Six are POLLS.** Something will become true and the loop asks until it does or
+the budget runs out — the ack wait, the identity measurement, the survival
+watch, the post-kill verification, the CLI's wait for a result, and the driver's
+pid probe. These now share `pollUntil` in `src/poll.ts`.
+
+**Four are SPACING.** Nothing is being observed; the pause *is* the point.
+`team_restart`'s gap between peers keeps a rolling restart from becoming a
+simultaneous one. `wake`'s 8 s is the window in which a booting Claude Code
+silently drops keys. The driver's send-verify delay lets the pane redraw before
+it is read. `peer_spawn`'s confirm window has to let time pass to see whether a
+process survives it. Wrapping these in a poll would dress a deliberate pause as
+a measurement of something — which is the same category error as a timer that
+reports its budget.
+
+Each of the four now carries **where its number came from**, including the ones
+that only passed by during the consolidation. Two of them say plainly that they
+are *not* derived from a measurement, because a bare constant in a freshly
+consolidated file is exactly the one a later reader takes for a measured value.
+
+#### The invariant
+
+`waitedMs` is measured; `timeoutMs` is the budget; they are **separate fields**,
+so no caller can report one as the other by accident. That mistake has been
+found three times in this campaign — 2500 ms reported for something ready in 960
+(v0.11.11), 5000 ms spent on an identity that could not exist (v0.11.16), and a
+settle window over nothing. Each said a number that was a decision and read like
+an observation.
+
+#### Three outcomes, not two
+
+`hit` · `aborted` · `expired`, named after what happened rather than after
+success and failure — because **the inverted caller is first-class**.
+`confirmStillRunning` waits to see whether a process *dies*: for it `aborted`
+means the peer did not survive and `expired` means it did. One loop, read two
+ways, and neither reading has to lie about the other.
+
+`aborted` is also what keeps a death from hiding inside a budget. When the
+identity measurement lacked that check, the test suite went from 42 s to 262 s
+because every mock spawn waited out a ceiling for a process that never existed.
+
 ## [0.11.19] — 2026-08-08
 
 ### Team tools stop reimplementing the primitives

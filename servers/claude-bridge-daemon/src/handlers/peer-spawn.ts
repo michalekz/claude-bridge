@@ -410,6 +410,11 @@ export async function handlePeerSpawn(
     // immediate by nature: a refused `--resume`, a missing binary, a cwd that
     // does not exist. Anything that survives half a second has got past them.
     if (record.probe?.kind === "pid" && ctx.hostDriver.probePane) {
+      // SPACING, not a poll (R5, v0.11.20). There is nothing to ask: the
+      // question is whether the process is still there AFTER a moment, so the
+      // moment has to pass. 500 ms is derived from the failure it catches — a
+      // refused `--resume` exits in about two seconds, and the three peers
+      // measured dying on 2026-08-08 were all gone inside one.
       await new Promise((r) => setTimeout(r, ctx.spawnConfirmMs ?? 500));
       const again = await ctx.hostDriver.probePane(canonicalKey);
       if (again.kind === "dead" || again.kind === "no-such-target") {

@@ -6,6 +6,7 @@ import {
   syntheticSenderId,
   writeEnvelope,
 } from "@claude-bridge/shared";
+import { pollUntil } from "../poll.ts";
 
 /**
  * Ask a peer to do something, then wait for it to say it did.
@@ -199,15 +200,18 @@ export function createAckChannel(channel: string): AckChannel {
 
     async poll(sessionId, deadline, pollMs, requestedAtMs, threadId) {
       const p = path(sessionId);
+      // A rejected ack is not a reason to stop waiting — the right one may still
+      // arrive. It IS a reason to remember why the last one failed, so the
+      // timeout can say "an ack was there and it was not yours".
       let last: AckVerdict = { accepted: false, reason: "none" };
-      while (Date.now() < deadline) {
-        last = await verifyAckFile(p, requestedAtMs, threadId);
-        if (last.accepted) return last;
-        // A rejected ack is not a reason to stop waiting — the right one may
-        // still arrive. It IS a reason to remember why the last one failed, so
-        // the timeout can say "an ack was there and it was not yours".
-        await new Promise((r) => setTimeout(r, pollMs));
-      }
+      const outcome = await pollUntil<AckVerdict>(
+        async () => {
+          last = await verifyAckFile(p, requestedAtMs, threadId);
+          return last.accepted ? last : null;
+        },
+        { timeoutMs: Math.max(0, deadline - Date.now()), pollMs },
+      );
+      if (outcome.kind === "hit") return outcome.value;
       const final = await verifyAckFile(p, requestedAtMs, threadId);
       return final.accepted ? final : final.reason === "none" ? last : final;
     },

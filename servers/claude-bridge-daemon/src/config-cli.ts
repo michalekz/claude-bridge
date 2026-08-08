@@ -3,6 +3,7 @@ import { readFile } from "node:fs/promises";
 import { atomicWriteJson, requestPath, resultPath } from "@claude-bridge/shared";
 import { PEER_SETTABLE } from "./handlers/control-config.ts";
 import { readLock } from "./lock.ts";
+import { pollUntil } from "./poll.ts";
 
 /**
  * `claude-bridge-daemon config …` — the same control_config, from a shell.
@@ -101,17 +102,30 @@ function generateRequestId(): string {
   return `cli-${Date.now().toString(36)}-${randomBytes(4).toString("hex")}`;
 }
 
+/**
+ * 200 ms, and it is the CLI's own tempo rather than a measurement of anything:
+ * a human is watching a terminal, and five checks a second is below what they
+ * can perceive as delay. Recorded here because a constant that just passes by
+ * during a consolidation is exactly the one that later reads as derived.
+ */
+const CLI_RESULT_POLL_MS = 200;
+
 async function pollForResult(requestId: string, timeoutMs: number): Promise<unknown | null> {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    try {
-      return JSON.parse(await readFile(resultPath(requestId), "utf-8"));
-    } catch (e) {
-      if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw e;
-    }
-    await new Promise((r) => setTimeout(r, 200));
-  }
-  return null;
+  const outcome = await pollUntil<{ value: unknown }>(
+    async () => {
+      try {
+        return { value: JSON.parse(await readFile(resultPath(requestId), "utf-8")) };
+      } catch (e) {
+        if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw e;
+        return null;
+      }
+    },
+    { timeoutMs, pollMs: CLI_RESULT_POLL_MS },
+  );
+  // Wrapped, because a result envelope can legitimately BE null and the poll
+  // reads a bare null as "not yet". Unwrapping here keeps that distinction from
+  // leaking into every caller.
+  return outcome.kind === "hit" ? outcome.value.value : null;
 }
 
 export async function runConfig(argv: string[]): Promise<number> {

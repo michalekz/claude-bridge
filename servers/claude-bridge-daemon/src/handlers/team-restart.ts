@@ -103,6 +103,12 @@ function orderPeers(records: PeerRecord[]): OrderResult<PeerRecord> {
   }));
 }
 
+/**
+ * SPACING, not a poll (R5, v0.11.20). The gap between peers is not waiting for
+ * anything observable — it is what keeps a rolling restart from becoming a
+ * simultaneous one. `settleMs` defaults to 3000 and is the operator's dial;
+ * force does not skip it, because the spacing is the safety, not a courtesy.
+ */
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
 /** The team of whoever sent this request — the search domain for short names. */

@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { z } from "zod";
 import { writeEvent } from "../events.ts";
 import { parseHostTarget } from "../hosts/driver.ts";
+import { pollUntil } from "../poll.ts";
 import type { RequestEnvelope, ResultEnvelope } from "../rpc.ts";
 import { errResult, okResult } from "../rpc.ts";
 import type { PeerRecord } from "../state.ts";
@@ -144,21 +145,21 @@ export async function confirmStillRunning(
   //     this window exists to catch, so holding the whole fleet for another two
   //     and a half seconds each buys nothing. Eight peers spent ~20 s of a
   //     restart proving that time passes.
-  const start = Date.now();
+  // THE INVERTED CALLER, and the reason `pollUntil` names its outcomes after
+  // what happened rather than after success and failure: here `aborted` means
+  // the peer DIED and `expired` means it survived long enough to be believed.
   const pollMs = 100;
   const budget = registered || !mustRegister ? Math.min(windowMs, 400) : windowMs;
-
-  while (Date.now() - start < budget) {
-    if (!alive()) {
-      return {
-        ok: false,
-        reason: `pid ${pid} exited ${Date.now() - start} ms after starting`,
-      };
-    }
-    await new Promise((r) => setTimeout(r, Math.min(pollMs, budget)));
-  }
-  if (!alive()) {
-    return { ok: false, reason: `pid ${pid} exited ${Date.now() - start} ms after starting` };
+  const outcome = await pollUntil<never>(() => null, {
+    timeoutMs: budget,
+    pollMs,
+    abort: () => (alive() ? { aborted: false } : { aborted: true, reason: "exited" }),
+  });
+  if (outcome.kind === "aborted" || !alive()) {
+    // The MEASURED time of death, not the budget. A process that dies at 300 ms
+    // used to be reported as having "exited within 2500 ms" — a number that was
+    // the decision, not the observation.
+    return { ok: false, reason: `pid ${pid} exited ${outcome.waitedMs} ms after starting` };
   }
   if (mustRegister && !registered) {
     return {

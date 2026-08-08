@@ -1,6 +1,7 @@
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { type ProcessInspector, defaultProcessInspector } from "../hosts/process-inspector.ts";
+import { pollUntil } from "../poll.ts";
 
 /**
  * Who is actually running in that pane.
@@ -179,31 +180,48 @@ export async function measureIdentity(
   const timeoutMs = opts.timeoutMs ?? IDENTITY_MEASURE_TIMEOUT_MS;
   const pollMs = opts.pollMs ?? IDENTITY_POLL_MS;
   const procRoot = opts.procRoot ?? "/proc";
-  const started = Date.now();
-  const deadline = started + timeoutMs;
-  let attempts = 0;
-  let lastReason: IdentityUnknownReason = "no-claude-under-pane";
 
   if (!pidExists(panePid, procRoot)) {
     return { kind: "unknown", reason: "pane-pid-gone", waitedMs: 0, attempts: 0 };
   }
 
-  for (;;) {
-    attempts++;
-    // Stop the moment the pane process goes: whatever we were waiting for is
-    // not coming, and continuing would report a timeout for a death.
-    if (attempts > 1 && !pidExists(panePid, procRoot)) {
-      return { kind: "unknown", reason: "pane-pid-gone", waitedMs: Date.now() - started, attempts };
-    }
-    const probe = await probeOnce(panePid, inspector);
-    if ("sessionId" in probe) {
-      // The MEASURED elapsed time, never the budget. A handler that reports its
-      // own timeout as a duration is reporting a decision, not an observation.
-      return { kind: "measured", measurement: probe, waitedMs: Date.now() - started, attempts };
-    }
-    lastReason = probe.kind;
-    if (Date.now() >= deadline) break;
-    await new Promise((r) => setTimeout(r, pollMs));
+  // Why the last reason is carried out of the loop: the poll only knows "not
+  // yet", and the two ways of not knowing — nothing of ours is running, versus
+  // it is running and has not written its file — need different answers from
+  // the caller. Collapsing them would hide a boot failure inside a timeout.
+  let lastReason: IdentityUnknownReason = "no-claude-under-pane";
+  const outcome = await pollUntil<IdentityMeasurement>(
+    async () => {
+      const probe = await probeOnce(panePid, inspector);
+      if ("sessionId" in probe) return probe;
+      lastReason = probe.kind;
+      return null;
+    },
+    {
+      timeoutMs,
+      pollMs,
+      // Stop the moment the pane process goes: whatever we were waiting for is
+      // not coming, and continuing would report a timeout for a death.
+      abort: () =>
+        pidExists(panePid, procRoot)
+          ? { aborted: false }
+          : { aborted: true, reason: "pane-pid-gone" },
+    },
+  );
+
+  if (outcome.kind === "hit") {
+    // The MEASURED elapsed time, never the budget.
+    return {
+      kind: "measured",
+      measurement: outcome.value,
+      waitedMs: outcome.waitedMs,
+      attempts: outcome.attempts,
+    };
   }
-  return { kind: "unknown", reason: lastReason, waitedMs: Date.now() - started, attempts };
+  return {
+    kind: "unknown",
+    reason: outcome.kind === "aborted" ? "pane-pid-gone" : lastReason,
+    waitedMs: outcome.waitedMs,
+    attempts: outcome.attempts,
+  };
 }

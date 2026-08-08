@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { promisify } from "node:util";
 import { controlDir, makeLogger } from "@claude-bridge/shared";
 import { writeEvent } from "../events.ts";
+import { pollUntil } from "../poll.ts";
 import {
   type HostWindowRecord,
   type PaneProbe,
@@ -15,6 +16,14 @@ import {
   parseHostTarget,
   sanitizeSessionKey,
 } from "./driver.ts";
+
+/**
+ * Pause between pid probes. Not derived from a measurement — it is a gap
+ * against transient `execFile` failures, chosen small enough that three
+ * attempts stay inside a spawn's patience. Written down because a bare 200 in
+ * a consolidated file reads as though somebody measured it.
+ */
+const PROBE_RETRY_PAUSE_MS = 200;
 import {
   CLEAR_STROKE_BATCH,
   type InputLineProbe,
@@ -141,7 +150,15 @@ const QUERY_TIMEOUT_MS = 5_000;
 const MUTATE_TIMEOUT_MS = 10_000;
 /** Key injection — a pane that cannot accept keys in 5 s will not accept them. */
 const SEND_KEYS_TIMEOUT_MS = 5_000;
-/** Settle time between injecting text and reading the pane back. */
+/**
+ * Settle time between injecting text and reading the pane back.
+ *
+ * SPACING, not a poll (R5, v0.11.20). Nothing is being waited FOR — the pane
+ * has to finish redrawing before a capture means anything, and a capture taken
+ * too early reads the previous frame and calls the send lost. Not derived from
+ * a measurement; 250 ms is a redraw's worth of time on this host and has held
+ * since v0.11.6. Written down so a later reader does not mistake it for one.
+ */
 const DEFAULT_SEND_VERIFY_DELAY_MS = 250;
 
 /** How long a `⚠` notice stays on the target's status line, in ms. */
@@ -1045,7 +1062,15 @@ export class TmuxDriver implements SessionHostDriver {
       // Only transient causes reach here, so a short pause is worth it. The
       // spawn path is the one that matters: it decides a new peer's fate on
       // this answer, and used to decide it on a single attempt.
-      if (attempt < attempts) await new Promise((r) => setTimeout(r, 200));
+      //
+      // Left as a plain pause and NOT folded into `pollUntil` (R5, v0.11.20):
+      // this loop is bounded by attempts against a flaky command, not by a
+      // deadline against a world that is becoming true, and its exit conditions
+      // live inside the try/catch above. Forcing it into a readiness poll would
+      // buy one fewer `setTimeout` and cost the distinction between "tmux did
+      // not answer" and "the pane is not there" — which is the distinction this
+      // function exists for.
+      if (attempt < attempts) await new Promise((r) => setTimeout(r, PROBE_RETRY_PAUSE_MS));
     }
     // Empty every time is absence, and absence is a fact. Anything else —
     // timeouts, unparseable output, a tmux that would not run — is ignorance,
@@ -1061,11 +1086,13 @@ export class TmuxDriver implements SessionHostDriver {
   }
 
   private async verifyKilled(sessionKey: string, budgetMs: number): Promise<boolean> {
-    const deadline = Date.now() + budgetMs;
-    while (Date.now() < deadline) {
-      if (!(await this.hasSession(sessionKey))) return true;
-      await new Promise((r) => setTimeout(r, this.verifyIntervalMs));
-    }
-    return !(await this.hasSession(sessionKey));
+    const outcome = await pollUntil<true>(
+      async () => ((await this.hasSession(sessionKey)) ? null : true),
+      { timeoutMs: budgetMs, pollMs: this.verifyIntervalMs },
+    );
+    // One last look after the budget: a session that goes in the final interval
+    // is gone, and reporting it as still standing would send a caller chasing a
+    // pane that is not there.
+    return outcome.kind === "hit" || !(await this.hasSession(sessionKey));
   }
 }

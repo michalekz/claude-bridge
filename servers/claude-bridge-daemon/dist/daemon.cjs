@@ -4320,7 +4320,7 @@ async function resolvePeer(idOrName, root = bridgeRoot(), now = Date.now()) {
 // package.json
 var package_default = {
   name: "claude-bridge-daemon",
-  version: "0.11.19",
+  version: "0.11.20",
   private: true,
   description: "Control-plane daemon for the claude-bridge plugin: peer lifecycle, telemetry, audit. Distributed as opt-in artefact \u2014 see ADR-008.",
   type: "module",
@@ -5123,6 +5123,42 @@ async function releaseLock() {
   }
 }
 
+// src/poll.ts
+async function pollUntil(probe, opts) {
+  const started = Date.now();
+  const deadline = started + opts.timeoutMs;
+  let attempts = 0;
+  for (; ; ) {
+    if (attempts > 0 && opts.abort) {
+      const verdict = opts.abort();
+      if (verdict.aborted) {
+        return {
+          kind: "aborted",
+          reason: verdict.reason,
+          waitedMs: Date.now() - started,
+          attempts
+        };
+      }
+    }
+    attempts++;
+    const value = await probe();
+    if (value !== null && value !== void 0) {
+      return { kind: "hit", value, waitedMs: Date.now() - started, attempts };
+    }
+    if (opts.maxAttempts !== void 0 && attempts >= opts.maxAttempts) break;
+    if (Date.now() >= deadline) break;
+    await new Promise(
+      (r) => setTimeout(r, Math.min(opts.pollMs, Math.max(0, deadline - Date.now())))
+    );
+  }
+  return {
+    kind: "expired",
+    waitedMs: Date.now() - started,
+    attempts,
+    timeoutMs: opts.timeoutMs
+  };
+}
+
 // src/config-cli.ts
 var CONFIG_HELP = `claude-bridge-daemon config \u2014 read and declare peer intent
 
@@ -5191,17 +5227,20 @@ function parseConfigArgs(argv) {
 function generateRequestId() {
   return `cli-${Date.now().toString(36)}-${(0, import_node_crypto3.randomBytes)(4).toString("hex")}`;
 }
+var CLI_RESULT_POLL_MS = 200;
 async function pollForResult(requestId, timeoutMs) {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    try {
-      return JSON.parse(await (0, import_promises7.readFile)(resultPath(requestId), "utf-8"));
-    } catch (e) {
-      if (e.code !== "ENOENT") throw e;
-    }
-    await new Promise((r) => setTimeout(r, 200));
-  }
-  return null;
+  const outcome = await pollUntil(
+    async () => {
+      try {
+        return { value: JSON.parse(await (0, import_promises7.readFile)(resultPath(requestId), "utf-8")) };
+      } catch (e) {
+        if (e.code !== "ENOENT") throw e;
+        return null;
+      }
+    },
+    { timeoutMs, pollMs: CLI_RESULT_POLL_MS }
+  );
+  return outcome.kind === "hit" ? outcome.value.value : null;
 }
 async function runConfig(argv) {
   if (argv[0] === "--help" || argv[0] === "-h") {
@@ -5420,11 +5459,14 @@ function createAckChannel(channel) {
     async poll(sessionId, deadline, pollMs, requestedAtMs, threadId) {
       const p = path(sessionId);
       let last = { accepted: false, reason: "none" };
-      while (Date.now() < deadline) {
-        last = await verifyAckFile(p, requestedAtMs, threadId);
-        if (last.accepted) return last;
-        await new Promise((r) => setTimeout(r, pollMs));
-      }
+      const outcome = await pollUntil(
+        async () => {
+          last = await verifyAckFile(p, requestedAtMs, threadId);
+          return last.accepted ? last : null;
+        },
+        { timeoutMs: Math.max(0, deadline - Date.now()), pollMs }
+      );
+      if (outcome.kind === "hit") return outcome.value;
       const final = await verifyAckFile(p, requestedAtMs, threadId);
       return final.accepted ? final : final.reason === "none" ? last : final;
     },
@@ -5871,27 +5913,39 @@ async function measureIdentity(panePid, opts = {}) {
   const timeoutMs = opts.timeoutMs ?? IDENTITY_MEASURE_TIMEOUT_MS;
   const pollMs = opts.pollMs ?? IDENTITY_POLL_MS;
   const procRoot = opts.procRoot ?? "/proc";
-  const started = Date.now();
-  const deadline = started + timeoutMs;
-  let attempts = 0;
-  let lastReason = "no-claude-under-pane";
   if (!pidExists(panePid, procRoot)) {
     return { kind: "unknown", reason: "pane-pid-gone", waitedMs: 0, attempts: 0 };
   }
-  for (; ; ) {
-    attempts++;
-    if (attempts > 1 && !pidExists(panePid, procRoot)) {
-      return { kind: "unknown", reason: "pane-pid-gone", waitedMs: Date.now() - started, attempts };
+  let lastReason = "no-claude-under-pane";
+  const outcome = await pollUntil(
+    async () => {
+      const probe = await probeOnce(panePid, inspector);
+      if ("sessionId" in probe) return probe;
+      lastReason = probe.kind;
+      return null;
+    },
+    {
+      timeoutMs,
+      pollMs,
+      // Stop the moment the pane process goes: whatever we were waiting for is
+      // not coming, and continuing would report a timeout for a death.
+      abort: () => pidExists(panePid, procRoot) ? { aborted: false } : { aborted: true, reason: "pane-pid-gone" }
     }
-    const probe = await probeOnce(panePid, inspector);
-    if ("sessionId" in probe) {
-      return { kind: "measured", measurement: probe, waitedMs: Date.now() - started, attempts };
-    }
-    lastReason = probe.kind;
-    if (Date.now() >= deadline) break;
-    await new Promise((r) => setTimeout(r, pollMs));
+  );
+  if (outcome.kind === "hit") {
+    return {
+      kind: "measured",
+      measurement: outcome.value,
+      waitedMs: outcome.waitedMs,
+      attempts: outcome.attempts
+    };
   }
-  return { kind: "unknown", reason: lastReason, waitedMs: Date.now() - started, attempts };
+  return {
+    kind: "unknown",
+    reason: outcome.kind === "aborted" ? "pane-pid-gone" : lastReason,
+    waitedMs: outcome.waitedMs,
+    attempts: outcome.attempts
+  };
 }
 
 // src/handlers/peer-spawn.ts
@@ -6925,20 +6979,15 @@ async function confirmStillRunning(pid, identity, expectedSessionId, opts = {}) 
   const isClaude = (opts.command ?? "").split("/").pop() === "claude";
   const mustRegister = isClaude && isResumableSessionId(expectedSessionId);
   const registered = identity.actual !== null;
-  const start = Date.now();
   const pollMs = 100;
   const budget = registered || !mustRegister ? Math.min(windowMs, 400) : windowMs;
-  while (Date.now() - start < budget) {
-    if (!alive()) {
-      return {
-        ok: false,
-        reason: `pid ${pid} exited ${Date.now() - start} ms after starting`
-      };
-    }
-    await new Promise((r) => setTimeout(r, Math.min(pollMs, budget)));
-  }
-  if (!alive()) {
-    return { ok: false, reason: `pid ${pid} exited ${Date.now() - start} ms after starting` };
+  const outcome = await pollUntil(() => null, {
+    timeoutMs: budget,
+    pollMs,
+    abort: () => alive() ? { aborted: false } : { aborted: true, reason: "exited" }
+  });
+  if (outcome.kind === "aborted" || !alive()) {
+    return { ok: false, reason: `pid ${pid} exited ${outcome.waitedMs} ms after starting` };
   }
   if (mustRegister && !registered) {
     return {
@@ -9303,6 +9352,7 @@ function displacedDraftNotice() {
 }
 
 // src/hosts/tmux-driver.ts
+var PROBE_RETRY_PAUSE_MS = 200;
 var execFileAsync = (0, import_node_util.promisify)(import_node_child_process.execFile);
 var log8 = makeLogger("daemon.host.tmux");
 var EXEC_DEFAULTS = { killSignal: "SIGKILL" };
@@ -10023,7 +10073,7 @@ ${content}`,
         last = `${msg}${stderr ? ` | stderr: ${stderr.trim()}` : ""}`;
         if (_TmuxDriver.NO_SUCH_TARGET.test(last)) return { kind: "no-such-target", raw: last };
       }
-      if (attempt < attempts) await new Promise((r) => setTimeout(r, 200));
+      if (attempt < attempts) await new Promise((r) => setTimeout(r, PROBE_RETRY_PAUSE_MS));
     }
     if (sawEmpty) return { kind: "no-such-target", raw: last };
     return { kind: "unavailable", raw: last, attempts };
@@ -10033,12 +10083,11 @@ ${content}`,
     return probe.kind === "pid" ? probe.pid : null;
   }
   async verifyKilled(sessionKey, budgetMs) {
-    const deadline = Date.now() + budgetMs;
-    while (Date.now() < deadline) {
-      if (!await this.hasSession(sessionKey)) return true;
-      await new Promise((r) => setTimeout(r, this.verifyIntervalMs));
-    }
-    return !await this.hasSession(sessionKey);
+    const outcome = await pollUntil(
+      async () => await this.hasSession(sessionKey) ? null : true,
+      { timeoutMs: budgetMs, pollMs: this.verifyIntervalMs }
+    );
+    return outcome.kind === "hit" || !await this.hasSession(sessionKey);
   }
 };
 
