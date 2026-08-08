@@ -311,7 +311,7 @@ export async function handleTeamRestart(
     dryRun: false,
     total: ordered.length,
     restarted: restarted.map((r) => r.handle),
-    failed: failed.map((r) => ({ sessionId: r.handle, error: r.error })),
+    failed: failed.map((r) => ({ handle: r.handle, error: r.error })),
     // Named, not merely absent from the success list: an operator has to know
     // which peers were never touched so they can finish the roll-out.
     skipped: skipped.map((r) => r.handle),

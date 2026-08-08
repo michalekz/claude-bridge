@@ -6,6 +6,57 @@ All notable changes to this project are documented here. Format follows [Keep a 
 
 _Nothing yet._
 
+## [0.11.24] — 2026-08-08
+
+### The rename that a compiler put back
+
+v0.11.22 swept the untyped surfaces and missed one line. The miss has a shape
+worth naming, because it was not carelessness — it was ORDER:
+
+1. A mechanical pass rewrote `sessionId: <handle-expr>` into `handle: …`.
+2. **Then** the interface field `RestartOutcome.sessionId` was renamed, and the
+   compiler rewrote every `r.sessionId` into `r.handle` — producing a fresh
+   `sessionId: r.handle` in a line the mechanical pass had already walked past.
+
+The file was renamed twice, by two different tools, and a new instance of the
+defect appeared between them. **A compiler that fixes references can manufacture
+exactly the pattern a regex was hunting, and it does it behind the regex's
+back.** The mechanical pass belongs AFTER the type-driven one, never before.
+
+Found in acceptance again, from a live `team_restart` on the etl team:
+`failed: [{"sessionId": "a32e4e44-…"}]`.
+
+### The test that reported coverage it did not have
+
+The v0.11.22 field-name test did not cover the team tools. Extending it was the
+obvious fix — and the first version of the extension **passed against the very
+defect it was written for**, because it used `dryRun: true`, and a dry run
+returns the PLAN while the miss lived in the FAILED list.
+
+A test that exercises a path where the bug cannot appear is worse than no test:
+it reports coverage it does not have. Caught by reverting the fix and watching
+the file stay green.
+
+The block now runs `team_restart` for real against a peer that refuses, so a
+`failed` entry actually exists to inspect, and asserts on the whole serialised
+payload rather than named fields — the miss was in a nested list nobody would
+have thought to name.
+
+The enumeration of team tools carries its own reason, because there is no way to
+ask the daemon "give me every tool that returns a handle". If a new one is added
+and not listed, nothing fails — so the failure message says what to do.
+
+### Also
+
+`~/.claude-bridge/bin/` carried the v0.11.22 daemon while the release said
+v0.11.23: the binary was rebuilt for the release and never copied to where it
+runs. Measured before reporting: `git diff v0.11.22 v0.11.23 -- src/` is empty,
+so no behaviour differed and the stage-2 acceptance results stand. **Deploying
+means copying, not building** — the same family as the artifact check added in
+v0.11.23, one layer further down.
+
+366 daemon tests (+3).
+
 ## [0.11.23] — 2026-08-08
 
 ### Installing a release did not install the program

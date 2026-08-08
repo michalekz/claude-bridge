@@ -188,3 +188,93 @@ describe("an audit event names the handle `handle` too", () => {
     await driver.kill(HANDLE).catch(() => undefined);
   });
 });
+
+/**
+ * v0.11.24 — the enumeration, and why it is an enumeration.
+ *
+ * The v0.11.22 sweep missed `team_restart`, and the miss had a shape worth
+ * naming: the file was renamed TWICE, by two different tools, and a new
+ * instance of the defect appeared between them.
+ *
+ *   1. a mechanical pass rewrote `sessionId: <handle-expr>` -> `handle: …`
+ *   2. THEN the interface field `RestartOutcome.sessionId` was renamed, and the
+ *      compiler rewrote `r.sessionId` into `r.handle` — producing a fresh
+ *      `sessionId: r.handle`, in a line the mechanical pass had already walked
+ *      past.
+ *
+ * So: the mechanical pass belongs AFTER the type-driven one, never before. A
+ * compiler that fixes references can manufacture exactly the pattern a regex
+ * was hunting, and it does it behind the regex's back.
+ *
+ * The tests above cover the tools a caller reaches for first. This block covers
+ * the TEAM tools, which is where the miss was — and it is deliberately a list,
+ * because there is no way to ask the daemon "give me every tool that returns a
+ * handle". If a new team tool is added and not listed here, nothing fails, so
+ * the list carries its own reason and the failure message says what to do.
+ */
+
+const TEAM_TOOLS_RETURNING_HANDLES = [
+  // Each entry: the tool, and args that reach a result WITHOUT touching a peer.
+  //
+  // NOTE the second `team_restart` entry. The first version of this block only
+  // had the dry run — which passed against the very defect it was written for,
+  // because `dryRun` returns the PLAN and the miss was in the FAILED list. A
+  // test that exercises a path where the bug cannot appear is worse than no
+  // test: it reports coverage it does not have. Caught by reverting the fix and
+  // watching this file stay green.
+  { tool: "team_restart", args: { team: "fields", dryRun: true } },
+  { tool: "team_restart", args: { team: "fields", dryRun: false } },
+  // `team_stop` reads a SPEC (file or inline), not the registry — so it gets
+  // one. That difference is itself worth pinning: the two team tools disagree
+  // about where a team comes from.
+  {
+    tool: "team_stop",
+    args: {
+      team: "fields",
+      dryRun: true,
+      inline: { team: "fields", peers: [{ handle: "fields-peer", displayName: "fields-peer" }] },
+    },
+  },
+] as const;
+
+describe("v0.11.24 — team tools name the handle `handle` too", () => {
+  beforeEach(() => {
+    homeHolder.current = `/tmp/cbd-fields-team-${process.hrtime.bigint()}`;
+    vi.resetModules();
+  });
+
+  for (const { tool, args } of TEAM_TOOLS_RETURNING_HANDLES) {
+    it(`${tool} — no \`sessionId\` anywhere in its result`, async () => {
+      const { handlers, state, mock } = await importAll();
+      const doc = state.emptyState("0.11.24-test");
+      // A CLAUDE peer whose identity was never measured: restartable enough to
+      // be attempted, and refused per-peer once it is — which is what puts an
+      // entry in the `failed` list, where the v0.11.22 miss actually lived.
+      doc.peers[HANDLE] = makePeer(
+        HANDLE,
+        { team: "fields", command: "/usr/bin/claude", cwd: "/tmp" },
+        { name: HANDLE, identity: "unknown", sessionId: null },
+      );
+      const driver = new mock.MockDriver();
+
+      const res = await handlers.dispatch(makeRequest(tool, args, `req-${tool}`), {
+        state: doc,
+        hostDriver: driver,
+        daemonVersion: "0.11.24-test",
+      });
+
+      // A real run of a refusing peer answers `error` — the payload is what
+      // this test is about, and it lives in `data` or in the error details.
+      const body = JSON.stringify(res.data ?? res.error?.details ?? {});
+      expect(body).toContain(HANDLE);
+      // Whole-payload, not field-by-field: the v0.11.22 miss was in a nested
+      // failure list nobody would have thought to name.
+      //
+      // If this fails on a tool you just added: the result carries a handle
+      // under the word this project reserves for Claude session ids. Rename the
+      // field to `handle` — and add the new tool to the list above, because
+      // nothing else will notice it is missing.
+      expect(body).not.toContain('"sessionId"');
+    });
+  }
+});

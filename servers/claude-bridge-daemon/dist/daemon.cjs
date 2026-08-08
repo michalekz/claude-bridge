@@ -4320,7 +4320,7 @@ async function resolvePeer(idOrName, root = bridgeRoot(), now = Date.now()) {
 // package.json
 var package_default = {
   name: "claude-bridge-daemon",
-  version: "0.11.23",
+  version: "0.11.24",
   private: true,
   description: "Control-plane daemon for the claude-bridge plugin: peer lifecycle, telemetry, audit. Distributed as opt-in artefact \u2014 see ADR-008.",
   type: "module",
@@ -8966,7 +8966,7 @@ async function handleTeamRestart(req, ctx) {
     dryRun: false,
     total: ordered.length,
     restarted: restarted.map((r) => r.handle),
-    failed: failed.map((r) => ({ sessionId: r.handle, error: r.error })),
+    failed: failed.map((r) => ({ handle: r.handle, error: r.error })),
     // Named, not merely absent from the success list: an operator has to know
     // which peers were never touched so they can finish the roll-out.
     skipped: skipped.map((r) => r.handle),

@@ -159,12 +159,12 @@ describe("team_restart rolls a team, and stops when something is wrong", () => {
     expect(res.error?.code).toBe("team_restart_incomplete");
     const sum = res.error?.details as {
       restarted: string[];
-      failed: Array<{ sessionId: string }>;
+      failed: Array<{ handle: string }>;
       skipped: string[];
       stoppedEarly: boolean;
     };
     expect(sum.restarted).toEqual(["a"]);
-    expect(sum.failed.map((f) => f.sessionId)).toEqual(["b"]);
+    expect(sum.failed.map((f) => f.handle)).toEqual(["b"]);
     // Half a fleet running beats a whole one broken — and the operator has to
     // be told which peers were never attempted.
     expect(sum.skipped).toEqual(["c"]);
