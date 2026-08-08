@@ -171,8 +171,14 @@ life of the peer:
 | `peer_list` (bridge) | `tst-c-3e`, id `e8197b26-f873-40fb-afec-4e370b5c0997` |
 | tmux | session `tst-c`, window `@2226`, pane pid 2249670 |
 
-Both are "right". Nothing reconciles them, and nothing can: the daemon's key was
-never a measurement, it was a wish.
+Both were "right", and nothing reconciled them, because the daemon's key was
+never a measurement — it was a wish.
+
+Measured after the fix, 2026-08-08 11:35, on this very peer: one `team_reconcile`
+pass read its identity off the running process and recorded
+`e8197b26-f873-40fb-afec-4e370b5c0997` against the handle `tst-c`. The two halves
+of the table above are now the same record. Nothing was killed, moved or adopted
+to achieve it — the pass is read-only for drift and writes only what it measured.
 
 **Measured on the live fleet** (2026-08-08): 25 of 26 registry keys are genuine
 session UUIDs. The one that is not is the only peer created by `peer_spawn`
