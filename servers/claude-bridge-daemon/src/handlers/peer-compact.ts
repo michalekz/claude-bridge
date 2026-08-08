@@ -23,7 +23,9 @@ import { ambiguousPeerMessage, resolvePeerRef } from "./peer-ref.ts";
  *      envelope writer — the operator playbook tells peers to react by
  *      writing their compact anchor and then touching
  *      `~/.claude-bridge/control/compact-ack/<sessionId>.json`.
- *   2. Poll for the ack file within `anchorTimeoutMs` (default 30 s).
+ *   2. Poll for the ack file within `anchorTimeoutMs` (default 300 s — see
+ *      DEFAULT_ANCHOR_TIMEOUT_MS; a real anchor takes minutes, measured 122 s
+ *      on a peer with substantial context).
  *      No ack → refuse; the peer wasn't ready and injecting /compact
  *      without a durable anchor would lose context.
  *   3. Ack received → `driver.sendKeys(sessionKey, "/compact")`.

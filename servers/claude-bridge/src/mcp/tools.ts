@@ -2843,7 +2843,7 @@ export const TOOLS: ToolSpec[] = [
   {
     name: "peer_compact",
     description:
-      "Ask the control-plane daemon to orchestrate `/compact` on a peer (v0.10.0-rc). Sequence: daemon writes a bridge inbox message to the peer requesting a compact anchor → peer writes `~/.claude-bridge/control/compact-ack/<sessionId>.json` when ready → daemon `send-keys /compact` into the tmux session → emits `peer_compacted`. Refuses with `anchor_timeout` if the ack file doesn't appear within `anchorTimeoutMs` (default 30 s). This is the ONLY send-keys path in the daemon (charter §8 amendment) — every inject is audit-logged via `peer_compact_inject`. The AUTO-watchdog framework is present but defaults OFF (`config.compactWatchdog.enabled = false`); operator must flip it explicitly. **There is deliberately NO `force` here** (decided v0.11.18): the anchor is the one thing a compact must never skip, so a force could only mean 'do not wait' — and that already exists as `anchorTimeoutMs`. To not wait, pass a small `anchorTimeoutMs`; the call then reports `anchor_timeout` and injects nothing, which is the honest outcome. A force that can only refuse is not a force.",
+      "Ask the control-plane daemon to orchestrate `/compact` on a peer (v0.10.0-rc). Sequence: daemon writes a bridge inbox message to the peer requesting a compact anchor → peer writes `~/.claude-bridge/control/compact-ack/<sessionId>.json` when ready → daemon `send-keys /compact` into the tmux session → emits `peer_compacted`. Refuses with `anchor_timeout` if the ack file doesn't appear within `anchorTimeoutMs` (default 300 s — a peer writing a real anchor takes MINUTES; 122 s measured on a peer with substantial context, so shortening this produces `anchor_timeout` on work that is going fine). This is the ONLY send-keys path in the daemon (charter §8 amendment) — every inject is audit-logged via `peer_compact_inject`. The AUTO-watchdog framework is present but defaults OFF (`config.compactWatchdog.enabled = false`); operator must flip it explicitly. **There is deliberately NO `force` here** (decided v0.11.18): the anchor is the one thing a compact must never skip, so a force could only mean 'do not wait' — and that already exists as `anchorTimeoutMs`. To not wait, pass a small `anchorTimeoutMs`; the call then reports `anchor_timeout` and injects nothing, which is the honest outcome. A force that can only refuse is not a force.",
     inputSchema: {
       type: "object",
       properties: {
@@ -2852,7 +2852,10 @@ export const TOOLS: ToolSpec[] = [
           type: "number",
           minimum: 1,
           maximum: 300000,
-          description: "Wait budget for the ack file (default 30000).",
+          description:
+            "Wait budget for the ack file (default 300000 — three of these numbers " +
+            "disagreed until v0.11.23; the daemon has always used 300000). A peer " +
+            "writing a real anchor takes minutes, not seconds.",
         },
         ackPollMs: {
           type: "number",

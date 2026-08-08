@@ -74,8 +74,16 @@ was read as "the peer is not answering". Fixed in v0.11.0; a second defect
 (a stale acknowledgement being accepted as the answer to a new request) was
 fixed in v0.11.3.
 
-**As of v0.11.5 the number of complete, unassisted cycles observed is small —
-single digits.** Treat it as working but young. In particular:
+**As of v0.11.23 the number of complete, unassisted cycles observed is small —
+low double digits.** Treat it as working but young. In particular:
+
+- **It did not work for a handle-keyed peer until v0.11.21.** The request tells
+  the peer to write `compact-ack/<its own session id>.json`; the daemon waited on
+  `compact-ack/<handle>.json`. For the 24-of-26 peers whose key IS their session
+  id those are the same file, so it worked — for a peer created by `team_layout`
+  it could only ever end in `anchor_timeout`. Both sides were telling the truth
+  and never met. Found by acceptance, not by the suite, because it needs a real
+  peer with a real transcript.
 
 - A peer writing a real anchor takes **minutes**, not seconds. Measured: 122 s
   on a peer with substantial context. The default timeout is 300 s for that
