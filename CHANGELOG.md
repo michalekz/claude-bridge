@@ -6,6 +6,49 @@ All notable changes to this project are documented here. Format follows [Keep a 
 
 _Nothing yet._
 
+## [0.11.10] — 2026-08-08
+
+### A wait that expires is not a verdict
+
+The control plane processes one request at a time, so a caller's wait can run
+out while its request is still queued. The wire answered that with
+`ok: true, timedOut: true` — and both directions of that answer were measured
+wrong on the same day:
+
+- a request reported that way **completed successfully 28 seconds later**;
+- `peer_compact` returned `timedOut: true` while the daemon had recorded
+  `request_completed: ok` after **20.3 s** — reported failure over an actual
+  success.
+
+In both cases the only way to find out what really happened was to read
+`events.jsonl` and the pane by hand. That cannot be the standard procedure.
+
+**A wait that expires now says exactly that**: `outcome: "pending"`, the
+`requestId`, and in plain words that the request was not cancelled, that a long
+operation ahead of it delays everything behind it, and that re-submitting would
+perform the operation a second time.
+
+### New tool: `control_result`
+
+The missing half of the request protocol. Every submitting tool has always
+returned a `requestId`, and nothing accepted one back — so a caller whose wait
+expired had no way to ask. Three answers, and the third is the one that has to
+exist:
+
+| outcome | meaning |
+|---|---|
+| `settled` | the daemon's verdict, passed through verbatim |
+| `pending` | still queued — ask again, do **not** re-submit. Says so explicitly when the daemon is not running, because then nothing is going to process it |
+| `unknown` | no verdict and no queued request: wrong id, or it settled long ago and the files were cleaned up. `events.jsonl` is the durable record |
+
+`unknown` is deliberate. Absence of evidence about an operation is not evidence
+that it failed, and this tool must not be the place that quietly decides
+otherwise.
+
+**What is NOT fixed:** the serialisation itself. A long operation still blocks
+read-only requests behind it, and `daemon status` still answers from the
+heartbeat rather than the queue. `docs/KNOWN-LIMITATIONS.md` says so.
+
 ## [0.11.9] — 2026-08-08
 
 ### One pane, two address forms, two contradictory answers

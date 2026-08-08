@@ -213,6 +213,86 @@ export async function controlConfigTool(
 }
 
 // ============================================================================
+// control_result — collect the verdict of a request that outlived its wait
+// ============================================================================
+
+export const ControlResultArgs = z
+  .object({
+    requestId: z.string().min(1),
+    /** Keep waiting for it, up to `timeoutMs`. */
+    wait: z.boolean().optional(),
+    timeoutMs: z.number().int().positive().max(60_000).optional(),
+  })
+  .strict();
+
+/**
+ * The missing half of the request protocol.
+ *
+ * Every submitting tool returns a `requestId`, and until now nothing accepted
+ * one back: a caller whose wait expired could not ask what happened. The only
+ * remaining route was reading `events.jsonl` by hand — which the maintainers
+ * did, twice, on 2026-08-08, and which is not a procedure anyone should need.
+ *
+ * Three honest answers, and the third is the one that has to exist:
+ *
+ *   settled  — the daemon wrote a verdict; here it is, exactly as recorded
+ *   pending  — no verdict yet, and the request is still on the queue
+ *   unknown  — no verdict AND no request. Either the id is wrong, or the
+ *              record was cleaned up long after the fact. Not a failure of the
+ *              operation: an absence of evidence about it, and saying so beats
+ *              inventing either outcome.
+ */
+export async function controlResultTool(
+  args: z.infer<typeof ControlResultArgs>,
+): Promise<ToolResult> {
+  const presence = await probeDaemon();
+  const timeoutMs = args.wait ? (args.timeoutMs ?? 10_000) : 0;
+  const result =
+    timeoutMs > 0
+      ? await pollForResult(args.requestId, timeoutMs)
+      : await readResult(args.requestId);
+  if (result) {
+    return ok({ requestId: args.requestId, outcome: "settled", result });
+  }
+  const stillQueued = await requestExists(args.requestId);
+  if (stillQueued) {
+    return ok({
+      requestId: args.requestId,
+      outcome: "pending",
+      daemonRunning: presence.running,
+      note: presence.running
+        ? "The request is still queued or running. Ask again; do not re-submit the original call."
+        : "The request is queued but THE DAEMON IS NOT RUNNING, so nothing is processing it. Start the daemon and it will be picked up. Do not re-submit: the queued request is still there and would then run twice.",
+    });
+  }
+  return ok({
+    requestId: args.requestId,
+    outcome: "unknown",
+    note:
+      "No verdict and no queued request under that id. Either the id is wrong, or this request settled long ago and its files were cleaned up. " +
+      "`~/.claude-bridge/control/events.jsonl` is the durable record — search it for the id before concluding anything about what happened.",
+  });
+}
+
+async function readResult(requestId: string): Promise<unknown | null> {
+  try {
+    return JSON.parse(await readFile(resultPath(requestId), "utf-8"));
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code === "ENOENT") return null;
+    throw e;
+  }
+}
+
+async function requestExists(requestId: string): Promise<boolean> {
+  try {
+    await stat(requestPath(requestId));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+// ============================================================================
 // control_status — daemon health + peer summary from state.json
 // ============================================================================
 
@@ -316,16 +396,37 @@ async function submitDaemonRequest(
     const timeoutMs = opts.timeoutMs ?? 10_000;
     const result = await pollForResult(requestId, timeoutMs);
     if (!result) {
+      // WE DO NOT HAVE A VERDICT, so we do not report one (v0.11.10).
+      //
+      // This used to answer `ok: true, timedOut: true`. Both directions of that
+      // lie were measured on 2026-08-08:
+      //
+      //   - a request reported this way COMPLETED successfully 28 s later,
+      //     while its caller had been told something that reads as a result;
+      //   - `peer_compact` returned `timedOut: true` while the daemon recorded
+      //     `request_completed: ok` after 20.3 s. Reported failure, actual
+      //     success — and the only way to find out was to read events.jsonl and
+      //     the pane by hand, which cannot be the standard procedure.
+      //
+      // A caller-side timeout has never cancelled anything server-side (see the
+      // protocol note in the daemon's rpc.ts); the request is queued or
+      // running, and its verdict will exist. So say exactly that, name the way
+      // to collect it, and say plainly not to re-submit — a second `peer_stop`
+      // or `peer_compact` would run the operation twice.
       return ok({
         requestId,
         queuedAt: envelope.ts,
         waited: true,
+        waitedMs: timeoutMs,
+        outcome: "pending",
+        // Kept so older readers do not break, but `outcome` is authoritative.
         timedOut: true,
+        note: `No verdict yet: the daemon has not written a result for ${requestId} within ${timeoutMs} ms. The request was NOT cancelled — it is queued or still running, and a long operation ahead of it in the queue delays everything behind it. Collect the real outcome with \`control_result\` (requestId: "${requestId}"). DO NOT re-submit the same call: it would perform the operation a second time.`,
       });
     }
-    return ok({ requestId, queuedAt: envelope.ts, waited: true, result });
+    return ok({ requestId, queuedAt: envelope.ts, waited: true, outcome: "settled", result });
   }
-  return ok({ requestId, queuedAt: envelope.ts });
+  return ok({ requestId, queuedAt: envelope.ts, outcome: "submitted" });
 }
 
 export async function peerStopTool(

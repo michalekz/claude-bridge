@@ -25,13 +25,24 @@ It had waited 60 seconds.
 **How long operations can be:** `peer_compact` up to 300 s, `team_stop` up to
 120 s per peer.
 
-**What you will see.** Your call times out. The request usually completes
+**What you will see.** Your call stops waiting and answers
+`outcome: "pending"` with a `requestId`. The request usually completes
 correctly afterwards.
 
-**Worse: the timeout answer says `ok: true`.** The `ok` describes whether the
-request was successfully *submitted*, not whether it *succeeded* — and there is
-nothing in the response telling you it is still running or how to collect the
-result. Read `timedOut: true` before you read `ok`.
+**This part is fixed as of v0.11.10.** The timeout answer used to say
+`ok: true, timedOut: true` and nothing else, which was wrong in both
+directions — measured on 2026-08-08, one request reported that way completed
+successfully 28 seconds later, and a `peer_compact` reported as timed out had
+been recorded by the daemon as `ok` after 20.3 s. A wait that expires now says
+so plainly, and `control_result` collects the real verdict:
+
+```
+control_result { requestId: "<the id from the pending answer>" }
+  → outcome: settled | pending | unknown
+```
+
+A caller-side timeout has never cancelled anything server-side. **Do not
+re-submit** a call that answered `pending` — the operation would run twice.
 
 **Worse still: `claude-bridge-daemon status` reports health throughout.** It
 reads a heartbeat file, not the queue. During a total blockage it answers in
@@ -43,9 +54,12 @@ tool will send you looking for the fault in your own code.
 operations to the others first. On a shared machine, a series of compacts will
 give everyone else timeouts on requests that are in fact succeeding.
 
-**Status:** open. The fix separates read-only handlers from the serial loop,
-makes the timeout response honest, and teaches `daemon status` to report the
-queue.
+**Status:** partly fixed. The timeout response is honest as of v0.11.10 and
+`control_result` exists to collect the verdict. **The serialisation itself
+remains**: a long operation still blocks read-only requests behind it, and
+`claude-bridge-daemon status` still answers from the heartbeat rather than from
+the queue. Separating read-only handlers from the serial loop is the remaining
+work.
 
 ---
 

@@ -35,6 +35,7 @@ import { bridgeRoot, encodeProjectDir } from "../util/paths.ts";
 import type { ServerContext } from "./context.ts";
 import {
   ControlConfigArgs,
+  ControlResultArgs,
   ControlStatusArgs,
   PeerCompactArgs,
   PeerRestartArgs,
@@ -48,6 +49,7 @@ import {
   TeamStatusArgs,
   TeamStopArgs,
   controlConfigTool,
+  controlResultTool,
   controlStatusTool,
   peerCompactTool,
   peerRestartTool,
@@ -2606,6 +2608,35 @@ export const TOOLS: ToolSpec[] = [
       const parsed = ControlStatusArgs.safeParse(args);
       if (!parsed.success) return err("invalid_args", "Schema validation failed", parsed.error);
       return controlStatusTool();
+    },
+  },
+  {
+    name: "control_result",
+    description:
+      "Collect the verdict of a control-plane request whose caller-side wait expired. Every submitting tool returns a `requestId`; until v0.11.10 nothing accepted one back, so a caller whose wait ran out could only read events.jsonl by hand. A caller-side timeout NEVER cancels the request — it stays queued or running — so the answer exists or will. Three outcomes: `settled` (the verdict, exactly as the daemon recorded it), `pending` (still queued; ask again, and do NOT re-submit the original call — that would perform the operation twice), `unknown` (no verdict and no queued request: wrong id, or it settled long ago and the files were cleaned up — events.jsonl is the durable record).",
+    inputSchema: {
+      type: "object",
+      properties: {
+        requestId: {
+          type: "string",
+          description: "The requestId returned by the submitting tool.",
+        },
+        wait: {
+          type: "boolean",
+          description: "Keep waiting for the verdict. Default false — one look.",
+        },
+        timeoutMs: {
+          type: "number",
+          description: "Wait budget in ms when `wait` is true (default 10000).",
+        },
+      },
+      required: ["requestId"],
+      additionalProperties: false,
+    },
+    handler: async (args) => {
+      const parsed = ControlResultArgs.safeParse(args);
+      if (!parsed.success) return err("invalid_args", "Schema validation failed", parsed.error);
+      return controlResultTool(parsed.data);
     },
   },
   {
