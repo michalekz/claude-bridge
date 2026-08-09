@@ -16,6 +16,14 @@
  * costs 600 ms. So this narrows the race; it does not close it. The verdict
  * still comes from the recipient's transcript afterwards. A gate that can see
  * the state it gates still only reports the state at the moment it looked.
+ *
+ * WHAT IT CANNOT SEE. The registry is scoped to `CLAUDE_CONFIG_DIR`. Measured
+ * 2026-08-09: a session running flat out under a different config directory was
+ * absent from the list entirely — not idle, not busy, absent. Every peer in
+ * this fleet shares the default directory, so the gate covers them; a peer
+ * started with its own config directory is invisible to it and comes back
+ * `unknown`, which is the honest answer and the reason `unknown` is not folded
+ * into `idle`.
  */
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";

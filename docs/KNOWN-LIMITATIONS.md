@@ -316,6 +316,25 @@ plugin installs work, and it is documented rather than worked around.
 
 ---
 
+## The busy gate is blind to peers under another config directory
+
+Before injecting `/compact`, the daemon asks `claude agents --json` whether the
+peer is mid-turn, and skips the inject when it says `busy`.
+
+That registry is scoped to `CLAUDE_CONFIG_DIR`. Measured 2026-08-09: a session
+working flat out under a different config directory was **absent from the list
+entirely** — not reported idle, not reported busy, simply not there.
+
+For a fleet on the default directory the gate covers every peer. A peer started
+with its own config directory comes back `unknown`, and `unknown` never counts
+as idle: the inject proceeds, and the outcome is read from the peer's
+transcript afterwards exactly as it was before the gate existed.
+
+**Status:** by design. The result carries `agentBusy`, so a `compact_queued`
+outcome can be read against what the gate actually saw.
+
+---
+
 ## A multi-line payload is delivered, but proven more weakly
 
 Anything the control plane puts into a pane — `/compact`, a wake prompt, a
