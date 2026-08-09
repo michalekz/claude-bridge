@@ -1,0 +1,673 @@
+<title>Rotace předplatitelských účtů — podklad k rozhodnutí</title>
+<style>
+  :root {
+    --paper: #f2f3f6;
+    --surface: #fafbfc;
+    --sunk: #e9ebf1;
+    --ink: #171a21;
+    --muted: #5a6070;
+    --rule: #d3d7e2;
+    --accent: #2f4a7a;
+    --accent-soft: #e2e8f4;
+    --ok: #3e7a4e;
+    --warn: #9a6b12;
+    --crit: #a33a2e;
+    --ok-bg: #e6efe8;
+    --warn-bg: #f5ecd8;
+    --crit-bg: #f6e4e1;
+    --serif: "Iowan Old Style", "Palatino Linotype", Palatino, Georgia, "Times New Roman", serif;
+    --sans: system-ui, -apple-system, "Segoe UI", "Liberation Sans", Arial, sans-serif;
+    --mono: ui-monospace, "SFMono-Regular", "JetBrains Mono", "DejaVu Sans Mono", Menlo, monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --paper: #12141a;
+      --surface: #191c24;
+      --sunk: #1f232d;
+      --ink: #e4e7ee;
+      --muted: #9aa2b4;
+      --rule: #2c313d;
+      --accent: #8fa9d8;
+      --accent-soft: #1e2534;
+      --ok: #79b98a;
+      --warn: #d3a642;
+      --crit: #e08072;
+      --ok-bg: #1a2620;
+      --warn-bg: #2a2313;
+      --crit-bg: #2b1a18;
+    }
+  }
+  :root[data-theme="dark"] {
+    --paper: #12141a;
+    --surface: #191c24;
+    --sunk: #1f232d;
+    --ink: #e4e7ee;
+    --muted: #9aa2b4;
+    --rule: #2c313d;
+    --accent: #8fa9d8;
+    --accent-soft: #1e2534;
+    --ok: #79b98a;
+    --warn: #d3a642;
+    --crit: #e08072;
+    --ok-bg: #1a2620;
+    --warn-bg: #2a2313;
+    --crit-bg: #2b1a18;
+  }
+
+  body {
+    background: var(--paper);
+    color: var(--ink);
+    font-family: var(--sans);
+    font-size: 17px;
+    line-height: 1.62;
+    margin: 0;
+    padding: 0 1.25rem 6rem;
+    -webkit-font-smoothing: antialiased;
+  }
+  .wrap { max-width: 52rem; margin: 0 auto; }
+  .prose { max-width: 40rem; }
+
+  header.masthead {
+    border-bottom: 2px solid var(--ink);
+    padding: 3.5rem 0 1.5rem;
+    margin-bottom: 2.5rem;
+  }
+  .eyebrow {
+    font-family: var(--mono);
+    font-size: 0.7rem;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--muted);
+    margin: 0 0 1rem;
+  }
+  h1 {
+    font-family: var(--serif);
+    font-size: clamp(2rem, 5vw, 2.9rem);
+    line-height: 1.12;
+    font-weight: 600;
+    letter-spacing: -0.015em;
+    text-wrap: balance;
+    margin: 0 0 0.75rem;
+  }
+  .standfirst {
+    font-family: var(--serif);
+    font-size: 1.18rem;
+    line-height: 1.5;
+    color: var(--muted);
+    max-width: 34rem;
+    margin: 0 0 1.75rem;
+  }
+  .chips { display: flex; flex-wrap: wrap; gap: 0.5rem; }
+  .chip {
+    font-family: var(--mono);
+    font-size: 0.72rem;
+    letter-spacing: 0.04em;
+    padding: 0.25rem 0.6rem;
+    border: 1px solid var(--rule);
+    border-radius: 2px;
+    background: var(--surface);
+    color: var(--muted);
+  }
+  .chip strong { color: var(--ink); font-weight: 600; }
+
+  h2 {
+    font-family: var(--serif);
+    font-size: 1.6rem;
+    font-weight: 600;
+    letter-spacing: -0.01em;
+    text-wrap: balance;
+    margin: 3.5rem 0 0.25rem;
+    padding-top: 1.25rem;
+    border-top: 1px solid var(--rule);
+  }
+  h3 {
+    font-family: var(--sans);
+    font-size: 0.95rem;
+    font-weight: 700;
+    letter-spacing: 0.02em;
+    margin: 2rem 0 0.5rem;
+  }
+  p { margin: 0 0 1rem; }
+  ul, ol { margin: 0 0 1rem; padding-left: 1.2rem; }
+  li { margin-bottom: 0.35rem; }
+  li::marker { color: var(--muted); }
+  strong { font-weight: 650; }
+  code {
+    font-family: var(--mono);
+    font-size: 0.86em;
+    background: var(--sunk);
+    padding: 0.1em 0.34em;
+    border-radius: 2px;
+  }
+  a { color: var(--accent); }
+
+  .scroller { overflow-x: auto; margin: 1.25rem 0 1.75rem; }
+  table {
+    border-collapse: collapse;
+    width: 100%;
+    font-size: 0.92rem;
+    font-variant-numeric: tabular-nums;
+  }
+  th, td {
+    text-align: left;
+    padding: 0.5rem 0.9rem 0.5rem 0;
+    border-bottom: 1px solid var(--rule);
+    vertical-align: top;
+  }
+  th {
+    font-family: var(--mono);
+    font-size: 0.7rem;
+    letter-spacing: 0.09em;
+    text-transform: uppercase;
+    color: var(--muted);
+    font-weight: 500;
+    border-bottom: 1px solid var(--ink);
+    white-space: nowrap;
+  }
+  tbody tr:last-child td { border-bottom: none; }
+  td.num, th.num { font-family: var(--mono); font-size: 0.85rem; white-space: nowrap; }
+  tr.self td { background: var(--accent-soft); }
+
+  .tag {
+    display: inline-block;
+    font-family: var(--mono);
+    font-size: 0.68rem;
+    letter-spacing: 0.05em;
+    padding: 0.1rem 0.42rem;
+    border-radius: 2px;
+    white-space: nowrap;
+  }
+  .tag.ok { background: var(--ok-bg); color: var(--ok); }
+  .tag.warn { background: var(--warn-bg); color: var(--warn); }
+  .tag.crit { background: var(--crit-bg); color: var(--crit); }
+
+  /* Every claim carries where it came from. */
+  .measured {
+    background: var(--surface);
+    border: 1px solid var(--rule);
+    border-left: 3px solid var(--accent);
+    border-radius: 2px;
+    padding: 1.1rem 1.25rem;
+    margin: 1.5rem 0;
+  }
+  .measured .label {
+    font-family: var(--mono);
+    font-size: 0.66rem;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--accent);
+    margin: 0 0 0.6rem;
+  }
+  .measured p:last-child, .measured ul:last-child { margin-bottom: 0; }
+  .measured .source {
+    font-family: var(--mono);
+    font-size: 0.72rem;
+    color: var(--muted);
+    margin-top: 0.75rem;
+  }
+
+  .flag {
+    background: var(--crit-bg);
+    border: 1px solid var(--crit);
+    border-radius: 2px;
+    padding: 1.1rem 1.25rem;
+    margin: 1.5rem 0;
+  }
+  .flag .label {
+    font-family: var(--mono);
+    font-size: 0.66rem;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--crit);
+    margin: 0 0 0.6rem;
+  }
+  .flag p:last-child { margin-bottom: 0; }
+
+  pre {
+    font-family: var(--mono);
+    font-size: 0.8rem;
+    line-height: 1.55;
+    background: var(--sunk);
+    border: 1px solid var(--rule);
+    border-radius: 2px;
+    padding: 1.1rem 1.25rem;
+    margin: 1.25rem 0;
+    overflow-x: auto;
+  }
+  pre code { background: none; padding: 0; font-size: inherit; }
+
+  .verdicts { display: grid; gap: 0.6rem; margin: 1.25rem 0 1.75rem; }
+  .verdict {
+    display: grid;
+    grid-template-columns: 11rem 1fr;
+    gap: 0.9rem;
+    background: var(--surface);
+    border: 1px solid var(--rule);
+    border-radius: 2px;
+    padding: 0.7rem 0.95rem;
+    font-size: 0.9rem;
+  }
+  .verdict .k { font-family: var(--mono); font-size: 0.78rem; color: var(--accent); }
+  @media (max-width: 34rem) {
+    .verdict { grid-template-columns: 1fr; gap: 0.2rem; }
+  }
+
+  ol.decisions { counter-reset: d; list-style: none; padding-left: 0; }
+  ol.decisions > li {
+    counter-increment: d;
+    display: grid;
+    grid-template-columns: 2.2rem 1fr;
+    gap: 0.9rem;
+    padding: 0.9rem 0;
+    border-bottom: 1px solid var(--rule);
+  }
+  ol.decisions > li::before {
+    content: counter(d);
+    font-family: var(--mono);
+    font-size: 0.95rem;
+    color: var(--accent);
+    padding-top: 0.05rem;
+  }
+  ol.decisions > li:last-child { border-bottom: none; }
+  .rec {
+    font-size: 0.85rem;
+    color: var(--muted);
+    display: block;
+    margin-top: 0.2rem;
+  }
+
+  footer {
+    margin-top: 4rem;
+    padding-top: 1.25rem;
+    border-top: 1px solid var(--rule);
+    font-size: 0.82rem;
+    color: var(--muted);
+  }
+</style>
+
+<div class="wrap">
+
+<header class="masthead">
+  <p class="eyebrow">Podklad k rozhodnutí · claude-bridge</p>
+  <h1>Rotace předplatitelských účtů</h1>
+  <p class="standfirst">Jeden účet vydrží zhruba dvě hodiny intenzivní práce. Dnes se přepíná ručně přes <code>/login</code> s čekáním na potvrzovací e-mail. Tohle je změřený podklad k tomu, jak to dělat strojově.</p>
+  <div class="chips">
+    <span class="chip">stav: <strong>návrh</strong></span>
+    <span class="chip">měřeno: <strong>9. 8. 2026</strong></span>
+    <span class="chip">Claude Code <strong>2.1.226</strong></span>
+    <span class="chip">pro: <strong>Zdeněk, designer</strong></span>
+  </div>
+</header>
+
+<div class="prose">
+<p>Zadání zní <strong>rotace, ne záloha</strong>. Nejde o to, co dělat, když účet spadne — jde o pravidelné kolečko <code>oxy → oxy2 → gmail → oxy</code>, několikrát denně.</p>
+</div>
+
+<div class="scroller">
+<table>
+  <thead>
+    <tr><th>Sekce</th><th>Na co odpovídá</th></tr>
+  </thead>
+  <tbody>
+    <tr><td><a href="#mechanika">Mechanika</a></td><td>Co se při rotaci fyzicky děje</td></tr>
+    <tr><td><a href="#zmereno">Co je změřeno</a></td><td>Šest měření, na kterých návrh stojí</td></tr>
+    <tr><td><a href="#ztraty">Co poskládaný profil ztrácí</a></td><td>Kde je návrh křehký a proč</td></tr>
+    <tr><td><a href="#varianty">Dvě varianty</a></td><td>Roční token × plný přihlašovací soubor</td></tr>
+    <tr><td><a href="#r1">Vada R-1</a></td><td>Rotace rozbije nástroj, který o rotaci rozhoduje</td></tr>
+    <tr><td><a href="#rozhodnuti">Rozhodnuto</a></td><td>Co je rozhodnuté, kým, a co zbývá</td></tr>
+  </tbody>
+</table>
+</div>
+
+<h2 id="mechanika">Mechanika</h2>
+<div class="prose">
+<p>Přihlášení Claude Code je jeden soubor. Rotace je jeho výměna — atomický <code>rename</code>, nic víc.</p>
+</div>
+
+<pre><code>       profily (0700, soubory 0600)
+       ~/.claude-bridge/control/accounts/
+         oxy.token   oxy2.token   gmail.token
+                     │
+                     │  poskládání profilu + atomický rename
+                     ▼
+       ~/.claude/.credentials.json          ← živé přihlášení
+                     │
+                     │  čte se ZNOVU při každém dotazu
+       ┌─────────────┼─────────────┬───────────────┐
+       ▼             ▼             ▼               ▼
+   peer ai-*     peer plt-*    peer mic-*      peer etl-*
+                                                24 záznamů</code></pre>
+
+<div class="prose">
+<p>Roční token ze <code>setup-token</code> se vloží na místo přístupového i obnovovacího tokenu a obě expirace se nastaví rok dopředu. Claude Code takový soubor přijme jako běžné předplatitelské přihlášení.</p>
+</div>
+
+<h2 id="zmereno">Co je změřeno</h2>
+
+<h3>1. Spotřeba teče na účet tokenu</h3>
+<div class="prose">
+<p>Hlavičky <code>anthropic-ratelimit-unified-*</code> u přímého dotazu na <code>/v1/messages</code>. Každý token má vlastní okno — kdyby se spotřeba počítala jinam, okna by se shodovala.</p>
+</div>
+
+<div class="scroller">
+<table>
+  <thead>
+    <tr><th>Token</th><th class="num">5h okno končí</th><th class="num">7d okno končí</th><th>Stav</th></tr>
+  </thead>
+  <tbody>
+    <tr class="self"><td>živé přihlášení</td><td class="num">17:30</td><td class="num">10. 8. 03:00</td><td><span class="tag warn">allowed_warning</span></td></tr>
+    <tr class="self"><td><code>oxy</code></td><td class="num">17:30</td><td class="num">10. 8. 03:00</td><td><span class="tag warn">allowed_warning</span></td></tr>
+    <tr><td><code>oxy2</code></td><td class="num">19:00</td><td class="num">14. 8. 21:00</td><td><span class="tag ok">allowed</span></td></tr>
+    <tr><td><code>gmail</code></td><td class="num">18:30</td><td class="num">16. 8. 01:00</td><td><span class="tag ok">allowed</span></td></tr>
+  </tbody>
+</table>
+</div>
+
+<div class="measured">
+  <p class="label">Druhý, nezávislý doklad</p>
+  <p>Peer běžící pod gmailovým profilem hlásil ve stavové řádce <code>5h = 1 %, reset 18:30</code> a <code>7d = 13 %, reset 16. 8.</code> ve chvíli, kdy účet <code>oxy</code> stál na <strong>19 %</strong> a <strong>91 %</strong>. Souhlasí to na vteřinu s hlavičkami.</p>
+  <p class="source">scratchpad/acct-probe.mjs · zachycení stavové řádky z izolovaného sezení</p>
+</div>
+
+<h3>2. Běžící proces přihlašovací soubor znovu čte</h3>
+<div class="measured">
+  <p class="label">Změřeno</p>
+  <p>Výměna souboru <strong>pod běžícím</strong> textovým rozhraním — hned následující tah jel na novém účtu. Stavová řádka přeskočila z <code>18:30</code> na <code>19:00</code>.</p>
+  <p><strong>Rotace nevyžaduje restart flotily.</strong> Padá tím obava, že by se muselo restartovat 24 peerů.</p>
+</div>
+
+<h3>3. Rozpracovaný tah doběhne na starém účtu</h3>
+<div class="measured">
+  <p class="label">Změřeno</p>
+  <p>Výměna uprostřed streamování stodvacetipoložkového seznamu tah nepřerušila. Seznam doběhl celý a stavová řádka na jeho konci hlásila původní účet. Přepnutí platí od <strong>dalšího</strong> dotazu.</p>
+  <p>Rotace tedy nemusí čekat na klidnou chvíli.</p>
+</div>
+
+<h3>4. Selhání je čitelné a vratné</h3>
+<div class="prose">
+<p>Vložen token platného tvaru a neplatného obsahu — přesně to, co udělá odvolání:</p>
+</div>
+<pre><code>● Login expired · Please run /login</code></pre>
+<div class="prose">
+<p>Žádný pád, žádné zaseknutí, peer žije dál. Po vrácení dobrého tokenu prošel <strong>hned další tah</strong>. Démon má tedy jak selhání poznat i jak ho vrátit.</p>
+</div>
+
+<h3>5. Všechny tři účty dosáhnou na všechny modely</h3>
+<div class="scroller">
+<table>
+  <thead>
+    <tr><th>Profil</th><th>Haiku 4.5</th><th>Opus 5</th><th>Fable 5</th><th>Sonnet 5</th></tr>
+  </thead>
+  <tbody>
+    <tr><td><code>oxy</code></td><td><span class="tag ok">ano</span></td><td><span class="tag ok">ano</span></td><td><span class="tag ok">ano</span></td><td><span class="tag ok">ano</span></td></tr>
+    <tr><td><code>oxy2</code></td><td><span class="tag ok">ano</span></td><td><span class="tag ok">ano</span></td><td><span class="tag ok">ano</span></td><td><span class="tag ok">ano</span></td></tr>
+    <tr><td><code>gmail</code></td><td><span class="tag ok">ano</span></td><td><span class="tag ok">ano</span></td><td><span class="tag ok">ano</span></td><td><span class="tag ok">ano</span></td></tr>
+  </tbody>
+</table>
+</div>
+<div class="prose">
+<p>Rotace navíc uvolní Fable, kde je <code>oxy</code> na <strong>96 %</strong> týdenního stropu. Na Fable jede designer.</p>
+</div>
+
+<h3>6. Firemní politika a seznam kanálů se nemění</h3>
+<div class="prose">
+<p>Pod jiným účtem přišly ze serveru <strong>shodné</strong> soubory <code>policy-limits.json</code> i <code>remote-settings.json</code> včetně našeho seznamu povolených kanálů — na kterém stojí doručování přes push. Platí to proto, že všechny tři účty jsou v témž org, ne obecně.</p>
+</div>
+
+<h2 id="ztraty">Co poskládaný profil ztrácí</h2>
+
+<div class="scroller">
+<table>
+  <thead>
+    <tr><th>Schopnost</th><th>Poskládaný profil</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>bezhlavý běh (<code>-p</code>)</td><td><span class="tag ok">funguje</span></td></tr>
+    <tr><td>rozhraní v <strong>teplém</strong> adresáři</td><td><span class="tag ok">funguje</span></td></tr>
+    <tr><td>rozhraní v <strong>čerstvém</strong> adresáři</td><td><span class="tag crit">skončí na přihlašovací obrazovce</span></td></tr>
+    <tr><td>stavová řádka a procenta limitů</td><td><span class="tag ok">funguje, vlastní účet</span></td></tr>
+    <tr><td><code>/api/oauth/usage</code> — náš druhý zdroj</td><td><span class="tag crit">403, chybí rozsah user:profile</span></td></tr>
+    <tr><td><code>oauthAccount</code>, e-mail, ověření účtu</td><td><span class="tag crit">nevznikne, zůstane zatuchlý</span></td></tr>
+  </tbody>
+</table>
+</div>
+
+<div class="flag">
+  <p class="label">Nosným prvkem je zatuchlá keš</p>
+  <p>Textové rozhraní se na „jsem přihlášen“ ptá záznamu <code>oauthAccount</code> v <code>.claude.json</code>, ne přihlašovacího souboru. Živý adresář ho má z původního přihlášení — proto ostré přepnutí flotila nepoznala. Kdyby Claude Code ten záznam někdy zahodil, spadne <strong>každý</strong> peer na přihlašovací obrazovku.</p>
+  <p>Z toho plyne tvrdé pravidlo: <strong>rotovat se smí přihlašovací SOUBOR, nikdy celý adresář.</strong></p>
+</div>
+
+<h3>Jak ověřit, na kterém účtu flotila jede</h3>
+<ul class="prose">
+  <li><code>auth status</code> <strong>nelže dopředu, jen opakuje</strong>, co zapsalo přihlášení. Pod poskládaným profilem si účet nemá kde vzít.</li>
+  <li><code>userID</code> v <code>.claude.json</code> <strong>není otisk účtu</strong> — protipokus: týž účet ve dvou adresářích dal dvě různá čísla. Je to číslo instalace.</li>
+  <li>Použitelný otisk je <strong><code>resets_at</code> ze stavové řádky</strong>. Každý účet má vlastní okno, démon zná očekávanou hodnotu a umí přepnutí ověřit.</li>
+</ul>
+
+<h2 id="varianty">Dvě varianty</h2>
+
+<div class="scroller">
+<table>
+  <thead>
+    <tr><th>Vlastnost</th><th>A · poskládaný profil</th><th>B · plný soubor z /login</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>pořízení</td><td><code>setup-token</code>, bez prohlížeče</td><td>prohlížeč, jednou za účet</td></tr>
+    <tr><td>platnost</td><td>rok, <strong>nikdy nevaruje</strong></td><td>8 h přístup / 28 dní obnova, varuje 3 dny předem</td></tr>
+    <tr><td>rozsah <code>user:profile</code></td><td><span class="tag crit">ne</span></td><td><span class="tag ok">ano</span></td></tr>
+    <tr><td>viditelnost limitů přes endpoint</td><td><span class="tag crit">ne</span></td><td><span class="tag ok">ano</span></td></tr>
+    <tr><td>ověření účtu</td><td><span class="tag crit">ne</span></td><td><span class="tag ok">ano</span></td></tr>
+    <tr><td>čerstvý adresář</td><td><span class="tag crit">ne</span></td><td><span class="tag ok">ano</span></td></tr>
+    <tr><td>údržba</td><td>varování si musíme <strong>vyrobit sami</strong></td><td>zpětné ukládání po každé obnově</td></tr>
+    <tr><td>ověřitelnost zálohy</td><td><span class="tag ok">kdykoli a libovolně často</span></td><td><span class="tag crit">zkouška ji znehodnotí</span></td></tr>
+  </tbody>
+</table>
+</div>
+
+<div class="flag">
+  <p class="label">Doporučení — po doměření obrácené</p>
+  <p>Ráno tu stálo „začít A, variantu B připravit jako cíl“. <strong>Po měření to neplatí. Doporučení je A jako cílové řešení</strong>, ne jako první krok.</p>
+  <p>Rozhodly tři nálezy, každý sám o sobě dostatečný:</p>
+  <div class="verdicts">
+    <div class="verdict"><span class="k">obnovovací token rotuje</span><span>uložená kopie zestará po každé obnově → zpětné ukládání zhruba po 8 h provozu</span></div>
+    <div class="verdict"><span class="k">28denní okno stojí</span><span>přihlášení přes prohlížeč každých 28 dní na účet, i při denním používání</span></div>
+    <div class="verdict"><span class="k">záloha je neověřitelná</span><span>zkouška ji znehodnotí, ať dopadne jakkoli — viz níže</span></div>
+  </div>
+</div>
+
+<h3>Zálohu s obnovovacím tokenem nelze ověřit, aniž ji spotřebuješ</h3>
+<div class="prose">
+<p>Nejsilnější argument proti B, a vyšel až z posledního pokusu. Zkouška takové zálohy má dva konce a <strong>oba ji znehodnotí</strong>:</p>
+<ul>
+  <li>nefunguje → je mrtvá;</li>
+  <li>funguje → obnovou se token vymění a <strong>kopie tím zestará</strong>.</li>
+</ul>
+<p>Záloha s obnovovacím tokenem je tedy ze své podstaty neověřitelná — dozvíš se o ní až ve chvíli, kdy ji potřebuješ. Roční token nic takového nemá; ověřit se dá kdykoli a libovolně často.</p>
+</div>
+
+<div class="measured">
+  <p class="label">Změřeno 16:09, se souhlasem vlastníka</p>
+  <p>Překonaný obnovovací token vrátil <code>Failed to authenticate: OAuth session expired and could not be refreshed</code> za 114 ms. Obnovovací tokeny jsou <strong>jednorázové</strong>.</p>
+  <p><strong>Odvolání se nešířilo</strong> — roční token téhož účtu i přístupový token ze zálohy dál vracejí 200. Běžná jednorázovost, ne odvolání celé rodiny.</p>
+  <p class="source">izolovaný adresář · flotila v té době jela na poskládaném profilu, živého souboru se to nedotklo</p>
+</div>
+
+<h3>Co si u varianty A hlídat</h3>
+<div class="prose">
+<p>Dvě slabiny, a po posudku designera obě dostaly mechanismus místo poznámky.</p>
+</div>
+
+<div class="flag">
+  <p class="label">Mina s ročním doběhem</p>
+  <p>„Roční token nikdy nevaruje“ vypadá jako drobnost a není. Expirace se nezjistí z tokenu ani z API, takže <strong>jediným nositelem je démonova paměť data vzniku</strong>. Ztratí-li ji — přestavba stavu, migrace, lidský zásah — token vyprší <strong>bez signálu a celá flotila spadne najednou</strong>.</p>
+  <p>Formulace designera, kterou přebírám: <em>vyměnili jsme třídenní varování varianty B za tiché ticho s ročním časovačem.</em></p>
+  <p><strong>Mechanismus:</strong> datum vzniku uložit redundantně <strong>mimo <code>state.json</code></strong>, ať přežije jeho přestavbu, a denně hlásit <strong>klesající počet dní</strong> do expirace. Aktivní odpočet nahradí varování, které mechanismus nemá.</p>
+</div>
+
+<div class="flag">
+  <p class="label">Závislost na nedokumentovaném chování cizího softwaru</p>
+  <p>Celá provozuschopnost flotily pod poskládaným profilem stojí na tom, že Claude Code nikdy nezahodí záznam <code>oauthAccount</code>. Hodinové pozorování není důkaz — a Claude Code aktualizujeme pravidelně. Dnešní ranní P0 byl přesně ukázka toho, že aktualizace mění chování.</p>
+  <p><strong>Mechanismus:</strong> detektor, který zmizení nebo změnu záznamu ohlásí <strong>dřív</strong>, než na to flotila narazí přihlašovací obrazovkou — a přeověření poskládaného profilu <strong>po každé aktualizaci Claude Code</strong>, zapsané do onboardingu jako brána.</p>
+</div>
+
+<h3>Nečinnost ani jedné variantě neuškodí — a aktivita ani jedné nepomůže</h3>
+<div class="prose">
+<p>Otázka vlastníka: nemá se obnova vyvolávat časovačem, když se dlouho nepracuje?</p>
+<ul>
+  <li><strong>U varianty A není co obnovovat.</strong> Roční token žádný obnovovací mechanismus nemá. Nečinnost mu neškodí.</li>
+  <li><strong>U varianty B by časovač nepomohl ani teoreticky:</strong> obnova 28denní okno <strong>neposouvá</strong>. Ani nepřetržitý provoz platnost neprodlouží.</li>
+  <li><strong>Smysl dává časovač na KONTROLU</strong>, ne na obnovu — a je to schopnost, kterou má jen A. Sonda je u ní navíc idempotentní: roční token nerotuje, takže čtením není co pokazit.</li>
+</ul>
+<p>Odpočet dní a sonda živosti proto splývají do <strong>jednoho denního přehledu zdraví účtů</strong>: klesající dny do expirace u každého profilu plus čerstvý důkaz, že token ještě žije.</p>
+</div>
+
+<div class="flag">
+  <p class="label">Rozhodovací měření — vyšla nejdražší varianta</p>
+  <div class="scroller">
+  <table>
+    <thead><tr><th>Co</th><th class="num">Před</th><th class="num">Po</th><th>Verdikt</th></tr></thead>
+    <tbody>
+      <tr><td>přístupový token</td><td class="num">c15b022c</td><td class="num">df04490b</td><td>změněn</td></tr>
+      <tr><td><strong>obnovovací token</strong></td><td class="num">e9339e45</td><td class="num">d5a2c144</td><td><span class="tag crit">ROTUJE</span></td></tr>
+      <tr><td><strong>28denní okno</strong></td><td class="num">6. 9. 15:58:30</td><td class="num">6. 9. 15:58:29</td><td><span class="tag crit">neposouvá se</span></td></tr>
+    </tbody>
+  </table>
+  </div>
+  <p><strong>Varianta B tedy stojí obojí:</strong> zpětné ukládání po každé obnově (zhruba po osmi hodinách provozu), protože uložená kopie zestará — a přihlášení přes prohlížeč <strong>každých 28 dní na účet</strong>, i při denním používání. Varianta A nemá ani jedno.</p>
+  <p>Obnova navíc proběhla <strong>275 sekund před</strong> nominální expirací. Claude Code obnovuje předem, ne až na chybu. Pětihodinové okno se obnovou tokenu neposunulo — je ukotvené nezávisle.</p>
+</div>
+
+<h3>Šest rotací na živé flotile</h3>
+<div class="prose">
+<p><code>oxy → oxy2 → gmail → oxy → oxy2 → gmail → skutečné přihlášení</code>, za tři minuty, na běžící flotile 24 peerů.</p>
+</div>
+<div class="measured">
+  <p class="label">Výsledek</p>
+  <ul>
+    <li><strong>Žádný panel flotily nehlásí <code>Login expired</code></strong> — proskenovány všechny panely všech sezení.</li>
+    <li>Démon běží nepřetržitě od 09:25, registr netknutý, 24 peerů.</li>
+    <li>Návrat na skutečné přihlášení je byte-identický se zálohou; endpoint spotřeby se vrátil do 21 sekund.</li>
+    <li>Peer <code>ai-kb-ops</code> — skutečný člen flotily, ne zkušební — přeskočil na gmail. Rotace platí pro celou flotilu, ne jen pro sezení, které ji provedlo.</li>
+  </ul>
+  <p>⚠ <strong>Obraz flotily rotaci „přesedlává".</strong> Peer aktualizuje svoje čísla, až když něco vykreslí; nečinní drží starý účet libovolně dlouho. Během série byly vidět tři účty najednou. Není to závada, ale démon s tím musí počítat.</p>
+</div>
+
+<h3>Brzda na tep</h3>
+<div class="prose">
+<p>Pevný časovač chrání jen do svého vypršení. Brzda na tep hlídá časovou značku: dokud ji někdo obnovuje, nedělá nic — přestane-li, vrátí poslední funkční přihlášení. Nezávisí na modelu, síti ani na tom, jestli někdo poslouchá.</p>
+</div>
+<div class="measured">
+  <p class="label">Vyzkoušeno naostro</p>
+  <p>Nastavena na 25 sekund, provedena rotace, tep zastaven. V 15:53:01 zjistila stáří 30 sekund a vrátila přesně ten snímek, který si pořídila.</p>
+  <p class="source">scratchpad/rot-heartbeat.sh · arm / beat / disarm / state</p>
+</div>
+
+<h2 id="r1">Vada R-1</h2>
+<div class="prose">
+<p>Rotace rozbije <code>rate_limit_status</code> — tedy právě ten nástroj, který o rotaci rozhoduje.</p>
+</div>
+
+<pre><code>rotace na poskládaný profil
+    │
+    ├─► /api/oauth/usage vrací 403
+    │        │
+    │        └─► curl -f skončí nenulově → soubor se ZÁMĚRNĚ nepřepíše
+    │                 → zachycení zamrzne na STARÉM účtu
+    │
+    └─► stavová řádka hlásí NOVÝ účet
+             │
+             ▼
+    skládání si půjčí severity, isActive, scopedLimits, spend
+    BEZ STROPU STÁŘÍ a bez pojmu, komu ta čísla patří
+             │
+             ▼
+    jedna odpověď, dva účty</code></pre>
+
+<div class="flag">
+  <p class="label">Doloženo v provozu, ne konstrukcí</p>
+  <p>Toto vrátil živý nástroj na živé flotile v 15:56, minutu po rotaci na <code>oxy2</code>:</p>
+  <div class="verdicts">
+    <div class="verdict"><span class="k">week.utilization</span><span><strong>0,46</strong> — oxy2, nový účet</span></div>
+    <div class="verdict"><span class="k">week.resetsAt</span><span><strong>14. 8. 21:00</strong> — oxy2</span></div>
+    <div class="verdict"><span class="k">week.severity</span><span><strong>critical</strong> — oxy, starý účet</span></div>
+    <div class="verdict"><span class="k">scopedLimits.resetsAt</span><span><strong>10. 8. 02:59</strong> — oxy, starý účet</span></div>
+    <div class="verdict"><span class="k">staleness</span><span><strong>fresh</strong></span></div>
+  </div>
+  <p>Šestačtyřicetiprocentní týden označený jako kritický, dvě různá týdenní okna v jednom objektu a nad tím hlavička „čerstvé“.</p>
+</div>
+
+<h3>Návrh opravy</h3>
+<ol class="prose">
+  <li>Rotace zachycení z endpointu <strong>zneplatní</strong>, nenechá ho zamrznout.</li>
+  <li>Skládání smí půjčovat jen tehdy, když se <code>resetsAt</code> obou půlek shoduje.</li>
+  <li>Při neshodě vrátit čistou odpověď ze stavové řádky a říct, že se nepůjčovalo.</li>
+</ol>
+<div class="prose">
+<p>Skládání bylo psáno pro dvě zachycení <strong>téhož</strong> účtu různého stáří. Rotace zavádí případ, se kterým nepočítalo: dvě zachycení <strong>různých</strong> účtů. Stáří se zaznamenává, původ ne.</p>
+</div>
+
+<h2 id="rozhodnuti">Rozhodnuto</h2>
+
+<div class="scroller">
+<table>
+  <thead><tr><th>Co</th><th>Rozhodnutí</th><th>Kdo</th></tr></thead>
+  <tbody>
+    <tr>
+      <td><strong>Distribuce ven</strong></td>
+      <td><span class="tag ok">vydat veřejně</span> — brána je vlastníkova a vlastník ji otevřel</td>
+      <td>Zdeněk, 9. 8.</td>
+    </tr>
+    <tr>
+      <td>Oprava R-1 do téhož vydání</td>
+      <td><span class="tag ok">ano</span> — rotace bez ní vyrábí nástroj, který lže o tom, na kterém účtu flotila je, a přitom je to nástroj, podle kterého se rotuje</td>
+      <td>designer, potvrzeno</td>
+    </tr>
+    <tr>
+      <td>Rozdělení ovládacích ploch</td>
+      <td><span class="tag ok">CLI primitivum, MCP fasáda, spouštěč vypnutý</span> — plus třetí, papírová vrstva pro případ, že neběží ani démon</td>
+      <td>designer, potvrzeno</td>
+    </tr>
+    <tr>
+      <td>Uchovávat plné přihlašovací soubory jako druhou cestu</td>
+      <td><span class="tag crit">ne</span> — a kotva pro <code>restore</code> má být rovněž poskládaný roční profil, ne browserový soubor</td>
+      <td>designer, potvrzeno</td>
+    </tr>
+  </tbody>
+</table>
+</div>
+
+<div class="flag">
+  <p class="label">Podmínka dodání, ne námitka</p>
+  <p>S rozhodnutím vydat veřejně přestává být macOS argumentem a stává se úkolem. Že tam Claude Code drží přihlášení v Keychainu, je <strong>odvození z našeho vlastního kódu, ne měření</strong> — a dokud to platí jako odvození, nesmí se to dodat cizím lidem ani jako fungující, ani jako nefungující.</p>
+  <p>Před veřejným vydáním tedy jedno z dvojího: <strong>chování na macOS změřit</strong>, nebo <strong>podporu platforem přiznat</strong> v dokumentaci nástroje. Bez toho by rotace na cizím Macu selhala způsobem, který uživatel nemá jak pochopit.</p>
+</div>
+
+<h3>Zůstává otevřené</h3>
+<div class="scroller">
+<table>
+  <thead><tr><th>Otázka</th><th>Podklad</th></tr></thead>
+  <tbody>
+    <tr>
+      <td>Přijmout variantu A jako cílové řešení?</td>
+      <td>Doporučení: ano. Ráno tu stálo „A jako první krok, B jako cíl“; měření to obrátilo. Designer souhlasí.</td>
+    </tr>
+    <tr>
+      <td>Smí démon rotovat sám, nebo jen navrhnout?</td>
+      <td>Cena omylu je jedno kopírování navíc; cena pozdní rotace je zastavená flotila. Fáze 3, vypnutá ve výchozím stavu.</td>
+    </tr>
+    <tr>
+      <td>Kdy rotovat — na prahu, nebo po čase?</td>
+      <td>Spouštěč musí koukat na session <strong>i</strong> týden. Předpoklad „skoro vždy jde o session“ 9. 8. neplatil: session 19 %, týden 91 %.</td>
+    </tr>
+  </tbody>
+</table>
+</div>
+
+<footer>
+  <p><strong>Sourozenecký dokument:</strong> <em>Rotace účtů — protokol měření a návrh implementace</em>. Obsahuje úplný postup, všechny hypotézy včetně vyvrácených, popis nástrojů, co zůstalo neověřené, a na to navázaný návrh úprav démona i jeho ovládání. Je určen designerovi k posouzení.</p>
+  <p>Nástroje: <code>rotate.mjs</code> (status / to / restore), <code>rot-heartbeat.sh</code> (brzda na tep), <code>acct-probe.mjs</code>, <code>model-probe.mjs</code>, <code>usage-probe.mjs</code>, <code>rot-observe.mjs</code>, <code>cred-watch.mjs</code>.</p>
+  <p>Úplný záznam měření je v paměti <code>account-rotation</code>. Vada R-1 je v zásobníku jako úloha&nbsp;#97.</p>
+</footer>
+
+</div>
