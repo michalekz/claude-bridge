@@ -94,6 +94,18 @@ box's closing rule, so `readInputLine` returns the payload cleanly with the
 palette open. Implemented literally, that rule would refuse every slash command
 there is, `/compact` first.
 
+#### Measured, and one thing not measured
+
+Acceptance ran on a live peer against the deployed daemon: an idle inject
+produced `peer_compacted` at the moment the compression actually finished
+(51 175 → 8 803 tokens), and a busy inject produced `compact_queued`
+(`waitedMs` 26 005) — the case that reported success the day before.
+
+**`raceRisk` has not been exercised above the threshold.** The acceptance peer
+sat at 16–25 % context, so only the `null` branch ran. The field is advisory
+and blocks nothing, so the first real use above 85 % is what will demonstrate
+it; until then, treat it as written but unwitnessed.
+
 #### Known, not fixed here
 
 The daemon cannot reach a **freshly spawned peer** until its first turn: Claude
