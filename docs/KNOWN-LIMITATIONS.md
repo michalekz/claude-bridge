@@ -387,6 +387,43 @@ Claude Code 2.1.226.
 
 ---
 
+## A cross-session message can be held, and the rule cuts both ways
+
+Claude Code lets your sessions message each other directly. When the two
+sessions run in different **permission-mode classes**, the message is not
+delivered — it is held behind an approval dialog in the receiving pane, and
+dropped if nobody answers within `dialogExpiry` (five minutes by default).
+
+The classes are: sessions that bypass permission prompts, and sessions that
+prompt. A peer in `bypassPermissions` holds messages from anyone who is not
+also bypassing. A peer that prompts holds messages from anyone who is.
+
+**The symmetry is the part that costs an afternoon.** It applies to replies
+exactly as it applies to first contact, so an exchange can be delivered in one
+direction and held in the other. Measured 2026-08-09: a message to a peer in
+`manual mode` arrived and was acted on; the peer's reply was held at the
+sender's end, which runs `bypassPermissions`. The sender's transcript then
+carried
+
+```
+[Cross-session delivery notice] Your message to another session was held
+for the recipient user's approval (recipient: uds:/run/user/1001/cc-socks/1639214.sock)
+```
+
+in a session that had sent nothing to that address — because the address was
+its own. It reads like an anomaly and is not one.
+
+**How to tell:** the notice names the recipient socket. Compare it against
+`/status` (`Peer address` row) or `CLAUDE_CODE_MESSAGING_SOCKET` in the session
+you are diagnosing. If they match, you are looking at a reply to you, held by
+your own settings.
+
+**Workaround:** set `crossSessionInbound` to `accept` on the receiving side.
+**Status:** by design, not a defect. Recorded so it is recognised rather than
+investigated.
+
+---
+
 ## Platform support is uneven
 
 - **Linux + tmux** — what the fleet runs on, and where everything above was

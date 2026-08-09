@@ -22,10 +22,10 @@
  * COMMAND. Delivery is a fact about a terminal; execution is a fact about the
  * recipient, and only the recipient's transcript can report it.
  *
- * WHY NOT AN IDLE GATE INSTEAD
+ * WHY THE OUTCOME IS READ AFTERWARDS RATHER THAN GATED BEFOREHAND
  *
- * The obvious fix is to refuse to inject unless the pane is idle. It cannot be
- * built, and that is measured too, not assumed:
+ * The obvious fix is to refuse to inject unless the peer is idle. Three of the
+ * four sources anyone reaches for cannot answer, and that is measured:
  *
  *   - THE PANE CANNOT SAY. While a peer streams its answer the pane is
  *     indistinguishable from an idle one: no spinner, empty input box, same
@@ -40,9 +40,22 @@
  *     turns. True — and irrelevant. It proves the peer was idle when it acked,
  *     not when we injected. In the incident a new turn started in between.
  *
- * A gate that cannot see the state it gates is worse than no gate: it reports
- * safety it does not have. So the question is asked AFTERWARDS, where the
- * transcript answers it exactly.
+ * THE FOURTH SOURCE CAN, AND THIS COMMENT USED TO DENY IT (corrected v0.11.26).
+ *
+ * It said a gate "cannot be built". That was wrong: it surveyed the pane and
+ * `turnInProgress` and stopped there. `claude agents --json` reports
+ * `status: busy | idle` per session, without a TTY, in about 570 ms — measured
+ * across the whole fleet, and the three peers it called busy were busy.
+ *
+ * So a gate CAN be built, and `peer_compact` uses it. What it cannot do is
+ * close the race, and that is why none of the machinery below is redundant:
+ * between reading `idle` and the keys landing, a turn is free to start. In the
+ * incident that window was 0.4 s, and the read itself costs 570 ms. A gate
+ * narrows the window; only the transcript says what actually happened.
+ *
+ * The rule survives its own correction: a gate that cannot see the state it
+ * gates reports safety it does not have — and a gate that CAN see it still only
+ * reports the state at the moment it looked.
  */
 import { open, readFile, stat } from "node:fs/promises";
 import { join } from "node:path";

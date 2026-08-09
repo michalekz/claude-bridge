@@ -4,7 +4,35 @@ All notable changes to this project are documented here. Format follows [Keep a 
 
 ## [Unreleased] — development channel
 
-_Nothing yet._
+### A gate can be built after all — it just cannot close the race
+
+v0.11.25 stated that an idle gate "cannot be built", and backed it with three
+measurements: the pane cannot say, `turnInProgress` cannot say, the anchor ack
+cannot say. All three hold. The conclusion did not, because the survey stopped
+at three.
+
+**`claude agents --json` reports `status: busy | idle` per session**, without a
+TTY, in about 570 ms. Measured across the whole fleet: 25 sessions, 21 idle,
+3 busy — and the three it called busy were busy. The same call also carries
+`sessionId`, `pid`, `cwd` and `kind`.
+
+What does **not** change is why v0.11.25's machinery exists. Between reading
+`idle` and the keys landing, a turn is free to start; in the incident that
+window was 0.4 s, and the read itself costs 570 ms. A gate narrows the window.
+Only the peer's transcript says what actually happened.
+
+The rule survives its own correction: a gate that cannot see the state it gates
+reports safety it does not have — and a gate that *can* see it still only
+reports the state at the moment it looked.
+
+#### Also
+
+- **The hold rule for cross-session messages is symmetric**, and it is now in
+  `docs/KNOWN-LIMITATIONS.md`. A peer in `bypassPermissions` holds messages from
+  anyone who prompts, and vice versa — in both directions, replies included. A
+  delivery notice naming your own socket as the recipient is a reply to you,
+  held by your own settings. It reads like an anomaly and is not one; it cost an
+  afternoon before it was recognised.
 
 ## [0.11.25] — 2026-08-09
 
@@ -35,6 +63,11 @@ One inject, one execution, **at a time nobody chose**. The pane was busy, so
 Claude Code queued the command; by the time it ran, the world had changed.
 
 #### Why there is still no idle gate
+
+> **Corrected in 0.11.26.** The claim below that a gate "cannot be built" was
+> wrong — it surveyed three sources and there is a fourth. What survives is the
+> reason this release does not rely on one: a gate narrows the race, it does not
+> close it. See the 0.11.26 entry.
 
 The obvious fix is to refuse to inject unless the peer is idle. It cannot be
 built, and that is measured rather than assumed:
