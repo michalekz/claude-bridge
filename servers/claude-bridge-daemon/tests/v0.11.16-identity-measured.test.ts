@@ -117,10 +117,80 @@ describe("measureIdentity — the measurement itself", () => {
       timeoutMs: 200,
       pollMs: 50,
       procRoot: fakeProc,
+      // Empty on purpose. Without it this reaches the real `claude agents
+      // --json` (v0.11.26), and a unit test that shells out is a unit test
+      // whose verdict depends on what else is running on the box.
+      readAgents: async () => [],
     });
     expect(out.kind).toBe("unknown");
     if (out.kind !== "unknown") return;
     expect(out.reason).toBe("no-session-id");
+  }, 15_000);
+
+  it("the client's registry answers when the session file has not appeared", async () => {
+    // v0.11.26. This is the `no-session-id` branch — our process is running and
+    // has written nothing — and it is the branch `restart_identity_unknown`
+    // comes out of. The registry does not depend on that file.
+    const { measureIdentity } = await import("../src/handlers/peer-identity.ts");
+    const out = await measureIdentity(PANE_PID, {
+      // biome-ignore lint/suspicious/noExplicitAny: fake process table
+      inspector: inspectorWith({ sessionId: null }) as any,
+      timeoutMs: 500,
+      pollMs: 50,
+      procRoot: fakeProc,
+      readAgents: async () => [{ sessionId: REAL_UUID, pid: CLAUDE_PID }],
+    });
+    expect(out.kind).toBe("measured");
+    if (out.kind !== "measured") return;
+    expect(out.measurement.sessionId).toBe(REAL_UUID);
+    // Named, not folded into the authoritative source: the three do not fail
+    // together, so a record that hides which one answered cannot be argued with.
+    expect(out.measurement.source).toBe("agents-json");
+    expect(out.measurement.pid).toBe(CLAUDE_PID);
+  }, 15_000);
+
+  it("the registry is not consulted when the file already answered", async () => {
+    // It costs ~600 ms against a 150 ms poll. Paying that on a peer whose file
+    // is already on disk would make the fallback slower than the thing it is
+    // meant to rescue.
+    const { measureIdentity } = await import("../src/handlers/peer-identity.ts");
+    let asked = 0;
+    const out = await measureIdentity(PANE_PID, {
+      // biome-ignore lint/suspicious/noExplicitAny: fake process table
+      inspector: inspectorWith() as any,
+      timeoutMs: 500,
+      pollMs: 50,
+      procRoot: fakeProc,
+      readAgents: async () => {
+        asked++;
+        return [];
+      },
+    });
+    expect(out.kind).toBe("measured");
+    if (out.kind !== "measured") return;
+    expect(out.measurement.source).toBe("sessions-json");
+    expect(asked).toBe(0);
+  }, 15_000);
+
+  it("the registry is asked once per measurement, not once per poll", async () => {
+    // Unmemoised, a 600 ms call on a 150 ms poll spends the whole ceiling
+    // queueing copies of itself and answers later than the file it was meant
+    // to beat.
+    const { measureIdentity } = await import("../src/handlers/peer-identity.ts");
+    let asked = 0;
+    const out = await measureIdentity(PANE_PID, {
+      // biome-ignore lint/suspicious/noExplicitAny: fake process table
+      inspector: inspectorWith({ sessionId: null }) as any,
+      timeoutMs: 400,
+      pollMs: 50,
+      procRoot: fakeProc,
+      readAgents: async () => {
+        asked++;
+        return [];
+      },
+    });
+    expect(out.kind).toBe("unknown");
+    expect(asked).toBe(1);
   }, 15_000);
 
   it("the ceiling is derived from a measurement, not chosen", async () => {

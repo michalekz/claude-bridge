@@ -51,6 +51,20 @@ v0.11.25's after-the-fact verification already covers what this gate misses.
 `agentBusy` travels with every outcome so a later `compact_queued` can be read
 against what the gate saw.
 
+**The same source also answers `restart_identity_unknown`.** Identity is read
+off `~/.claude/sessions/<pid>.json`, and the branch where the process is
+running and the file has not appeared is exactly where that report comes from.
+The registry does not depend on that file, so it is asked there — and only
+there. It costs ~600 ms against a 150 ms poll, so paying it on a peer whose
+file is already on disk would make the fallback slower than the thing it
+rescues; it is asked once per measurement, never once per poll.
+
+`identitySource` gains `agents-json` rather than folding into
+`sessions-json`. The three sources do not fail together: the file can be slow
+while the registry already knows, and the registry can be missing a peer
+another launcher started while the file is right there. A record that hides
+which one answered cannot be argued with when it turns out wrong.
+
 ### A newline is not a formatting detail, it is the choice of route
 
 A multi-line payload used to be refused outright. The reason was sound and is

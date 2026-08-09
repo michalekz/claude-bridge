@@ -237,8 +237,18 @@ export interface PeerObserved {
   identity?: "measured" | "unknown";
   /** When the identity was measured. Absent while it is unknown. */
   identityAt?: string | null;
-  /** How it was read — `sessions-json` is authoritative, `resume-arg` is a fallback. */
-  identitySource?: "sessions-json" | "resume-arg" | null;
+  /**
+   * How it was read — `sessions-json` is authoritative, `resume-arg` is a
+   * fallback, and `agents-json` (v0.11.26) is the client's own registry, asked
+   * only when the session file has not appeared yet.
+   *
+   * Recorded rather than collapsed because the three do not fail together: the
+   * file can be slow while the registry already knows, and the registry can be
+   * missing a peer another launcher started while the file is right there. A
+   * record that hides which one answered cannot be argued with when it turns
+   * out wrong.
+   */
+  identitySource?: "sessions-json" | "resume-arg" | "agents-json" | null;
   /** Where the window actually sits. Compared against `desired.windowIndex` to report drift. */
   windowIndex?: number;
   /** The model actually running, as last measured. `desired.model` is what was asked for. */

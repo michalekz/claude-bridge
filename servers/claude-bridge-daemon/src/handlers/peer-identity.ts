@@ -1,5 +1,6 @@
 import { existsSync } from "node:fs";
 import { join } from "node:path";
+import { readAgents } from "../hosts/agents-json.ts";
 import { type ProcessInspector, defaultProcessInspector } from "../hosts/process-inspector.ts";
 import { pollUntil } from "../poll.ts";
 
@@ -64,10 +65,19 @@ export function bridgeIdOf(record: {
   return record.observed.sessionId ?? record.handle;
 }
 
-/** How the peer's own MCP server learns its identity — so it is authoritative. */
+/**
+ * How the peer's own MCP server learns its identity — so it is authoritative.
+ *
+ * `agents-json` was added in v0.11.26 and is the client's own registry rather
+ * than a file we found on disk. It is recorded as a distinct source because the
+ * three do not fail together: the session file can be slow while the registry
+ * already knows, and the registry can be missing a peer another launcher
+ * started while the file is right there. A measurement that hides which one
+ * answered cannot be argued with when it turns out wrong.
+ */
 export interface IdentityMeasurement {
   sessionId: string;
-  source: "sessions-json" | "resume-arg";
+  source: "sessions-json" | "resume-arg" | "agents-json";
   pid: number;
   measuredAt: string;
 }
@@ -110,6 +120,11 @@ export interface MeasureOptions {
   inspector?: ProcessInspector;
   /** Where to check that the pane process exists. Tests point it at a fixture. */
   procRoot?: string;
+  /**
+   * The client's own session registry, for the case where the file is late.
+   * Injected so tests never shell out; defaults to `readAgents`.
+   */
+  readAgents?: () => Promise<readonly { sessionId: string; pid?: number }[]>;
 }
 
 /**
@@ -142,15 +157,18 @@ function pidExists(pid: number, procRoot: string): boolean {
 async function probeOnce(
   panePid: number,
   inspector: ProcessInspector,
+  askAgents?: () => Promise<readonly { sessionId: string; pid?: number }[]>,
 ): Promise<IdentityMeasurement | { kind: "no-claude-under-pane" | "no-session-id" }> {
   const claudes = await inspector.listClaudePeers().catch(() => []);
   let sawOurs = false;
+  const ours: number[] = [];
   for (const proc of claudes) {
     if (proc.pid !== panePid) {
       const chain = [proc.ppid, ...(await inspector.ancestorsOf(proc.pid).catch(() => []))];
       if (!chain.includes(panePid)) continue;
     }
     sawOurs = true;
+    ours.push(proc.pid);
     if (proc.sessionId && proc.sessionIdSource !== "none") {
       return {
         sessionId: proc.sessionId,
@@ -158,6 +176,29 @@ async function probeOnce(
         pid: proc.pid,
         measuredAt: new Date().toISOString(),
       };
+    }
+  }
+  /**
+   * OUR PROCESS IS THERE AND HAS NOT WRITTEN ITS SESSION FILE (v0.11.26).
+   *
+   * This is `no-session-id`, and it is the branch `restart_identity_unknown`
+   * comes out of. The client's own registry does not depend on that file, so
+   * ask it — but only HERE, once the /proc walk has already told us which pids
+   * are ours. Asking first would cost ~600 ms on every probe of a peer whose
+   * file was already on disk.
+   */
+  if (sawOurs && askAgents) {
+    const agents = await askAgents().catch(() => []);
+    for (const pid of ours) {
+      const hit = agents.find((a) => a.pid === pid);
+      if (hit) {
+        return {
+          sessionId: hit.sessionId,
+          source: "agents-json",
+          pid,
+          measuredAt: new Date().toISOString(),
+        };
+      }
     }
   }
   // The two are different situations and the caller reports them differently:
@@ -188,6 +229,21 @@ export async function measureIdentity(
     return { kind: "unknown", reason: "pane-pid-gone", waitedMs: 0, attempts: 0 };
   }
 
+  /**
+   * ASKED AT MOST ONCE PER MEASUREMENT.
+   *
+   * The poll runs every 150 ms and this call costs about 600 ms, so an
+   * unmemoised version would spend the entire 5 s ceiling queueing copies of
+   * itself and answer later than the file it was meant to beat. One call, and
+   * only from the branch where the file is missing.
+   */
+  const fetchAgents = opts.readAgents ?? readAgents;
+  let agentsOnce: Promise<readonly { sessionId: string; pid?: number }[]> | null = null;
+  const askAgents = () => {
+    agentsOnce ??= fetchAgents();
+    return agentsOnce;
+  };
+
   // Why the last reason is carried out of the loop: the poll only knows "not
   // yet", and the two ways of not knowing — nothing of ours is running, versus
   // it is running and has not written its file — need different answers from
@@ -195,7 +251,7 @@ export async function measureIdentity(
   let lastReason: IdentityUnknownReason = "no-claude-under-pane";
   const outcome = await pollUntil<IdentityMeasurement>(
     async () => {
-      const probe = await probeOnce(panePid, inspector);
+      const probe = await probeOnce(panePid, inspector, askAgents);
       if ("sessionId" in probe) return probe;
       lastReason = probe.kind;
       return null;
