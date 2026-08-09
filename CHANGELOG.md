@@ -101,10 +101,18 @@ produced `peer_compacted` at the moment the compression actually finished
 (51 175 → 8 803 tokens), and a busy inject produced `compact_queued`
 (`waitedMs` 26 005) — the case that reported success the day before.
 
-**`raceRisk` has not been exercised above the threshold.** The acceptance peer
-sat at 16–25 % context, so only the `null` branch ran. The field is advisory
-and blocks nothing, so the first real use above 85 % is what will demonstrate
-it; until then, treat it as written but unwitnessed.
+**`raceRisk` above the threshold — witnessed in production, 2026-08-09 12:07
+UTC.** Acceptance could not exercise it: the scratch peer sat at 16–25 %
+context, so only the `null` branch ran, and this section originally said so. The
+first real call supplied the rest. Peer `ai-kb-ops` at **97 %**: the warning
+fired with `level: compact_race_risk` and the correct note, Claude Code did NOT
+autocompact first (`preemptedByAuto: null`), and the run returned
+`verified: true` with `preTokens 972 850 → postTokens 11 926` and
+`woken: true` — the wake line brought the peer back and it reported in. Anchor
+request → ack → inject → verify → wake, with no hand on it.
+
+That is the near-million-token case the threshold was written for, and it is the
+one the 2026-08-09 incident happened on.
 
 #### Known, not fixed here
 
