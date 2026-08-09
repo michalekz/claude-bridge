@@ -65,6 +65,56 @@ while the registry already knows, and the registry can be missing a peer
 another launcher started while the file is right there. A record that hides
 which one answered cannot be argued with when it turns out wrong.
 
+### One answer must not be built from two accounts
+
+`rate_limit_status` composes utilization and reset times from the statusLine
+capture with `severity`, `isActive`, `scopedLimits` and `spend` from the OAuth
+capture. That was written for two captures of ONE account at two ages, and it
+recorded the age difference faithfully. It had no notion of WHOSE numbers they
+were.
+
+Observed live on 2026-08-09, one minute after rotating a 24-peer fleet between
+two subscription accounts:
+
+```
+week.utilization          0.46          ← the new account
+week.resetsAt             14. 8. 21:00  ← the new account
+week.severity             critical      ← the OLD account
+scopedLimits[0].resetsAt  10. 8. 02:59  ← the OLD account
+staleness                 fresh
+```
+
+A 46 % week labelled critical, two different weekly windows inside one object,
+and one freshness label over the pair. The statusLine render follows the live
+credentials file at once; the OAuth capture freezes the moment the endpoint
+starts refusing the new token, because the hook deliberately leaves the previous
+file in place rather than writing a gap.
+
+**The weekly window is now the account boundary.** Composition borrows only when
+both halves report the same weekly `resetsAt`, and a refusal says so through
+`secondaryRejected` rather than silently thinning the answer — a refusal is not
+a fault, it means the older capture describes a different account.
+
+Two measurements shaped the rule and neither was optional:
+
+- **±120 s, not equality.** The same window arrives as `03:00:00.000Z` from one
+  source and `02:59:59.604Z` from the other, because one rounds a unix timestamp
+  and the other carries microseconds. Comparing for equality would have refused
+  every borrow, always — the fix would have disabled the feature it was meant to
+  correct. Different accounts are days apart, not seconds.
+- **The 5-hour window is deliberately not the boundary.** It rolls every few
+  hours on the same account, so a rule built on it would refuse borrows as a
+  matter of routine, and a refusal that happens constantly stops carrying
+  information.
+
+This is not only a rotation defect. The OAuth endpoint is heavily throttled —
+three consecutive `429`s measured the same day — so the borrowed half can freeze
+at any time, and until now nothing capped how old it was allowed to be.
+
+One existing fixture had to change: it described two different weekly windows,
+which was harmless while "two captures" implicitly meant "one account". The
+boundary check is what turned an arbitrary timestamp into a contradiction.
+
 ### A newline is not a formatting detail, it is the choice of route
 
 A multi-line payload used to be refused outright. The reason was sound and is

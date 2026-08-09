@@ -384,7 +384,13 @@ describe("readLiveRateLimits — source priority", () => {
           },
           seven_day: {
             used_percentage: 20,
-            resets_at: Math.floor(now.getTime() / 1000) + 3600 * 24,
+            // The SAME weekly window the OAuth fixture reports (v0.11.27).
+            // It used to be `now + 24 h`, which described a different week and
+            // therefore — once the account boundary existed — a different
+            // ACCOUNT. Nothing forced this fixture to be coherent while "two
+            // captures" implicitly meant "one account"; the boundary check is
+            // what turned an arbitrary timestamp into a contradiction.
+            resets_at: Math.floor(Date.parse("2026-07-06T02:59:59.590Z") / 1000),
           },
         },
       },

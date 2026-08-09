@@ -197,6 +197,25 @@ export interface SecondarySourceInfo {
   fields: string[];
 }
 
+/**
+ * Why the older capture was NOT borrowed from.
+ *
+ * A refusal is not a fault and must not read like one. It means the two halves
+ * describe DIFFERENT ACCOUNTS, which is exactly what account rotation produces:
+ * the statusLine render follows the live credentials file immediately, while
+ * the OAuth capture freezes at the moment the endpoint starts refusing the new
+ * token. Borrowing across that line yields one answer built from two accounts.
+ */
+export interface SecondaryRejection {
+  source: RateLimitSource;
+  capturedAt: string;
+  capturedAgeSeconds: number;
+  reason: "different-weekly-window";
+  /** The two windows that disagreed, so an operator can see it rather than trust it. */
+  freshWeekResetsAt: string;
+  olderWeekResetsAt: string;
+}
+
 export interface RateLimitStatus {
   hasLiveData: boolean;
   /** Which live source produced this result. v0.9.0+. */
@@ -217,6 +236,8 @@ export interface RateLimitStatus {
   rawExperimental?: Record<string, unknown>;
   /** Present when two captures were combined — says which fields came from the older one. */
   secondary?: SecondarySourceInfo;
+  /** Present when an older capture existed but described a different account. */
+  secondaryRejected?: SecondaryRejection;
   /** Setup instruction pointer when hasLiveData=false. */
   setupPointer?: string;
 }
@@ -536,10 +557,68 @@ export async function readLiveRateLimits(now: Date = new Date()): Promise<RateLi
  * Fresh numbers from the statusLine capture, richer fields from the older
  * OAuth capture, and an explicit note of which half is stale.
  */
+/**
+ * How far apart the two halves may put the SAME weekly window.
+ *
+ * MEASURED 2026-08-09 on one account: the statusLine capture said
+ * `2026-08-10T03:00:00.000Z` and the OAuth capture said
+ * `2026-08-10T02:59:59.604Z` for the same window — 0.4 s apart, because one
+ * rounds a unix timestamp and the other carries microseconds. Comparing for
+ * equality would therefore refuse every borrow, always.
+ *
+ * Two minutes is three hundred times that skew and still nowhere near the gap
+ * between accounts: the three profiles measured that day reset on 10. 8., 14. 8.
+ * and 16. 8. — days apart, not minutes.
+ */
+const SAME_WINDOW_TOLERANCE_MS = 120_000;
+
+/** Do these two halves describe the same weekly window, i.e. the same account? */
+function sameWeeklyWindow(a: string | undefined, b: string | undefined): boolean {
+  if (!a || !b) return true; // Nothing to disagree about.
+  const ta = Date.parse(a);
+  const tb = Date.parse(b);
+  if (Number.isNaN(ta) || Number.isNaN(tb)) return true; // Unparseable is not evidence.
+  return Math.abs(ta - tb) <= SAME_WINDOW_TOLERANCE_MS;
+}
+
 export function composeFromStatusLineAndOAuth(
   fresh: RateLimitStatus,
   older: RateLimitStatus,
 ): RateLimitStatus {
+  /**
+   * THE TWO HALVES MUST BE THE SAME ACCOUNT (v0.11.27).
+   *
+   * This function was written for two captures of ONE account at two ages, and
+   * it recorded the age difference faithfully. Account rotation introduces the
+   * case it never contemplated: two captures of DIFFERENT accounts. The
+   * statusLine render follows the live credentials file at once, while the
+   * OAuth capture freezes the moment the endpoint starts refusing the new
+   * token — and the hook deliberately leaves the previous file in place rather
+   * than writing a gap.
+   *
+   * Observed live on 2026-08-09, one minute after a rotation: `utilization`
+   * 0.46 from the new account beside `severity: "critical"` from the old, two
+   * different weekly windows inside one object, and `staleness: "fresh"` over
+   * the pair. Age was recorded; PROVENANCE was not.
+   *
+   * The weekly window is the boundary rather than the 5-hour one because a 5-h
+   * window legitimately rolls every few hours on the same account — a rule
+   * built on it would refuse borrows as a matter of routine, and a refusal that
+   * happens constantly stops carrying information.
+   */
+  if (!sameWeeklyWindow(fresh.week?.resetsAt, older.week?.resetsAt)) {
+    const rejected: RateLimitStatus = { ...fresh };
+    rejected.secondaryRejected = {
+      source: older.source,
+      capturedAt: older.capturedAt ?? "",
+      capturedAgeSeconds: older.capturedAgeSeconds ?? 0,
+      reason: "different-weekly-window",
+      freshWeekResetsAt: fresh.week?.resetsAt ?? "",
+      olderWeekResetsAt: older.week?.resetsAt ?? "",
+    };
+    return rejected;
+  }
+
   const borrowed: string[] = [];
   const out: RateLimitStatus = { ...fresh, source: "composed" };
 
