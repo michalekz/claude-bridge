@@ -586,7 +586,7 @@ export function composeFromStatusLineAndOAuth(
   older: RateLimitStatus,
 ): RateLimitStatus {
   /**
-   * THE TWO HALVES MUST BE THE SAME ACCOUNT (v0.11.27).
+   * THE TWO HALVES MUST BE THE SAME ACCOUNT (v0.11.26).
    *
    * This function was written for two captures of ONE account at two ages, and
    * it recorded the age difference faithfully. Account rotation introduces the

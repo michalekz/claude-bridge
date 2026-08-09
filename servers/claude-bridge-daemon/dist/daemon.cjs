@@ -4320,7 +4320,7 @@ async function resolvePeer(idOrName, root = bridgeRoot(), now = Date.now()) {
 // package.json
 var package_default = {
   name: "claude-bridge-daemon",
-  version: "0.11.25",
+  version: "0.11.26",
   private: true,
   description: "Control-plane daemon for the claude-bridge plugin: peer lifecycle, telemetry, audit. Distributed as opt-in artefact \u2014 see ADR-008.",
   type: "module",
@@ -5546,6 +5546,66 @@ async function publishLifecycleEvent(payload) {
   }
 }
 
+// src/hosts/agents-json.ts
+var import_node_child_process = require("node:child_process");
+var import_node_util = require("node:util");
+var execFileAsync = (0, import_node_util.promisify)(import_node_child_process.execFile);
+var log7 = makeLogger("daemon.host.agents");
+var AGENTS_TIMEOUT_MS = 5e3;
+function normaliseBusy(record) {
+  if (record.status === "idle") return "idle";
+  if (record.status === "busy") return "busy";
+  return "unknown";
+}
+function parseAgentsJson(stdout) {
+  let parsed;
+  try {
+    parsed = JSON.parse(stdout);
+  } catch {
+    return [];
+  }
+  if (!Array.isArray(parsed)) return [];
+  const out = [];
+  for (const item of parsed) {
+    if (typeof item !== "object" || item === null) continue;
+    const r = item;
+    const sessionId = typeof r["sessionId"] === "string" ? r["sessionId"] : null;
+    if (!sessionId) continue;
+    out.push({
+      sessionId,
+      ...typeof r["name"] === "string" ? { name: r["name"] } : {},
+      ...typeof r["cwd"] === "string" ? { cwd: r["cwd"] } : {},
+      ...typeof r["kind"] === "string" ? { kind: r["kind"] } : {},
+      ...typeof r["pid"] === "number" ? { pid: r["pid"] } : {},
+      ...typeof r["startedAt"] === "number" ? { startedAt: r["startedAt"] } : {},
+      busy: normaliseBusy(r),
+      reported: {
+        ...typeof r["status"] === "string" ? { status: r["status"] } : {},
+        ...typeof r["state"] === "string" ? { state: r["state"] } : {}
+      }
+    });
+  }
+  return out;
+}
+async function readAgents(claudeBin = "claude") {
+  try {
+    const { stdout } = await execFileAsync(claudeBin, ["agents", "--json"], {
+      timeout: AGENTS_TIMEOUT_MS,
+      killSignal: "SIGKILL",
+      maxBuffer: 4 * 1024 * 1024
+    });
+    return parseAgentsJson(stdout);
+  } catch (e) {
+    log7.warn("agents_json_unavailable", { err: e instanceof Error ? e.message : String(e) });
+    return [];
+  }
+}
+function busyOf(records, sessionId) {
+  if (!sessionId) return "unknown";
+  const hit = records.find((r) => r.sessionId === sessionId);
+  return hit ? hit.busy : "unknown";
+}
+
 // src/handlers/ack-protocol.ts
 var import_promises10 = require("node:fs/promises");
 var import_node_path8 = require("node:path");
@@ -5845,15 +5905,17 @@ var IDENTITY_POLL_MS = 150;
 function pidExists(pid, procRoot) {
   return (0, import_node_fs3.existsSync)((0, import_node_path10.join)(procRoot, String(pid)));
 }
-async function probeOnce(panePid, inspector) {
+async function probeOnce(panePid, inspector, askAgents) {
   const claudes = await inspector.listClaudePeers().catch(() => []);
   let sawOurs = false;
+  const ours = [];
   for (const proc of claudes) {
     if (proc.pid !== panePid) {
       const chain = [proc.ppid, ...await inspector.ancestorsOf(proc.pid).catch(() => [])];
       if (!chain.includes(panePid)) continue;
     }
     sawOurs = true;
+    ours.push(proc.pid);
     if (proc.sessionId && proc.sessionIdSource !== "none") {
       return {
         sessionId: proc.sessionId,
@@ -5861,6 +5923,20 @@ async function probeOnce(panePid, inspector) {
         pid: proc.pid,
         measuredAt: (/* @__PURE__ */ new Date()).toISOString()
       };
+    }
+  }
+  if (sawOurs && askAgents) {
+    const agents = await askAgents().catch(() => []);
+    for (const pid of ours) {
+      const hit = agents.find((a) => a.pid === pid);
+      if (hit) {
+        return {
+          sessionId: hit.sessionId,
+          source: "agents-json",
+          pid,
+          measuredAt: (/* @__PURE__ */ new Date()).toISOString()
+        };
+      }
     }
   }
   return { kind: sawOurs ? "no-session-id" : "no-claude-under-pane" };
@@ -5873,10 +5949,16 @@ async function measureIdentity(panePid, opts = {}) {
   if (!pidExists(panePid, procRoot)) {
     return { kind: "unknown", reason: "pane-pid-gone", waitedMs: 0, attempts: 0 };
   }
+  const fetchAgents = opts.readAgents ?? readAgents;
+  let agentsOnce = null;
+  const askAgents = () => {
+    agentsOnce ??= fetchAgents();
+    return agentsOnce;
+  };
   let lastReason = "no-claude-under-pane";
   const outcome = await pollUntil(
     async () => {
-      const probe = await probeOnce(panePid, inspector);
+      const probe = await probeOnce(panePid, inspector, askAgents);
       if ("sessionId" in probe) return probe;
       lastReason = probe.kind;
       return null;
@@ -6087,6 +6169,37 @@ async function handlePeerCompact(req, ctx) {
     note: `Peer is at ${contextPercentBefore}% context. Claude Code may autocompact on its own before this /compact runs, which compresses the same context twice.`
   } : null;
   const transcriptPath = snapshot.transcriptPath;
+  const peerSessionId = record.observed.sessionId ?? void 0;
+  const agentBusy = busyOf(await readAgents(), peerSessionId);
+  if (agentBusy === "busy") {
+    await writeEvent({
+      event: "peer_compact_skipped_busy",
+      level: "warn",
+      by: { sessionId: req.requestedBy.sessionId, name: req.requestedBy.name },
+      requestId: req.id,
+      details: {
+        handle,
+        sessionKey,
+        threadId,
+        anchorMsgId,
+        contextPercentBefore,
+        source: "claude agents --json",
+        note: "The peer is mid-turn. Injecting now would put /compact in its queue, to run at a time nobody chose \u2014 the 2026-08-09 incident."
+      }
+    });
+    return okResult(req.id, req.tool, {
+      handle,
+      sessionKey,
+      threadId,
+      anchorMsgId,
+      contextPercentBefore,
+      raceRisk,
+      verified: false,
+      outcome: "skipped_busy",
+      agentBusy,
+      note: "Nothing was injected: `claude agents --json` reports this peer as busy, and a command sent into a busy pane is queued rather than run. The peer's anchor has been written, so a retry once it is idle costs only the inject."
+    });
+  }
   await writeEvent({
     event: "peer_compact_inject",
     by: { sessionId: req.requestedBy.sessionId, name: req.requestedBy.name },
@@ -6116,7 +6229,15 @@ async function handlePeerCompact(req, ctx) {
     return errResult(req.id, req.tool, "send_keys_failed", msg, { handle, sessionKey });
   }
   await compactAcks.consume(bridgeId);
-  const common = { handle, sessionKey, threadId, anchorMsgId, contextPercentBefore, raceRisk };
+  const common = {
+    handle,
+    sessionKey,
+    threadId,
+    anchorMsgId,
+    contextPercentBefore,
+    raceRisk,
+    agentBusy
+  };
   if (!transcriptPath) {
     await writeEvent({
       event: "peer_compact_unverified",
@@ -7898,7 +8019,7 @@ async function handlePeerRestart(req, ctx) {
 }
 
 // src/handlers/team-adopt.ts
-var log7 = makeLogger("daemon.adopt");
+var log8 = makeLogger("daemon.adopt");
 var TeamAdoptArgsSchema = external_exports.object({
   team: external_exports.string().min(1),
   mode: external_exports.enum(["auto", "manual"]).default("auto"),
@@ -8037,7 +8158,7 @@ async function handleTeamAdopt(req, ctx) {
   const deadWindows = windows.filter((w) => w.dead);
   if (deadWindows.length > 0) {
     windows = windows.filter((w) => !w.dead);
-    log7.warn("adopt_skipped_dead_panes", {
+    log8.warn("adopt_skipped_dead_panes", {
       count: deadWindows.length,
       targets: deadWindows.map((w) => ({ target: w.target, exitStatus: w.exitStatus }))
     });
@@ -9618,7 +9739,7 @@ async function dispatch(req, ctx) {
 
 // src/heartbeat.ts
 var import_promises17 = require("node:fs/promises");
-var log8 = makeLogger("daemon.heartbeat");
+var log9 = makeLogger("daemon.heartbeat");
 var timer = null;
 async function touch() {
   const now = /* @__PURE__ */ new Date();
@@ -9629,7 +9750,7 @@ async function touch() {
     if (code === "ENOENT") {
       await (0, import_promises17.writeFile)(heartbeatPath(), "");
     } else {
-      log8.warn("heartbeat_touch_failed", { err: String(e) });
+      log9.warn("heartbeat_touch_failed", { err: String(e) });
     }
   }
 }
@@ -9648,11 +9769,11 @@ function stopHeartbeat() {
 }
 
 // src/hosts/tmux-driver.ts
-var import_node_child_process = require("node:child_process");
+var import_node_child_process2 = require("node:child_process");
 var import_node_fs7 = require("node:fs");
 var import_promises18 = require("node:fs/promises");
 var import_node_path16 = require("node:path");
-var import_node_util = require("node:util");
+var import_node_util2 = require("node:util");
 
 // src/hosts/input-line.ts
 var INPUT_MARKER = "\u276F";
@@ -9703,10 +9824,27 @@ function paneContains(captured, keys) {
   const probe = needle.length > 40 ? needle.slice(-40) : needle;
   return haystack.includes(probe);
 }
+var PASTED_PLACEHOLDER = /^\[Pasted text #(\d+)(?: \+(\d+) lines?)?\]$/;
+function countLineBreaks(keys) {
+  let n = 0;
+  for (const ch of keys) if (ch === "\n") n++;
+  return n;
+}
+function payloadRoute(keys) {
+  return keys.includes("\n") ? "pasted" : "typed";
+}
 function inputLineHolds(captured, keys) {
   const inputLine = readInputLine(captured);
   if (inputLine.kind === "draft" && paneContains(inputLine.text, keys)) {
     return { delivered: true, where: "input-line", inputLine };
+  }
+  if (inputLine.kind === "draft") {
+    const m = PASTED_PLACEHOLDER.exec(inputLine.text.trim());
+    if (m) {
+      const declared = m[2] === void 0 ? 0 : Number(m[2]);
+      const sent = countLineBreaks(keys);
+      return declared === sent ? { delivered: true, where: "pasted-placeholder", inputLine } : { delivered: false, where: "pasted-line-count-mismatch", inputLine };
+    }
   }
   if (inputLine.kind === "no-marker") {
     return {
@@ -9718,17 +9856,24 @@ function inputLineHolds(captured, keys) {
   const where = paneContains(captured, keys) ? "elsewhere-on-pane" : "absent";
   return { delivered: false, where, inputLine };
 }
+var PASTE_ROUTE_MEASURED_LIMIT = 6e4;
 function refusePayload(keys) {
-  if (/[\n\r]/.test(keys)) {
+  if (keys.includes("\r")) {
     return {
-      reason: "multiline",
-      message: "payload contains a newline \u2014 tmux sends each one as Enter, which would submit the payload in pieces. A payload is one line; see docs/SEND-KEYS.md."
+      reason: "carriage-return",
+      message: "payload contains a carriage return \u2014 how Claude Code counts it in a pasted-text placeholder has not been measured, so delivery could not be verified against it. Send \\n only; see docs/SEND-KEYS.md."
     };
   }
-  if (keys.length > PASTE_COLLAPSE_LIMIT) {
+  if (payloadRoute(keys) === "typed" && keys.length > PASTE_COLLAPSE_LIMIT) {
     return {
-      reason: "too-long",
-      message: `payload is ${keys.length} characters \u2014 Claude Code collapses anything over ${PASTE_COLLAPSE_LIMIT} into a "[Pasted text]" placeholder, after which delivery cannot be verified. See docs/SEND-KEYS.md.`
+      reason: "too-long-to-type",
+      message: `payload is ${keys.length} characters on one line \u2014 Claude Code collapses anything over ${PASTE_COLLAPSE_LIMIT} into a "[Pasted text #N]" placeholder that carries no line count, after which delivery cannot be verified. See docs/SEND-KEYS.md.`
+    };
+  }
+  if (keys.length > PASTE_ROUTE_MEASURED_LIMIT) {
+    return {
+      reason: "beyond-measured-paste",
+      message: `payload is ${keys.length} characters \u2014 the paste route has been measured to ${PASTE_ROUTE_MEASURED_LIMIT}. This is the edge of the evidence, not a known failure; see docs/SEND-KEYS.md.`
     };
   }
   return null;
@@ -9739,8 +9884,8 @@ function displacedDraftNotice() {
 
 // src/hosts/tmux-driver.ts
 var PROBE_RETRY_PAUSE_MS = 200;
-var execFileAsync = (0, import_node_util.promisify)(import_node_child_process.execFile);
-var log9 = makeLogger("daemon.host.tmux");
+var execFileAsync2 = (0, import_node_util2.promisify)(import_node_child_process2.execFile);
+var log10 = makeLogger("daemon.host.tmux");
 var EXEC_DEFAULTS = { killSignal: "SIGKILL" };
 var TMUX_OWNED_VARS = ["TMUX", "TMUX_PANE"];
 var PANE_SELF_DESCRIBING = [
@@ -9777,6 +9922,8 @@ var TmuxDriver = class _TmuxDriver {
   verifyTimeoutMs;
   verifyIntervalMs;
   sendVerifyDelayMs;
+  /** Buffer names must not collide between concurrent sends. */
+  pasteSeq = 0;
   constructor(opts = {}) {
     this.tmuxBin = opts.tmuxBin ?? "tmux";
     this.verifyTimeoutMs = opts.verifyTimeoutMs ?? 2e3;
@@ -9790,7 +9937,7 @@ var TmuxDriver = class _TmuxDriver {
       return windows.some((w) => w.target === t.windowId);
     }
     try {
-      await execFileAsync(this.tmuxBin, ["has-session", "-t", t.session], {
+      await execFileAsync2(this.tmuxBin, ["has-session", "-t", t.session], {
         ...EXEC_DEFAULTS,
         timeout: QUERY_TIMEOUT_MS
       });
@@ -9802,7 +9949,7 @@ var TmuxDriver = class _TmuxDriver {
   /** Session-only probe. `hasSession` resolves window ids; this asks about a session. */
   async rawHasSession(session) {
     try {
-      await execFileAsync(this.tmuxBin, ["has-session", "-t", `${session}:`], {
+      await execFileAsync2(this.tmuxBin, ["has-session", "-t", `${session}:`], {
         ...EXEC_DEFAULTS,
         timeout: QUERY_TIMEOUT_MS
       });
@@ -9813,7 +9960,7 @@ var TmuxDriver = class _TmuxDriver {
   }
   async listWindows() {
     try {
-      const { stdout } = await execFileAsync(
+      const { stdout } = await execFileAsync2(
         this.tmuxBin,
         [
           "list-panes",
@@ -9867,12 +10014,12 @@ var TmuxDriver = class _TmuxDriver {
    */
   async linkedElsewhere(target) {
     try {
-      const { stdout } = await execFileAsync(
+      const { stdout } = await execFileAsync2(
         this.tmuxBin,
         ["display-message", "-p", "-t", target, "#{window_linked_sessions_list}"],
         { ...EXEC_DEFAULTS, timeout: QUERY_TIMEOUT_MS }
       );
-      const { stdout: ownOut } = await execFileAsync(
+      const { stdout: ownOut } = await execFileAsync2(
         this.tmuxBin,
         ["display-message", "-p", "-t", target, "#{session_name}"],
         { ...EXEC_DEFAULTS, timeout: QUERY_TIMEOUT_MS }
@@ -9916,7 +10063,7 @@ var TmuxDriver = class _TmuxDriver {
     let effectiveArgs = args;
     let recreatedHome = false;
     if (asWindow && parentSession !== null && !await this.rawHasSession(parentSession)) {
-      log9.info("tmux_home_session_recreated", { session: parentSession });
+      log10.info("tmux_home_session_recreated", { session: parentSession });
       effectiveArgs = [
         "new-session",
         "-d",
@@ -9938,7 +10085,7 @@ var TmuxDriver = class _TmuxDriver {
     const { env } = opts;
     let createdWindowId = null;
     try {
-      const { stdout } = await execFileAsync(this.tmuxBin, effectiveArgs, {
+      const { stdout } = await execFileAsync2(this.tmuxBin, effectiveArgs, {
         ...EXEC_DEFAULTS,
         // Kept for the tmux CLIENT process itself. It does NOT reach the pane —
         // see envPrefix() for why the pane's environment is built on the
@@ -9948,7 +10095,7 @@ var TmuxDriver = class _TmuxDriver {
       });
       if (asWindow) createdWindowId = stdout.trim() ? trustCanonicalTarget(stdout.trim()) : null;
     } catch (e) {
-      log9.error("tmux_spawn_failed", {
+      log10.error("tmux_spawn_failed", {
         sessionKey: opts.sessionKey,
         canonicalKey,
         err: e instanceof Error ? e.message : String(e)
@@ -9956,7 +10103,7 @@ var TmuxDriver = class _TmuxDriver {
       throw e;
     }
     if (canonicalKey !== opts.sessionKey) {
-      log9.info("session_key_canonicalized", {
+      log10.info("session_key_canonicalized", {
         raw: opts.sessionKey,
         canonical: canonicalKey
       });
@@ -9966,21 +10113,21 @@ var TmuxDriver = class _TmuxDriver {
       ["set-window-option", "-t", effectiveKey, "remain-on-exit", "on"],
       QUERY_TIMEOUT_MS
     ).catch((e) => {
-      log9.warn("tmux_remain_on_exit_not_set", {
+      log10.warn("tmux_remain_on_exit_not_set", {
         sessionKey: effectiveKey,
         err: e instanceof Error ? e.message.split("\n")[0] : String(e)
       });
     });
     const probe = await this.probePanePid(effectiveKey);
     if (probe.kind === "no-such-target") {
-      log9.error("tmux_spawn_target_gone", {
+      log10.error("tmux_spawn_target_gone", {
         sessionKey: opts.sessionKey,
         canonicalKey: effectiveKey,
         raw: probe.raw,
         note: "tmux says the target does not exist \u2014 the command exited immediately"
       });
     } else if (probe.kind === "unavailable") {
-      log9.error("tmux_spawn_pid_unavailable", {
+      log10.error("tmux_spawn_pid_unavailable", {
         sessionKey: opts.sessionKey,
         canonicalKey: effectiveKey,
         raw: probe.raw,
@@ -10005,7 +10152,7 @@ var TmuxDriver = class _TmuxDriver {
         `pane held exit status ${before.exitStatus ?? "unknown"} before teardown`
       );
       if (saved === null) {
-        log9.error("tmux_kill_refused_no_archive", {
+        log10.error("tmux_kill_refused_no_archive", {
           sessionKey: canonical,
           exitStatus: before.exitStatus
         });
@@ -10013,7 +10160,7 @@ var TmuxDriver = class _TmuxDriver {
           `Refusing to destroy '${canonical}': its process had already exited (status ${before.exitStatus ?? "unknown"}) and the pane could NOT be archived, so tearing it down would take the only record of why with it. Read it with \`tmux capture-pane -p -S -2000 -t ${canonical}\` and remove it by hand.`
         );
       }
-      log9.info("tmux_kill_archived_first", {
+      log10.info("tmux_kill_archived_first", {
         sessionKey: canonical,
         archivePath: saved,
         exitStatus: before.exitStatus
@@ -10024,8 +10171,8 @@ var TmuxDriver = class _TmuxDriver {
     if (t.kind === "window") {
       const linked = await this.linkedElsewhere(t.windowId);
       if (linked.length > 0) {
-        log9.warn("tmux_window_linked_unlinking", { target: t.windowId, linkedSessions: linked });
-        await execFileAsync(this.tmuxBin, ["unlink-window", "-t", t.windowId], {
+        log10.warn("tmux_window_linked_unlinking", { target: t.windowId, linkedSessions: linked });
+        await execFileAsync2(this.tmuxBin, ["unlink-window", "-t", t.windowId], {
           ...EXEC_DEFAULTS,
           timeout: MUTATE_TIMEOUT_MS
         });
@@ -10033,7 +10180,7 @@ var TmuxDriver = class _TmuxDriver {
       }
     }
     try {
-      await execFileAsync(this.tmuxBin, [verb, "-t", canonical], {
+      await execFileAsync2(this.tmuxBin, [verb, "-t", canonical], {
         ...EXEC_DEFAULTS,
         timeout: MUTATE_TIMEOUT_MS
       });
@@ -10046,7 +10193,7 @@ var TmuxDriver = class _TmuxDriver {
     const budget = opts.force === true ? this.verifyTimeoutMs / 2 : this.verifyTimeoutMs;
     const respawned = !await this.verifyKilled(canonical, budget);
     if (respawned) {
-      log9.error("tmux_kill_respawn_detected", { sessionKey: canonical });
+      log10.error("tmux_kill_respawn_detected", { sessionKey: canonical });
       throw new Error(
         `Session '${canonical}' respawned within ${budget}ms after kill \u2014 investigate supervisor (bg-pty-host?)`
       );
@@ -10054,7 +10201,7 @@ var TmuxDriver = class _TmuxDriver {
   }
   async listSessions() {
     try {
-      const { stdout } = await execFileAsync(
+      const { stdout } = await execFileAsync2(
         this.tmuxBin,
         ["list-sessions", "-F", "#{session_name}	#{pane_pid}	#{pane_dead}	#{pane_dead_status}"],
         { ...EXEC_DEFAULTS, timeout: QUERY_TIMEOUT_MS }
@@ -10135,7 +10282,7 @@ var TmuxDriver = class _TmuxDriver {
   async sendKeys(sessionKey, keys) {
     const refusal = refusePayload(keys);
     if (refusal) {
-      log9.error("tmux_send_keys_refused", { sessionKey, reason: refusal.reason });
+      log10.error("tmux_send_keys_refused", { sessionKey, reason: refusal.reason });
       throw new Error(`send-keys to '${sessionKey}' refused \u2014 ${refusal.message}`);
     }
     const canonical = formatHostTarget(parseHostTarget(sessionKey));
@@ -10153,7 +10300,7 @@ var TmuxDriver = class _TmuxDriver {
         strokes: cleared.strokes,
         draftChars: cleared.draft.length
       });
-      log9.error("tmux_send_keys_input_stuck", { sessionKey: canonical, strokes: cleared.strokes });
+      log10.error("tmux_send_keys_input_stuck", { sessionKey: canonical, strokes: cleared.strokes });
       throw new Error(
         `send-keys to '${canonical}' refused \u2014 the input line still holds ${cleared.draft.length} characters after ${cleared.strokes} clear strokes, and typing onto a person's unsent text is not an option. Look at the pane: tmux capture-pane -p -t ${canonical}`
       );
@@ -10164,9 +10311,15 @@ var TmuxDriver = class _TmuxDriver {
     let capturedTail = "";
     let lastError = null;
     let where = "absent";
+    let boxAfterAttempt = "empty";
+    const route = payloadRoute(keys);
     for (attempts = 1; attempts <= 2 && !delivered; attempts++) {
       try {
-        await this.tmux(["send-keys", "-t", canonical, "-l", "--", keys], SEND_KEYS_TIMEOUT_MS);
+        if (route === "pasted") {
+          await this.pasteIntoPane(canonical, keys);
+        } else {
+          await this.tmux(["send-keys", "-t", canonical, "-l", "--", keys], SEND_KEYS_TIMEOUT_MS);
+        }
       } catch (e) {
         lastError = e instanceof Error ? e.message : String(e);
         continue;
@@ -10176,6 +10329,8 @@ var TmuxDriver = class _TmuxDriver {
       const probe = inputLineHolds(capturedTail, keys);
       delivered = probe.delivered;
       where = probe.where;
+      boxAfterAttempt = probe.inputLine.kind;
+      if (!delivered && probe.inputLine.kind !== "empty") break;
     }
     await this.logSendKeys(canonical, {
       keys,
@@ -10183,8 +10338,12 @@ var TmuxDriver = class _TmuxDriver {
       attempts: attempts - 1,
       verdict: delivered ? "delivered" : "not-verified",
       // WHERE the text was, not just whether it was somewhere. `elsewhere-on-pane`
-      // is the verdict the pre-v0.11.25 check would have called a success.
+      // is the verdict the pre-v0.11.25 check would have called a success, and
+      // `pasted-placeholder` is a weaker proof than `input-line` — the log has
+      // to let a reader tell all three apart.
       deliveryWhere: where,
+      route,
+      boxAfterAttempt,
       inputLine: cleared.kind,
       clearStrokes: cleared.strokes,
       ...cleared.kind === "displaced" ? { displacedDraft: cleared.draft, restorable: cleared.restorable } : {},
@@ -10192,14 +10351,16 @@ var TmuxDriver = class _TmuxDriver {
       capturedTail: capturedTail.slice(-240)
     });
     if (!delivered) {
-      log9.error("tmux_send_keys_unverified", {
+      log10.error("tmux_send_keys_unverified", {
         sessionKey: canonical,
         attempts: attempts - 1,
         deliveryWhere: where,
+        route,
         err: lastError
       });
+      const detail = where === "elsewhere-on-pane" ? "the text IS on the pane but NOT in the input line, so pressing Enter would submit something else" : where === "pasted-line-count-mismatch" ? "the input line holds a pasted-text placeholder whose line count does not match what was sent \u2014 something is in the box, but it is not this payload" : `text never reached the input line${lastError ? ` (tmux: ${lastError.split("\n")[0]})` : ""}`;
       throw new Error(
-        where === "elsewhere-on-pane" ? `send-keys to '${canonical}' could not be verified after ${attempts - 1} attempts \u2014 the text IS on the pane but NOT in the input line, so pressing Enter would submit something else. Look at the pane: tmux capture-pane -p -t ${canonical}` : `send-keys to '${canonical}' could not be verified after ${attempts - 1} attempts \u2014 text never reached the input line${lastError ? ` (tmux: ${lastError.split("\n")[0]})` : ""}`
+        `send-keys to '${canonical}' could not be verified after ${attempts - 1} attempts \u2014 ${detail}. Look at the pane: tmux capture-pane -p -t ${canonical}`
       );
     }
     await this.tmux(["send-keys", "-t", canonical, "Enter"], SEND_KEYS_TIMEOUT_MS);
@@ -10340,10 +10501,10 @@ var TmuxDriver = class _TmuxDriver {
 ${content}`,
         "utf-8"
       );
-      log9.info("pane_archived", { sessionKey: canonical, path, reason });
+      log10.info("pane_archived", { sessionKey: canonical, path, reason });
       return path;
     } catch (e) {
-      log9.error("pane_archive_failed", {
+      log10.error("pane_archive_failed", {
         sessionKey: canonical,
         err: e instanceof Error ? e.message : String(e)
       });
@@ -10383,7 +10544,54 @@ ${content}`,
     }
   }
   tmux(args, timeout) {
-    return execFileAsync(this.tmuxBin, args, { ...EXEC_DEFAULTS, timeout });
+    return execFileAsync2(this.tmuxBin, args, { ...EXEC_DEFAULTS, timeout });
+  }
+  /**
+   * Run tmux with the payload on stdin instead of on the command line.
+   *
+   * `load-buffer -` exists precisely so a buffer can be filled without the
+   * content becoming an argument. That matters twice over: arguments are
+   * visible in `ps` to every user on the box, and these payloads are messages
+   * between people. A temporary file would have the same problem with a longer
+   * half-life.
+   */
+  async tmuxWithStdin(args, timeout, input) {
+    const running = execFileAsync2(this.tmuxBin, args, { ...EXEC_DEFAULTS, timeout });
+    const child = running.child;
+    child?.stdin?.on("error", () => void 0);
+    child?.stdin?.end(input);
+    await running;
+  }
+  /**
+   * Put a multi-line payload in the box WITHOUT submitting it line by line.
+   *
+   * MEASURED 2026-08-09 on Claude Code 2.1.226. The same four-line payload:
+   *
+   * | route                                | peer's transcript                      |
+   * |--------------------------------------|----------------------------------------|
+   * | `paste-buffer` without `-p`          | three user messages, fourth line orphaned |
+   * | `paste-buffer -p`                    | ONE user message, four lines           |
+   *
+   * `-p` is what makes the difference: it brackets the paste, so the client
+   * reads the newlines as content rather than as Enter. Without it the payload
+   * is submitted in pieces — the exact hazard that made multi-line payloads a
+   * refusal until now.
+   *
+   * `-d` deletes the buffer once it has been pasted. The `finally` covers the
+   * paths where the paste never ran, because a buffer left behind is a copy of
+   * someone's message sitting in the tmux server.
+   */
+  async pasteIntoPane(target, keys) {
+    const buffer = `claude-bridge-${process.pid}-${++this.pasteSeq}`;
+    try {
+      await this.tmuxWithStdin(["load-buffer", "-b", buffer, "-"], SEND_KEYS_TIMEOUT_MS, keys);
+      await this.tmux(
+        ["paste-buffer", "-b", buffer, "-t", target, "-p", "-d"],
+        SEND_KEYS_TIMEOUT_MS
+      );
+    } finally {
+      await this.tmux(["delete-buffer", "-b", buffer], SEND_KEYS_TIMEOUT_MS).catch(() => void 0);
+    }
   }
   /**
    * tmux's own vocabulary for "that target is not there".
@@ -10429,7 +10637,7 @@ ${content}`,
     let sawEmpty = false;
     for (let attempt = 1; attempt <= attempts; attempt++) {
       try {
-        const { stdout } = await execFileAsync(
+        const { stdout } = await execFileAsync2(
           this.tmuxBin,
           [
             "display-message",
@@ -10486,7 +10694,7 @@ ${content}`,
 };
 
 // src/hosts/mock-driver.ts
-var log10 = makeLogger("daemon.host.mock");
+var log11 = makeLogger("daemon.host.mock");
 
 // src/hosts/index.ts
 function defaultHostDriver() {
@@ -10497,14 +10705,14 @@ function defaultHostDriver() {
 }
 
 // src/daemon.ts
-var log11 = makeLogger("daemon");
+var log12 = makeLogger("daemon");
 var POLL_INTERVAL_MS = 250;
 async function runDaemon(opts) {
   try {
     await acquireLock();
   } catch (e) {
     if (e instanceof LockAcquireError) {
-      log11.error("lock_held_by_another_daemon", {
+      log12.error("lock_held_by_another_daemon", {
         heldBy: e.heldBy
       });
       process.exitCode = 3;
@@ -10540,7 +10748,7 @@ async function runDaemon(opts) {
   process.on("SIGINT", () => void shutdown("SIGINT"));
   process.on("SIGTERM", () => void shutdown("SIGTERM"));
   process.on("SIGHUP", () => {
-    log11.info("sighup_reload_stub", { note: "config reload lands in v0.10.0-beta" });
+    log12.info("sighup_reload_stub", { note: "config reload lands in v0.10.0-beta" });
   });
   process.on("SIGPIPE", () => void 0);
   const drainQueue = async () => {
@@ -10560,7 +10768,7 @@ async function runDaemon(opts) {
         continue;
       }
       if (req.id !== fileId) {
-        log11.warn("request_id_filename_mismatch", { fileId, envelopeId: req.id });
+        log12.warn("request_id_filename_mismatch", { fileId, envelopeId: req.id });
       }
       if (!await markRequestDone(fileId)) {
         await writeEvent({
@@ -10601,9 +10809,9 @@ async function runDaemon(opts) {
       // Log on a doubling curve — a 120 s handler drops ~480 ticks and the
       // journal must show the stall without 4 lines per second.
       onSkip: (skipped) => {
-        if (isPowerOfTwo(skipped)) log11.debug("queue_tick_skipped_busy", { skipped });
+        if (isPowerOfTwo(skipped)) log12.debug("queue_tick_skipped_busy", { skipped });
       },
-      onError: (e) => log11.error("queue_error", { err: String(e) })
+      onError: (e) => log12.error("queue_error", { err: String(e) })
     }
   );
   if (opts.once) {
@@ -10617,11 +10825,11 @@ async function runDaemon(opts) {
 }
 
 // src/install.ts
-var import_node_child_process2 = require("node:child_process");
+var import_node_child_process3 = require("node:child_process");
 var import_promises19 = require("node:fs/promises");
 var import_node_os4 = require("node:os");
 var import_node_path17 = require("node:path");
-var log12 = makeLogger("daemon.install");
+var log13 = makeLogger("daemon.install");
 var UNIT_NAME = "claude-bridge-daemon.service";
 function systemdUserDir() {
   return (0, import_node_path17.join)((0, import_node_os4.homedir)(), ".config", "systemd", "user");
@@ -10669,7 +10877,7 @@ function deployMetaPath() {
 async function deployDaemonBinary(sourceBin) {
   const target = deployedDaemonPath();
   if ((0, import_node_path17.resolve)(sourceBin) === (0, import_node_path17.resolve)(target)) {
-    log12.info("deploy_skipped_same_path", { path: target });
+    log13.info("deploy_skipped_same_path", { path: target });
     return target;
   }
   await (0, import_promises19.mkdir)((0, import_node_path17.dirname)(target), { recursive: true });
@@ -10681,7 +10889,7 @@ async function deployDaemonBinary(sourceBin) {
     await (0, import_promises19.mkdir)((0, import_node_path17.dirname)(templateTarget), { recursive: true });
     await (0, import_promises19.writeFile)(templateTarget, templateSource, "utf-8");
   } catch (e) {
-    log12.warn("template_deploy_failed", { err: String(e) });
+    log13.warn("template_deploy_failed", { err: String(e) });
   }
   let version = "unknown";
   try {
@@ -10697,7 +10905,7 @@ async function deployDaemonBinary(sourceBin) {
 `,
     "utf-8"
   );
-  log12.info("daemon_binary_deployed", { source: sourceBin, target, version });
+  log13.info("daemon_binary_deployed", { source: sourceBin, target, version });
   return target;
 }
 async function installSystemd() {
@@ -10710,43 +10918,43 @@ async function installSystemd() {
   const rendered = template.replace(/__NODE_BIN__/g, nodeBin).replace(/__DAEMON_BIN__/g, daemonBin);
   await (0, import_promises19.mkdir)(systemdUserDir(), { recursive: true });
   await (0, import_promises19.writeFile)(unitPath(), rendered, "utf-8");
-  log12.info("unit_written", { path: unitPath(), execStart: daemonBin });
+  log13.info("unit_written", { path: unitPath(), execStart: daemonBin });
   runSystemctl("daemon-reload");
   runSystemctl("enable", UNIT_NAME);
   runSystemctl("restart", UNIT_NAME);
-  log12.info("daemon_started_via_systemd");
+  log13.info("daemon_started_via_systemd");
 }
 async function uninstallSystemd() {
   assertLinux();
   try {
     runSystemctl("stop", UNIT_NAME);
   } catch (e) {
-    log12.warn("systemd_stop_failed", { err: String(e) });
+    log13.warn("systemd_stop_failed", { err: String(e) });
   }
   try {
     runSystemctl("disable", UNIT_NAME);
   } catch (e) {
-    log12.warn("systemd_disable_failed", { err: String(e) });
+    log13.warn("systemd_disable_failed", { err: String(e) });
   }
   try {
     await (0, import_promises19.unlink)(unitPath());
   } catch (e) {
     const code = e.code;
-    if (code !== "ENOENT") log12.warn("unit_unlink_failed", { err: String(e) });
+    if (code !== "ENOENT") log13.warn("unit_unlink_failed", { err: String(e) });
   }
   for (const path of [deployedDaemonPath(), deployMetaPath()]) {
     try {
       await (0, import_promises19.unlink)(path);
     } catch (e) {
       const code = e.code;
-      if (code !== "ENOENT") log12.warn("deployed_binary_unlink_failed", { path, err: String(e) });
+      if (code !== "ENOENT") log13.warn("deployed_binary_unlink_failed", { path, err: String(e) });
     }
   }
   runSystemctl("daemon-reload");
-  log12.info("uninstalled");
+  log13.info("uninstalled");
 }
 function runSystemctl(...args) {
-  (0, import_node_child_process2.execFileSync)("systemctl", ["--user", ...args], { stdio: "inherit" });
+  (0, import_node_child_process3.execFileSync)("systemctl", ["--user", ...args], { stdio: "inherit" });
 }
 async function ensureBinariesExist(daemonBin, nodeBin) {
   for (const [label, path] of [
@@ -10914,7 +11122,7 @@ ${SEND_HELP}` };
 }
 
 // src/index.ts
-var log13 = makeLogger("daemon.cli");
+var log14 = makeLogger("daemon.cli");
 var DAEMON_VERSION = package_default.version;
 var HELP = `claude-bridge-daemon ${DAEMON_VERSION}
 
@@ -11015,6 +11223,6 @@ ${HELP}`);
   }
 }
 main(process.argv.slice(2)).catch((e) => {
-  log13.error("cli_fatal", { err: String(e) });
+  log14.error("cli_fatal", { err: String(e) });
   process.exitCode = 1;
 });

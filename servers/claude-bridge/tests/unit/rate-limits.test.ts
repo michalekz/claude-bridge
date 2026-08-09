@@ -384,7 +384,7 @@ describe("readLiveRateLimits — source priority", () => {
           },
           seven_day: {
             used_percentage: 20,
-            // The SAME weekly window the OAuth fixture reports (v0.11.27).
+            // The SAME weekly window the OAuth fixture reports (v0.11.26).
             // It used to be `now + 24 h`, which described a different week and
             // therefore — once the account boundary existed — a different
             // ACCOUNT. Nothing forced this fixture to be coherent while "two

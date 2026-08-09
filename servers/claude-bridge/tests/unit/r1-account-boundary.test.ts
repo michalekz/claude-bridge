@@ -83,7 +83,6 @@ function frozenPreviousAccount(): RateLimitStatus {
   };
 }
 
-
 /** Both fixtures always set `week`; this says so to the types and to the reader. */
 function withWeekResetsAt(base: RateLimitStatus, resetsAt: string): RateLimitStatus {
   const week = base.week;
