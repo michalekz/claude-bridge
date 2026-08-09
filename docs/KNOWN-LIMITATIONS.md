@@ -316,6 +316,33 @@ plugin installs work, and it is documented rather than worked around.
 
 ---
 
+## `rate_limit_status` reports one freshness for an answer with two ages
+
+The tool composes its answer from two captures: the statusLine render supplies
+utilization and reset times, and the OAuth capture supplies `severity`,
+`isActive`, `scopedLimits`, `spend` and `extraUsage` — fields the statusLine
+payload does not carry at all.
+
+**The borrowed half has no age ceiling.** `secondary.capturedAgeSeconds` states
+how old it is, and nothing acts on that number. The top-level `staleness`
+describes the *fresh* half only, so an answer can read `staleness: "fresh"`
+while its `severity` comes from a capture made an hour earlier.
+
+This is not hypothetical. The OAuth endpoint is heavily rate-limited — measured
+2026-08-09, three calls in a row returned `429` — and the hook deliberately
+leaves the previous file in place on any failure rather than writing a gap. A
+long throttle therefore freezes the borrowed half silently.
+
+**Read `secondary.capturedAgeSeconds` before acting on `severity`.** When the
+two halves disagree — a low `utilization` beside a `critical` severity — the
+severity is the older claim.
+
+**Status:** open. The fix under consideration is to refuse the borrow when the
+two halves' `resetsAt` disagree, which also covers the account-rotation case
+where the halves can describe two different accounts entirely.
+
+---
+
 ## The busy gate is blind to peers under another config directory
 
 Before injecting `/compact`, the daemon asks `claude agents --json` whether the
