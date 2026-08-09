@@ -25,6 +25,32 @@ The rule survives its own correction: a gate that cannot see the state it gates
 reports safety it does not have — and a gate that *can* see it still only
 reports the state at the moment it looked.
 
+**The gate is now built.** `peer_compact` asks the source immediately before
+injecting — after the anchor ack, because writing the ack is itself a turn and
+the peer may still be finishing it. A peer reported `busy` gets nothing
+injected and the caller gets `outcome: "skipped_busy"`, with its anchor already
+written so a retry costs only the inject.
+
+The payload is not uniform, and that is where a careless reader goes wrong:
+
+```
+interactive   pid, cwd, kind, startedAt, sessionId, name, status
+background    id,  cwd, kind, startedAt, sessionId, name, state
+```
+
+A background entry carries **no `status` key at all** and says
+`state: "blocked"` instead. Read `status` off every record and it comes back
+`undefined` — and `undefined` treated as idle is a blocked agent reported
+ready. So `unknown` is a value here rather than an absence, and callers lean it
+towards busy.
+
+One deliberate deviation from that lean: only a **positive** `busy` stops the
+inject. Refusing on `unknown` would make every peer the source does not list —
+anything adopted without a measured session id — permanently uncompactable, and
+v0.11.25's after-the-fact verification already covers what this gate misses.
+`agentBusy` travels with every outcome so a later `compact_queued` can be read
+against what the gate saw.
+
 ### A newline is not a formatting detail, it is the choice of route
 
 A multi-line payload used to be refused outright. The reason was sound and is

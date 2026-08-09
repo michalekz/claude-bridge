@@ -9,6 +9,7 @@ import {
 } from "../compact-verify.ts";
 import { publishLifecycleEvent } from "../event-subscribers.ts";
 import { writeEvent } from "../events.ts";
+import { busyOf, readAgents } from "../hosts/agents-json.ts";
 import type { RequestEnvelope, ResultEnvelope } from "../rpc.ts";
 import { errResult, okResult } from "../rpc.ts";
 import {
@@ -398,6 +399,58 @@ export async function handlePeerCompact(
       : null;
   const transcriptPath = snapshot.transcriptPath;
 
+  /**
+   * IS THE PEER MID-TURN? (v0.11.26, the third source)
+   *
+   * v0.11.25 said this could not be asked. It surveyed the pane, which during
+   * streaming is indistinguishable from idle, and `turnInProgress`, whose last
+   * JSONL event at inject time was `assistant`. Both measurements hold; the
+   * conclusion did not, because `claude agents --json` was never tried. It
+   * answers in about 600 ms without a TTY.
+   *
+   * Asked HERE and not earlier: the anchor ack proves the peer was responsive
+   * a moment ago, not that it is free now — writing the ack is itself a turn,
+   * and it may still be finishing.
+   *
+   * DELIBERATE DEVIATION from `unknown counts as busy`. That rule is right
+   * where the alternative is a retry; here refusing on `unknown` would make
+   * every peer the source does not list — anything adopted without a measured
+   * session id — permanently uncompactable. So only a POSITIVE `busy` stops
+   * the inject. `unknown` proceeds and is recorded, because v0.11.25's
+   * after-the-fact verification already covers the case this gate misses.
+   */
+  const peerSessionId = record.observed.sessionId ?? undefined;
+  const agentBusy = busyOf(await readAgents(), peerSessionId);
+  if (agentBusy === "busy") {
+    await writeEvent({
+      event: "peer_compact_skipped_busy",
+      level: "warn",
+      by: { sessionId: req.requestedBy.sessionId, name: req.requestedBy.name },
+      requestId: req.id,
+      details: {
+        handle,
+        sessionKey,
+        threadId,
+        anchorMsgId,
+        contextPercentBefore,
+        source: "claude agents --json",
+        note: "The peer is mid-turn. Injecting now would put /compact in its queue, to run at a time nobody chose — the 2026-08-09 incident.",
+      },
+    });
+    return okResult(req.id, req.tool, {
+      handle,
+      sessionKey,
+      threadId,
+      anchorMsgId,
+      contextPercentBefore,
+      raceRisk,
+      verified: false,
+      outcome: "skipped_busy",
+      agentBusy,
+      note: "Nothing was injected: `claude agents --json` reports this peer as busy, and a command sent into a busy pane is queued rather than run. The peer's anchor has been written, so a retry once it is idle costs only the inject.",
+    });
+  }
+
   // Charter §8 audit checkpoint — record the EXACT keys we're about to inject
   // BEFORE the send-keys call.
   await writeEvent({
@@ -441,7 +494,18 @@ export async function handlePeerCompact(
    * That is the false success the P0 was made of: `sendKeys` reports on a
    * terminal, and the question is about a peer.
    */
-  const common = { handle, sessionKey, threadId, anchorMsgId, contextPercentBefore, raceRisk };
+  // `agentBusy` travels with every outcome: a result that says `unknown` is a
+  // result whose pre-inject gate had no opinion, and a reader needs that to
+  // interpret a `compact_queued` afterwards.
+  const common = {
+    handle,
+    sessionKey,
+    threadId,
+    anchorMsgId,
+    contextPercentBefore,
+    raceRisk,
+    agentBusy,
+  };
   if (!transcriptPath) {
     // No statusLine capture for this peer → no transcript path → nothing to
     // watch. Say so in the result rather than reporting the old, cheap success:
