@@ -183,6 +183,76 @@ export function paneContains(captured: string, keys: string): boolean {
   return haystack.includes(probe);
 }
 
+/**
+ * WHERE the payload was found — the v0.11.25 delivery contract.
+ *
+ * `input-line` and `no-input-box` license an Enter; the other two do not, and
+ * they are kept apart because they call for different actions.
+ */
+export type DeliveryWhere = "input-line" | "no-input-box" | "elsewhere-on-pane" | "absent";
+
+export type DeliveryProbe = {
+  delivered: boolean;
+  where: DeliveryWhere;
+  /** What the input box held when we looked — evidence for the log. */
+  inputLine: InputLineProbe;
+};
+
+/**
+ * Is the payload in the box we are about to submit?
+ *
+ * The old check was `paneContains(wholePane, keys)`, and it answered a
+ * different question: "is this string visible anywhere on screen". Those two
+ * questions come apart, and the difference is an Enter pressed on something
+ * nobody verified — the command palette, a transcript line quoting the payload,
+ * a line still being rendered. Verification that searches the whole screen
+ * verifies VISIBILITY, not DELIVERY.
+ *
+ * MEASURED 2026-08-09 on Claude Code 2.1.226, and it settles a design question
+ * the P0 brief got wrong: the slash palette does NOT carry the `❯` marker, and
+ * it is drawn BELOW the box's closing rule. So with `/repro-marker` typed and
+ * the palette open, `readInputLine` returns exactly `draft: "/repro-marker"`.
+ *
+ * That matters, because the brief asked for "and the pane is not showing a
+ * palette". Implemented literally that would refuse every slash command
+ * forever — `/compact` opens the palette by being typed. The palette is not the
+ * hazard; submitting text nobody located is. So the contract is positional
+ * only: the payload must be IN THE BOX.
+ */
+export function inputLineHolds(captured: string, keys: string): DeliveryProbe {
+  const inputLine = readInputLine(captured);
+  if (inputLine.kind === "draft" && paneContains(inputLine.text, keys)) {
+    return { delivered: true, where: "input-line", inputLine };
+  }
+  /**
+   * NO CLAUDE CODE INPUT BOX — a shell, a pager, a pane still starting.
+   *
+   * `clearInputLine` already refuses to claim a verdict about a pane it cannot
+   * parse, and the same restraint belongs here: a rule written for Claude
+   * Code's TUI must not decide that a `bash` pane is undeliverable. The first
+   * version of this function had no such branch and took six live-tmux tests
+   * with it, every one of them sending into a plain shell.
+   *
+   * So we fall back to the pre-v0.11.25 whole-pane check — and NAME the
+   * fallback, because a verdict reached by a weaker rule must not be
+   * indistinguishable in the log from one reached by the strong rule. The
+   * hazard this release exists for lives in the Claude Code box, and there the
+   * strong rule always applies.
+   */
+  if (inputLine.kind === "no-marker") {
+    return {
+      delivered: paneContains(captured, keys),
+      where: "no-input-box",
+      inputLine,
+    };
+  }
+  // Not in the box. Say whether the OLD check would have passed, because that
+  // is the difference between "this release changed the verdict" and "the send
+  // genuinely failed" — and an operator reading the log needs to tell them apart.
+  const where: DeliveryWhere = paneContains(captured, keys) ? "elsewhere-on-pane" : "absent";
+  return { delivered: false, where, inputLine };
+}
+
 /** Why a payload may not be typed into a pane at all. */
 export type PayloadRefusal = { reason: "multiline" | "too-long"; message: string };
 

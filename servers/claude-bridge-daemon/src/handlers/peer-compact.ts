@@ -1,5 +1,12 @@
 import { mkdir } from "node:fs/promises";
 import { z } from "zod";
+import {
+  COMPACT_RACE_PERCENT,
+  DEFAULT_VERIFY_TIMEOUT_MS,
+  markTranscript,
+  readPeerContext,
+  watchForCompact,
+} from "../compact-verify.ts";
 import { publishLifecycleEvent } from "../event-subscribers.ts";
 import { writeEvent } from "../events.ts";
 import type { RequestEnvelope, ResultEnvelope } from "../rpc.ts";
@@ -36,17 +43,24 @@ import { ambiguousPeerMessage, resolvePeerRef } from "./peer-ref.ts";
  * (default false) — this handler is only invoked directly. Ownership
  * of the flip is the owner's.
  *
- * THE INVARIANT — why there is no "is the peer idle?" check:
+ * THE INVARIANT THAT WAS NOT ONE (corrected v0.11.25):
  *
- *   THE ACK IS ITSELF THE PROOF OF IDLE. A peer only reaches its inbox between
- *   turns, so a peer that acked was, by construction, not mid-generation. The
- *   tool therefore never injects `/compact` into a running turn without having
- *   to observe anything — and that matters, because "idle" is not reliably
- *   observable from outside.
+ *   This comment used to argue that no idle check was needed, because THE ACK
+ *   IS ITSELF THE PROOF OF IDLE — a peer only reaches its inbox between turns,
+ *   so a peer that acked was not mid-generation.
  *
- * A peer that is busy simply does not answer in time and the run ends in
- * `anchor_timeout` with nothing injected. That is the correct outcome, not a
- * failure to handle the case (edge case B4, ratified 2026-08-06).
+ *   The premise is true and the conclusion does not follow. The ack proves the
+ *   peer was idle WHEN IT ACKED. Between the ack and the inject the peer is
+ *   free to start another turn, and on 2026-08-09 it did: the ack landed, the
+ *   daemon injected 0.4 s after the peer began a Bash tool call, and Claude
+ *   Code queued the `/compact` instead of running it. It ran 5 min 52 s later,
+ *   after an autocompact had already emptied the context — the second
+ *   compression at 9 %.
+ *
+ *   A proof about one instant is not a proof about the next one. The fix is not
+ *   a better idle check (see `compact-verify.ts` for why one cannot be built);
+ *   it is to stop claiming success from the send and read the outcome out of
+ *   the peer's own transcript.
  */
 
 /*
@@ -91,6 +105,15 @@ export const PeerCompactArgsSchema = z
     ackPollMs: z.number().int().positive().max(10_000).optional(),
     /** Skip the anchor request → treat the ack file as pre-existing. */
     skipAnchorRequest: z.boolean().default(false),
+    /**
+     * How long to watch the peer's transcript for the compact to actually run.
+     *
+     * A parameter, not a constant, because the two honest measurements are
+     * 122 s and 130 s on peers around 760k tokens, and the fleet has peers at
+     * 846k. A number tuned to today's largest peer is a number that starts
+     * lying the day somebody grows past it.
+     */
+    verifyTimeoutMs: z.number().int().positive().max(600_000).optional(),
     reason: z.string().optional(),
   })
   .strict();
@@ -353,14 +376,48 @@ export async function handlePeerCompact(
     );
   }
 
+  /**
+   * How full is the peer, and is this a race? (v0.11.25, ⑤)
+   *
+   * Not a gate — a name. Above `COMPACT_RACE_PERCENT` the peer may start its
+   * own autocompact at any moment, and then two compressions run against one
+   * context. Measured twice on 2026-08-09: the designer's peer at 1 001 614
+   * tokens, and the keeper at 85 % which began autocompacting in the middle of
+   * a manual orchestration. The operator keeps the decision; what changes is
+   * that the answer says the risk out loud instead of leaving them to find out.
+   */
+  const snapshot = await readPeerContext(bridgeId);
+  const contextPercentBefore = snapshot.usedPercentage;
+  const raceRisk =
+    contextPercentBefore !== null && contextPercentBefore >= COMPACT_RACE_PERCENT
+      ? {
+          level: "compact_race_risk" as const,
+          percentUsed: contextPercentBefore,
+          note: `Peer is at ${contextPercentBefore}% context. Claude Code may autocompact on its own before this /compact runs, which compresses the same context twice.`,
+        }
+      : null;
+  const transcriptPath = snapshot.transcriptPath;
+
   // Charter §8 audit checkpoint — record the EXACT keys we're about to inject
   // BEFORE the send-keys call.
   await writeEvent({
     event: "peer_compact_inject",
     by: { sessionId: req.requestedBy.sessionId, name: req.requestedBy.name },
     requestId: req.id,
-    details: { handle, sessionKey, threadId, injectedKeys: "[daemon] /compact" },
+    details: {
+      handle,
+      sessionKey,
+      threadId,
+      injectedKeys: "[daemon] /compact",
+      contextPercentBefore,
+      raceRisk: raceRisk?.level ?? null,
+      transcriptPath,
+    },
   });
+
+  // The offset must be taken BEFORE the keys go in. Everything appended after
+  // this byte is a consequence of our inject; everything before it is history.
+  const fromOffset = transcriptPath ? await markTranscript(transcriptPath) : 0;
 
   try {
     await sendKeys(sessionKey, "/compact");
@@ -376,17 +433,183 @@ export async function handlePeerCompact(
     return errResult(req.id, req.tool, "send_keys_failed", msg, { handle, sessionKey });
   }
   await compactAcks.consume(bridgeId);
+
+  /**
+   * The keys are in. Now find out whether anything HAPPENED.
+   *
+   * Until v0.11.25 the next two statements were `peer_compacted` and a return.
+   * That is the false success the P0 was made of: `sendKeys` reports on a
+   * terminal, and the question is about a peer.
+   */
+  const common = { handle, sessionKey, threadId, anchorMsgId, contextPercentBefore, raceRisk };
+  if (!transcriptPath) {
+    // No statusLine capture for this peer → no transcript path → nothing to
+    // watch. Say so in the result rather than reporting the old, cheap success:
+    // an unverifiable compact and a verified one must not read the same.
+    await writeEvent({
+      event: "peer_compact_unverified",
+      level: "warn",
+      by: { sessionId: req.requestedBy.sessionId, name: req.requestedBy.name },
+      requestId: req.id,
+      details: {
+        ...common,
+        why: "no statusLine capture for this peer, so its transcript path is unknown",
+        setupPointer: "docs/SETUP-LIVE-DATA.md",
+      },
+    });
+    return okResult(req.id, req.tool, {
+      ...common,
+      verified: false,
+      outcome: "unverifiable",
+      note: "Keys were delivered to the input line, but this peer has no statusLine capture, so the daemon cannot read its transcript to confirm the compact ran. See docs/SETUP-LIVE-DATA.md.",
+    });
+  }
+
+  const watch = await watchForCompact({
+    transcriptPath,
+    fromOffset,
+    payload: "/compact",
+    timeoutMs: args.verifyTimeoutMs ?? DEFAULT_VERIFY_TIMEOUT_MS,
+  });
+
+  if (watch.kind === "executed") {
+    if (watch.preemptedByAuto) {
+      // THE INCIDENT, caught this time. Claude Code compacted first and ours
+      // ran on top of it. Loud, and in the audit trail — not a footnote in a
+      // success payload.
+      await writeEvent({
+        event: "peer_compact_preempted_by_auto",
+        level: "error",
+        by: { sessionId: req.requestedBy.sessionId, name: req.requestedBy.name },
+        requestId: req.id,
+        details: {
+          ...common,
+          auto: watch.preemptedByAuto,
+          ours: { at: watch.at, preTokens: watch.preTokens, postTokens: watch.postTokens },
+          queuedAt: watch.queuedAt,
+          note: "Claude Code autocompacted before our /compact was dequeued, so the peer was compressed twice — the second time on an already-compacted context. This is the 2026-08-09 incident.",
+        },
+      });
+    }
+    await writeEvent({
+      event: "peer_compacted",
+      by: { sessionId: req.requestedBy.sessionId, name: req.requestedBy.name },
+      requestId: req.id,
+      details: {
+        ...common,
+        reason: args.reason ?? null,
+        compactedAt: watch.at,
+        preTokens: watch.preTokens,
+        postTokens: watch.postTokens,
+        queuedAt: watch.queuedAt,
+      },
+    });
+    await publishLifecycleEvent({
+      event: "peer_compacted",
+      handle: handle,
+      sessionKey,
+      details: { threadId, reason: args.reason ?? null, compactedAt: watch.at },
+    });
+
+    /**
+     * Wake the peer — Zdeněk's item, and now with a measured rule behind it.
+     *
+     * A peer does not necessarily resume after `/compact`; it sits at the
+     * prompt. Measured across three cases on 2026-08-09: it continues by itself
+     * exactly when something is still waiting in its queue, and sits silent
+     * when the queue is empty. The daemon cannot see that queue, and a
+     * duplicate wake costs one short turn while a missed one costs a peer that
+     * nobody notices is asleep. So: always.
+     *
+     * PLAIN TEXT, never a slash command. A payload beginning with `/` opens the
+     * command palette, and this line is meant for the agent, not for Claude
+     * Code's command parser.
+     */
+    const wakeLine = wakeAfterCompactLine();
+    try {
+      await sendKeys(sessionKey, wakeLine);
+    } catch (e) {
+      // A failed wake does not undo a successful compact. Record it and report
+      // it in the payload so the operator knows to look.
+      const msg = e instanceof Error ? e.message : String(e);
+      await writeEvent({
+        event: "peer_compact_wake_failed",
+        level: "warn",
+        by: { sessionId: req.requestedBy.sessionId, name: req.requestedBy.name },
+        requestId: req.id,
+        details: { ...common, err: msg },
+      });
+      return okResult(req.id, req.tool, {
+        ...common,
+        verified: true,
+        outcome: "compacted",
+        compactedAt: watch.at,
+        preTokens: watch.preTokens,
+        postTokens: watch.postTokens,
+        queuedAt: watch.queuedAt,
+        preemptedByAuto: watch.preemptedByAuto,
+        woken: false,
+        wakeError: msg,
+      });
+    }
+    return okResult(req.id, req.tool, {
+      ...common,
+      verified: true,
+      outcome: "compacted",
+      compactedAt: watch.at,
+      preTokens: watch.preTokens,
+      postTokens: watch.postTokens,
+      queuedAt: watch.queuedAt,
+      preemptedByAuto: watch.preemptedByAuto,
+      woken: true,
+    });
+  }
+
+  // Everything below this line is a compact that did NOT happen inside the
+  // window. None of it is `peer_compacted`, and none of it is silent.
   await writeEvent({
-    event: "peer_compacted",
+    event: "peer_compact_unresolved",
+    level: watch.kind === "silent" ? "warn" : "error",
     by: { sessionId: req.requestedBy.sessionId, name: req.requestedBy.name },
     requestId: req.id,
-    details: { handle, sessionKey, threadId, reason: args.reason ?? null },
+    details: { ...common, watch },
   });
-  await publishLifecycleEvent({
-    event: "peer_compacted",
-    handle: handle,
-    sessionKey,
-    details: { threadId, reason: args.reason ?? null },
-  });
-  return okResult(req.id, req.tool, { handle, sessionKey, threadId, anchorMsgId });
+
+  if (watch.kind === "queued-unresolved") {
+    return errResult(
+      req.id,
+      req.tool,
+      "compact_queued",
+      `Peer '${handle}' was BUSY: Claude Code queued the /compact at ${watch.queuedAt} instead of running it, and it had not run ${watch.waitedMs} ms later. It cannot be taken back out of the queue — it WILL run, at a moment nobody chose, against whatever context exists then. Watch the peer or re-check with peer_compact once it is idle.`,
+      { ...common, queuedAt: watch.queuedAt, waitedMs: watch.waitedMs },
+    );
+  }
+  if (watch.kind === "preempted-unresolved") {
+    return errResult(
+      req.id,
+      req.tool,
+      "compact_preempted_by_auto",
+      `Claude Code autocompacted peer '${handle}' by itself at ${watch.auto.at} (${watch.auto.preTokens} → ${watch.auto.postTokens} tokens) and OUR /compact has still not run. When it does it will compress an already-compacted context. This is the 2026-08-09 incident, caught in flight.`,
+      { ...common, auto: watch.auto, queuedAt: watch.queuedAt, waitedMs: watch.waitedMs },
+    );
+  }
+  return errResult(
+    req.id,
+    req.tool,
+    "compact_not_observed",
+    `Keys reached the input line of peer '${handle}', but its transcript shows no compact and no queued command after ${watch.waitedMs} ms. Nothing is known to have happened — do not assume it did.`,
+    { ...common, waitedMs: watch.waitedMs },
+  );
+}
+
+/**
+ * What the peer is told after its context was compressed.
+ *
+ * One line, plain text, no leading slash — see the call site for why. It names
+ * the anchor first because that is the only thing that survived, and asks for a
+ * report because a compacted peer that says nothing is indistinguishable from a
+ * dead one.
+ */
+export function wakeAfterCompactLine(): string {
+  return "[daemon] Compact complete — re-onboard from your anchor, read your inbox (peer_inbox_read) and report to whoever requested the compact.";
 }

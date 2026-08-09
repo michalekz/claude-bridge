@@ -2843,7 +2843,11 @@ export const TOOLS: ToolSpec[] = [
   {
     name: "peer_compact",
     description:
-      "Ask the control-plane daemon to orchestrate `/compact` on a peer (v0.10.0-rc). Sequence: daemon writes a bridge inbox message to the peer requesting a compact anchor → peer writes `~/.claude-bridge/control/compact-ack/<sessionId>.json` when ready → daemon `send-keys /compact` into the tmux session → emits `peer_compacted`. Refuses with `anchor_timeout` if the ack file doesn't appear within `anchorTimeoutMs` (default 300 s — a peer writing a real anchor takes MINUTES; 122 s measured on a peer with substantial context, so shortening this produces `anchor_timeout` on work that is going fine). This is the ONLY send-keys path in the daemon (charter §8 amendment) — every inject is audit-logged via `peer_compact_inject`. The AUTO-watchdog framework is present but defaults OFF (`config.compactWatchdog.enabled = false`); operator must flip it explicitly. **There is deliberately NO `force` here** (decided v0.11.18): the anchor is the one thing a compact must never skip, so a force could only mean 'do not wait' — and that already exists as `anchorTimeoutMs`. To not wait, pass a small `anchorTimeoutMs`; the call then reports `anchor_timeout` and injects nothing, which is the honest outcome. A force that can only refuse is not a force.",
+      "Ask the control-plane daemon to orchestrate `/compact` on a peer (v0.10.0-rc). Sequence: daemon writes a bridge inbox message to the peer requesting a compact anchor → peer writes `~/.claude-bridge/control/compact-ack/<sessionId>.json` when ready → daemon `send-keys /compact` into the tmux session → **daemon WATCHES the peer's transcript until the compact actually runs** → emits `peer_compacted` with `preTokens`/`postTokens` as evidence → sends a plain-text wake line. Refuses with `anchor_timeout` if the ack file doesn't appear within `anchorTimeoutMs` (default 300 s — a peer writing a real anchor takes MINUTES; 122 s measured on a peer with substantial context, so shortening this produces `anchor_timeout` on work that is going fine).\n\n" +
+      "**v0.11.25 — a delivered command is not an executed command.** Until v0.11.24 success was claimed the moment `send-keys` returned. On 2026-08-09 that reported success for a compact that ran 5 min 52 s later, after Claude Code had autocompacted the peer by itself — the peer was compressed twice, the second time at 9 % context. Cause: the pane was busy, so Claude Code QUEUED the command instead of running it. There is deliberately still no idle pre-check, because none can be built: a streaming pane is indistinguishable from an idle one, `turnInProgress` reads `false` mid-turn, and the anchor ack proves the peer was idle when it ACKED, not when we injected. So the question is asked afterwards, of the transcript.\n\n" +
+      'Outcomes beyond `ok`: **`compact_queued`** — Claude Code queued the command and it had not run when the window closed. It CANNOT be taken back out (measured: 40 `C-u` strokes left a queued item untouched), so it WILL run, at a moment nobody chose, against whatever context exists then. **`compact_preempted_by_auto`** — Claude Code autocompacted first and ours is still pending; this is the 2026-08-09 incident caught in flight. **`compact_not_observed`** — keys reached the input line and the transcript shows nothing; do not assume it happened. An `ok` with `outcome: "unverifiable"` means the peer has no statusLine capture, so its transcript could not be read (see docs/SETUP-LIVE-DATA.md) — that is NOT the same as a verified compact and does not read the same.\n\n' +
+      "At or above 85 % context the result carries `raceRisk`: Claude Code may autocompact at any moment and compress the same context twice. It is named, not blocked — the decision is the operator's. **Orchestrator pattern:** a peer heading into a compact may still have your earlier instruction sitting in its queue, and that instruction will execute on a post-compact context. Send a CANCELLING message before the compact rather than relying on the bridge to withdraw it — it cannot.\n\n" +
+      "Every inject is audit-logged via `peer_compact_inject`. The AUTO-watchdog framework is present but defaults OFF (`config.compactWatchdog.enabled = false`); operator must flip it explicitly. **There is deliberately NO `force` here** (decided v0.11.18): the anchor is the one thing a compact must never skip, so a force could only mean 'do not wait' — and that already exists as `anchorTimeoutMs`. To not wait, pass a small `anchorTimeoutMs`; the call then reports `anchor_timeout` and injects nothing, which is the honest outcome. A force that can only refuse is not a force.",
     inputSchema: {
       type: "object",
       properties: {
@@ -2867,6 +2871,17 @@ export const TOOLS: ToolSpec[] = [
           type: "boolean",
           description:
             "Skip the anchor request bridge message — assume the ack file is already present. For tests / operators who bypass the standard playbook.",
+        },
+        verifyTimeoutMs: {
+          type: "number",
+          minimum: 1,
+          maximum: 600000,
+          description:
+            "How long to watch the peer's transcript for the compact to actually run " +
+            "(default 180000). A parameter and not a constant because the honest " +
+            "measurements are 122 s and 130 s at ~760k tokens, and the fleet has peers " +
+            "at 846k — a number tuned to today's largest peer starts lying the day " +
+            "somebody grows past it.",
         },
         reason: { type: "string", description: "Free-text reason recorded in events.jsonl." },
         wait: { type: "boolean" },

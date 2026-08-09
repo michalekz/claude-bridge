@@ -541,6 +541,8 @@ export const PeerCompactArgs = z
     anchorTimeoutMs: z.number().int().positive().max(300_000).optional(),
     ackPollMs: z.number().int().positive().max(10_000).optional(),
     skipAnchorRequest: z.boolean().optional(),
+    /** v0.11.25 — how long the daemon watches the transcript for the compact. */
+    verifyTimeoutMs: z.number().int().positive().max(600_000).optional(),
     reason: z.string().optional(),
     wait: z.boolean().optional(),
     timeoutMs: z.number().int().positive().max(120_000).optional(),
@@ -556,6 +558,7 @@ export async function peerCompactTool(
   if (args.ackPollMs !== undefined) daemonArgs["ackPollMs"] = args.ackPollMs;
   if (args.skipAnchorRequest !== undefined)
     daemonArgs["skipAnchorRequest"] = args.skipAnchorRequest;
+  if (args.verifyTimeoutMs !== undefined) daemonArgs["verifyTimeoutMs"] = args.verifyTimeoutMs;
   if (args.reason !== undefined) daemonArgs["reason"] = args.reason;
   return submitDaemonRequest(ctx, "peer_compact", daemonArgs, {
     wait: args.wait,

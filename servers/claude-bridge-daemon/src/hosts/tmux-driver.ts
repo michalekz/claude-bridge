@@ -29,11 +29,12 @@ import {
 const PROBE_RETRY_PAUSE_MS = 200;
 import {
   CLEAR_STROKE_BATCH,
+  type DeliveryWhere,
   type InputLineProbe,
   KILL_RING_HINT,
   MAX_CLEAR_STROKES,
   displacedDraftNotice,
-  paneContains,
+  inputLineHolds,
   readInputLine,
   refusePayload,
 } from "./input-line.ts";
@@ -731,6 +732,7 @@ export class TmuxDriver implements SessionHostDriver {
     let attempts = 0;
     let capturedTail = "";
     let lastError: string | null = null;
+    let where: DeliveryWhere = "absent";
     // One retry: the common failure is a pane that was still settling, and a
     // second attempt costs a few hundred milliseconds.
     for (attempts = 1; attempts <= 2 && !delivered; attempts++) {
@@ -749,14 +751,22 @@ export class TmuxDriver implements SessionHostDriver {
       }
       await new Promise((r) => setTimeout(r, this.sendVerifyDelayMs));
       capturedTail = await this.capturePane(canonical);
-      delivered = paneContains(capturedTail, keys);
+      // v0.11.25: the payload must be in the INPUT LINE, not merely on screen.
+      // See `inputLineHolds` for what the old whole-pane check was actually
+      // answering, and why the palette is not part of the test.
+      const probe = inputLineHolds(capturedTail, keys);
+      delivered = probe.delivered;
+      where = probe.where;
     }
 
     await this.logSendKeys(canonical, {
       keys,
       paneInMode: inMode,
       attempts: attempts - 1,
-      verdict: delivered ? "delivered" : "not-visible",
+      verdict: delivered ? "delivered" : "not-verified",
+      // WHERE the text was, not just whether it was somewhere. `elsewhere-on-pane`
+      // is the verdict the pre-v0.11.25 check would have called a success.
+      deliveryWhere: where,
       inputLine: cleared.kind,
       clearStrokes: cleared.strokes,
       ...(cleared.kind === "displaced"
@@ -770,10 +780,13 @@ export class TmuxDriver implements SessionHostDriver {
       log.error("tmux_send_keys_unverified", {
         sessionKey: canonical,
         attempts: attempts - 1,
+        deliveryWhere: where,
         err: lastError,
       });
       throw new Error(
-        `send-keys to '${canonical}' could not be verified after ${attempts - 1} attempts — text never appeared in the pane${lastError ? ` (tmux: ${lastError.split("\n")[0]})` : ""}`,
+        where === "elsewhere-on-pane"
+          ? `send-keys to '${canonical}' could not be verified after ${attempts - 1} attempts — the text IS on the pane but NOT in the input line, so pressing Enter would submit something else. Look at the pane: tmux capture-pane -p -t ${canonical}`
+          : `send-keys to '${canonical}' could not be verified after ${attempts - 1} attempts — text never reached the input line${lastError ? ` (tmux: ${lastError.split("\n")[0]})` : ""}`,
       );
     }
     await this.tmux(["send-keys", "-t", canonical, "Enter"], SEND_KEYS_TIMEOUT_MS);

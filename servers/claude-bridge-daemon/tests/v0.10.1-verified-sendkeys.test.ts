@@ -151,7 +151,14 @@ describe.skipIf(!TMUX)("verified send-keys against a real tmux pane", () => {
 
     const logPath = join(tempHome, ".claude-bridge", "control", "logs", `sendkeys-${key}.log`);
     const entry = JSON.parse((await readFile(logPath, "utf-8")).trim().split("\n").pop() as string);
-    expect(entry.verdict).toBe("not-visible");
+    // `not-visible` until v0.11.25. The word was renamed because the check
+    // was: visibility is no longer what is being asserted — the payload has to
+    // be in the input line, and text that is visible elsewhere on the pane now
+    // fails too. A verdict named after the old question would misdescribe the
+    // new one.
+    expect(entry.verdict).toBe("not-verified");
+    // A pane that no longer exists cannot hold anything anywhere.
+    expect(entry.deliveryWhere).toBe("absent");
     expect(entry.attempts).toBe(2);
   });
 });

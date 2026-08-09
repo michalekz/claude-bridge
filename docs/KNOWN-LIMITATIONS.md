@@ -351,6 +351,42 @@ commands looks wrong, check `inputLine` in
 
 ---
 
+## A freshly spawned peer cannot be sent to until its first turn
+
+`peer_spawn` starts a peer, and until that peer has taken **one turn** the
+daemon cannot inject anything into it — not `peer_compact`, not a wake line.
+Every attempt ends in:
+
+```
+send-keys to '@5507' refused — the input line still holds 21 characters
+after 40 clear strokes
+```
+
+There is nothing in the input line. Those twenty-one characters are Claude
+Code's own **placeholder** — `Try "fix lint errors"` — which a fresh session
+draws inside the input box and which the daemon reads as a human's unsent draft.
+It then spends forty `C-u` strokes trying to clear text that was never there,
+and refuses rather than type over what it believes is somebody's sentence.
+
+The refusal is the safe outcome of a correct rule applied to the wrong input.
+The placeholder disappears once the session has any history, so the limitation
+lifts by itself after the first turn.
+
+Two related misreadings share the cause — `readInputLine` looks for the last `❯`
+on the pane, and Claude Code uses that marker for more than the input box:
+
+| pane state | read as | consequence |
+|---|---|---|
+| fresh session, empty box | `draft` = the placeholder | send refused |
+| trust / selection dialog | `draft` = `1. Yes, I trust this folder…` | forty `C-u` into a modal dialog, then refused |
+| a message waiting in the queue | `draft` | send refused |
+
+**Workaround:** give the peer one turn — any message will do — before the
+control plane needs to reach it. **Status:** open, measured 2026-08-09 on
+Claude Code 2.1.226.
+
+---
+
 ## Platform support is uneven
 
 - **Linux + tmux** — what the fleet runs on, and where everything above was

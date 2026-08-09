@@ -7,7 +7,7 @@ var __export = (target, all) => {
 };
 
 // src/index.ts
-var import_promises20 = require("node:fs/promises");
+var import_promises21 = require("node:fs/promises");
 
 // ../../packages/shared/src/atomic-write.ts
 var import_node_crypto = require("node:crypto");
@@ -4320,7 +4320,7 @@ async function resolvePeer(idOrName, root = bridgeRoot(), now = Date.now()) {
 // package.json
 var package_default = {
   name: "claude-bridge-daemon",
-  version: "0.11.24",
+  version: "0.11.25",
   private: true,
   description: "Control-plane daemon for the claude-bridge plugin: peer lifecycle, telemetry, audit. Distributed as opt-in artefact \u2014 see ADR-008.",
   type: "module",
@@ -5113,8 +5113,8 @@ var LockAcquireError = class extends Error {
 function readProcStart(pid) {
   if (process.platform !== "linux") return null;
   try {
-    const stat4 = (0, import_node_fs.readFileSync)(`/proc/${pid}/stat`, "utf-8");
-    const afterComm = stat4.slice(stat4.lastIndexOf(")") + 1).trim();
+    const stat5 = (0, import_node_fs.readFileSync)(`/proc/${pid}/stat`, "utf-8");
+    const afterComm = stat5.slice(stat5.lastIndexOf(")") + 1).trim();
     const fields = afterComm.split(/\s+/);
     const starttime = fields[19];
     return starttime ?? null;
@@ -5366,25 +5366,148 @@ async function handleControlStatus(req, ctx) {
 }
 
 // src/handlers/peer-compact.ts
-var import_promises11 = require("node:fs/promises");
+var import_promises12 = require("node:fs/promises");
+
+// src/compact-verify.ts
+var import_promises8 = require("node:fs/promises");
+var import_node_path6 = require("node:path");
+var log5 = makeLogger("daemon.compact-verify");
+function statuslineFile(sessionId) {
+  return (0, import_node_path6.join)(bridgeRoot(), "live", "statusline", `${sessionId}.json`);
+}
+var DEFAULT_VERIFY_TIMEOUT_MS = 18e4;
+var DEFAULT_VERIFY_POLL_MS = 2e3;
+var COMPACT_RACE_PERCENT = 85;
+async function readPeerContext(sessionId) {
+  const empty = {
+    usedPercentage: null,
+    transcriptPath: null,
+    capturedAt: null
+  };
+  try {
+    const raw = await (0, import_promises8.readFile)(statuslineFile(sessionId), "utf-8");
+    const doc = JSON.parse(raw);
+    return {
+      usedPercentage: doc.payload?.context_window?.used_percentage ?? null,
+      transcriptPath: doc.payload?.transcript_path ?? null,
+      capturedAt: doc.capturedAt ?? null
+    };
+  } catch {
+    return empty;
+  }
+}
+async function markTranscript(path) {
+  try {
+    return (await (0, import_promises8.stat)(path)).size;
+  } catch {
+    return 0;
+  }
+}
+async function readSince(path, offset) {
+  let handle = null;
+  try {
+    const size = (await (0, import_promises8.stat)(path)).size;
+    if (size < offset) return { rows: [], offset: size };
+    if (size === offset) return { rows: [], offset };
+    handle = await (0, import_promises8.open)(path, "r");
+    const buf = Buffer.alloc(size - offset);
+    await handle.read(buf, 0, buf.length, offset);
+    const text = buf.toString("utf-8");
+    const lastNl = text.lastIndexOf("\n");
+    if (lastNl < 0) return { rows: [], offset };
+    const rows = [];
+    for (const line of text.slice(0, lastNl).split("\n")) {
+      if (!line.trim()) continue;
+      try {
+        rows.push(JSON.parse(line));
+      } catch {
+      }
+    }
+    return { rows, offset: offset + Buffer.byteLength(text.slice(0, lastNl + 1)) };
+  } catch {
+    return { rows: [], offset };
+  } finally {
+    await handle?.close().catch(() => void 0);
+  }
+}
+function compactOf(row) {
+  const meta = row.compactMetadata;
+  if (!meta?.trigger) return null;
+  return {
+    trigger: meta.trigger,
+    at: row.timestamp ?? (/* @__PURE__ */ new Date()).toISOString(),
+    pre: typeof meta.preTokens === "number" ? meta.preTokens : null,
+    post: typeof meta.postTokens === "number" ? meta.postTokens : null
+  };
+}
+function isEnqueueOf(row, payload) {
+  if (row.type !== "queue-operation" || row.operation !== "enqueue") return false;
+  const c = row.content;
+  const text = typeof c === "string" ? c : JSON.stringify(c ?? "");
+  return text.includes(payload);
+}
+async function watchForCompact(opts) {
+  const pollMs = opts.pollMs ?? DEFAULT_VERIFY_POLL_MS;
+  const now = opts.now ?? (() => Date.now());
+  const sleep3 = opts.sleep ?? ((ms) => new Promise((r) => setTimeout(r, ms)));
+  const startedMs = now();
+  const deadline = startedMs + opts.timeoutMs;
+  let offset = opts.fromOffset;
+  let queuedAt = null;
+  let auto = null;
+  for (; ; ) {
+    const { rows, offset: next } = await readSince(opts.transcriptPath, offset);
+    offset = next;
+    for (const row of rows) {
+      if (queuedAt === null && isEnqueueOf(row, opts.payload)) {
+        queuedAt = row.timestamp ?? (/* @__PURE__ */ new Date()).toISOString();
+        log5.warn("compact_queued", { queuedAt, payload: opts.payload });
+        continue;
+      }
+      const c = compactOf(row);
+      if (!c) continue;
+      if (c.trigger === "manual") {
+        return {
+          kind: "executed",
+          at: c.at,
+          preTokens: c.pre,
+          postTokens: c.post,
+          queuedAt,
+          preemptedByAuto: auto
+        };
+      }
+      if (c.trigger === "auto" && auto === null) {
+        auto = { at: c.at, preTokens: c.pre, postTokens: c.post };
+        log5.error("compact_preempted_by_auto", auto);
+      }
+    }
+    if (now() >= deadline) {
+      const waitedMs = now() - startedMs;
+      if (auto) return { kind: "preempted-unresolved", auto, queuedAt, waitedMs };
+      if (queuedAt) return { kind: "queued-unresolved", queuedAt, waitedMs };
+      return { kind: "silent", waitedMs };
+    }
+    await sleep3(pollMs);
+  }
+}
 
 // src/event-subscribers.ts
 var import_node_crypto4 = require("node:crypto");
-var import_promises8 = require("node:fs/promises");
-var import_node_path6 = require("node:path");
-var log5 = makeLogger("daemon.subscribers");
+var import_promises9 = require("node:fs/promises");
+var import_node_path7 = require("node:path");
+var log6 = makeLogger("daemon.subscribers");
 function subscribersFilePath() {
-  return (0, import_node_path6.join)(controlDir(), "subscribers.json");
+  return (0, import_node_path7.join)(controlDir(), "subscribers.json");
 }
 async function readSubscribers() {
   try {
-    const raw = await (0, import_promises8.readFile)(subscribersFilePath(), "utf-8");
+    const raw = await (0, import_promises9.readFile)(subscribersFilePath(), "utf-8");
     const parsed = JSON.parse(raw);
     return parsed.subscribers ?? [];
   } catch (e) {
     const code = e.code;
     if (code === "ENOENT") return [];
-    log5.warn("subscribers_read_error", { err: String(e) });
+    log6.warn("subscribers_read_error", { err: String(e) });
     return [];
   }
 }
@@ -5414,7 +5537,7 @@ async function publishLifecycleEvent(payload) {
         ].join("\n")
       });
     } catch (e) {
-      log5.warn("subscriber_dispatch_failed", {
+      log6.warn("subscriber_dispatch_failed", {
         subscriber: sub.peerId,
         event: payload.event,
         err: String(e)
@@ -5424,30 +5547,30 @@ async function publishLifecycleEvent(payload) {
 }
 
 // src/handlers/ack-protocol.ts
-var import_promises9 = require("node:fs/promises");
-var import_node_path7 = require("node:path");
+var import_promises10 = require("node:fs/promises");
+var import_node_path8 = require("node:path");
 var ACK_FILENAME_EXTENSION = ".json";
 async function fileExists(path) {
   try {
-    await (0, import_promises9.access)(path);
+    await (0, import_promises10.access)(path);
     return true;
   } catch {
     return false;
   }
 }
 async function verifyAckFile(path, requestedAtMs, threadId) {
-  let stat4;
+  let stat5;
   try {
-    stat4 = await (0, import_promises9.lstat)(path);
+    stat5 = await (0, import_promises10.lstat)(path);
   } catch {
     return { accepted: false, reason: "none" };
   }
-  if (stat4.mtimeMs < requestedAtMs - 1e3) {
-    return { accepted: false, reason: "too_old", writtenAt: new Date(stat4.mtimeMs).toISOString() };
+  if (stat5.mtimeMs < requestedAtMs - 1e3) {
+    return { accepted: false, reason: "too_old", writtenAt: new Date(stat5.mtimeMs).toISOString() };
   }
   let ackThreadId = null;
   try {
-    const parsed = JSON.parse(await (0, import_promises9.readFile)(path, "utf-8"));
+    const parsed = JSON.parse(await (0, import_promises10.readFile)(path, "utf-8"));
     if (typeof parsed.threadId === "string") ackThreadId = parsed.threadId;
   } catch {
   }
@@ -5456,19 +5579,19 @@ async function verifyAckFile(path, requestedAtMs, threadId) {
       accepted: false,
       reason: "wrong_thread",
       ackThreadId,
-      writtenAt: new Date(stat4.mtimeMs).toISOString()
+      writtenAt: new Date(stat5.mtimeMs).toISOString()
     };
   }
   return {
     accepted: true,
     reason: "fresh",
     ackThreadId,
-    writtenAt: new Date(stat4.mtimeMs).toISOString()
+    writtenAt: new Date(stat5.mtimeMs).toISOString()
   };
 }
 function createAckChannel(channel) {
-  const dir = () => (0, import_node_path7.join)(controlDir(), channel);
-  const path = (sessionId) => (0, import_node_path7.join)(dir(), `${sessionId}${ACK_FILENAME_EXTENSION}`);
+  const dir = () => (0, import_node_path8.join)(controlDir(), channel);
+  const path = (sessionId) => (0, import_node_path8.join)(dir(), `${sessionId}${ACK_FILENAME_EXTENSION}`);
   return {
     channel,
     dir,
@@ -5476,32 +5599,32 @@ function createAckChannel(channel) {
     async sweepStale(sessionId, reason) {
       const src = path(sessionId);
       if (!await fileExists(src)) return null;
-      const done = (0, import_node_path7.join)(dir(), "done");
-      await (0, import_promises9.mkdir)(done, { recursive: true });
-      const dest = (0, import_node_path7.join)(done, `${sessionId}-${reason}-${Date.now()}.json`);
+      const done = (0, import_node_path8.join)(dir(), "done");
+      await (0, import_promises10.mkdir)(done, { recursive: true });
+      const dest = (0, import_node_path8.join)(done, `${sessionId}-${reason}-${Date.now()}.json`);
       try {
-        await (0, import_promises9.rename)(src, dest);
+        await (0, import_promises10.rename)(src, dest);
       } catch {
-        await (0, import_promises9.unlink)(src).catch(() => void 0);
+        await (0, import_promises10.unlink)(src).catch(() => void 0);
       }
       return dest;
     },
     async sweepAllAtStartup() {
       let names;
       try {
-        names = await (0, import_promises9.readdir)(dir());
+        names = await (0, import_promises10.readdir)(dir());
       } catch {
         return 0;
       }
-      const done = (0, import_node_path7.join)(dir(), "done");
-      await (0, import_promises9.mkdir)(done, { recursive: true });
+      const done = (0, import_node_path8.join)(dir(), "done");
+      await (0, import_promises10.mkdir)(done, { recursive: true });
       let swept = 0;
       for (const name of names) {
         if (!name.endsWith(ACK_FILENAME_EXTENSION)) continue;
         try {
-          await (0, import_promises9.rename)(
-            (0, import_node_path7.join)(dir(), name),
-            (0, import_node_path7.join)(
+          await (0, import_promises10.rename)(
+            (0, import_node_path8.join)(dir(), name),
+            (0, import_node_path8.join)(
               done,
               `${name.slice(0, -ACK_FILENAME_EXTENSION.length)}-startup-${Date.now()}.json`
             )
@@ -5528,12 +5651,12 @@ function createAckChannel(channel) {
     },
     async consume(sessionId) {
       const src = path(sessionId);
-      const done = (0, import_node_path7.join)(dir(), "done");
+      const done = (0, import_node_path8.join)(dir(), "done");
       try {
-        await (0, import_promises9.mkdir)(done, { recursive: true });
-        await (0, import_promises9.rename)(src, (0, import_node_path7.join)(done, `${sessionId}-${Date.now()}.json`));
+        await (0, import_promises10.mkdir)(done, { recursive: true });
+        await (0, import_promises10.rename)(src, (0, import_node_path8.join)(done, `${sessionId}-${Date.now()}.json`));
       } catch {
-        await (0, import_promises9.unlink)(src).catch(() => void 0);
+        await (0, import_promises10.unlink)(src).catch(() => void 0);
       }
     }
   };
@@ -5559,19 +5682,19 @@ var ALL_ACK_CHANNELS = [compactAcks, stopAcks, restartAcks];
 
 // src/handlers/peer-identity.ts
 var import_node_fs3 = require("node:fs");
-var import_node_path9 = require("node:path");
+var import_node_path10 = require("node:path");
 
 // src/hosts/process-inspector.ts
 var import_node_fs2 = require("node:fs");
-var import_promises10 = require("node:fs/promises");
+var import_promises11 = require("node:fs/promises");
 var import_node_os3 = require("node:os");
-var import_node_path8 = require("node:path");
+var import_node_path9 = require("node:path");
 var DEFAULT_MAX_DEPTH = 8;
 var UUID_RE = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i;
-function parsePpidFromStat(stat4) {
-  const close = stat4.lastIndexOf(")");
+function parsePpidFromStat(stat5) {
+  const close = stat5.lastIndexOf(")");
   if (close === -1) return null;
-  const fields = stat4.slice(close + 1).trim().split(/\s+/);
+  const fields = stat5.slice(close + 1).trim().split(/\s+/);
   const ppid = Number.parseInt(fields[1] ?? "", 10);
   return Number.isNaN(ppid) ? null : ppid;
 }
@@ -5580,7 +5703,7 @@ function sessionIdFromCmdline(cmdline) {
   if (idx === -1) return null;
   const rest = cmdline.slice(idx + "--resume".length).trim();
   const token = rest.split(/\s+/)[0] ?? "";
-  const match = UUID_RE.exec((0, import_node_path8.basename)(token));
+  const match = UUID_RE.exec((0, import_node_path9.basename)(token));
   return match ? match[0] : null;
 }
 var LinuxProcessInspector = class {
@@ -5588,12 +5711,12 @@ var LinuxProcessInspector = class {
   sessionsDir;
   constructor(opts = {}) {
     this.procRoot = opts.procRoot ?? "/proc";
-    this.sessionsDir = opts.sessionsDir ?? (0, import_node_path8.join)((0, import_node_os3.homedir)(), ".claude", "sessions");
+    this.sessionsDir = opts.sessionsDir ?? (0, import_node_path9.join)((0, import_node_os3.homedir)(), ".claude", "sessions");
   }
   async listClaudePeers() {
     let entries;
     try {
-      entries = await (0, import_promises10.readdir)(this.procRoot);
+      entries = await (0, import_promises11.readdir)(this.procRoot);
     } catch {
       return [];
     }
@@ -5603,8 +5726,8 @@ var LinuxProcessInspector = class {
       if (Number.isNaN(pid) || String(pid) !== entry) continue;
       const comm = await this.readProcFile(pid, "comm");
       if (comm?.trim() !== "claude") continue;
-      const stat4 = await this.readProcFile(pid, "stat");
-      const ppid = stat4 ? parsePpidFromStat(stat4) : null;
+      const stat5 = await this.readProcFile(pid, "stat");
+      const ppid = stat5 ? parsePpidFromStat(stat5) : null;
       const raw = await this.readProcFile(pid, "cmdline");
       const argv = (raw ?? "").split("\0").filter((a) => a.length > 0);
       const cmdline = argv.join(" ").trim();
@@ -5655,9 +5778,9 @@ var LinuxProcessInspector = class {
     if (!pathVar) return null;
     for (const dir of pathVar.split(":")) {
       if (dir.length === 0) continue;
-      const candidate = (0, import_node_path8.join)(dir, command);
+      const candidate = (0, import_node_path9.join)(dir, command);
       try {
-        await (0, import_promises10.access)(candidate, import_node_fs2.constants.X_OK);
+        await (0, import_promises11.access)(candidate, import_node_fs2.constants.X_OK);
         return candidate;
       } catch {
       }
@@ -5666,7 +5789,7 @@ var LinuxProcessInspector = class {
   }
   async readProcCwd(pid) {
     try {
-      return await (0, import_promises10.readlink)((0, import_node_path8.join)(this.procRoot, String(pid), "cwd"));
+      return await (0, import_promises11.readlink)((0, import_node_path9.join)(this.procRoot, String(pid), "cwd"));
     } catch {
       return null;
     }
@@ -5675,9 +5798,9 @@ var LinuxProcessInspector = class {
     const chain = [];
     let current = pid;
     for (let i = 0; i < maxDepth; i++) {
-      const stat4 = await this.readProcFile(current, "stat");
-      if (!stat4) break;
-      const ppid = parsePpidFromStat(stat4);
+      const stat5 = await this.readProcFile(current, "stat");
+      if (!stat5) break;
+      const ppid = parsePpidFromStat(stat5);
       if (ppid === null || ppid <= 1) break;
       chain.push(ppid);
       current = ppid;
@@ -5692,7 +5815,7 @@ var LinuxProcessInspector = class {
    */
   async resolveSessionId(pid, cmdline) {
     try {
-      const raw = await (0, import_promises10.readFile)((0, import_node_path8.join)(this.sessionsDir, `${pid}.json`), "utf-8");
+      const raw = await (0, import_promises11.readFile)((0, import_node_path9.join)(this.sessionsDir, `${pid}.json`), "utf-8");
       const parsed = JSON.parse(raw);
       if (parsed.sessionId) return { sessionId: parsed.sessionId, source: "sessions-json" };
     } catch {
@@ -5703,7 +5826,7 @@ var LinuxProcessInspector = class {
   }
   async readProcFile(pid, name) {
     try {
-      return await (0, import_promises10.readFile)((0, import_node_path8.join)(this.procRoot, String(pid), name), "utf-8");
+      return await (0, import_promises11.readFile)((0, import_node_path9.join)(this.procRoot, String(pid), name), "utf-8");
     } catch {
       return null;
     }
@@ -5720,7 +5843,7 @@ function bridgeIdOf(record) {
 var IDENTITY_MEASURE_TIMEOUT_MS = 5e3;
 var IDENTITY_POLL_MS = 150;
 function pidExists(pid, procRoot) {
-  return (0, import_node_fs3.existsSync)((0, import_node_path9.join)(procRoot, String(pid)));
+  return (0, import_node_fs3.existsSync)((0, import_node_path10.join)(procRoot, String(pid)));
 }
 async function probeOnce(panePid, inspector) {
   const claudes = await inspector.listClaudePeers().catch(() => []);
@@ -5791,6 +5914,15 @@ var PeerCompactArgsSchema = external_exports.object({
   ackPollMs: external_exports.number().int().positive().max(1e4).optional(),
   /** Skip the anchor request → treat the ack file as pre-existing. */
   skipAnchorRequest: external_exports.boolean().default(false),
+  /**
+   * How long to watch the peer's transcript for the compact to actually run.
+   *
+   * A parameter, not a constant, because the two honest measurements are
+   * 122 s and 130 s on peers around 760k tokens, and the fleet has peers at
+   * 846k. A number tuned to today's largest peer is a number that starts
+   * lying the day somebody grows past it.
+   */
+  verifyTimeoutMs: external_exports.number().int().positive().max(6e5).optional(),
   reason: external_exports.string().optional()
 }).strict();
 async function sweepAllAcksAtStartup() {
@@ -5870,7 +6002,7 @@ async function handlePeerCompact(req, ctx) {
   const anchorTimeoutMs = args.anchorTimeoutMs ?? DEFAULT_ANCHOR_TIMEOUT_MS;
   const ackPollMs = args.ackPollMs ?? DEFAULT_ACK_POLL_MS;
   const threadId = `compact:${bridgeId}:${Date.now().toString(36)}`;
-  await (0, import_promises11.mkdir)(compactAcks.dir(), { recursive: true });
+  await (0, import_promises12.mkdir)(compactAcks.dir(), { recursive: true });
   const requestedAtMs = Date.now();
   let anchorMsgId = null;
   let sweptStale = null;
@@ -5947,12 +6079,29 @@ async function handlePeerCompact(req, ctx) {
       }
     );
   }
+  const snapshot = await readPeerContext(bridgeId);
+  const contextPercentBefore = snapshot.usedPercentage;
+  const raceRisk = contextPercentBefore !== null && contextPercentBefore >= COMPACT_RACE_PERCENT ? {
+    level: "compact_race_risk",
+    percentUsed: contextPercentBefore,
+    note: `Peer is at ${contextPercentBefore}% context. Claude Code may autocompact on its own before this /compact runs, which compresses the same context twice.`
+  } : null;
+  const transcriptPath = snapshot.transcriptPath;
   await writeEvent({
     event: "peer_compact_inject",
     by: { sessionId: req.requestedBy.sessionId, name: req.requestedBy.name },
     requestId: req.id,
-    details: { handle, sessionKey, threadId, injectedKeys: "[daemon] /compact" }
+    details: {
+      handle,
+      sessionKey,
+      threadId,
+      injectedKeys: "[daemon] /compact",
+      contextPercentBefore,
+      raceRisk: raceRisk?.level ?? null,
+      transcriptPath
+    }
   });
+  const fromOffset = transcriptPath ? await markTranscript(transcriptPath) : 0;
   try {
     await sendKeys(sessionKey, "/compact");
   } catch (e) {
@@ -5967,29 +6116,149 @@ async function handlePeerCompact(req, ctx) {
     return errResult(req.id, req.tool, "send_keys_failed", msg, { handle, sessionKey });
   }
   await compactAcks.consume(bridgeId);
+  const common = { handle, sessionKey, threadId, anchorMsgId, contextPercentBefore, raceRisk };
+  if (!transcriptPath) {
+    await writeEvent({
+      event: "peer_compact_unverified",
+      level: "warn",
+      by: { sessionId: req.requestedBy.sessionId, name: req.requestedBy.name },
+      requestId: req.id,
+      details: {
+        ...common,
+        why: "no statusLine capture for this peer, so its transcript path is unknown",
+        setupPointer: "docs/SETUP-LIVE-DATA.md"
+      }
+    });
+    return okResult(req.id, req.tool, {
+      ...common,
+      verified: false,
+      outcome: "unverifiable",
+      note: "Keys were delivered to the input line, but this peer has no statusLine capture, so the daemon cannot read its transcript to confirm the compact ran. See docs/SETUP-LIVE-DATA.md."
+    });
+  }
+  const watch = await watchForCompact({
+    transcriptPath,
+    fromOffset,
+    payload: "/compact",
+    timeoutMs: args.verifyTimeoutMs ?? DEFAULT_VERIFY_TIMEOUT_MS
+  });
+  if (watch.kind === "executed") {
+    if (watch.preemptedByAuto) {
+      await writeEvent({
+        event: "peer_compact_preempted_by_auto",
+        level: "error",
+        by: { sessionId: req.requestedBy.sessionId, name: req.requestedBy.name },
+        requestId: req.id,
+        details: {
+          ...common,
+          auto: watch.preemptedByAuto,
+          ours: { at: watch.at, preTokens: watch.preTokens, postTokens: watch.postTokens },
+          queuedAt: watch.queuedAt,
+          note: "Claude Code autocompacted before our /compact was dequeued, so the peer was compressed twice \u2014 the second time on an already-compacted context. This is the 2026-08-09 incident."
+        }
+      });
+    }
+    await writeEvent({
+      event: "peer_compacted",
+      by: { sessionId: req.requestedBy.sessionId, name: req.requestedBy.name },
+      requestId: req.id,
+      details: {
+        ...common,
+        reason: args.reason ?? null,
+        compactedAt: watch.at,
+        preTokens: watch.preTokens,
+        postTokens: watch.postTokens,
+        queuedAt: watch.queuedAt
+      }
+    });
+    await publishLifecycleEvent({
+      event: "peer_compacted",
+      handle,
+      sessionKey,
+      details: { threadId, reason: args.reason ?? null, compactedAt: watch.at }
+    });
+    const wakeLine = wakeAfterCompactLine();
+    try {
+      await sendKeys(sessionKey, wakeLine);
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      await writeEvent({
+        event: "peer_compact_wake_failed",
+        level: "warn",
+        by: { sessionId: req.requestedBy.sessionId, name: req.requestedBy.name },
+        requestId: req.id,
+        details: { ...common, err: msg }
+      });
+      return okResult(req.id, req.tool, {
+        ...common,
+        verified: true,
+        outcome: "compacted",
+        compactedAt: watch.at,
+        preTokens: watch.preTokens,
+        postTokens: watch.postTokens,
+        queuedAt: watch.queuedAt,
+        preemptedByAuto: watch.preemptedByAuto,
+        woken: false,
+        wakeError: msg
+      });
+    }
+    return okResult(req.id, req.tool, {
+      ...common,
+      verified: true,
+      outcome: "compacted",
+      compactedAt: watch.at,
+      preTokens: watch.preTokens,
+      postTokens: watch.postTokens,
+      queuedAt: watch.queuedAt,
+      preemptedByAuto: watch.preemptedByAuto,
+      woken: true
+    });
+  }
   await writeEvent({
-    event: "peer_compacted",
+    event: "peer_compact_unresolved",
+    level: watch.kind === "silent" ? "warn" : "error",
     by: { sessionId: req.requestedBy.sessionId, name: req.requestedBy.name },
     requestId: req.id,
-    details: { handle, sessionKey, threadId, reason: args.reason ?? null }
+    details: { ...common, watch }
   });
-  await publishLifecycleEvent({
-    event: "peer_compacted",
-    handle,
-    sessionKey,
-    details: { threadId, reason: args.reason ?? null }
-  });
-  return okResult(req.id, req.tool, { handle, sessionKey, threadId, anchorMsgId });
+  if (watch.kind === "queued-unresolved") {
+    return errResult(
+      req.id,
+      req.tool,
+      "compact_queued",
+      `Peer '${handle}' was BUSY: Claude Code queued the /compact at ${watch.queuedAt} instead of running it, and it had not run ${watch.waitedMs} ms later. It cannot be taken back out of the queue \u2014 it WILL run, at a moment nobody chose, against whatever context exists then. Watch the peer or re-check with peer_compact once it is idle.`,
+      { ...common, queuedAt: watch.queuedAt, waitedMs: watch.waitedMs }
+    );
+  }
+  if (watch.kind === "preempted-unresolved") {
+    return errResult(
+      req.id,
+      req.tool,
+      "compact_preempted_by_auto",
+      `Claude Code autocompacted peer '${handle}' by itself at ${watch.auto.at} (${watch.auto.preTokens} \u2192 ${watch.auto.postTokens} tokens) and OUR /compact has still not run. When it does it will compress an already-compacted context. This is the 2026-08-09 incident, caught in flight.`,
+      { ...common, auto: watch.auto, queuedAt: watch.queuedAt, waitedMs: watch.waitedMs }
+    );
+  }
+  return errResult(
+    req.id,
+    req.tool,
+    "compact_not_observed",
+    `Keys reached the input line of peer '${handle}', but its transcript shows no compact and no queued command after ${watch.waitedMs} ms. Nothing is known to have happened \u2014 do not assume it did.`,
+    { ...common, waitedMs: watch.waitedMs }
+  );
+}
+function wakeAfterCompactLine() {
+  return "[daemon] Compact complete \u2014 re-onboard from your anchor, read your inbox (peer_inbox_read) and report to whoever requested the compact.";
 }
 
 // src/handlers/peer-restart.ts
 var import_node_fs5 = require("node:fs");
-var import_promises13 = require("node:fs/promises");
-var import_node_path11 = require("node:path");
+var import_promises14 = require("node:fs/promises");
+var import_node_path12 = require("node:path");
 
 // src/handlers/peer-spawn.ts
 var import_node_fs4 = require("node:fs");
-var import_node_path10 = require("node:path");
+var import_node_path11 = require("node:path");
 
 // src/handlers/fork-guard.ts
 async function forkGuard(state, driver, opts) {
@@ -6085,10 +6354,10 @@ var PeerSpawnArgsSchema = external_exports.object({
 }).strict();
 function findTranscriptElsewhere(sessionId, cwd) {
   try {
-    const here = (0, import_node_path10.dirname)(sessionFile(cwd, sessionId));
+    const here = (0, import_node_path11.dirname)(sessionFile(cwd, sessionId));
     for (const dir of (0, import_node_fs4.readdirSync)(projectsRoot())) {
-      const candidate = (0, import_node_path10.join)(projectsRoot(), dir, `${sessionId}.jsonl`);
-      if ((0, import_node_path10.basename)((0, import_node_path10.join)(projectsRoot(), dir)) === (0, import_node_path10.basename)(here)) continue;
+      const candidate = (0, import_node_path11.join)(projectsRoot(), dir, `${sessionId}.jsonl`);
+      if ((0, import_node_path11.basename)((0, import_node_path11.join)(projectsRoot(), dir)) === (0, import_node_path11.basename)(here)) continue;
       if ((0, import_node_fs4.existsSync)(candidate)) return candidate;
     }
   } catch {
@@ -6482,7 +6751,7 @@ async function handlePeerSpawn(req, ctx) {
 }
 
 // src/handlers/peer-stop.ts
-var import_promises12 = require("node:fs/promises");
+var import_promises13 = require("node:fs/promises");
 
 // src/handlers/stop-protocol.ts
 var DEFAULT_STOP_ACK_TIMEOUT_MS = 12e4;
@@ -6576,7 +6845,7 @@ async function runCourtesyPhase(req, ctx, target, args) {
   const bridgeId = bridgeIdOf(record);
   const timeoutMs = args.ackTimeoutMs ?? DEFAULT_STOP_ACK_TIMEOUT_MS;
   const pollMs = args.ackPollMs ?? DEFAULT_STOP_ACK_POLL_MS;
-  await (0, import_promises12.mkdir)(stopAcks.dir(), { recursive: true });
+  await (0, import_promises13.mkdir)(stopAcks.dir(), { recursive: true });
   const pending = record.observed.stopRequest ?? null;
   const resumed = pending !== null;
   let threadId;
@@ -7024,7 +7293,7 @@ async function confirmStillRunning(pid, identity, expectedSessionId, opts = {}) 
   if (pid === null) return { ok: false, reason: "no pid was reported by the spawn" };
   const windowMs = opts.settleMs ?? 2500;
   const procRoot = opts.procRoot ?? "/proc";
-  const alive = () => (0, import_node_fs5.existsSync)((0, import_node_path11.join)(procRoot, String(pid)));
+  const alive = () => (0, import_node_fs5.existsSync)((0, import_node_path12.join)(procRoot, String(pid)));
   const isClaude = (opts.command ?? "").split("/").pop() === "claude";
   const mustRegister = isClaude && isResumableSessionId(expectedSessionId);
   const registered = identity.actual !== null;
@@ -7112,7 +7381,7 @@ async function runReadyPhase(req, ctx, target, args, resumeSessionId) {
   const bridgeId = bridgeIdOf(record);
   const timeoutMs = args.readyTimeoutMs ?? DEFAULT_RESTART_READY_TIMEOUT_MS;
   const pollMs = args.readyPollMs ?? DEFAULT_RESTART_READY_POLL_MS;
-  await (0, import_promises13.mkdir)(restartAcks.dir(), { recursive: true });
+  await (0, import_promises14.mkdir)(restartAcks.dir(), { recursive: true });
   const pending = record.observed.restartRequest ?? null;
   const resumable = pending !== null && pending.phase === "ready-ack";
   let threadId;
@@ -7629,7 +7898,7 @@ async function handlePeerRestart(req, ctx) {
 }
 
 // src/handlers/team-adopt.ts
-var log6 = makeLogger("daemon.adopt");
+var log7 = makeLogger("daemon.adopt");
 var TeamAdoptArgsSchema = external_exports.object({
   team: external_exports.string().min(1),
   mode: external_exports.enum(["auto", "manual"]).default("auto"),
@@ -7768,7 +8037,7 @@ async function handleTeamAdopt(req, ctx) {
   const deadWindows = windows.filter((w) => w.dead);
   if (deadWindows.length > 0) {
     windows = windows.filter((w) => !w.dead);
-    log6.warn("adopt_skipped_dead_panes", {
+    log7.warn("adopt_skipped_dead_panes", {
       count: deadWindows.length,
       targets: deadWindows.map((w) => ({ target: w.target, exitStatus: w.exitStatus }))
     });
@@ -7958,8 +8227,8 @@ async function handleTeamAdopt(req, ctx) {
 }
 
 // src/handlers/team-layout.ts
-var import_promises14 = require("node:fs/promises");
-var import_node_path12 = require("node:path");
+var import_promises15 = require("node:fs/promises");
+var import_node_path13 = require("node:path");
 var PeerSpecSchema = external_exports.object({
   /**
    * The registry key for this peer — renamed from `sessionId` in R3
@@ -8035,11 +8304,11 @@ var TeamLayoutArgsSchema = external_exports.object({
   wakeDelayMs: external_exports.number().int().min(0).max(12e4).optional()
 }).strict();
 function teamFilePath(team) {
-  return (0, import_node_path12.join)(teamsDir(), `${team}.json`);
+  return (0, import_node_path13.join)(teamsDir(), `${team}.json`);
 }
 async function loadTeamSpec(team) {
   try {
-    const raw = await (0, import_promises14.readFile)(teamFilePath(team), "utf-8");
+    const raw = await (0, import_promises15.readFile)(teamFilePath(team), "utf-8");
     const parsed = TeamFileSchema.safeParse(JSON.parse(raw));
     if (!parsed.success) throw new Error(`Team spec parse failed: ${parsed.error.message}`);
     return parsed.data;
@@ -8299,7 +8568,7 @@ async function handleTeamLayout(req, ctx) {
 
 // src/handlers/team-reconcile.ts
 var import_node_fs6 = require("node:fs");
-var import_node_path13 = require("node:path");
+var import_node_path14 = require("node:path");
 var TeamReconcileArgsSchema = external_exports.object({
   /** Restrict the report to one team. Unmanaged processes are still listed. */
   team: external_exports.string().min(1).optional(),
@@ -8310,7 +8579,7 @@ var TeamReconcileArgsSchema = external_exports.object({
   markDead: external_exports.boolean().default(false)
 }).strict();
 function pidAlive(pid, procRoot) {
-  return (0, import_node_fs6.existsSync)((0, import_node_path13.join)(procRoot, String(pid)));
+  return (0, import_node_fs6.existsSync)((0, import_node_path14.join)(procRoot, String(pid)));
 }
 async function ownsProcess(inspector, panePid, childPid) {
   if (panePid === childPid) return true;
@@ -9086,8 +9355,8 @@ async function handleTeamStatus(req, ctx) {
 }
 
 // src/handlers/team-stop.ts
-var import_promises15 = require("node:fs/promises");
-var import_node_path14 = require("node:path");
+var import_promises16 = require("node:fs/promises");
+var import_node_path15 = require("node:path");
 var DEFAULT_ANCHOR_TIMEOUT_MS2 = 12e4;
 var DEFAULT_ACK_POLL_MS2 = 500;
 var PeerOrderableSchema = external_exports.object({
@@ -9109,11 +9378,11 @@ var TeamStopArgsSchema = external_exports.object({
   inline: TeamStopFileSchema.optional()
 }).strict();
 function teamFilePath2(team) {
-  return (0, import_node_path14.join)(teamsDir(), `${team}.json`);
+  return (0, import_node_path15.join)(teamsDir(), `${team}.json`);
 }
 async function loadTeamOrder(team) {
   try {
-    const raw = await (0, import_promises15.readFile)(teamFilePath2(team), "utf-8");
+    const raw = await (0, import_promises16.readFile)(teamFilePath2(team), "utf-8");
     const json = JSON.parse(raw);
     const parsed = TeamStopFileSchema.safeParse(json);
     if (!parsed.success) throw new Error(`Team spec parse failed: ${parsed.error.message}`);
@@ -9348,19 +9617,19 @@ async function dispatch(req, ctx) {
 }
 
 // src/heartbeat.ts
-var import_promises16 = require("node:fs/promises");
-var log7 = makeLogger("daemon.heartbeat");
+var import_promises17 = require("node:fs/promises");
+var log8 = makeLogger("daemon.heartbeat");
 var timer = null;
 async function touch() {
   const now = /* @__PURE__ */ new Date();
   try {
-    await (0, import_promises16.utimes)(heartbeatPath(), now, now);
+    await (0, import_promises17.utimes)(heartbeatPath(), now, now);
   } catch (e) {
     const code = e.code;
     if (code === "ENOENT") {
-      await (0, import_promises16.writeFile)(heartbeatPath(), "");
+      await (0, import_promises17.writeFile)(heartbeatPath(), "");
     } else {
-      log7.warn("heartbeat_touch_failed", { err: String(e) });
+      log8.warn("heartbeat_touch_failed", { err: String(e) });
     }
   }
 }
@@ -9381,8 +9650,8 @@ function stopHeartbeat() {
 // src/hosts/tmux-driver.ts
 var import_node_child_process = require("node:child_process");
 var import_node_fs7 = require("node:fs");
-var import_promises17 = require("node:fs/promises");
-var import_node_path15 = require("node:path");
+var import_promises18 = require("node:fs/promises");
+var import_node_path16 = require("node:path");
 var import_node_util = require("node:util");
 
 // src/hosts/input-line.ts
@@ -9434,6 +9703,21 @@ function paneContains(captured, keys) {
   const probe = needle.length > 40 ? needle.slice(-40) : needle;
   return haystack.includes(probe);
 }
+function inputLineHolds(captured, keys) {
+  const inputLine = readInputLine(captured);
+  if (inputLine.kind === "draft" && paneContains(inputLine.text, keys)) {
+    return { delivered: true, where: "input-line", inputLine };
+  }
+  if (inputLine.kind === "no-marker") {
+    return {
+      delivered: paneContains(captured, keys),
+      where: "no-input-box",
+      inputLine
+    };
+  }
+  const where = paneContains(captured, keys) ? "elsewhere-on-pane" : "absent";
+  return { delivered: false, where, inputLine };
+}
 function refusePayload(keys) {
   if (/[\n\r]/.test(keys)) {
     return {
@@ -9456,7 +9740,7 @@ function displacedDraftNotice() {
 // src/hosts/tmux-driver.ts
 var PROBE_RETRY_PAUSE_MS = 200;
 var execFileAsync = (0, import_node_util.promisify)(import_node_child_process.execFile);
-var log8 = makeLogger("daemon.host.tmux");
+var log9 = makeLogger("daemon.host.tmux");
 var EXEC_DEFAULTS = { killSignal: "SIGKILL" };
 var TMUX_OWNED_VARS = ["TMUX", "TMUX_PANE"];
 var PANE_SELF_DESCRIBING = [
@@ -9632,7 +9916,7 @@ var TmuxDriver = class _TmuxDriver {
     let effectiveArgs = args;
     let recreatedHome = false;
     if (asWindow && parentSession !== null && !await this.rawHasSession(parentSession)) {
-      log8.info("tmux_home_session_recreated", { session: parentSession });
+      log9.info("tmux_home_session_recreated", { session: parentSession });
       effectiveArgs = [
         "new-session",
         "-d",
@@ -9664,7 +9948,7 @@ var TmuxDriver = class _TmuxDriver {
       });
       if (asWindow) createdWindowId = stdout.trim() ? trustCanonicalTarget(stdout.trim()) : null;
     } catch (e) {
-      log8.error("tmux_spawn_failed", {
+      log9.error("tmux_spawn_failed", {
         sessionKey: opts.sessionKey,
         canonicalKey,
         err: e instanceof Error ? e.message : String(e)
@@ -9672,7 +9956,7 @@ var TmuxDriver = class _TmuxDriver {
       throw e;
     }
     if (canonicalKey !== opts.sessionKey) {
-      log8.info("session_key_canonicalized", {
+      log9.info("session_key_canonicalized", {
         raw: opts.sessionKey,
         canonical: canonicalKey
       });
@@ -9682,21 +9966,21 @@ var TmuxDriver = class _TmuxDriver {
       ["set-window-option", "-t", effectiveKey, "remain-on-exit", "on"],
       QUERY_TIMEOUT_MS
     ).catch((e) => {
-      log8.warn("tmux_remain_on_exit_not_set", {
+      log9.warn("tmux_remain_on_exit_not_set", {
         sessionKey: effectiveKey,
         err: e instanceof Error ? e.message.split("\n")[0] : String(e)
       });
     });
     const probe = await this.probePanePid(effectiveKey);
     if (probe.kind === "no-such-target") {
-      log8.error("tmux_spawn_target_gone", {
+      log9.error("tmux_spawn_target_gone", {
         sessionKey: opts.sessionKey,
         canonicalKey: effectiveKey,
         raw: probe.raw,
         note: "tmux says the target does not exist \u2014 the command exited immediately"
       });
     } else if (probe.kind === "unavailable") {
-      log8.error("tmux_spawn_pid_unavailable", {
+      log9.error("tmux_spawn_pid_unavailable", {
         sessionKey: opts.sessionKey,
         canonicalKey: effectiveKey,
         raw: probe.raw,
@@ -9721,7 +10005,7 @@ var TmuxDriver = class _TmuxDriver {
         `pane held exit status ${before.exitStatus ?? "unknown"} before teardown`
       );
       if (saved === null) {
-        log8.error("tmux_kill_refused_no_archive", {
+        log9.error("tmux_kill_refused_no_archive", {
           sessionKey: canonical,
           exitStatus: before.exitStatus
         });
@@ -9729,7 +10013,7 @@ var TmuxDriver = class _TmuxDriver {
           `Refusing to destroy '${canonical}': its process had already exited (status ${before.exitStatus ?? "unknown"}) and the pane could NOT be archived, so tearing it down would take the only record of why with it. Read it with \`tmux capture-pane -p -S -2000 -t ${canonical}\` and remove it by hand.`
         );
       }
-      log8.info("tmux_kill_archived_first", {
+      log9.info("tmux_kill_archived_first", {
         sessionKey: canonical,
         archivePath: saved,
         exitStatus: before.exitStatus
@@ -9740,7 +10024,7 @@ var TmuxDriver = class _TmuxDriver {
     if (t.kind === "window") {
       const linked = await this.linkedElsewhere(t.windowId);
       if (linked.length > 0) {
-        log8.warn("tmux_window_linked_unlinking", { target: t.windowId, linkedSessions: linked });
+        log9.warn("tmux_window_linked_unlinking", { target: t.windowId, linkedSessions: linked });
         await execFileAsync(this.tmuxBin, ["unlink-window", "-t", t.windowId], {
           ...EXEC_DEFAULTS,
           timeout: MUTATE_TIMEOUT_MS
@@ -9762,7 +10046,7 @@ var TmuxDriver = class _TmuxDriver {
     const budget = opts.force === true ? this.verifyTimeoutMs / 2 : this.verifyTimeoutMs;
     const respawned = !await this.verifyKilled(canonical, budget);
     if (respawned) {
-      log8.error("tmux_kill_respawn_detected", { sessionKey: canonical });
+      log9.error("tmux_kill_respawn_detected", { sessionKey: canonical });
       throw new Error(
         `Session '${canonical}' respawned within ${budget}ms after kill \u2014 investigate supervisor (bg-pty-host?)`
       );
@@ -9851,7 +10135,7 @@ var TmuxDriver = class _TmuxDriver {
   async sendKeys(sessionKey, keys) {
     const refusal = refusePayload(keys);
     if (refusal) {
-      log8.error("tmux_send_keys_refused", { sessionKey, reason: refusal.reason });
+      log9.error("tmux_send_keys_refused", { sessionKey, reason: refusal.reason });
       throw new Error(`send-keys to '${sessionKey}' refused \u2014 ${refusal.message}`);
     }
     const canonical = formatHostTarget(parseHostTarget(sessionKey));
@@ -9869,7 +10153,7 @@ var TmuxDriver = class _TmuxDriver {
         strokes: cleared.strokes,
         draftChars: cleared.draft.length
       });
-      log8.error("tmux_send_keys_input_stuck", { sessionKey: canonical, strokes: cleared.strokes });
+      log9.error("tmux_send_keys_input_stuck", { sessionKey: canonical, strokes: cleared.strokes });
       throw new Error(
         `send-keys to '${canonical}' refused \u2014 the input line still holds ${cleared.draft.length} characters after ${cleared.strokes} clear strokes, and typing onto a person's unsent text is not an option. Look at the pane: tmux capture-pane -p -t ${canonical}`
       );
@@ -9879,6 +10163,7 @@ var TmuxDriver = class _TmuxDriver {
     let attempts = 0;
     let capturedTail = "";
     let lastError = null;
+    let where = "absent";
     for (attempts = 1; attempts <= 2 && !delivered; attempts++) {
       try {
         await this.tmux(["send-keys", "-t", canonical, "-l", "--", keys], SEND_KEYS_TIMEOUT_MS);
@@ -9888,13 +10173,18 @@ var TmuxDriver = class _TmuxDriver {
       }
       await new Promise((r) => setTimeout(r, this.sendVerifyDelayMs));
       capturedTail = await this.capturePane(canonical);
-      delivered = paneContains(capturedTail, keys);
+      const probe = inputLineHolds(capturedTail, keys);
+      delivered = probe.delivered;
+      where = probe.where;
     }
     await this.logSendKeys(canonical, {
       keys,
       paneInMode: inMode,
       attempts: attempts - 1,
-      verdict: delivered ? "delivered" : "not-visible",
+      verdict: delivered ? "delivered" : "not-verified",
+      // WHERE the text was, not just whether it was somewhere. `elsewhere-on-pane`
+      // is the verdict the pre-v0.11.25 check would have called a success.
+      deliveryWhere: where,
       inputLine: cleared.kind,
       clearStrokes: cleared.strokes,
       ...cleared.kind === "displaced" ? { displacedDraft: cleared.draft, restorable: cleared.restorable } : {},
@@ -9902,13 +10192,14 @@ var TmuxDriver = class _TmuxDriver {
       capturedTail: capturedTail.slice(-240)
     });
     if (!delivered) {
-      log8.error("tmux_send_keys_unverified", {
+      log9.error("tmux_send_keys_unverified", {
         sessionKey: canonical,
         attempts: attempts - 1,
+        deliveryWhere: where,
         err: lastError
       });
       throw new Error(
-        `send-keys to '${canonical}' could not be verified after ${attempts - 1} attempts \u2014 text never appeared in the pane${lastError ? ` (tmux: ${lastError.split("\n")[0]})` : ""}`
+        where === "elsewhere-on-pane" ? `send-keys to '${canonical}' could not be verified after ${attempts - 1} attempts \u2014 the text IS on the pane but NOT in the input line, so pressing Enter would submit something else. Look at the pane: tmux capture-pane -p -t ${canonical}` : `send-keys to '${canonical}' could not be verified after ${attempts - 1} attempts \u2014 text never reached the input line${lastError ? ` (tmux: ${lastError.split("\n")[0]})` : ""}`
       );
     }
     await this.tmux(["send-keys", "-t", canonical, "Enter"], SEND_KEYS_TIMEOUT_MS);
@@ -10039,20 +10330,20 @@ var TmuxDriver = class _TmuxDriver {
     const content = await this.capturePaneWithHistory(canonical);
     if (content.trim().length === 0) return null;
     try {
-      const dir = (0, import_node_path15.join)(controlDir(), "archive");
-      await (0, import_promises17.mkdir)(dir, { recursive: true });
+      const dir = (0, import_node_path16.join)(controlDir(), "archive");
+      await (0, import_promises18.mkdir)(dir, { recursive: true });
       const stamp = (/* @__PURE__ */ new Date()).toISOString().replace(/[:.]/g, "-");
-      const path = (0, import_node_path15.join)(dir, `pane-${canonical}-${stamp}.log`);
-      await (0, import_promises17.appendFile)(
+      const path = (0, import_node_path16.join)(dir, `pane-${canonical}-${stamp}.log`);
+      await (0, import_promises18.appendFile)(
         path,
         `# archived ${(/* @__PURE__ */ new Date()).toISOString()} \u2014 target ${canonical} \u2014 ${reason}
 ${content}`,
         "utf-8"
       );
-      log8.info("pane_archived", { sessionKey: canonical, path, reason });
+      log9.info("pane_archived", { sessionKey: canonical, path, reason });
       return path;
     } catch (e) {
-      log8.error("pane_archive_failed", {
+      log9.error("pane_archive_failed", {
         sessionKey: canonical,
         err: e instanceof Error ? e.message : String(e)
       });
@@ -10083,10 +10374,10 @@ ${content}`,
   }
   async logSendKeys(sessionKey, entry) {
     try {
-      const dir = (0, import_node_path15.join)(controlDir(), "logs");
-      await (0, import_promises17.mkdir)(dir, { recursive: true });
+      const dir = (0, import_node_path16.join)(controlDir(), "logs");
+      await (0, import_promises18.mkdir)(dir, { recursive: true });
       const line = JSON.stringify({ ts: (/* @__PURE__ */ new Date()).toISOString(), sessionKey, ...entry });
-      await (0, import_promises17.appendFile)((0, import_node_path15.join)(dir, `sendkeys-${sessionKey}.log`), `${line}
+      await (0, import_promises18.appendFile)((0, import_node_path16.join)(dir, `sendkeys-${sessionKey}.log`), `${line}
 `, "utf-8");
     } catch {
     }
@@ -10195,7 +10486,7 @@ ${content}`,
 };
 
 // src/hosts/mock-driver.ts
-var log9 = makeLogger("daemon.host.mock");
+var log10 = makeLogger("daemon.host.mock");
 
 // src/hosts/index.ts
 function defaultHostDriver() {
@@ -10206,14 +10497,14 @@ function defaultHostDriver() {
 }
 
 // src/daemon.ts
-var log10 = makeLogger("daemon");
+var log11 = makeLogger("daemon");
 var POLL_INTERVAL_MS = 250;
 async function runDaemon(opts) {
   try {
     await acquireLock();
   } catch (e) {
     if (e instanceof LockAcquireError) {
-      log10.error("lock_held_by_another_daemon", {
+      log11.error("lock_held_by_another_daemon", {
         heldBy: e.heldBy
       });
       process.exitCode = 3;
@@ -10249,7 +10540,7 @@ async function runDaemon(opts) {
   process.on("SIGINT", () => void shutdown("SIGINT"));
   process.on("SIGTERM", () => void shutdown("SIGTERM"));
   process.on("SIGHUP", () => {
-    log10.info("sighup_reload_stub", { note: "config reload lands in v0.10.0-beta" });
+    log11.info("sighup_reload_stub", { note: "config reload lands in v0.10.0-beta" });
   });
   process.on("SIGPIPE", () => void 0);
   const drainQueue = async () => {
@@ -10269,7 +10560,7 @@ async function runDaemon(opts) {
         continue;
       }
       if (req.id !== fileId) {
-        log10.warn("request_id_filename_mismatch", { fileId, envelopeId: req.id });
+        log11.warn("request_id_filename_mismatch", { fileId, envelopeId: req.id });
       }
       if (!await markRequestDone(fileId)) {
         await writeEvent({
@@ -10310,9 +10601,9 @@ async function runDaemon(opts) {
       // Log on a doubling curve — a 120 s handler drops ~480 ticks and the
       // journal must show the stall without 4 lines per second.
       onSkip: (skipped) => {
-        if (isPowerOfTwo(skipped)) log10.debug("queue_tick_skipped_busy", { skipped });
+        if (isPowerOfTwo(skipped)) log11.debug("queue_tick_skipped_busy", { skipped });
       },
-      onError: (e) => log10.error("queue_error", { err: String(e) })
+      onError: (e) => log11.error("queue_error", { err: String(e) })
     }
   );
   if (opts.once) {
@@ -10327,16 +10618,16 @@ async function runDaemon(opts) {
 
 // src/install.ts
 var import_node_child_process2 = require("node:child_process");
-var import_promises18 = require("node:fs/promises");
+var import_promises19 = require("node:fs/promises");
 var import_node_os4 = require("node:os");
-var import_node_path16 = require("node:path");
-var log11 = makeLogger("daemon.install");
+var import_node_path17 = require("node:path");
+var log12 = makeLogger("daemon.install");
 var UNIT_NAME = "claude-bridge-daemon.service";
 function systemdUserDir() {
-  return (0, import_node_path16.join)((0, import_node_os4.homedir)(), ".config", "systemd", "user");
+  return (0, import_node_path17.join)((0, import_node_os4.homedir)(), ".config", "systemd", "user");
 }
 function unitPath() {
-  return (0, import_node_path16.join)(systemdUserDir(), UNIT_NAME);
+  return (0, import_node_path17.join)(systemdUserDir(), UNIT_NAME);
 }
 function assertLinux() {
   if (process.platform !== "linux") {
@@ -10348,19 +10639,19 @@ function assertLinux() {
 function resolveDaemonBin() {
   const argv1 = process.argv[1];
   if (!argv1) throw new Error("process.argv[1] missing \u2014 cannot determine daemon binary path");
-  if (!argv1.startsWith("/")) return (0, import_node_path16.resolve)(process.cwd(), argv1);
+  if (!argv1.startsWith("/")) return (0, import_node_path17.resolve)(process.cwd(), argv1);
   return argv1;
 }
 async function readTemplate() {
   const anchor = resolveDaemonBin();
-  const anchorDir = (0, import_node_path16.dirname)(anchor);
+  const anchorDir = (0, import_node_path17.dirname)(anchor);
   const candidates = [
-    (0, import_node_path16.resolve)(anchorDir, "..", "templates", UNIT_NAME),
-    (0, import_node_path16.resolve)(anchorDir, "templates", UNIT_NAME)
+    (0, import_node_path17.resolve)(anchorDir, "..", "templates", UNIT_NAME),
+    (0, import_node_path17.resolve)(anchorDir, "templates", UNIT_NAME)
   ];
   for (const candidate of candidates) {
     try {
-      return await (0, import_promises18.readFile)(candidate, "utf-8");
+      return await (0, import_promises19.readFile)(candidate, "utf-8");
     } catch {
     }
   }
@@ -10370,43 +10661,43 @@ function findNodeBin() {
   return process.execPath;
 }
 function deployedDaemonPath() {
-  return (0, import_node_path16.join)((0, import_node_os4.homedir)(), ".claude-bridge", "bin", "claude-bridge-daemon.cjs");
+  return (0, import_node_path17.join)((0, import_node_os4.homedir)(), ".claude-bridge", "bin", "claude-bridge-daemon.cjs");
 }
 function deployMetaPath() {
-  return (0, import_node_path16.join)((0, import_node_path16.dirname)(deployedDaemonPath()), "deployed-from.json");
+  return (0, import_node_path17.join)((0, import_node_path17.dirname)(deployedDaemonPath()), "deployed-from.json");
 }
 async function deployDaemonBinary(sourceBin) {
   const target = deployedDaemonPath();
-  if ((0, import_node_path16.resolve)(sourceBin) === (0, import_node_path16.resolve)(target)) {
-    log11.info("deploy_skipped_same_path", { path: target });
+  if ((0, import_node_path17.resolve)(sourceBin) === (0, import_node_path17.resolve)(target)) {
+    log12.info("deploy_skipped_same_path", { path: target });
     return target;
   }
-  await (0, import_promises18.mkdir)((0, import_node_path16.dirname)(target), { recursive: true });
-  await (0, import_promises18.copyFile)(sourceBin, target);
-  await (0, import_promises18.chmod)(target, 493);
+  await (0, import_promises19.mkdir)((0, import_node_path17.dirname)(target), { recursive: true });
+  await (0, import_promises19.copyFile)(sourceBin, target);
+  await (0, import_promises19.chmod)(target, 493);
   try {
     const templateSource = await readTemplate();
-    const templateTarget = (0, import_node_path16.join)((0, import_node_path16.dirname)(target), "templates", UNIT_NAME);
-    await (0, import_promises18.mkdir)((0, import_node_path16.dirname)(templateTarget), { recursive: true });
-    await (0, import_promises18.writeFile)(templateTarget, templateSource, "utf-8");
+    const templateTarget = (0, import_node_path17.join)((0, import_node_path17.dirname)(target), "templates", UNIT_NAME);
+    await (0, import_promises19.mkdir)((0, import_node_path17.dirname)(templateTarget), { recursive: true });
+    await (0, import_promises19.writeFile)(templateTarget, templateSource, "utf-8");
   } catch (e) {
-    log11.warn("template_deploy_failed", { err: String(e) });
+    log12.warn("template_deploy_failed", { err: String(e) });
   }
   let version = "unknown";
   try {
     const pkg = JSON.parse(
-      await (0, import_promises18.readFile)((0, import_node_path16.resolve)((0, import_node_path16.dirname)(sourceBin), "..", "package.json"), "utf-8")
+      await (0, import_promises19.readFile)((0, import_node_path17.resolve)((0, import_node_path17.dirname)(sourceBin), "..", "package.json"), "utf-8")
     );
     version = pkg.version ?? "unknown";
   } catch {
   }
-  await (0, import_promises18.writeFile)(
+  await (0, import_promises19.writeFile)(
     deployMetaPath(),
-    `${JSON.stringify({ source: (0, import_node_path16.resolve)(sourceBin), version, deployedAt: (/* @__PURE__ */ new Date()).toISOString() }, null, 2)}
+    `${JSON.stringify({ source: (0, import_node_path17.resolve)(sourceBin), version, deployedAt: (/* @__PURE__ */ new Date()).toISOString() }, null, 2)}
 `,
     "utf-8"
   );
-  log11.info("daemon_binary_deployed", { source: sourceBin, target, version });
+  log12.info("daemon_binary_deployed", { source: sourceBin, target, version });
   return target;
 }
 async function installSystemd() {
@@ -10417,42 +10708,42 @@ async function installSystemd() {
   const daemonBin = await deployDaemonBinary(sourceBin);
   const template = await readTemplate();
   const rendered = template.replace(/__NODE_BIN__/g, nodeBin).replace(/__DAEMON_BIN__/g, daemonBin);
-  await (0, import_promises18.mkdir)(systemdUserDir(), { recursive: true });
-  await (0, import_promises18.writeFile)(unitPath(), rendered, "utf-8");
-  log11.info("unit_written", { path: unitPath(), execStart: daemonBin });
+  await (0, import_promises19.mkdir)(systemdUserDir(), { recursive: true });
+  await (0, import_promises19.writeFile)(unitPath(), rendered, "utf-8");
+  log12.info("unit_written", { path: unitPath(), execStart: daemonBin });
   runSystemctl("daemon-reload");
   runSystemctl("enable", UNIT_NAME);
   runSystemctl("restart", UNIT_NAME);
-  log11.info("daemon_started_via_systemd");
+  log12.info("daemon_started_via_systemd");
 }
 async function uninstallSystemd() {
   assertLinux();
   try {
     runSystemctl("stop", UNIT_NAME);
   } catch (e) {
-    log11.warn("systemd_stop_failed", { err: String(e) });
+    log12.warn("systemd_stop_failed", { err: String(e) });
   }
   try {
     runSystemctl("disable", UNIT_NAME);
   } catch (e) {
-    log11.warn("systemd_disable_failed", { err: String(e) });
+    log12.warn("systemd_disable_failed", { err: String(e) });
   }
   try {
-    await (0, import_promises18.unlink)(unitPath());
+    await (0, import_promises19.unlink)(unitPath());
   } catch (e) {
     const code = e.code;
-    if (code !== "ENOENT") log11.warn("unit_unlink_failed", { err: String(e) });
+    if (code !== "ENOENT") log12.warn("unit_unlink_failed", { err: String(e) });
   }
   for (const path of [deployedDaemonPath(), deployMetaPath()]) {
     try {
-      await (0, import_promises18.unlink)(path);
+      await (0, import_promises19.unlink)(path);
     } catch (e) {
       const code = e.code;
-      if (code !== "ENOENT") log11.warn("deployed_binary_unlink_failed", { path, err: String(e) });
+      if (code !== "ENOENT") log12.warn("deployed_binary_unlink_failed", { path, err: String(e) });
     }
   }
   runSystemctl("daemon-reload");
-  log11.info("uninstalled");
+  log12.info("uninstalled");
 }
 function runSystemctl(...args) {
   (0, import_node_child_process2.execFileSync)("systemctl", ["--user", ...args], { stdio: "inherit" });
@@ -10463,7 +10754,7 @@ async function ensureBinariesExist(daemonBin, nodeBin) {
     ["node", nodeBin]
   ]) {
     try {
-      await (0, import_promises18.stat)(path);
+      await (0, import_promises19.stat)(path);
     } catch {
       throw new Error(`${label} binary not found at ${path} \u2014 build daemon first (npm run build)`);
     }
@@ -10471,7 +10762,7 @@ async function ensureBinariesExist(daemonBin, nodeBin) {
 }
 
 // src/send.ts
-var import_promises19 = require("node:fs/promises");
+var import_promises20 = require("node:fs/promises");
 var EXIT_OK = 0;
 var EXIT_PEER = 2;
 var EXIT_USAGE = 3;
@@ -10547,7 +10838,7 @@ ${SEND_HELP}` };
   let content;
   if (parsed.textFile !== void 0) {
     try {
-      content = parsed.textFile === "-" ? await readStdin() : await (0, import_promises19.readFile)(parsed.textFile, "utf-8");
+      content = parsed.textFile === "-" ? await readStdin() : await (0, import_promises20.readFile)(parsed.textFile, "utf-8");
     } catch (e) {
       return { code: EXIT_USAGE, stderr: `send: cannot read --text-file: ${String(e)}
 ` };
@@ -10623,7 +10914,7 @@ ${SEND_HELP}` };
 }
 
 // src/index.ts
-var log12 = makeLogger("daemon.cli");
+var log13 = makeLogger("daemon.cli");
 var DAEMON_VERSION = package_default.version;
 var HELP = `claude-bridge-daemon ${DAEMON_VERSION}
 
@@ -10643,7 +10934,7 @@ async function statusCommand() {
   const lock = await readLock();
   let heartbeatAgeMs = null;
   try {
-    const s = await (0, import_promises20.stat)(heartbeatPath());
+    const s = await (0, import_promises21.stat)(heartbeatPath());
     heartbeatAgeMs = Date.now() - s.mtimeMs;
   } catch {
     heartbeatAgeMs = null;
@@ -10724,6 +11015,6 @@ ${HELP}`);
   }
 }
 main(process.argv.slice(2)).catch((e) => {
-  log12.error("cli_fatal", { err: String(e) });
+  log13.error("cli_fatal", { err: String(e) });
   process.exitCode = 1;
 });

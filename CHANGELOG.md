@@ -6,6 +6,101 @@ All notable changes to this project are documented here. Format follows [Keep a 
 
 _Nothing yet._
 
+## [0.11.25] — 2026-08-09
+
+### A delivered command is not an executed command
+
+**P0.** On 2026-08-09 the control plane injected `/compact` into a peer,
+`sendKeys` returned, the daemon wrote `peer_compacted`, and the tool reported
+success. The peer compacted **5 min 52 s later**, on a context that Claude
+Code's own autocompact had already emptied in the meantime — the second
+compression landed at 9 % and threw away a freshly restored state.
+
+The first diagnosis — one inject, two executions — was wrong, and measurement
+said so. The peer's own transcript, read by `compactMetadata.trigger`:
+
+| time | trigger | preTokens → postTokens |
+|---|---|---|
+| 07:35:27 | `auto` | 1 001 614 → 13 944 |
+| 07:39:58 | `manual` | 87 556 → 10 822 |
+
+```
+07:31:44.942  enqueue  /compact       <- our inject, merely QUEUED
+07:35:27      autocompact — not ours
+07:37:37.153  dequeue  -> /compact runs, 5m52s late
+07:39:58      our compact, on an already-compacted context
+```
+
+One inject, one execution, **at a time nobody chose**. The pane was busy, so
+Claude Code queued the command; by the time it ran, the world had changed.
+
+#### Why there is still no idle gate
+
+The obvious fix is to refuse to inject unless the peer is idle. It cannot be
+built, and that is measured rather than assumed:
+
+- **The pane cannot say.** While a peer streams its answer the pane is
+  indistinguishable from an idle one — no spinner, empty input box, identical
+  status row. `✽ Computing…` shows during thinking and tool calls and vanishes
+  exactly when text starts arriving.
+- **`turnInProgress` cannot say.** At inject time in the reproduction the last
+  transcript row was an `assistant` thinking block, so it read "idle" in the
+  middle of a running turn.
+- **The ack cannot say.** `peer_compact` argued that the anchor ack IS the proof
+  of idleness. It proves the peer was idle *when it acked*; a new turn started
+  before the inject. A proof about one instant is not a proof about the next.
+
+So the question is asked afterwards, where the transcript answers it exactly.
+
+#### Changed
+
+- **`peer_compact` reads the outcome from the peer's transcript**
+  (`compact-verify.ts`). `peer_compacted` is now written only when a
+  `compactMetadata` with `trigger: "manual"` appears after the inject, and the
+  event carries `preTokens`/`postTokens`/`compactedAt` as evidence.
+- **New outcomes, none of them silent:** `compact_queued` (Claude Code queued
+  the command — it cannot be taken back out, measured: forty `C-u` strokes left
+  a queued item untouched, so the tool reports rather than cancels),
+  `compact_preempted_by_auto` (the incident, caught in flight),
+  `compact_not_observed`, and `unverifiable` for a peer with no statusLine
+  capture. An unverifiable compact and a verified one no longer read the same.
+- **`verifyTimeoutMs`** — new argument, default 180 s. A parameter and not a
+  constant because the honest measurements are 122 s and 130 s at ~760k tokens,
+  and the fleet has peers at 846k.
+- **Race warning before the inject.** At or above 85 % context the result
+  carries `raceRisk`, because Claude Code may autocompact at any moment and
+  compress the same context twice. Named, not blocked — the decision stays with
+  the operator. Two peers hit this threshold in one morning.
+- **A wake line after a confirmed compact** — plain text, never a slash command.
+  Measured rule behind it: a peer resumes by itself exactly when something is
+  still waiting in its queue, and sits silent when the queue is empty. The
+  daemon cannot see that queue, so the line is always sent; a duplicate wake
+  costs one short turn, a missed one costs a peer nobody notices is asleep.
+- **`sendKeys` verifies the INPUT LINE, not the pane.** The old check,
+  `paneContains(wholePane, keys)`, answered "is this string visible anywhere",
+  and Enter was pressed on that answer. Claude Code echoes submitted messages
+  back into the transcript **with the same `❯` marker**, so after any successful
+  inject the payload stays visible forever — and the next attempt would be
+  called delivered without a keystroke landing. The log now records
+  `deliveryWhere`: `input-line` · `no-input-box` (a shell or pager, verified by
+  the older whole-pane rule and named so the weaker verdict is never mistaken
+  for the strong one) · `elsewhere-on-pane` (what the previous release called
+  success) · `absent`. The verdict `not-visible` was renamed `not-verified`.
+
+Note on the brief: it asked for "the payload is in the input line **and the pane
+is not showing a palette**". The second half was not implemented, because
+measurement refuted it — the slash palette carries no `❯` and is drawn below the
+box's closing rule, so `readInputLine` returns the payload cleanly with the
+palette open. Implemented literally, that rule would refuse every slash command
+there is, `/compact` first.
+
+#### Known, not fixed here
+
+The daemon cannot reach a **freshly spawned peer** until its first turn: Claude
+Code's input-box placeholder (`Try "fix lint errors"`) is read as a human's
+draft, spends forty `C-u` strokes on it and refuses the send. Reproduced twice;
+see `docs/KNOWN-LIMITATIONS.md`. Out of scope for a P0.
+
 ## [0.11.24] — 2026-08-08
 
 ### The rename that a compiler put back
