@@ -184,12 +184,87 @@ export function paneContains(captured: string, keys: string): boolean {
 }
 
 /**
- * WHERE the payload was found — the v0.11.25 delivery contract.
+ * Claude Code's stand-in for a payload it decided not to draw.
  *
- * `input-line` and `no-input-box` license an Enter; the other two do not, and
- * they are kept apart because they call for different actions.
+ * TWO FORMS, and the difference carries the whole proof:
+ *
+ *   [Pasted text #7 +2 lines]   — the payload had 2 line breaks
+ *   [Pasted text #6]            — the payload had none
+ *
+ * MEASURED 2026-08-09 on Claude Code 2.1.226, and the measurement refuted the
+ * number this contract was first drafted with. A four-LINE payload reports
+ * `+3 lines`: the count is LINE BREAKS, not lines. A contract written to
+ * compare it against a line count would have rejected every correct delivery
+ * and passed nothing.
+ *
+ * The `#N` is a per-session counter and increments on every paste, so it is
+ * matched but never predicted.
  */
-export type DeliveryWhere = "input-line" | "no-input-box" | "elsewhere-on-pane" | "absent";
+export const PASTED_PLACEHOLDER = /^\[Pasted text #(\d+)(?: \+(\d+) lines?)?\]$/;
+
+/**
+ * When Claude Code collapses a pasted payload instead of drawing it.
+ *
+ * MEASURED — two independent triggers, either one is enough:
+ *
+ * | payload                          | box                          |
+ * |----------------------------------|------------------------------|
+ * | 15 chars, 2 breaks               | the text, on three rows      |
+ * | 1500 chars, 2 breaks             | `[Pasted text #7 +2 lines]`  |
+ * | 7 chars, 3 breaks                | `[Pasted text #4 +3 lines]`  |
+ * | 1200 chars, 0 breaks             | `[Pasted text #6]`           |
+ *
+ * The verifier does not use this to PREDICT which form to expect — it accepts
+ * either and checks whichever arrived. The constant is here because the
+ * boundary is a measured property of the client and belongs written down.
+ */
+export const PASTE_COLLAPSE_LINE_BREAKS = 3;
+
+/** Line breaks in a payload — the number the placeholder reports. */
+export function countLineBreaks(keys: string): number {
+  let n = 0;
+  for (const ch of keys) if (ch === "\n") n++;
+  return n;
+}
+
+/**
+ * How a payload has to reach the input box.
+ *
+ * `send-keys -l` turns every newline into Enter, so a multi-line payload typed
+ * that way is SUBMITTED IN PIECES. Measured 2026-08-09: a four-line payload
+ * pasted without bracketing produced three separate user messages in the
+ * peer's transcript and left the fourth line sitting in the box. The same
+ * payload through `load-buffer` + `paste-buffer -p` produced exactly one
+ * message of four lines.
+ *
+ * So the newline is not a formatting detail, it is the choice of route.
+ */
+export type PayloadRoute = "typed" | "pasted";
+
+export function payloadRoute(keys: string): PayloadRoute {
+  return keys.includes("\n") ? "pasted" : "typed";
+}
+
+/**
+ * WHERE the payload was found — the delivery contract.
+ *
+ * `input-line`, `no-input-box` and `pasted-placeholder` license an Enter; the
+ * rest do not, and they are kept apart because they call for different actions.
+ *
+ * `pasted-placeholder` is DELIBERATELY WEAKER than `input-line` and is named so
+ * that a log reader can tell. Under it the pane no longer holds the payload, so
+ * what is proven is "a paste of the right size arrived", not "this text
+ * arrived". That is the strongest claim the client leaves available once it
+ * collapses the text, and overstating it in the log would be worse than the
+ * weakness itself.
+ */
+export type DeliveryWhere =
+  | "input-line"
+  | "no-input-box"
+  | "pasted-placeholder"
+  | "pasted-line-count-mismatch"
+  | "elsewhere-on-pane"
+  | "absent";
 
 export type DeliveryProbe = {
   delivered: boolean;
@@ -225,6 +300,35 @@ export function inputLineHolds(captured: string, keys: string): DeliveryProbe {
     return { delivered: true, where: "input-line", inputLine };
   }
   /**
+   * THE PAYLOAD IS IN THE BOX BUT THE BOX NO LONGER SHOWS IT.
+   *
+   * Claude Code replaces a collapsed paste with a placeholder, and from that
+   * moment the content check above can never pass — the text is not on the
+   * pane to be found. Before this branch existed the only honest answer was to
+   * refuse multi-line payloads outright, because a send that reports failure
+   * after actually succeeding leaves the text in the box for the next caller
+   * to prepend to: reported failure, actual success, booby trap left behind.
+   *
+   * The placeholder is not nothing, though. It states how many line breaks it
+   * swallowed, and that number is checkable against what we sent. So the
+   * verdict here is a real verification of a smaller claim, not a shrug.
+   *
+   * A count that does NOT match is its own verdict rather than a plain
+   * failure: it means something arrived that is not what we sent — a stale
+   * placeholder from an earlier paste, or a payload that lost a line on the
+   * way — and an operator needs to see which of those they are looking at.
+   */
+  if (inputLine.kind === "draft") {
+    const m = PASTED_PLACEHOLDER.exec(inputLine.text.trim());
+    if (m) {
+      const declared = m[2] === undefined ? 0 : Number(m[2]);
+      const sent = countLineBreaks(keys);
+      return declared === sent
+        ? { delivered: true, where: "pasted-placeholder", inputLine }
+        : { delivered: false, where: "pasted-line-count-mismatch", inputLine };
+    }
+  }
+  /**
    * NO CLAUDE CODE INPUT BOX — a shell, a pager, a pane still starting.
    *
    * `clearInputLine` already refuses to claim a verdict about a pane it cannot
@@ -253,36 +357,67 @@ export function inputLineHolds(captured: string, keys: string): DeliveryProbe {
   return { delivered: false, where, inputLine };
 }
 
-/** Why a payload may not be typed into a pane at all. */
-export type PayloadRefusal = { reason: "multiline" | "too-long"; message: string };
+/**
+ * Largest pasted payload this contract has actually been measured against.
+ *
+ * MEASURED 2026-08-09: 4 019, 16 019 and 60 023 characters across six lines
+ * each landed as one paste and reported `+5 lines` every time. The 800
+ * character ceiling is a property of the TYPED route — of the arrival burst —
+ * and does not apply here.
+ *
+ * The cap is therefore not a known failure point. It is the edge of the
+ * evidence, and a payload past it is refused rather than sent on a guess.
+ */
+export const PASTE_ROUTE_MEASURED_LIMIT = 60_000;
+
+/** Why a payload may not be delivered to a pane at all. */
+export type PayloadRefusal = {
+  reason: "carriage-return" | "too-long-to-type" | "beyond-measured-paste";
+  message: string;
+};
 
 /**
  * Refuse payloads the send layer cannot deliver honestly.
  *
- * MULTILINE — tmux turns every `\n` in a send-keys argument into Enter, so a
- * two-line payload submits the first line on its own and leaves the second
- * hanging. If a multi-line payload is ever genuinely needed the route is
- * `Ctrl+J` for a newline that does not submit, or `load-buffer` +
- * `paste-buffer -p`; both need their own verification story because of the
- * collapse limit above. Until then: a payload is one line.
+ * WHAT CHANGED, AND WHY IT WAS A REFUSAL FIRST.
  *
- * TOO LONG — see `PASTE_COLLAPSE_LIMIT`.
+ * A newline used to be an outright refusal, because `send-keys -l` turns each
+ * one into Enter and the payload goes in pieces. That is still true — measured
+ * 2026-08-09, a four-line payload sent that way produced three separate user
+ * messages and orphaned the fourth line — so the newline did not stop being a
+ * hazard. It stopped being a REFUSAL because it now selects a route that
+ * handles it: `load-buffer` + `paste-buffer -p`, whose result is verifiable
+ * through the placeholder. See `payloadRoute` and `inputLineHolds`.
  *
- * Both refusals are checked before any key is sent, so a rejected payload
+ * CARRIAGE RETURN stays refused. Nothing was measured about how the client
+ * counts `\r`, and the placeholder contract is a count — asserting a number we
+ * never observed is exactly the failure this release exists to remove.
+ *
+ * TOO LONG TO TYPE — the 800 character ceiling now applies only to the typed
+ * route, where exceeding it produces a placeholder carrying NO count and the
+ * delivery becomes unprovable. See `PASTE_COLLAPSE_LIMIT`.
+ *
+ * Every refusal is checked before any key is sent, so a rejected payload
  * leaves the target pane exactly as it was found.
  */
 export function refusePayload(keys: string): PayloadRefusal | null {
-  if (/[\n\r]/.test(keys)) {
+  if (keys.includes("\r")) {
     return {
-      reason: "multiline",
+      reason: "carriage-return",
       message:
-        "payload contains a newline — tmux sends each one as Enter, which would submit the payload in pieces. A payload is one line; see docs/SEND-KEYS.md.",
+        "payload contains a carriage return — how Claude Code counts it in a pasted-text placeholder has not been measured, so delivery could not be verified against it. Send \\n only; see docs/SEND-KEYS.md.",
     };
   }
-  if (keys.length > PASTE_COLLAPSE_LIMIT) {
+  if (payloadRoute(keys) === "typed" && keys.length > PASTE_COLLAPSE_LIMIT) {
     return {
-      reason: "too-long",
-      message: `payload is ${keys.length} characters — Claude Code collapses anything over ${PASTE_COLLAPSE_LIMIT} into a "[Pasted text]" placeholder, after which delivery cannot be verified. See docs/SEND-KEYS.md.`,
+      reason: "too-long-to-type",
+      message: `payload is ${keys.length} characters on one line — Claude Code collapses anything over ${PASTE_COLLAPSE_LIMIT} into a "[Pasted text #N]" placeholder that carries no line count, after which delivery cannot be verified. See docs/SEND-KEYS.md.`,
+    };
+  }
+  if (keys.length > PASTE_ROUTE_MEASURED_LIMIT) {
+    return {
+      reason: "beyond-measured-paste",
+      message: `payload is ${keys.length} characters — the paste route has been measured to ${PASTE_ROUTE_MEASURED_LIMIT}. This is the edge of the evidence, not a known failure; see docs/SEND-KEYS.md.`,
     };
   }
   return null;

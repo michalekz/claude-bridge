@@ -1,4 +1,4 @@
-import { execFile } from "node:child_process";
+import { type ChildProcess, execFile } from "node:child_process";
 import { existsSync } from "node:fs";
 import { appendFile, mkdir } from "node:fs/promises";
 import { join } from "node:path";
@@ -33,8 +33,10 @@ import {
   type InputLineProbe,
   KILL_RING_HINT,
   MAX_CLEAR_STROKES,
+  type PayloadRoute,
   displacedDraftNotice,
   inputLineHolds,
+  payloadRoute,
   readInputLine,
   refusePayload,
 } from "./input-line.ts";
@@ -217,6 +219,8 @@ export class TmuxDriver implements SessionHostDriver {
   private readonly verifyTimeoutMs: number;
   private readonly verifyIntervalMs: number;
   private readonly sendVerifyDelayMs: number;
+  /** Buffer names must not collide between concurrent sends. */
+  private pasteSeq = 0;
 
   constructor(opts: TmuxDriverOptions = {}) {
     this.tmuxBin = opts.tmuxBin ?? "tmux";
@@ -733,15 +737,23 @@ export class TmuxDriver implements SessionHostDriver {
     let capturedTail = "";
     let lastError: string | null = null;
     let where: DeliveryWhere = "absent";
+    let boxAfterAttempt: InputLineProbe["kind"] = "empty";
+    // A newline is not a formatting detail, it is the choice of route. See
+    // `payloadRoute` for the measurement that makes typing one impossible.
+    const route: PayloadRoute = payloadRoute(keys);
     // One retry: the common failure is a pane that was still settling, and a
     // second attempt costs a few hundred milliseconds.
     for (attempts = 1; attempts <= 2 && !delivered; attempts++) {
       try {
-        // `-l` sends the string literally and `--` ends option parsing. Without
-        // them tmux reads a payload that happens to spell a key name ("Enter",
-        // "Tab", "Space") as that KEY, and a payload starting with "-" as its
-        // own flag. No caller trips this today; the point is that none can.
-        await this.tmux(["send-keys", "-t", canonical, "-l", "--", keys], SEND_KEYS_TIMEOUT_MS);
+        if (route === "pasted") {
+          await this.pasteIntoPane(canonical, keys);
+        } else {
+          // `-l` sends the string literally and `--` ends option parsing. Without
+          // them tmux reads a payload that happens to spell a key name ("Enter",
+          // "Tab", "Space") as that KEY, and a payload starting with "-" as its
+          // own flag. No caller trips this today; the point is that none can.
+          await this.tmux(["send-keys", "-t", canonical, "-l", "--", keys], SEND_KEYS_TIMEOUT_MS);
+        }
       } catch (e) {
         // A vanished pane makes tmux itself fail. Record it and keep going to
         // the logging path — an unlogged failure is the half of the
@@ -757,6 +769,22 @@ export class TmuxDriver implements SessionHostDriver {
       const probe = inputLineHolds(capturedTail, keys);
       delivered = probe.delivered;
       where = probe.where;
+      boxAfterAttempt = probe.inputLine.kind;
+      /**
+       * RETRY ONLY INTO AN EMPTY BOX.
+       *
+       * The retry was written for a pane that had not settled, where the
+       * second attempt lands on nothing. Once the box holds SOMETHING that
+       * fails to verify, sending again cannot improve it and can make it
+       * strictly worse — a second paste stacks a second placeholder, and the
+       * line count then disagrees with the payload by construction, turning a
+       * recoverable "did not arrive" into an unrecoverable "arrived twice".
+       *
+       * So the retry is now conditional on the evidence rather than on the
+       * attempt number. A box that is empty says nothing landed; anything else
+       * is a state to report, not to overwrite.
+       */
+      if (!delivered && probe.inputLine.kind !== "empty") break;
     }
 
     await this.logSendKeys(canonical, {
@@ -765,8 +793,12 @@ export class TmuxDriver implements SessionHostDriver {
       attempts: attempts - 1,
       verdict: delivered ? "delivered" : "not-verified",
       // WHERE the text was, not just whether it was somewhere. `elsewhere-on-pane`
-      // is the verdict the pre-v0.11.25 check would have called a success.
+      // is the verdict the pre-v0.11.25 check would have called a success, and
+      // `pasted-placeholder` is a weaker proof than `input-line` — the log has
+      // to let a reader tell all three apart.
       deliveryWhere: where,
+      route,
+      boxAfterAttempt,
       inputLine: cleared.kind,
       clearStrokes: cleared.strokes,
       ...(cleared.kind === "displaced"
@@ -781,12 +813,17 @@ export class TmuxDriver implements SessionHostDriver {
         sessionKey: canonical,
         attempts: attempts - 1,
         deliveryWhere: where,
+        route,
         err: lastError,
       });
-      throw new Error(
+      const detail =
         where === "elsewhere-on-pane"
-          ? `send-keys to '${canonical}' could not be verified after ${attempts - 1} attempts — the text IS on the pane but NOT in the input line, so pressing Enter would submit something else. Look at the pane: tmux capture-pane -p -t ${canonical}`
-          : `send-keys to '${canonical}' could not be verified after ${attempts - 1} attempts — text never reached the input line${lastError ? ` (tmux: ${lastError.split("\n")[0]})` : ""}`,
+          ? "the text IS on the pane but NOT in the input line, so pressing Enter would submit something else"
+          : where === "pasted-line-count-mismatch"
+            ? "the input line holds a pasted-text placeholder whose line count does not match what was sent — something is in the box, but it is not this payload"
+            : `text never reached the input line${lastError ? ` (tmux: ${lastError.split("\n")[0]})` : ""}`;
+      throw new Error(
+        `send-keys to '${canonical}' could not be verified after ${attempts - 1} attempts — ${detail}. Look at the pane: tmux capture-pane -p -t ${canonical}`,
       );
     }
     await this.tmux(["send-keys", "-t", canonical, "Enter"], SEND_KEYS_TIMEOUT_MS);
@@ -990,6 +1027,61 @@ export class TmuxDriver implements SessionHostDriver {
 
   private tmux(args: string[], timeout: number) {
     return execFileAsync(this.tmuxBin, args, { ...EXEC_DEFAULTS, timeout });
+  }
+
+  /**
+   * Run tmux with the payload on stdin instead of on the command line.
+   *
+   * `load-buffer -` exists precisely so a buffer can be filled without the
+   * content becoming an argument. That matters twice over: arguments are
+   * visible in `ps` to every user on the box, and these payloads are messages
+   * between people. A temporary file would have the same problem with a longer
+   * half-life.
+   */
+  private async tmuxWithStdin(args: string[], timeout: number, input: string): Promise<void> {
+    const running = execFileAsync(this.tmuxBin, args, { ...EXEC_DEFAULTS, timeout });
+    const child = (running as unknown as { child?: ChildProcess }).child;
+    // v0.10.2 lesson, same shape as refresh-limits: if tmux dies before reading
+    // its stdin, `end()` emits 'error' on the stream rather than throwing, and
+    // unhandled that is a process-level crash — here, inside the daemon.
+    child?.stdin?.on("error", () => undefined);
+    child?.stdin?.end(input);
+    await running;
+  }
+
+  /**
+   * Put a multi-line payload in the box WITHOUT submitting it line by line.
+   *
+   * MEASURED 2026-08-09 on Claude Code 2.1.226. The same four-line payload:
+   *
+   * | route                                | peer's transcript                      |
+   * |--------------------------------------|----------------------------------------|
+   * | `paste-buffer` without `-p`          | three user messages, fourth line orphaned |
+   * | `paste-buffer -p`                    | ONE user message, four lines           |
+   *
+   * `-p` is what makes the difference: it brackets the paste, so the client
+   * reads the newlines as content rather than as Enter. Without it the payload
+   * is submitted in pieces — the exact hazard that made multi-line payloads a
+   * refusal until now.
+   *
+   * `-d` deletes the buffer once it has been pasted. The `finally` covers the
+   * paths where the paste never ran, because a buffer left behind is a copy of
+   * someone's message sitting in the tmux server.
+   */
+  private async pasteIntoPane(target: string, keys: string): Promise<void> {
+    // Unique per send: two concurrent handlers must not share a buffer, and a
+    // shared name would let one overwrite the other's payload between the load
+    // and the paste.
+    const buffer = `claude-bridge-${process.pid}-${++this.pasteSeq}`;
+    try {
+      await this.tmuxWithStdin(["load-buffer", "-b", buffer, "-"], SEND_KEYS_TIMEOUT_MS, keys);
+      await this.tmux(
+        ["paste-buffer", "-b", buffer, "-t", target, "-p", "-d"],
+        SEND_KEYS_TIMEOUT_MS,
+      );
+    } finally {
+      await this.tmux(["delete-buffer", "-b", buffer], SEND_KEYS_TIMEOUT_MS).catch(() => undefined);
+    }
   }
 
   /**

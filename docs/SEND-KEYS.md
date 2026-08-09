@@ -27,36 +27,72 @@ the line is still uncommitted, so a failure costs nothing.
 
 ---
 
-## A payload is one line, and at most 800 characters
+## A newline picks the route (v0.11.26)
 
 ```
-refusePayload(keys)   →   "multiline" | "too-long" | null
+payloadRoute(keys)    →   "typed" | "pasted"
+refusePayload(keys)   →   "carriage-return" | "too-long-to-type"
+                          | "beyond-measured-paste" | null
 ```
 
-**Multiline.** tmux turns every `\n` in a `send-keys` argument into Enter. A
-two-line payload submits the first line on its own and leaves the second
-hanging in the box. If a multi-line payload is ever genuinely needed, the routes
-are `Ctrl+J` (a newline that does not submit) or `load-buffer` +
-`paste-buffer -p`; both need their own verification story because of the limit
-below.
+tmux turns every `\n` in a `send-keys` argument into Enter, so a multi-line
+payload typed that way is **submitted in pieces**. Measured 2026-08-09, the same
+four-line payload:
 
-**Over 800 characters.** Claude Code collapses the input into a
-`[Pasted text #N +X lines]` placeholder.
+| route | what reached the peer |
+|---|---|
+| `paste-buffer` without `-p` | three user messages, fourth line orphaned in the box |
+| `paste-buffer -p` | **one** user message of four lines |
 
-| Length | What lands in the box | Verifiable |
-|--------|-----------------------|------------|
-| 800 | the text, literally | yes |
-| 801 | `[Pasted text #1]` | **no** |
+`-p` brackets the paste, so the client reads the newlines as content. That is
+the whole difference, and it is why a newline used to be an outright refusal:
+until the paste route existed there was no way to deliver one honestly.
 
-The collapse is decided by the arrival burst, **not** by bracketed-paste
-markers — raw `send-keys` trips it just as a paste does. This was measured
-precisely because the opposite had been argued.
+**Carriage return stays refused.** Nothing was measured about how Claude Code
+counts `\r`, and the paste route proves delivery by comparing a count. Send
+`\n` only.
 
-What is lost is not the text — the full string is in the box, behind the
-placeholder — it is the **proof**. The pane no longer contains the payload, so
-step 4 fails, Enter is never sent, and the text stays in the box for the next
-caller to prepend to. Reported failure, actual success, booby trap left behind.
-Hence: refused up front.
+## When the box stops showing the payload
+
+Claude Code replaces a collapsed paste with a placeholder. Two triggers,
+either one is enough — both measured 2026-08-09 on 2.1.226:
+
+| payload | what the box shows |
+|---|---|
+| 15 chars, 2 line breaks | the text, on three rows |
+| 1 500 chars, 2 line breaks | `[Pasted text #7 +2 lines]` |
+| 7 chars, 3 line breaks | `[Pasted text #4 +3 lines]` |
+| 1 200 chars, 0 line breaks | `[Pasted text #6]` |
+
+**The count is LINE BREAKS, not lines.** A four-line payload reports `+3`. The
+contract was first drafted expecting `+4`; the pane refuted it, and a verifier
+written to the draft would have rejected every correct delivery.
+
+So the verification has three outcomes rather than two:
+
+| verdict | meaning | Enter? |
+|---|---|---|
+| `input-line` | the payload itself is in the box | yes |
+| `pasted-placeholder` | a placeholder whose count matches what was sent | yes |
+| `pasted-line-count-mismatch` | something is in the box, and it is not this | **no** |
+
+`pasted-placeholder` is deliberately **weaker** than `input-line` and is named
+so a log reader can tell: it proves a paste of the right size arrived, not that
+this text arrived. That is the strongest claim the client leaves available once
+it collapses the text, and overstating it in the log would be worse than the
+weakness itself.
+
+**The 800-character ceiling belongs to the typed route only.** Over it, the
+placeholder carries no count at all — `[Pasted text #6]` — and the delivery
+becomes unprovable. Pasted payloads of 4 019, 16 019 and 60 023 characters all
+arrived reporting `+5 lines` exactly; 60 000 is where the evidence stops, not
+where the mechanism does, and past it the send is refused rather than guessed.
+
+**Retry only into an empty box.** The retry was written for a pane that had not
+settled. Once the box holds something that fails to verify, sending again
+cannot improve it and can make it strictly worse: a second paste stacks a
+second placeholder, and the count then disagrees by construction — turning a
+recoverable "did not arrive" into an unrecoverable "arrived twice".
 
 ---
 

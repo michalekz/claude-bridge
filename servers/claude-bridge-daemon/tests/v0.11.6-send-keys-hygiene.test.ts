@@ -132,23 +132,38 @@ describe("proving the payload arrived", () => {
 });
 
 describe("payloads the send layer refuses to carry", () => {
-  it("a newline would submit the payload in pieces", async () => {
-    // tmux turns every `\n` in a send-keys argument into Enter: line one is
-    // submitted on its own and line two is left hanging in the box.
-    const { refusePayload } = await import("../src/hosts/input-line.ts");
-    expect(refusePayload("first line\nsecond line")?.reason).toBe("multiline");
-    expect(refusePayload("carriage\rreturn too")?.reason).toBe("multiline");
+  it("a newline now picks a route instead of being refused", async () => {
+    // It was a refusal until v0.11.26, and the reason it was one has not gone
+    // away: `send-keys -l` turns every `\n` into Enter. Measured 2026-08-09 —
+    // a four-line payload sent that way produced THREE user messages in the
+    // peer's transcript and orphaned the fourth line. What changed is that
+    // there is now a route that survives it, so the newline selects one.
+    const { refusePayload, payloadRoute } = await import("../src/hosts/input-line.ts");
+    expect(refusePayload("first line\nsecond line")).toBeNull();
+    expect(payloadRoute("first line\nsecond line")).toBe("pasted");
+    expect(payloadRoute("one line only")).toBe("typed");
   });
 
-  it("801 characters is where the proof disappears — 800 is not", async () => {
+  it("a carriage return stays refused, because it was never measured", async () => {
+    // The pasted-text placeholder proves delivery by stating a COUNT, and
+    // nothing was ever measured about how the client counts `\r`. Asserting a
+    // number nobody observed is the failure this contract exists to remove.
+    const { refusePayload } = await import("../src/hosts/input-line.ts");
+    expect(refusePayload("carriage\rreturn")?.reason).toBe("carriage-return");
+  });
+
+  it("801 characters is where the proof disappears — on the TYPED route", async () => {
     // Measured by bisection, not read off documentation: 800 lands literally,
-    // 801 becomes `[Pasted text #N]`. The text is still THERE; what is gone is
-    // the ability to verify it, after which sendKeys throws, Enter is never
-    // sent, and the payload sits in the box for the next caller to prepend to.
+    // 801 becomes `[Pasted text #N]` — with NO line count, which is what makes
+    // it unverifiable. The ceiling belongs to the typed route only: measured
+    // 2026-08-09, pasted payloads of 4 019, 16 019 and 60 023 characters all
+    // arrived reporting `+5 lines` exactly.
     const { refusePayload, PASTE_COLLAPSE_LIMIT } = await import("../src/hosts/input-line.ts");
     expect(PASTE_COLLAPSE_LIMIT).toBe(800);
     expect(refusePayload("a".repeat(800))).toBeNull();
-    expect(refusePayload("a".repeat(801))?.reason).toBe("too-long");
+    expect(refusePayload("a".repeat(801))?.reason).toBe("too-long-to-type");
+    // The same length with a line break in it goes the other way and is fine.
+    expect(refusePayload(`${"a".repeat(801)}\nb`)).toBeNull();
   });
 
   it("the human-facing notice names the one keystroke that undoes it", async () => {
@@ -169,8 +184,8 @@ describe("refusal happens before tmux is touched", () => {
     // payload would have disturbed a real pane on the way to being rejected.
     const { TmuxDriver } = await import("../src/hosts/tmux-driver.ts");
     const driver = new TmuxDriver();
-    await expect(driver.sendKeys("no-such-session-anywhere", "one\ntwo")).rejects.toThrow(
-      /refused.*newline/s,
+    await expect(driver.sendKeys("no-such-session-anywhere", "carriage\rreturn")).rejects.toThrow(
+      /refused.*carriage return/s,
     );
     await expect(driver.sendKeys("no-such-session-anywhere", "b".repeat(900))).rejects.toThrow(
       /refused.*900 characters/s,

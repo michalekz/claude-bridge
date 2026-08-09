@@ -316,20 +316,31 @@ plugin installs work, and it is documented rather than worked around.
 
 ---
 
-## Injected payloads are one line and at most 800 characters
+## A multi-line payload is delivered, but proven more weakly
 
-Anything the control plane types into a pane — `/compact`, a wake prompt, a
-custom `wakePrompt` you pass in — goes through one function that refuses
-multi-line payloads and payloads over 800 characters, before touching tmux.
+Anything the control plane puts into a pane — `/compact`, a wake prompt, a
+custom `wakePrompt` you pass in — is routed by whether it contains a newline.
+One line is typed; more than one is pasted with `paste-buffer -p`, which is
+what keeps the newlines from being submitted as Enter presses.
 
-Both refusals exist because the alternative is worse than an error: a newline
-becomes an Enter that submits the payload in pieces, and Claude Code collapses a
-longer burst into a `[Pasted text #N]` placeholder that makes delivery
-unverifiable. `docs/SEND-KEYS.md` has the measurements.
+The catch is on the verification side. Claude Code collapses a pasted payload
+into `[Pasted text #N +M lines]`, so the pane no longer holds the text and the
+strong content check cannot run. What is checked instead is `M` against the
+number of line breaks sent. That is a real check of a smaller claim: **a paste
+of the right size arrived**, not **this text arrived**. The log says which of
+the two it got — `pasted-placeholder` rather than `input-line`.
 
-**Status:** by design, but the ceiling is real. A caller that needs to deliver a
-long instruction should write it to the peer's inbox and inject only a short
-prompt telling it to read.
+Still refused, and why:
+
+| payload | reason |
+|---|---|
+| contains `\r` | how the client counts it was never measured |
+| one line over 800 characters | its placeholder carries no count at all |
+| over 60 000 characters | the edge of the evidence, not a known failure |
+
+**Status:** by design. A caller that needs to deliver a long instruction and
+wants it proven exactly should still write it to the peer's inbox and inject a
+short prompt telling it to read. `docs/SEND-KEYS.md` has the measurements.
 
 ---
 

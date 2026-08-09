@@ -25,6 +25,64 @@ The rule survives its own correction: a gate that cannot see the state it gates
 reports safety it does not have — and a gate that *can* see it still only
 reports the state at the moment it looked.
 
+### A newline is not a formatting detail, it is the choice of route
+
+A multi-line payload used to be refused outright. The reason was sound and is
+unchanged: `send-keys -l` turns every `\n` into Enter. Measured 2026-08-09 —
+the same four-line payload, two ways:
+
+| route | what reached the peer |
+|---|---|
+| `paste-buffer` without `-p` | three user messages, fourth line orphaned |
+| `paste-buffer -p` | **one** user message of four lines |
+
+So the newline now selects `load-buffer` + `paste-buffer -p` instead of being
+turned away. The hard part was never the sending, though — it was the proof.
+
+**Claude Code hides what it pasted.** Over three line breaks or 800 characters
+it replaces the payload with `[Pasted text #N +M lines]`, and from that moment
+the content check can never pass: the text is not on the pane to be found. That
+is precisely why the refusal existed, because a send that reports failure after
+succeeding leaves the text in the box for the next caller to prepend to.
+
+The placeholder is not nothing. It states how many line breaks it swallowed,
+and that number is checkable — so there is now a third verdict:
+
+| verdict | proves | Enter? |
+|---|---|---|
+| `input-line` | the payload is in the box | yes |
+| `pasted-placeholder` | a paste of the right size arrived | yes |
+| `pasted-line-count-mismatch` | something is in the box, and it is not this | no |
+
+`pasted-placeholder` is deliberately weaker than `input-line` and is named so a
+log reader can tell them apart. It proves a paste of the right size arrived,
+not that this text arrived — the strongest claim the client leaves available
+once it collapses the text.
+
+**The count is line BREAKS, not lines.** A four-line payload reports `+3`. This
+contract was drafted expecting `+4`, and the pane refuted it: a verifier written
+to the draft would have rejected every correct delivery and accepted nothing.
+
+Two smaller consequences, both measured:
+
+- The 800-character ceiling belongs to the **typed** route only. Over it the
+  placeholder carries no count at all, so nothing can be checked. Pasted
+  payloads of 4 019, 16 019 and 60 023 characters all reported `+5 lines`
+  exactly; 60 000 is where the evidence stops, not where the mechanism does.
+- **The retry now requires an empty box.** It was written for a pane that had
+  not settled. Once the box holds something that fails to verify, sending again
+  cannot improve it and can make it worse: a second paste stacks a second
+  placeholder and the count disagrees by construction — a recoverable "did not
+  arrive" turned into an unrecoverable "arrived twice".
+
+A carriage return stays refused. Nothing was measured about how the client
+counts `\r`, and asserting a number nobody observed is the failure this whole
+contract exists to remove.
+
+Live acceptance on Claude Code 2.1.226: a four-line payload through the real
+driver, `delivered · pasted-placeholder · route=pasted` on the first attempt in
+302 ms, and one four-line user message in the peer's transcript.
+
 #### Also
 
 - **The hold rule for cross-session messages is symmetric**, and it is now in
