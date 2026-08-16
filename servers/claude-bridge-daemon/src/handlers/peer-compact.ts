@@ -1,6 +1,7 @@
 import { mkdir } from "node:fs/promises";
 import { z } from "zod";
 import {
+  COMPACT_MIN_PERCENT,
   COMPACT_RACE_PERCENT,
   DEFAULT_VERIFY_TIMEOUT_MS,
   markTranscript,
@@ -9,7 +10,7 @@ import {
 } from "../compact-verify.ts";
 import { publishLifecycleEvent } from "../event-subscribers.ts";
 import { writeEvent } from "../events.ts";
-import { busyOf, readAgents } from "../hosts/agents-json.ts";
+import { blocksInject, busyOf, probeAgents } from "../hosts/agents-json.ts";
 import type { RequestEnvelope, ResultEnvelope } from "../rpc.ts";
 import { errResult, okResult } from "../rpc.ts";
 import {
@@ -21,7 +22,7 @@ import {
 } from "./ack-protocol.ts";
 import type { HandlerContext } from "./context.ts";
 import { bridgeIdOf } from "./peer-identity.ts";
-import { ambiguousPeerMessage, resolvePeerRef } from "./peer-ref.ts";
+import { ambiguousPeerMessage, resolvePeerRef, unresolvedPeerError } from "./peer-ref.ts";
 
 /**
  * peer_compact — orchestrated `/compact` inject into a live peer.
@@ -106,6 +107,15 @@ export const PeerCompactArgsSchema = z
     ackPollMs: z.number().int().positive().max(10_000).optional(),
     /** Skip the anchor request → treat the ack file as pre-existing. */
     skipAnchorRequest: z.boolean().default(false),
+    /**
+     * Compact even though the peer is below `COMPACT_MIN_PERCENT`.
+     *
+     * Handing over a role, or an expected large input, are real reasons to
+     * compress early. The flag keeps them possible while the accident — a
+     * routine compact that throws away a peer's working context for nothing —
+     * needs a word.
+     */
+    belowThreshold: z.boolean().default(false),
     /**
      * How long to watch the peer's transcript for the compact to actually run.
      *
@@ -231,13 +241,8 @@ export async function handlePeerCompact(
   }
   const found = resolved.kind === "found" ? resolved : null;
   if (!found) {
-    return errResult(
-      req.id,
-      req.tool,
-      "peer_not_found",
-      `No peer with id/name '${args.peer}' in daemon state`,
-      { peer: args.peer },
-    );
+    const unresolved = await unresolvedPeerError(args.peer);
+    return errResult(req.id, req.tool, unresolved.code, unresolved.message, unresolved.details);
   }
   const handle = found.handle;
   const record = ctx.state.peers[handle];
@@ -275,6 +280,58 @@ export async function handlePeerCompact(
       `Host driver '${ctx.hostDriver.name}' does not support send-keys on this platform`,
       { hostDriver: ctx.hostDriver.name },
     );
+  }
+
+  /**
+   * Is this compact worth doing at all? (v0.11.27)
+   *
+   * Compaction is always a loss — a summary replaces the transcript, and what
+   * the summary leaves out is gone. Below a sensible fraction of the window it
+   * buys nothing and costs the peer everything it had not written down.
+   *
+   * The fleet had a PreCompact hook meant to enforce exactly this. On
+   * 2026-08-11 it printed "🛑 COMPACT ZABLOKOVÁN — kontext je na 63 %" and the
+   * compaction ran anyway: `{"continue": false}` from that hook does not stop
+   * it. The peer believed the message, reported that no compact had happened,
+   * and its transcript said otherwise — 634 166 → 10 840 tokens. A guard that
+   * announces an intervention it did not make is worse than no guard, because
+   * everyone downstream reasons from the announcement.
+   *
+   * So the threshold moves to the side that can actually refuse: this handler
+   * injects nothing, and says why. ASKED BEFORE THE ANCHOR REQUEST, deliberately
+   * — the old order made the peer write an anchor for a compaction we were
+   * about to decline.
+   *
+   * `belowThreshold` is the way to mean it anyway. There are real reasons to
+   * compact early — handing over a role, an expected large input — and the flag
+   * exists so those stay possible while the accident does not. Same shape as
+   * `overrideLiveness` on `peer_stop`, and for the same reason: the difference
+   * that matters is not the state, it is whether the caller knows.
+   */
+  const preSnapshot = await readPeerContext(bridgeId);
+  const percentNow = preSnapshot.usedPercentage;
+  if (percentNow !== null && percentNow < COMPACT_MIN_PERCENT && !args.belowThreshold) {
+    await writeEvent({
+      event: "peer_compact_skipped_below_threshold",
+      level: "info",
+      by: { sessionId: req.requestedBy.sessionId, name: req.requestedBy.name },
+      requestId: req.id,
+      details: {
+        handle,
+        sessionKey,
+        percentUsed: percentNow,
+        thresholdPercent: COMPACT_MIN_PERCENT,
+      },
+    });
+    return okResult(req.id, req.tool, {
+      handle,
+      sessionKey,
+      verified: false,
+      outcome: "skipped_below_threshold",
+      contextPercentBefore: percentNow,
+      thresholdPercent: COMPACT_MIN_PERCENT,
+      note: `Nothing was injected and the peer was not disturbed: it is at ${percentNow}% of its context window, below the ${COMPACT_MIN_PERCENT}% threshold. Compaction is always a loss, so below the threshold it costs more than it saves. If you mean it anyway — handing over a role, or an expected large input — repeat with belowThreshold:true.`,
+    });
   }
 
   const anchorTimeoutMs = args.anchorTimeoutMs ?? DEFAULT_ANCHOR_TIMEOUT_MS;
@@ -413,15 +470,25 @@ export async function handlePeerCompact(
    * and it may still be finishing.
    *
    * DELIBERATE DEVIATION from `unknown counts as busy`. That rule is right
-   * where the alternative is a retry; here refusing on `unknown` would make
-   * every peer the source does not list — anything adopted without a measured
-   * session id — permanently uncompactable. So only a POSITIVE `busy` stops
-   * the inject. `unknown` proceeds and is recorded, because v0.11.25's
-   * after-the-fact verification already covers the case this gate misses.
+   * where the alternative is a retry; here refusing on a peer the source does
+   * not list would make it — anything adopted without a measured session id —
+   * permanently uncompactable. So `absent` proceeds and is recorded, because
+   * v0.11.25's after-the-fact verification already covers what this gate misses.
+   *
+   * WHAT THAT DEVIATION DID NOT COVER, and the 2026-08-10 P0: a probe that
+   * never ran also answered `unknown`, so "we never looked" inherited the pass
+   * written for "we looked and it is not there". Measured: `spawn claude
+   * ENOENT` on every call since deploy — 9 probes, 0 `skipped_busy`. The gate
+   * could not have stopped anything.
+   *
+   * Hence the binary comes from `desired.command` — the path the daemon
+   * ALREADY uses to launch this very peer — instead of the ambient `PATH` the
+   * systemd unit never sets.
    */
   const peerSessionId = record.observed.sessionId ?? undefined;
-  const agentBusy = busyOf(await readAgents(), peerSessionId);
-  if (agentBusy === "busy") {
+  const probe = await probeAgents(record.desired.command);
+  const agentBusy = busyOf(probe, peerSessionId);
+  if (blocksInject(agentBusy)) {
     await writeEvent({
       event: "peer_compact_skipped_busy",
       level: "warn",
@@ -434,7 +501,12 @@ export async function handlePeerCompact(
         anchorMsgId,
         contextPercentBefore,
         source: "claude agents --json",
-        note: "The peer is mid-turn. Injecting now would put /compact in its queue, to run at a time nobody chose — the 2026-08-09 incident.",
+        agentBusy,
+        ...(probe.err ? { probeErr: probe.err, claudeBin: record.desired.command } : {}),
+        note:
+          agentBusy === "busy"
+            ? "The peer is mid-turn. Injecting now would put /compact in its queue, to run at a time nobody chose — the 2026-08-09 incident."
+            : "The probe never ran, so nothing is known about this peer's state. Refusing is the cheap side of an asymmetric bet — see the 2026-08-10 P0, where a failed probe passed as `unknown` and the gate had never once stopped anything.",
       },
     });
     return okResult(req.id, req.tool, {
@@ -447,7 +519,14 @@ export async function handlePeerCompact(
       verified: false,
       outcome: "skipped_busy",
       agentBusy,
-      note: "Nothing was injected: `claude agents --json` reports this peer as busy, and a command sent into a busy pane is queued rather than run. The peer's anchor has been written, so a retry once it is idle costs only the inject.",
+      // The failure travels in the ANSWER, not only in the log. `agentBusy:
+      // "unknown"` read as "we asked and could not tell"; it meant "we never
+      // asked", and the operator had no way to see the difference.
+      ...(probe.err ? { probeErr: probe.err } : {}),
+      note:
+        agentBusy === "busy"
+          ? "Nothing was injected: `claude agents --json` reports this peer as busy, and a command sent into a busy pane is queued rather than run. The peer's anchor has been written, so a retry once it is idle costs only the inject."
+          : "Nothing was injected: the `claude agents --json` probe could not be run, so this peer's state is unknown. The anchor has been written, so a retry once the probe works costs only the inject. Check that the daemon can reach the `claude` binary — its systemd unit does not set PATH.",
     });
   }
 

@@ -1,4 +1,54 @@
+import { resolvePeer } from "@claude-bridge/shared";
 import type { PeerRecord } from "../state.ts";
+
+/** What a lifecycle handler should answer when it cannot find a peer. */
+export interface UnresolvedPeerError {
+  code: "peer_not_found" | "peer_unmanaged";
+  message: string;
+  details: Record<string, unknown>;
+}
+
+/**
+ * `peer_not_found` was true of the registry and false of the world.
+ *
+ * THE 2026-08-11 INCIDENT, second half. After a background session force-stopped
+ * a live peer, the peer was revived in tmux beside the control plane — so it
+ * heartbeated, `peer_list` showed it, `peer_context_status` reported on it, and
+ * every lifecycle tool answered `peer_not_found: No peer with id/name in daemon
+ * state`. Read plainly, that says the peer does not exist. It existed, was
+ * talking, and could not be reached — a materially different situation with a
+ * different remedy, and the message named neither.
+ *
+ * The daemon's registry and the heartbeat directory are two populations:
+ * `state.peers` holds what the control plane started or adopted, while
+ * `<root>/status/` holds every Claude Code process that loaded the plugin,
+ * however it was started. A peer in the second and not the first is not missing
+ * — it is unmanaged, and `team_adopt` is the fix.
+ *
+ * Absence of a heartbeat is NOT read as proof of anything: no heartbeat gives
+ * the old answer, unchanged.
+ */
+export async function unresolvedPeerError(ref: string): Promise<UnresolvedPeerError> {
+  const heartbeat = await resolvePeer(ref);
+  if (heartbeat.outcome === "found") {
+    return {
+      code: "peer_unmanaged",
+      message: `Peer '${ref}' IS RUNNING but the control plane does not manage it, so lifecycle tools cannot reach it. Its heartbeat is ${Math.round(heartbeat.peer.lastSeenAgeMs)} ms old. This happens when a session is started or revived outside the daemon — adopt it with team_adopt, then retry.`,
+      details: {
+        peer: ref,
+        sessionId: heartbeat.peer.id,
+        name: heartbeat.peer.name,
+        lastSeenAgeMs: Math.round(heartbeat.peer.lastSeenAgeMs),
+        remedy: "team_adopt",
+      },
+    };
+  }
+  return {
+    code: "peer_not_found",
+    message: `No peer with id/name '${ref}' in daemon state, and nothing by that name is heartbeating either.`,
+    details: { peer: ref },
+  };
+}
 
 /**
  * Resolve a peer reference (session id or display name) against daemon state.

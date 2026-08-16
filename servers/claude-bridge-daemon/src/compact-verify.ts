@@ -89,6 +89,24 @@ export const DEFAULT_VERIFY_POLL_MS = 2_000;
  */
 export const COMPACT_RACE_PERCENT = 85;
 
+/**
+ * Below this, a compact costs more than it saves — and now it is REFUSED.
+ *
+ * The same 85 as above, and that is not laziness: it is the one number the
+ * fleet already agreed on. Above it, a compact races the client's own
+ * autocompact; below it, there is little to compress and the summary throws
+ * away work that had room to live. The window between "worth doing" and "risky
+ * to do" is narrow by nature.
+ *
+ * Unlike `COMPACT_RACE_PERCENT`, this one BLOCKS — because the guard that was
+ * supposed to enforce it did not. On 2026-08-11 the fleet's PreCompact hook
+ * printed "🛑 COMPACT ZABLOKOVÁN — kontext je na 63 %" and the compaction ran:
+ * `{"continue": false}` from that hook has no effect. The peer believed the
+ * message and reported no compact had happened; its transcript said 634 166 →
+ * 10 840. The threshold therefore moved to the side that can actually decline.
+ */
+export const COMPACT_MIN_PERCENT = 85;
+
 export type CompactWatchOutcome =
   /** Ours ran. The only outcome that licenses `peer_compacted`. */
   | {

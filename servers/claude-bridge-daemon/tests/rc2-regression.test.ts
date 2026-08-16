@@ -50,6 +50,21 @@ describe("v0.10.0-rc.2 regression — T1 sessionKey + T2 stop reconcile", () => 
       const doc = state.emptyState("0.10.0-rc.2");
       const driver = new mock.MockDriver();
 
+      // v0.11.27: `peer_compact` below refuses to inject when the busy probe
+      // cannot run, and `/bin/sleep agents --json` cannot. A real executable
+      // keeps this test about what it is about — canonical target end-to-end —
+      // without stubbing away the resolution path the P0 was hiding in.
+      await mkdir(homeHolder.current, { recursive: true });
+      const agentsStub = join(homeHolder.current, "claude-stub.sh");
+      // Answers the probe and otherwise stays alive, because the driver really
+      // launches this and `hostAlive` is measured from the process. A real
+      // client behaves the same way: `agents --json` returns, the session runs.
+      await writeFile(
+        agentsStub,
+        "#!/bin/sh\nif [ \"$1\" = 'agents' ]; then echo '[]'; exit 0; fi\nexec sleep 10\n",
+        { mode: 0o755 },
+      );
+
       const spawnRes = await handlers.dispatch(
         makeRequest(
           "peer_spawn",
@@ -57,7 +72,7 @@ describe("v0.10.0-rc.2 regression — T1 sessionKey + T2 stop reconcile", () => 
             handle: "peer-x",
             displayName: "rc-test:alice", // <-- unsafe raw name
             cwd: "/tmp",
-            command: "/bin/sleep",
+            command: agentsStub,
             args: ["10"],
           },
           "req-spawn",

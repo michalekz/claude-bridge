@@ -142,7 +142,15 @@ export async function installSystemd(): Promise<void> {
   await ensureBinariesExist(sourceBin, nodeBin);
   const daemonBin = await deployDaemonBinary(sourceBin);
   const template = await readTemplate();
-  const rendered = template.replace(/__NODE_BIN__/g, nodeBin).replace(/__DAEMON_BIN__/g, daemonBin);
+  // The daemon shells out to binaries that live beside its own node — `claude`
+  // above all — and systemd's default PATH does not include them. Derived from
+  // `nodeBin` rather than configured, so it cannot drift from the interpreter
+  // the unit actually starts.
+  const nodeDir = dirname(nodeBin);
+  const rendered = template
+    .replace(/__NODE_BIN__/g, nodeBin)
+    .replace(/__DAEMON_BIN__/g, daemonBin)
+    .replace(/__NODE_DIR__/g, nodeDir);
   await mkdir(systemdUserDir(), { recursive: true });
   await writeFile(unitPath(), rendered, "utf-8");
   log.info("unit_written", { path: unitPath(), execStart: daemonBin });

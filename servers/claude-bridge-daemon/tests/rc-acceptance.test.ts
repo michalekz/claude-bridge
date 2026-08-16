@@ -23,6 +23,32 @@ async function importAll() {
   };
 }
 
+/**
+ * A REAL executable that answers `agents --json` with an empty fleet.
+ *
+ * v0.11.27: `peer_compact` now refuses to inject when the busy probe cannot be
+ * run, so a fixture whose `command` is `/bin/sleep` no longer reaches the
+ * send-keys step — `/bin/sleep agents --json` fails, and failing closed is the
+ * point of the fix. Handing the handler a genuine binary keeps the acceptance
+ * honest: the resolution and parse paths run for real, exactly as they do in
+ * the daemon, instead of being stubbed away. That distinction is what the
+ * original 94a acceptance got wrong — it exercised a path where the defect
+ * could not arise, so it passed while the gate was dead in production.
+ */
+async function writeAgentsStub(dir: string): Promise<string> {
+  await mkdir(dir, { recursive: true });
+  const path = join(dir, "claude-stub.sh");
+  // Answers the probe and otherwise stays alive: the driver really launches
+  // this, and `hostAlive` is measured from the process. A real client behaves
+  // the same way — `agents --json` returns, the session keeps running.
+  await writeFile(
+    path,
+    "#!/bin/sh\nif [ \"$1\" = 'agents' ]; then echo '[]'; exit 0; fi\nexec sleep 10\n",
+    { mode: 0o755 },
+  );
+  return path;
+}
+
 function makeRequest(tool: string, args: Record<string, unknown>, id = "req-1") {
   return {
     schemaVersion: 1 as const,
@@ -214,6 +240,7 @@ describe("rc acceptance", () => {
       const { handlers, state, mock, shared } = await importAll();
       const doc = state.emptyState("0.10.0-rc.0");
       const driver = new mock.MockDriver();
+      const agentsStub = await writeAgentsStub(homeHolder.current);
 
       // Pre-register a live peer.
       await handlers.dispatch(
@@ -223,7 +250,7 @@ describe("rc acceptance", () => {
             handle: "compact-peer",
             displayName: "compact:target",
             cwd: "/tmp",
-            command: "/bin/sleep",
+            command: agentsStub,
             args: ["10"],
           },
           "req-spawn",

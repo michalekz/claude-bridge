@@ -1,4 +1,5 @@
 import { mkdir } from "node:fs/promises";
+import { resolvePeer } from "@claude-bridge/shared";
 import { z } from "zod";
 import { publishLifecycleEvent } from "../event-subscribers.ts";
 import { writeEvent } from "../events.ts";
@@ -7,7 +8,7 @@ import { errResult, okResult } from "../rpc.ts";
 import type { PeerRecord } from "../state.ts";
 import type { HandlerContext } from "./context.ts";
 import { bridgeIdOf } from "./peer-identity.ts";
-import { ambiguousPeerMessage, resolvePeerRef } from "./peer-ref.ts";
+import { ambiguousPeerMessage, resolvePeerRef, unresolvedPeerError } from "./peer-ref.ts";
 import { applyStateChange } from "./state-writer.ts";
 import {
   DEFAULT_STOP_ACK_POLL_MS,
@@ -16,6 +17,16 @@ import {
   stopAcks,
   stopThreadId,
 } from "./stop-protocol.ts";
+
+/**
+ * A heartbeat younger than this proves the peer is running.
+ *
+ * Same 30 s the daemon uses to judge its own liveness, and the same reasoning:
+ * a peer writes its heartbeat about once a second, so 30 s is thirty missed
+ * writes — far past noise, far short of a peer that merely went quiet. The
+ * victim of the 2026-08-11 incident was at 2.3 s.
+ */
+const LIVE_HEARTBEAT_MS = 30_000;
 
 /**
  * peer_stop — ask a peer to stand down, then end its session.
@@ -59,6 +70,23 @@ export const PeerStopArgsSchema = z
      * and the dangerous reading is the one that should need a word.
      */
     force: z.boolean().default(false),
+    /**
+     * Kill a peer whose heartbeat proves it is alive.
+     *
+     * THE 2026-08-11 INCIDENT. A background session resurrected from the
+     * previous day decided a live peer was "a zombie after the nightly crash"
+     * and force-stopped it. The premise was false — the victim's heartbeat was
+     * 2.3 s old and its transcript had been written 14 minutes earlier — but
+     * nothing checked, because `force` asked for no evidence.
+     *
+     * So `force` alone now refuses a demonstrably live peer. This flag is the
+     * way to say it anyway, and it exists because refusing outright would break
+     * the legitimate case: a peer stuck on a modal dialog also heartbeats, and
+     * killing its process is the only way out. The difference is not the state
+     * of the peer — it is whether the caller KNOWS it is killing something
+     * alive. That belongs in the audit trail as an override, not as routine.
+     */
+    overrideLiveness: z.boolean().default(false),
     /**
      * The courtesy already happened somewhere else — skip it, change nothing
      * else. FOR INTERNAL CALLERS.
@@ -282,13 +310,8 @@ export async function handlePeerStop(
       requestId: req.id,
       details: { peer: args.peer, reason: "peer_not_found" },
     });
-    return errResult(
-      req.id,
-      req.tool,
-      "peer_not_found",
-      `No peer with id/name '${args.peer}' in daemon state`,
-      { peer: args.peer },
-    );
+    const unresolved = await unresolvedPeerError(args.peer);
+    return errResult(req.id, req.tool, unresolved.code, unresolved.message, unresolved.details);
   }
   const handle = found.handle;
   const record = ctx.state.peers[handle];
@@ -298,6 +321,58 @@ export async function handlePeerStop(
   }
   const sessionKey = record.observed.tmuxTarget ?? record.observed.name;
   const forceFlag = args.force === true;
+
+  // ---------------------------------------------------------------------
+  // Evidence before force (v0.11.27) — the 2026-08-11 incident.
+  // ---------------------------------------------------------------------
+  //
+  // `force` skips the courtesy phase, so nothing else in this handler ever
+  // looks at whether the peer is alive. On 2026-08-11 a resurrected background
+  // session used exactly that to kill a live peer on the strength of its own
+  // conclusion — "a zombie after the nightly crash" — which three independent
+  // measurements of the victim's heartbeat contradicted.
+  //
+  // The fix is not to forbid force. A peer stuck on a modal dialog also
+  // heartbeats, and killing its process is the only way out; that case is real
+  // and happened the day before. The fix is that a caller must SAY it is
+  // killing something alive, so the claim is testable and the act is auditable.
+  //
+  // Deliberately asymmetric: a refused stop costs one retry with one flag, a
+  // wrongful kill costs a peer its session. And a peer that stopped
+  // heartbeating is not protected at all — the whole point is to distinguish
+  // "looks dead" from "is dead".
+  if (forceFlag && !args.overrideLiveness) {
+    const liveness = await resolvePeer(record.observed.sessionId ?? handle);
+    const ageMs = liveness.outcome === "found" ? liveness.peer.lastSeenAgeMs : null;
+    if (ageMs !== null && ageMs < LIVE_HEARTBEAT_MS) {
+      await writeEvent({
+        event: "peer_stop_refused_alive",
+        level: "warn",
+        by: { sessionId: req.requestedBy.sessionId, name: req.requestedBy.name },
+        requestId: req.id,
+        details: { handle, sessionKey, lastSeenAgeMs: ageMs, thresholdMs: LIVE_HEARTBEAT_MS },
+      });
+      return errResult(
+        req.id,
+        req.tool,
+        "peer_alive",
+        `Refusing to force-stop '${record.observed.name}': its heartbeat is ${ageMs} ms old, so it is demonstrably alive. If you mean to kill a live peer anyway — a peer stuck on a modal dialog is the usual reason — repeat with overrideLiveness:true, which records the kill as an override.`,
+        { handle, lastSeenAgeMs: ageMs, thresholdMs: LIVE_HEARTBEAT_MS },
+      );
+    }
+  }
+  // An override that got this far killed something alive on purpose. Say so
+  // separately from the stop itself, so the audit trail can be searched for
+  // the deliberate ones without reading every stop.
+  if (forceFlag && args.overrideLiveness) {
+    await writeEvent({
+      event: "peer_stop_liveness_overridden",
+      level: "warn",
+      by: { sessionId: req.requestedBy.sessionId, name: req.requestedBy.name },
+      requestId: req.id,
+      details: { handle, sessionKey, reason: args.reason ?? null },
+    });
+  }
 
   // ---------------------------------------------------------------------
   // The courtesy phase.

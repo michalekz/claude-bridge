@@ -10,7 +10,7 @@ import { errResult, okResult } from "../rpc.ts";
 import type { PeerRecord } from "../state.ts";
 import type { HandlerContext } from "./context.ts";
 import { bridgeIdOf } from "./peer-identity.ts";
-import { ambiguousPeerMessage, resolvePeerRef } from "./peer-ref.ts";
+import { ambiguousPeerMessage, resolvePeerRef, unresolvedPeerError } from "./peer-ref.ts";
 import { handlePeerSpawn } from "./peer-spawn.ts";
 import { handlePeerStop } from "./peer-stop.ts";
 import {
@@ -490,13 +490,8 @@ export async function handlePeerRestart(
   }
   const record = resolved.kind === "found" ? resolved.record : null;
   if (!record) {
-    return errResult(
-      req.id,
-      req.tool,
-      "peer_not_found",
-      `No peer with id/name '${args.peer}' in daemon state`,
-      { peer: args.peer },
-    );
+    const unresolved = await unresolvedPeerError(args.peer);
+    return errResult(req.id, req.tool, unresolved.code, unresolved.message, unresolved.details);
   }
 
   // IS ONE ALREADY RUNNING? (P4 idempotence, with a mechanism.)
@@ -745,6 +740,19 @@ export async function handlePeerRestart(
       // old process nor the new one.
       keepInState: true,
       force: args.force,
+      // v0.11.27: `peer_stop` now refuses `force` on a peer whose heartbeat
+      // proves it is alive. A FORCED RESTART IS ALREADY THAT DECISION — the
+      // caller was told in as many words that it loses whatever the peer had
+      // not written down, and the peer comes back afterwards, so this is not
+      // the killing the guard was built to stop. Passing the override here
+      // keeps the legitimate case working: on 2026-08-10 a forced restart was
+      // the only way to free two peers stuck on a modal dialog, and those peers
+      // were heartbeating the whole time.
+      //
+      // The stop still records the override in the audit trail, so a deliberate
+      // kill of a live peer stays searchable whether it came from here or from
+      // a human typing `peer_stop`.
+      overrideLiveness: args.force,
     },
     requestedBy: req.requestedBy,
   };
