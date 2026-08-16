@@ -32,6 +32,29 @@ export interface SessionHostSpawnOptions {
    * session could not tell them apart (Zdeněk, 2026-08-04).
    */
   windowName?: string;
+  /**
+   * Put the new window back where the old one sat.
+   *
+   * WHY A MOVE AND NOT `new-window -t <session>:<index>` (measured 2026-08-15).
+   * The fleet's tmux runs `renumber-windows on`, so killing a window
+   * IMMEDIATELY renumbers every window after it. The freed index is therefore
+   * not free — the peer's successor slid into it, and creating there fails
+   * with "index in use". Measured on the real sequence:
+   *
+   *   start           1:designer 2:bridge-dev 3:process-dev 4:kb-dev 5:kb-ops
+   *   kill 3          1:designer 2:bridge-dev 3:kb-dev 4:kb-ops     <- shifted
+   *   new-window      … 5:process-dev                               <- lands last
+   *
+   * That is the whole of #103: a restart is a kill plus a create, and with
+   * renumbering the create can only ever append. `move-window -b -t
+   * <session>:<index>` inserts BEFORE whoever now holds the index, which is
+   * exactly where the peer used to be. Verified restoring the original order
+   * from the first, middle and last position.
+   *
+   * The index is measured just before the kill, not read from `desired` — a
+   * stored number describes a layout that renumbering may have changed since.
+   */
+  windowIndex?: number;
   cwd: string;
   command: string;
   args: string[];
@@ -119,12 +142,29 @@ export interface SessionHostRecord {
  */
 export type HostTarget =
   | { kind: "session"; session: string }
-  | { kind: "window"; windowId: string };
+  | { kind: "window"; windowId: string }
+  | { kind: "pane"; paneId: string };
 
 const WINDOW_ID = /^@\d+$/;
+/**
+ * A pane id is an address too — and the second half of the R3 bug.
+ *
+ * v0.11.21 fixed `@1011` being sanitised into `_1011`, which had made all
+ * twenty-three peers unreachable to `peer_compact`. The identical hole stayed
+ * open one sigil over: `%` is in `UNSAFE_TARGET_CHARS`, so `%1` became `_1` —
+ * a plausible SESSION NAME. tmux then answers about whatever `_1` is, and the
+ * failure is silent misdirection rather than an error.
+ *
+ * Found 2026-08-15 by a live test that addressed a pane directly, minutes
+ * after it was written. Pane ids are also what the F0.5 review named as the
+ * one identity that survives `move-window`/`join-pane` — so the lookup that
+ * would tell a MOVED peer from a DEAD one has to be able to address one.
+ */
+const PANE_ID = /^%\d+$/;
 
 export function parseHostTarget(key: string): HostTarget {
   if (WINDOW_ID.test(key)) return { kind: "window", windowId: key };
+  if (PANE_ID.test(key)) return { kind: "pane", paneId: key };
   return { kind: "session", session: sanitizeSessionKey(key) };
 }
 
@@ -152,7 +192,9 @@ export type CanonicalTarget = string & { readonly __canonicalHostTarget: unique 
 
 /** The canonical string form of a target — what goes into `PeerRecord.tmuxTarget`. */
 export function formatHostTarget(t: HostTarget): CanonicalTarget {
-  return (t.kind === "window" ? t.windowId : t.session) as CanonicalTarget;
+  if (t.kind === "window") return t.windowId as CanonicalTarget;
+  if (t.kind === "pane") return t.paneId as CanonicalTarget;
+  return t.session as CanonicalTarget;
 }
 
 /** Parse and format in one step — the shape every caller actually wanted. */
@@ -219,6 +261,17 @@ export interface HostWindowRecord {
 export interface SessionHostDriver {
   /** Static identifier — matches values in `state.peers[<id>].hostDriver`. */
   readonly name: "tmux" | "bg-pty" | "mock";
+
+  /**
+   * One-time checks at daemon start (F0.5): version canary, orphan-buffer
+   * sweep. Optional — only hosts with a server-side state to hygiene need it.
+   * Must never throw; a cold host (no server yet) is a normal answer.
+   */
+  startupHygiene?(): Promise<{
+    tmuxVersion: string;
+    versionMeasured: boolean;
+    sweptBuffers: number;
+  }>;
 
   /** Idempotent probe — never throws for "not found", returns false. */
   hasSession(sessionKey: string): Promise<boolean>;

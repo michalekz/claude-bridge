@@ -156,6 +156,22 @@ const QUERY_TIMEOUT_MS = 5_000;
 const MUTATE_TIMEOUT_MS = 10_000;
 /** Key injection — a pane that cannot accept keys in 5 s will not accept them. */
 const SEND_KEYS_TIMEOUT_MS = 5_000;
+
+/**
+ * Scrollback for panes this daemon creates. 2 000, not the user's 100 000:
+ * capture-pane reads ≤ ~50 rows for dialogs and the durable record is the
+ * peer's own JSONL. Measured 2026-08-14: the production tmux server held
+ * ~500 MiB of scrollback (~3,5 kB RSS per 100-char row), 29 % of it one pane.
+ *
+ * The limit is read when a PANE IS CREATED (measured twice: neither `-g` nor a
+ * per-window `set -w` reaches an existing pane), so it must land on the session
+ * BEFORE `new-window`. Existing panes keep their history until respawn — the
+ * owner was told to expect no immediate drop.
+ */
+const FLEET_HISTORY_LIMIT = 2_000;
+
+/** The tmux version every behavioural measurement in docs/cs was taken on. */
+const MEASURED_TMUX_VERSION = "tmux 3.4";
 /**
  * Settle time between injecting text and reading the pane back.
  *
@@ -237,6 +253,16 @@ export class TmuxDriver implements SessionHostDriver {
     if (t.kind === "window") {
       const windows = await this.listWindows();
       return windows.some((w) => w.target === t.windowId);
+    }
+    if (t.kind === "pane") {
+      // A pane id is not a session, so `has-session` would answer about a
+      // different object entirely. Ask the panes.
+      const { stdout } = await execFileAsync(
+        this.tmuxBin,
+        ["list-panes", "-a", "-F", "#{pane_id}"],
+        { ...EXEC_DEFAULTS, timeout: QUERY_TIMEOUT_MS },
+      ).catch(() => ({ stdout: "" }));
+      return stdout.split("\n").some((line) => line.trim() === t.paneId);
     }
     try {
       await execFileAsync(this.tmuxBin, ["has-session", "-t", t.session], {
@@ -417,6 +443,18 @@ export class TmuxDriver implements SessionHostDriver {
       recreatedHome = true;
     }
 
+    // History limit BEFORE the pane exists — it is read at pane creation
+    // (see FLEET_HISTORY_LIMIT). On the recreate path the session is not there
+    // yet; the post-creation set below covers its future panes, and the first
+    // pane of a fresh session keeps the global limit until its first respawn.
+    // That gap is documented, not hidden.
+    if (asWindow && parentSession !== null && !recreatedHome) {
+      await this.tmux(
+        ["set-option", "-t", parentSession, "history-limit", String(FLEET_HISTORY_LIMIT)],
+        QUERY_TIMEOUT_MS,
+      ).catch(() => undefined);
+    }
+
     const { env } = opts;
     let createdWindowId: CanonicalTarget | null = null;
     try {
@@ -495,6 +533,34 @@ export class TmuxDriver implements SessionHostDriver {
       });
     });
 
+    // Put the window back where the peer used to sit (#103).
+    //
+    // See `windowIndex` in the options for the measurement: with
+    // `renumber-windows on` a create can only append, so the position has to be
+    // restored by a MOVE. `-b` inserts before whoever now holds that index —
+    // the peer's own successor — which is exactly the vacated place.
+    //
+    // Best effort by design. A restart that ends with the peer alive at the
+    // wrong index is a cosmetic defect; one that fails because a move failed is
+    // a real outage. So the failure is logged and swallowed, and the daemon
+    // keeps reporting drift through `team_reconcile` as it did before.
+    if (asWindow && opts.windowIndex !== undefined && parentSession !== null) {
+      const moved = await this.tmux(
+        ["move-window", "-b", "-s", effectiveKey, "-t", `${parentSession}:${opts.windowIndex}`],
+        QUERY_TIMEOUT_MS,
+      ).then(
+        () => true,
+        () => false,
+      );
+      if (!moved) {
+        log.warn("tmux_window_index_not_restored", {
+          sessionKey: effectiveKey,
+          wantedIndex: opts.windowIndex,
+          note: "peer is alive at the end of the session instead of its old position; team_reconcile still reports the drift",
+        });
+      }
+    }
+
     const probe = await this.probePanePid(effectiveKey);
     if (probe.kind === "no-such-target") {
       log.error("tmux_spawn_target_gone", {
@@ -523,7 +589,7 @@ export class TmuxDriver implements SessionHostDriver {
 
   async kill(sessionKey: string, opts: { force?: boolean } = {}): Promise<void> {
     const t = parseHostTarget(sessionKey);
-    const canonical = t.kind === "window" ? t.windowId : t.session;
+    const canonical = formatHostTarget(t);
 
     // ARCHIVE BEFORE YOU DESTROY — enforced here, in the throat (v0.11.13).
     //
@@ -707,13 +773,47 @@ export class TmuxDriver implements SessionHostDriver {
     // (plt-designer, live compact orchestration 2026-08-05). This was the last
     // method still sanitizing a target instead of parsing it.
     const canonical = formatHostTarget(parseHostTarget(sessionKey));
-    const inMode = await this.paneInMode(canonical);
-    if (inMode) {
-      // A pane left in copy-mode (someone scrolled back) discards send-keys.
-      await this.tmux(["send-keys", "-t", canonical, "-X", "cancel"], SEND_KEYS_TIMEOUT_MS).catch(
+    /**
+     * ONE snapshot before touching the pane (revision F0.5, 2026-08-15).
+     *
+     * Reads everything the state table names in one display-message — one
+     * server round trip, so the fields describe one instant. Only two
+     * predicates REFUSE (target gone, pane dead: both are lifecycle's problem,
+     * and typing into a corpse's shell was this driver's blind spot until now).
+     * The rest — sync, input-off, extra panes, zoom — have ZERO recorded
+     * occurrences in this fleet's history, so they are DETECTED AND LOGGED,
+     * never remedied: a remedy nobody has ever seen fire is not a safeguard,
+     * it is a habit (kb-ops, F0.5). The log entry is the trigger that would
+     * justify writing one.
+     */
+    const snap = await this.paneSnapshot(canonical);
+    if (!snap.found) {
+      log.error("tmux_send_keys_target_gone", { sessionKey: canonical });
+      throw new Error(
+        `send-keys to '${canonical}' refused — the target answers as missing (display-message exits 0 with empty output for a gone target; measured 2026-08-08). If the peer's window was moved, its pane id survives: tmux list-panes -a -F '#{pane_id} #{window_id} #{pane_current_command}'`,
+      );
+    }
+    if (snap.dead) {
+      log.error("tmux_send_keys_pane_dead", { sessionKey: canonical, panePid: snap.panePid });
+      throw new Error(
+        `send-keys to '${canonical}' refused — the pane's process is DEAD (remain-on-exit corpse). Keys typed here reach nobody. This peer belongs to lifecycle (restart), not to delivery.`,
+      );
+    }
+    if (!snap.clean) {
+      // Measured, not treated. If one of these ever fires in production, the
+      // event below is the evidence that pays for writing the remedy.
+      log.warn("pane_state_dirty", { sessionKey: canonical, ...snap });
+    }
+    if (snap.inMode) {
+      // `copy-mode -q`, NOT `send-keys -X cancel`: `-X cancel` fails with
+      // "not in a mode" in clock/choose modes and the pane stays deaf, while
+      // `copy-mode -q` ends every mode and works even with input off — both
+      // measured on 3.4 (F0.5 expert review; the only live bug it found).
+      await this.tmux(["copy-mode", "-q", "-t", canonical], SEND_KEYS_TIMEOUT_MS).catch(
         () => undefined,
       );
     }
+    const inMode = snap.inMode;
 
     const cleared = await this.clearInputLine(canonical);
     if (cleared.kind === "stuck") {
@@ -924,17 +1024,124 @@ export class TmuxDriver implements SessionHostDriver {
     }).catch(() => undefined);
   }
 
-  /** `#{pane_in_mode}` is "1" while the pane is in copy-mode / view-mode. */
-  private async paneInMode(sessionKey: string): Promise<boolean> {
+  /**
+   * Everything the pane-state table names, in ONE display-message.
+   *
+   * One server round trip = one instant; the fields cannot describe two
+   * different moments (the server is single-threaded). Separator is a TAB —
+   * 0x1f was tried first and display-message ESCAPES non-printables in its
+   * output: the byte went out, the four characters "\037" came back, and every
+   * field after the first was empty while field 0 kept passing (F0, 2026-08-14).
+   *
+   * `found:false` means the target answered as MISSING — display-message exits
+   * 0 with empty stdout for a gone target (measured 2026-08-08, see
+   * `probePanePid`). Absence must not be read as any particular state.
+   */
+  private async paneSnapshot(sessionKey: string): Promise<PaneStateSnapshot> {
+    const SEP = "\t";
+    const FMT = [
+      "#{pane_dead}",
+      "#{pane_pid}",
+      "#{pane_current_command}",
+      "#{window_id}",
+      "#{pane_in_mode}",
+      "#{pane_synchronized}",
+      "#{pane_input_off}",
+      "#{window_panes}",
+      "#{window_zoomed_flag}",
+      "#{pane_marked}",
+      "#{alternate_on}",
+    ].join(SEP);
+    let raw = "";
     try {
       const { stdout } = await this.tmux(
-        ["display-message", "-p", "-t", sessionKey, "#{pane_in_mode}"],
+        ["display-message", "-p", "-t", sessionKey, FMT],
         QUERY_TIMEOUT_MS,
       );
-      return stdout.trim() === "1";
+      raw = stdout.trimEnd();
     } catch {
-      return false;
+      raw = "";
     }
+    const f = raw.split(SEP);
+    if (raw === "" || f.length < 11) return { ...EMPTY_PANE_SNAPSHOT };
+    const snap: PaneStateSnapshot = {
+      found: true,
+      dead: f[0] === "1",
+      panePid: Number(f[1] ?? "0") || null,
+      currentCommand: f[2] ?? "",
+      windowId: f[3] ?? "",
+      inMode: f[4] === "1",
+      synchronized: f[5] === "1",
+      inputOff: f[6] === "1",
+      windowPanes: Number(f[7] ?? "1") || 1,
+      zoomed: f[8] === "1",
+      marked: f[9] === "1",
+      alternateOn: f[10] === "1",
+      clean: true,
+    };
+    // "Clean" = nothing that has never been seen in production is present.
+    // inMode is NOT part of cleanliness — humans scroll back legitimately and
+    // the driver has always handled it; it is a workflow, not an anomaly.
+    snap.clean =
+      !snap.synchronized && !snap.inputOff && snap.windowPanes === 1 && !snap.zoomed && !snap.dead;
+    return snap;
+  }
+
+  /**
+   * Startup hygiene (F0.5): the two cheap checks that pay rent.
+   *
+   * 1. Version canary — every behavioural measurement this driver leans on
+   *    (copy-mode -q semantics, display-message escaping, history-limit
+   *    read-at-creation) was taken on ONE tmux version. A different version
+   *    does not degrade anything by itself; it revokes the evidence, and that
+   *    must be said out loud once per daemon lifetime, in the log.
+   * 2. Orphan paste buffers — `pasteIntoPane` deletes its buffer in `finally`,
+   *    and a daemon killed between load and delete (earlyoom, 2026-08-13)
+   *    leaves a copy of a human-to-human message inside the tmux server
+   *    indefinitely. Sweep buffers named by OTHER pids of this daemon.
+   */
+  async startupHygiene(): Promise<{
+    tmuxVersion: string;
+    versionMeasured: boolean;
+    sweptBuffers: number;
+  }> {
+    let version = "";
+    try {
+      const { stdout } = await execFileAsync(this.tmuxBin, ["-V"], {
+        ...EXEC_DEFAULTS,
+        timeout: QUERY_TIMEOUT_MS,
+      });
+      version = stdout.trim();
+    } catch {
+      version = "unknown";
+    }
+    const versionMeasured = version === MEASURED_TMUX_VERSION;
+    if (!versionMeasured) {
+      log.warn("tmux_version_unmeasured", {
+        found: version,
+        measured: MEASURED_TMUX_VERSION,
+        note: "behavioural measurements (copy-mode -q, display-message escaping, history-limit) were taken on the measured version and are unverified on this one",
+      });
+    }
+    let swept = 0;
+    try {
+      const { stdout } = await this.tmux(
+        ["list-buffers", "-F", "#{buffer_name}"],
+        QUERY_TIMEOUT_MS,
+      );
+      for (const name of stdout.split("\n")) {
+        const m = /^claude-bridge-(\d+)-\d+$/.exec(name.trim());
+        if (!m || Number(m[1]) === process.pid) continue;
+        await this.tmux(["delete-buffer", "-b", name.trim()], QUERY_TIMEOUT_MS).catch(
+          () => undefined,
+        );
+        swept++;
+      }
+    } catch {
+      // No server running is a normal cold start, not a hygiene failure.
+    }
+    if (swept > 0) log.warn("tmux_orphan_buffers_swept", { swept });
+    return { tmuxVersion: version, versionMeasured, sweptBuffers: swept };
   }
 
   private async capturePane(sessionKey: string): Promise<string> {
@@ -1208,3 +1415,36 @@ export class TmuxDriver implements SessionHostDriver {
     return outcome.kind === "hit" || !(await this.hasSession(sessionKey));
   }
 }
+
+/** What one display-message reveals about a pane, in one instant. */
+export type PaneStateSnapshot = {
+  found: boolean;
+  dead: boolean;
+  panePid: number | null;
+  currentCommand: string;
+  windowId: string;
+  inMode: boolean;
+  synchronized: boolean;
+  inputOff: boolean;
+  windowPanes: number;
+  zoomed: boolean;
+  marked: boolean;
+  alternateOn: boolean;
+  clean: boolean;
+};
+
+const EMPTY_PANE_SNAPSHOT: PaneStateSnapshot = {
+  found: false,
+  dead: false,
+  panePid: null,
+  currentCommand: "",
+  windowId: "",
+  inMode: false,
+  synchronized: false,
+  inputOff: false,
+  windowPanes: 1,
+  zoomed: false,
+  marked: false,
+  alternateOn: false,
+  clean: false,
+};

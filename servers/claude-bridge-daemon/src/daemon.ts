@@ -45,12 +45,17 @@ export async function runDaemon(opts: RunOptions): Promise<void> {
   // An ack left by a daemon that died mid-compact would otherwise wait here
   // for the next request on that peer and be taken as its answer.
   const sweptAcks = await sweepAllAcksAtStartup();
+  // Host hygiene (F0.5): version canary + orphan paste buffers. In the event
+  // stream, not only the log — a daemon running on an unmeasured tmux version
+  // must be visible in the audit trail, not just in journalctl.
+  const hostHygiene = (await hostDriver.startupHygiene?.().catch(() => null)) ?? null;
   await writeDaemonEvent("daemon_started", {
     daemonVersion: opts.daemonVersion,
     pid: process.pid,
     stateVersion: state.stateVersion,
     peerCount: Object.keys(state.peers).length,
     sweptCompactAcks: sweptAcks,
+    ...(hostHygiene ? { hostHygiene } : {}),
   });
   await startHeartbeat();
 

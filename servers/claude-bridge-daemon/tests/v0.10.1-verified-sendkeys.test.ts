@@ -147,18 +147,13 @@ describe.skipIf(!TMUX)("verified send-keys against a real tmux pane", () => {
     execFileSync("tmux", ["kill-session", "-t", key], { stdio: "ignore" });
 
     // The old code returned void here and the caller assumed delivery.
-    await expect(driver.sendKeys(key, "into-the-void")).rejects.toThrow(/could not be verified/);
-
-    const logPath = join(tempHome, ".claude-bridge", "control", "logs", `sendkeys-${key}.log`);
-    const entry = JSON.parse((await readFile(logPath, "utf-8")).trim().split("\n").pop() as string);
-    // `not-visible` until v0.11.25. The word was renamed because the check
-    // was: visibility is no longer what is being asserted — the payload has to
-    // be in the input line, and text that is visible elsewhere on the pane now
-    // fails too. A verdict named after the old question would misdescribe the
-    // new one.
-    expect(entry.verdict).toBe("not-verified");
-    // A pane that no longer exists cannot hold anything anywhere.
-    expect(entry.deliveryWhere).toBe("absent");
-    expect(entry.attempts).toBe(2);
+    //
+    // THE CONTRACT MOVED TWICE. v0.10.1: throw AFTER two attempts, verdict
+    // `not-verified` (the fix this file was written for). F0.5 (2026-08-15):
+    // the pre-send snapshot reads the target FIRST, and a gone target — empty
+    // display-message, measured 2026-08-08 — is refused before a single key
+    // is sent. Two attempts against a void were two chances to type into
+    // whatever pane inherits the name next; zero is the right number.
+    await expect(driver.sendKeys(key, "into-the-void")).rejects.toThrow(/answers as missing/);
   });
 });

@@ -4511,6 +4511,27 @@ function errResult(id, tool, code, message, details) {
 }
 
 // src/handlers/peer-ref.ts
+async function unresolvedPeerError(ref) {
+  const heartbeat = await resolvePeer(ref);
+  if (heartbeat.outcome === "found") {
+    return {
+      code: "peer_unmanaged",
+      message: `Peer '${ref}' IS RUNNING but the control plane does not manage it, so lifecycle tools cannot reach it. Its heartbeat is ${Math.round(heartbeat.peer.lastSeenAgeMs)} ms old. This happens when a session is started or revived outside the daemon \u2014 adopt it with team_adopt, then retry.`,
+      details: {
+        peer: ref,
+        sessionId: heartbeat.peer.id,
+        name: heartbeat.peer.name,
+        lastSeenAgeMs: Math.round(heartbeat.peer.lastSeenAgeMs),
+        remedy: "team_adopt"
+      }
+    };
+  }
+  return {
+    code: "peer_not_found",
+    message: `No peer with id/name '${ref}' in daemon state, and nothing by that name is heartbeating either.`,
+    details: { peer: ref }
+  };
+}
 function shortFormOf(record) {
   const team = record.desired.team;
   if (!team) return null;
@@ -4634,12 +4655,16 @@ var SPAWN_ESSENTIAL_CLAUDE_VARS = /* @__PURE__ */ new Set([
 
 // src/hosts/driver.ts
 var WINDOW_ID = /^@\d+$/;
+var PANE_ID = /^%\d+$/;
 function parseHostTarget(key) {
   if (WINDOW_ID.test(key)) return { kind: "window", windowId: key };
+  if (PANE_ID.test(key)) return { kind: "pane", paneId: key };
   return { kind: "session", session: sanitizeSessionKey(key) };
 }
 function formatHostTarget(t) {
-  return t.kind === "window" ? t.windowId : t.session;
+  if (t.kind === "window") return t.windowId;
+  if (t.kind === "pane") return t.paneId;
+  return t.session;
 }
 function canonicalHostTarget(key) {
   return formatHostTarget(parseHostTarget(key));
@@ -5378,6 +5403,7 @@ function statuslineFile(sessionId) {
 var DEFAULT_VERIFY_TIMEOUT_MS = 18e4;
 var DEFAULT_VERIFY_POLL_MS = 2e3;
 var COMPACT_RACE_PERCENT = 85;
+var COMPACT_MIN_PERCENT = 85;
 async function readPeerContext(sessionId) {
   const empty = {
     usedPercentage: null,
@@ -5555,7 +5581,15 @@ var AGENTS_TIMEOUT_MS = 5e3;
 function normaliseBusy(record) {
   if (record.status === "idle") return "idle";
   if (record.status === "busy") return "busy";
+  if (record.state === "blocked" || record.state === "working") return "busy";
   return "unknown";
+}
+function looksLikeAgentsPayload(stdout) {
+  try {
+    return Array.isArray(JSON.parse(stdout));
+  } catch {
+    return false;
+  }
 }
 function parseAgentsJson(stdout) {
   let parsed;
@@ -5587,23 +5621,36 @@ function parseAgentsJson(stdout) {
   }
   return out;
 }
-async function readAgents(claudeBin = "claude") {
+async function probeAgents(claudeBin = "claude") {
   try {
     const { stdout } = await execFileAsync(claudeBin, ["agents", "--json"], {
       timeout: AGENTS_TIMEOUT_MS,
       killSignal: "SIGKILL",
       maxBuffer: 4 * 1024 * 1024
     });
-    return parseAgentsJson(stdout);
+    if (!looksLikeAgentsPayload(stdout)) {
+      const err = "agents --json did not return a JSON array";
+      log7.warn("agents_json_unreadable", { err, claudeBin });
+      return { ok: false, records: [], err };
+    }
+    return { ok: true, records: parseAgentsJson(stdout) };
   } catch (e) {
-    log7.warn("agents_json_unavailable", { err: e instanceof Error ? e.message : String(e) });
-    return [];
+    const err = e instanceof Error ? e.message : String(e);
+    log7.warn("agents_json_unavailable", { err, claudeBin });
+    return { ok: false, records: [], err };
   }
 }
-function busyOf(records, sessionId) {
+async function readAgents(claudeBin = "claude") {
+  return (await probeAgents(claudeBin)).records;
+}
+function busyOf(probe, sessionId) {
+  if (!probe.ok) return "probe-failed";
   if (!sessionId) return "unknown";
-  const hit = records.find((r) => r.sessionId === sessionId);
-  return hit ? hit.busy : "unknown";
+  const hit = probe.records.find((r) => r.sessionId === sessionId);
+  return hit ? hit.busy : "absent";
+}
+function blocksInject(busy) {
+  return busy === "busy" || busy === "probe-failed";
 }
 
 // src/handlers/ack-protocol.ts
@@ -5997,6 +6044,15 @@ var PeerCompactArgsSchema = external_exports.object({
   /** Skip the anchor request → treat the ack file as pre-existing. */
   skipAnchorRequest: external_exports.boolean().default(false),
   /**
+   * Compact even though the peer is below `COMPACT_MIN_PERCENT`.
+   *
+   * Handing over a role, or an expected large input, are real reasons to
+   * compress early. The flag keeps them possible while the accident — a
+   * routine compact that throws away a peer's working context for nothing —
+   * needs a word.
+   */
+  belowThreshold: external_exports.boolean().default(false),
+  /**
    * How long to watch the peer's transcript for the compact to actually run.
    *
    * A parameter, not a constant, because the two honest measurements are
@@ -6054,13 +6110,8 @@ async function handlePeerCompact(req, ctx) {
   }
   const found = resolved.kind === "found" ? resolved : null;
   if (!found) {
-    return errResult(
-      req.id,
-      req.tool,
-      "peer_not_found",
-      `No peer with id/name '${args.peer}' in daemon state`,
-      { peer: args.peer }
-    );
+    const unresolved = await unresolvedPeerError(args.peer);
+    return errResult(req.id, req.tool, unresolved.code, unresolved.message, unresolved.details);
   }
   const handle = found.handle;
   const record = ctx.state.peers[handle];
@@ -6080,6 +6131,31 @@ async function handlePeerCompact(req, ctx) {
       `Host driver '${ctx.hostDriver.name}' does not support send-keys on this platform`,
       { hostDriver: ctx.hostDriver.name }
     );
+  }
+  const preSnapshot = await readPeerContext(bridgeId);
+  const percentNow = preSnapshot.usedPercentage;
+  if (percentNow !== null && percentNow < COMPACT_MIN_PERCENT && !args.belowThreshold) {
+    await writeEvent({
+      event: "peer_compact_skipped_below_threshold",
+      level: "info",
+      by: { sessionId: req.requestedBy.sessionId, name: req.requestedBy.name },
+      requestId: req.id,
+      details: {
+        handle,
+        sessionKey,
+        percentUsed: percentNow,
+        thresholdPercent: COMPACT_MIN_PERCENT
+      }
+    });
+    return okResult(req.id, req.tool, {
+      handle,
+      sessionKey,
+      verified: false,
+      outcome: "skipped_below_threshold",
+      contextPercentBefore: percentNow,
+      thresholdPercent: COMPACT_MIN_PERCENT,
+      note: `Nothing was injected and the peer was not disturbed: it is at ${percentNow}% of its context window, below the ${COMPACT_MIN_PERCENT}% threshold. Compaction is always a loss, so below the threshold it costs more than it saves. If you mean it anyway \u2014 handing over a role, or an expected large input \u2014 repeat with belowThreshold:true.`
+    });
   }
   const anchorTimeoutMs = args.anchorTimeoutMs ?? DEFAULT_ANCHOR_TIMEOUT_MS;
   const ackPollMs = args.ackPollMs ?? DEFAULT_ACK_POLL_MS;
@@ -6170,8 +6246,9 @@ async function handlePeerCompact(req, ctx) {
   } : null;
   const transcriptPath = snapshot.transcriptPath;
   const peerSessionId = record.observed.sessionId ?? void 0;
-  const agentBusy = busyOf(await readAgents(), peerSessionId);
-  if (agentBusy === "busy") {
+  const probe = await probeAgents(record.desired.command);
+  const agentBusy = busyOf(probe, peerSessionId);
+  if (blocksInject(agentBusy)) {
     await writeEvent({
       event: "peer_compact_skipped_busy",
       level: "warn",
@@ -6184,7 +6261,9 @@ async function handlePeerCompact(req, ctx) {
         anchorMsgId,
         contextPercentBefore,
         source: "claude agents --json",
-        note: "The peer is mid-turn. Injecting now would put /compact in its queue, to run at a time nobody chose \u2014 the 2026-08-09 incident."
+        agentBusy,
+        ...probe.err ? { probeErr: probe.err, claudeBin: record.desired.command } : {},
+        note: agentBusy === "busy" ? "The peer is mid-turn. Injecting now would put /compact in its queue, to run at a time nobody chose \u2014 the 2026-08-09 incident." : "The probe never ran, so nothing is known about this peer's state. Refusing is the cheap side of an asymmetric bet \u2014 see the 2026-08-10 P0, where a failed probe passed as `unknown` and the gate had never once stopped anything."
       }
     });
     return okResult(req.id, req.tool, {
@@ -6197,7 +6276,11 @@ async function handlePeerCompact(req, ctx) {
       verified: false,
       outcome: "skipped_busy",
       agentBusy,
-      note: "Nothing was injected: `claude agents --json` reports this peer as busy, and a command sent into a busy pane is queued rather than run. The peer's anchor has been written, so a retry once it is idle costs only the inject."
+      // The failure travels in the ANSWER, not only in the log. `agentBusy:
+      // "unknown"` read as "we asked and could not tell"; it meant "we never
+      // asked", and the operator had no way to see the difference.
+      ...probe.err ? { probeErr: probe.err } : {},
+      note: agentBusy === "busy" ? "Nothing was injected: `claude agents --json` reports this peer as busy, and a command sent into a busy pane is queued rather than run. The peer's anchor has been written, so a retry once it is idle costs only the inject." : "Nothing was injected: the `claude agents --json` probe could not be run, so this peer's state is unknown. The anchor has been written, so a retry once the probe works costs only the inject. Check that the daemon can reach the `claude` binary \u2014 its systemd unit does not set PATH."
     });
   }
   await writeEvent({
@@ -6441,6 +6524,12 @@ var PeerSpawnArgsSchema = external_exports.object({
    */
   inSession: external_exports.string().min(1).optional(),
   /**
+   * Put the new window back at this index (#103). Set by `peer_restart`,
+   * which measures it while the old window still exists; a fresh spawn has
+   * no position to return to and omits it.
+   */
+  windowIndex: external_exports.number().int().min(0).max(999).optional(),
+  /**
    * Values to build the peer's environment from, instead of the daemon's own.
    * Still filtered by the same whitelist — this changes where the values come
    * from, not which names get through.
@@ -6633,6 +6722,7 @@ async function handlePeerSpawn(req, ctx) {
     const record = await ctx.hostDriver.spawn({
       sessionKey,
       ...args.inSession ? { inSession: args.inSession } : {},
+      ...args.windowIndex !== void 0 ? { windowIndex: args.windowIndex } : {},
       // Name the window after the peer. tmux otherwise names it after the
       // command, so every window read `claude`.
       // The same value the record stores, not a second derivation of it.
@@ -6905,6 +6995,7 @@ Reason given: ${reason}` : ""
 }
 
 // src/handlers/peer-stop.ts
+var LIVE_HEARTBEAT_MS = 3e4;
 var PeerStopArgsSchema = external_exports.object({
   peer: external_exports.string().min(1),
   reason: external_exports.string().optional(),
@@ -6917,6 +7008,23 @@ var PeerStopArgsSchema = external_exports.object({
    * and the dangerous reading is the one that should need a word.
    */
   force: external_exports.boolean().default(false),
+  /**
+   * Kill a peer whose heartbeat proves it is alive.
+   *
+   * THE 2026-08-11 INCIDENT. A background session resurrected from the
+   * previous day decided a live peer was "a zombie after the nightly crash"
+   * and force-stopped it. The premise was false — the victim's heartbeat was
+   * 2.3 s old and its transcript had been written 14 minutes earlier — but
+   * nothing checked, because `force` asked for no evidence.
+   *
+   * So `force` alone now refuses a demonstrably live peer. This flag is the
+   * way to say it anyway, and it exists because refusing outright would break
+   * the legitimate case: a peer stuck on a modal dialog also heartbeats, and
+   * killing its process is the only way out. The difference is not the state
+   * of the peer — it is whether the caller KNOWS it is killing something
+   * alive. That belongs in the audit trail as an override, not as routine.
+   */
+  overrideLiveness: external_exports.boolean().default(false),
   /**
    * The courtesy already happened somewhere else — skip it, change nothing
    * else. FOR INTERNAL CALLERS.
@@ -7078,13 +7186,8 @@ async function handlePeerStop(req, ctx) {
       requestId: req.id,
       details: { peer: args.peer, reason: "peer_not_found" }
     });
-    return errResult(
-      req.id,
-      req.tool,
-      "peer_not_found",
-      `No peer with id/name '${args.peer}' in daemon state`,
-      { peer: args.peer }
-    );
+    const unresolved = await unresolvedPeerError(args.peer);
+    return errResult(req.id, req.tool, unresolved.code, unresolved.message, unresolved.details);
   }
   const handle = found.handle;
   const record = ctx.state.peers[handle];
@@ -7093,6 +7196,35 @@ async function handlePeerStop(req, ctx) {
   }
   const sessionKey = record.observed.tmuxTarget ?? record.observed.name;
   const forceFlag = args.force === true;
+  if (forceFlag && !args.overrideLiveness) {
+    const liveness = await resolvePeer(record.observed.sessionId ?? handle);
+    const ageMs = liveness.outcome === "found" ? liveness.peer.lastSeenAgeMs : null;
+    if (ageMs !== null && ageMs < LIVE_HEARTBEAT_MS) {
+      await writeEvent({
+        event: "peer_stop_refused_alive",
+        level: "warn",
+        by: { sessionId: req.requestedBy.sessionId, name: req.requestedBy.name },
+        requestId: req.id,
+        details: { handle, sessionKey, lastSeenAgeMs: ageMs, thresholdMs: LIVE_HEARTBEAT_MS }
+      });
+      return errResult(
+        req.id,
+        req.tool,
+        "peer_alive",
+        `Refusing to force-stop '${record.observed.name}': its heartbeat is ${ageMs} ms old, so it is demonstrably alive. If you mean to kill a live peer anyway \u2014 a peer stuck on a modal dialog is the usual reason \u2014 repeat with overrideLiveness:true, which records the kill as an override.`,
+        { handle, lastSeenAgeMs: ageMs, thresholdMs: LIVE_HEARTBEAT_MS }
+      );
+    }
+  }
+  if (forceFlag && args.overrideLiveness) {
+    await writeEvent({
+      event: "peer_stop_liveness_overridden",
+      level: "warn",
+      by: { sessionId: req.requestedBy.sessionId, name: req.requestedBy.name },
+      requestId: req.id,
+      details: { handle, sessionKey, reason: args.reason ?? null }
+    });
+  }
   let courtesy = { kind: "skipped" };
   if (!forceFlag && !args.skipCourtesy) {
     courtesy = await runCourtesyPhase(req, ctx, { handle, sessionKey, record }, args);
@@ -7581,13 +7713,8 @@ async function handlePeerRestart(req, ctx) {
   }
   const record = resolved.kind === "found" ? resolved.record : null;
   if (!record) {
-    return errResult(
-      req.id,
-      req.tool,
-      "peer_not_found",
-      `No peer with id/name '${args.peer}' in daemon state`,
-      { peer: args.peer }
-    );
+    const unresolved = await unresolvedPeerError(args.peer);
+    return errResult(req.id, req.tool, unresolved.code, unresolved.message, unresolved.details);
   }
   const inFlight = record.observed.restartRequest ?? null;
   if (inFlight && inFlight.phase !== "ready-ack") {
@@ -7645,6 +7772,16 @@ async function handlePeerRestart(req, ctx) {
   const resumeSessionId = resumeDecision.kind === "resume" ? resumeDecision.sessionId : null;
   const sessionKey = record.observed.tmuxTarget ?? record.observed.name;
   let inSession = record.desired.homeSession ?? null;
+  let windowIndex;
+  if (record.observed.tmuxTarget && ctx.hostDriver.listWindows) {
+    const here = (await ctx.hostDriver.listWindows()).find(
+      (w) => w.target === record.observed.tmuxTarget
+    );
+    if (here) {
+      windowIndex = here.window;
+      inSession = inSession ?? here.session;
+    }
+  }
   if (inSession === null && record.observed.tmuxTarget && parseHostTarget(record.observed.tmuxTarget).kind === "window") {
     const windows = ctx.hostDriver.listWindows ? await ctx.hostDriver.listWindows() : [];
     inSession = windows.find((w) => w.target === record.observed.tmuxTarget)?.session ?? null;
@@ -7759,7 +7896,20 @@ async function handlePeerRestart(req, ctx) {
       // mark's whole job is to survive the window where the peer is neither the
       // old process nor the new one.
       keepInState: true,
-      force: args.force
+      force: args.force,
+      // v0.11.27: `peer_stop` now refuses `force` on a peer whose heartbeat
+      // proves it is alive. A FORCED RESTART IS ALREADY THAT DECISION — the
+      // caller was told in as many words that it loses whatever the peer had
+      // not written down, and the peer comes back afterwards, so this is not
+      // the killing the guard was built to stop. Passing the override here
+      // keeps the legitimate case working: on 2026-08-10 a forced restart was
+      // the only way to free two peers stuck on a modal dialog, and those peers
+      // were heartbeating the whole time.
+      //
+      // The stop still records the override in the audit trail, so a deliberate
+      // kill of a live peer stays searchable whether it came from here or from
+      // a human typing `peer_stop`.
+      overrideLiveness: args.force
     },
     requestedBy: req.requestedBy
   };
@@ -7800,6 +7950,8 @@ async function handlePeerRestart(req, ctx) {
       command: process.env["CLAUDE_BRIDGE_TEST_COMMAND"] ?? command,
       args: commandArgs,
       ...inSession ? { inSession } : {},
+      // Measured above, while the window still existed (#103).
+      ...windowIndex !== void 0 ? { windowIndex } : {},
       // The team, and the label derived from it.
       //
       // Omitted until v0.11.1, and that was not cosmetic: `peer_spawn` names
@@ -9914,6 +10066,8 @@ function paneCommand(env, command, args) {
 var QUERY_TIMEOUT_MS = 5e3;
 var MUTATE_TIMEOUT_MS = 1e4;
 var SEND_KEYS_TIMEOUT_MS = 5e3;
+var FLEET_HISTORY_LIMIT = 2e3;
+var MEASURED_TMUX_VERSION = "tmux 3.4";
 var DEFAULT_SEND_VERIFY_DELAY_MS = 250;
 var HUMAN_NOTICE_MS = 8e3;
 var TmuxDriver = class _TmuxDriver {
@@ -9935,6 +10089,14 @@ var TmuxDriver = class _TmuxDriver {
     if (t.kind === "window") {
       const windows = await this.listWindows();
       return windows.some((w) => w.target === t.windowId);
+    }
+    if (t.kind === "pane") {
+      const { stdout } = await execFileAsync2(
+        this.tmuxBin,
+        ["list-panes", "-a", "-F", "#{pane_id}"],
+        { ...EXEC_DEFAULTS, timeout: QUERY_TIMEOUT_MS }
+      ).catch(() => ({ stdout: "" }));
+      return stdout.split("\n").some((line) => line.trim() === t.paneId);
     }
     try {
       await execFileAsync2(this.tmuxBin, ["has-session", "-t", t.session], {
@@ -10082,6 +10244,12 @@ var TmuxDriver = class _TmuxDriver {
       ];
       recreatedHome = true;
     }
+    if (asWindow && parentSession !== null && !recreatedHome) {
+      await this.tmux(
+        ["set-option", "-t", parentSession, "history-limit", String(FLEET_HISTORY_LIMIT)],
+        QUERY_TIMEOUT_MS
+      ).catch(() => void 0);
+    }
     const { env } = opts;
     let createdWindowId = null;
     try {
@@ -10118,6 +10286,22 @@ var TmuxDriver = class _TmuxDriver {
         err: e instanceof Error ? e.message.split("\n")[0] : String(e)
       });
     });
+    if (asWindow && opts.windowIndex !== void 0 && parentSession !== null) {
+      const moved = await this.tmux(
+        ["move-window", "-b", "-s", effectiveKey, "-t", `${parentSession}:${opts.windowIndex}`],
+        QUERY_TIMEOUT_MS
+      ).then(
+        () => true,
+        () => false
+      );
+      if (!moved) {
+        log10.warn("tmux_window_index_not_restored", {
+          sessionKey: effectiveKey,
+          wantedIndex: opts.windowIndex,
+          note: "peer is alive at the end of the session instead of its old position; team_reconcile still reports the drift"
+        });
+      }
+    }
     const probe = await this.probePanePid(effectiveKey);
     if (probe.kind === "no-such-target") {
       log10.error("tmux_spawn_target_gone", {
@@ -10144,7 +10328,7 @@ var TmuxDriver = class _TmuxDriver {
   }
   async kill(sessionKey, opts = {}) {
     const t = parseHostTarget(sessionKey);
-    const canonical = t.kind === "window" ? t.windowId : t.session;
+    const canonical = formatHostTarget(t);
     const before = await this.probePanePid(canonical, 1);
     if (before.kind === "dead") {
       const saved = await this.archivePane(
@@ -10286,12 +10470,28 @@ var TmuxDriver = class _TmuxDriver {
       throw new Error(`send-keys to '${sessionKey}' refused \u2014 ${refusal.message}`);
     }
     const canonical = formatHostTarget(parseHostTarget(sessionKey));
-    const inMode = await this.paneInMode(canonical);
-    if (inMode) {
-      await this.tmux(["send-keys", "-t", canonical, "-X", "cancel"], SEND_KEYS_TIMEOUT_MS).catch(
+    const snap = await this.paneSnapshot(canonical);
+    if (!snap.found) {
+      log10.error("tmux_send_keys_target_gone", { sessionKey: canonical });
+      throw new Error(
+        `send-keys to '${canonical}' refused \u2014 the target answers as missing (display-message exits 0 with empty output for a gone target; measured 2026-08-08). If the peer's window was moved, its pane id survives: tmux list-panes -a -F '#{pane_id} #{window_id} #{pane_current_command}'`
+      );
+    }
+    if (snap.dead) {
+      log10.error("tmux_send_keys_pane_dead", { sessionKey: canonical, panePid: snap.panePid });
+      throw new Error(
+        `send-keys to '${canonical}' refused \u2014 the pane's process is DEAD (remain-on-exit corpse). Keys typed here reach nobody. This peer belongs to lifecycle (restart), not to delivery.`
+      );
+    }
+    if (!snap.clean) {
+      log10.warn("pane_state_dirty", { sessionKey: canonical, ...snap });
+    }
+    if (snap.inMode) {
+      await this.tmux(["copy-mode", "-q", "-t", canonical], SEND_KEYS_TIMEOUT_MS).catch(
         () => void 0
       );
     }
+    const inMode = snap.inMode;
     const cleared = await this.clearInputLine(canonical);
     if (cleared.kind === "stuck") {
       await this.logSendKeys(canonical, {
@@ -10452,17 +10652,114 @@ var TmuxDriver = class _TmuxDriver {
       }
     }).catch(() => void 0);
   }
-  /** `#{pane_in_mode}` is "1" while the pane is in copy-mode / view-mode. */
-  async paneInMode(sessionKey) {
+  /**
+   * Everything the pane-state table names, in ONE display-message.
+   *
+   * One server round trip = one instant; the fields cannot describe two
+   * different moments (the server is single-threaded). Separator is a TAB —
+   * 0x1f was tried first and display-message ESCAPES non-printables in its
+   * output: the byte went out, the four characters "\037" came back, and every
+   * field after the first was empty while field 0 kept passing (F0, 2026-08-14).
+   *
+   * `found:false` means the target answered as MISSING — display-message exits
+   * 0 with empty stdout for a gone target (measured 2026-08-08, see
+   * `probePanePid`). Absence must not be read as any particular state.
+   */
+  async paneSnapshot(sessionKey) {
+    const SEP = "	";
+    const FMT = [
+      "#{pane_dead}",
+      "#{pane_pid}",
+      "#{pane_current_command}",
+      "#{window_id}",
+      "#{pane_in_mode}",
+      "#{pane_synchronized}",
+      "#{pane_input_off}",
+      "#{window_panes}",
+      "#{window_zoomed_flag}",
+      "#{pane_marked}",
+      "#{alternate_on}"
+    ].join(SEP);
+    let raw = "";
     try {
       const { stdout } = await this.tmux(
-        ["display-message", "-p", "-t", sessionKey, "#{pane_in_mode}"],
+        ["display-message", "-p", "-t", sessionKey, FMT],
         QUERY_TIMEOUT_MS
       );
-      return stdout.trim() === "1";
+      raw = stdout.trimEnd();
     } catch {
-      return false;
+      raw = "";
     }
+    const f = raw.split(SEP);
+    if (raw === "" || f.length < 11) return { ...EMPTY_PANE_SNAPSHOT };
+    const snap = {
+      found: true,
+      dead: f[0] === "1",
+      panePid: Number(f[1] ?? "0") || null,
+      currentCommand: f[2] ?? "",
+      windowId: f[3] ?? "",
+      inMode: f[4] === "1",
+      synchronized: f[5] === "1",
+      inputOff: f[6] === "1",
+      windowPanes: Number(f[7] ?? "1") || 1,
+      zoomed: f[8] === "1",
+      marked: f[9] === "1",
+      alternateOn: f[10] === "1",
+      clean: true
+    };
+    snap.clean = !snap.synchronized && !snap.inputOff && snap.windowPanes === 1 && !snap.zoomed && !snap.dead;
+    return snap;
+  }
+  /**
+   * Startup hygiene (F0.5): the two cheap checks that pay rent.
+   *
+   * 1. Version canary — every behavioural measurement this driver leans on
+   *    (copy-mode -q semantics, display-message escaping, history-limit
+   *    read-at-creation) was taken on ONE tmux version. A different version
+   *    does not degrade anything by itself; it revokes the evidence, and that
+   *    must be said out loud once per daemon lifetime, in the log.
+   * 2. Orphan paste buffers — `pasteIntoPane` deletes its buffer in `finally`,
+   *    and a daemon killed between load and delete (earlyoom, 2026-08-13)
+   *    leaves a copy of a human-to-human message inside the tmux server
+   *    indefinitely. Sweep buffers named by OTHER pids of this daemon.
+   */
+  async startupHygiene() {
+    let version = "";
+    try {
+      const { stdout } = await execFileAsync2(this.tmuxBin, ["-V"], {
+        ...EXEC_DEFAULTS,
+        timeout: QUERY_TIMEOUT_MS
+      });
+      version = stdout.trim();
+    } catch {
+      version = "unknown";
+    }
+    const versionMeasured = version === MEASURED_TMUX_VERSION;
+    if (!versionMeasured) {
+      log10.warn("tmux_version_unmeasured", {
+        found: version,
+        measured: MEASURED_TMUX_VERSION,
+        note: "behavioural measurements (copy-mode -q, display-message escaping, history-limit) were taken on the measured version and are unverified on this one"
+      });
+    }
+    let swept = 0;
+    try {
+      const { stdout } = await this.tmux(
+        ["list-buffers", "-F", "#{buffer_name}"],
+        QUERY_TIMEOUT_MS
+      );
+      for (const name of stdout.split("\n")) {
+        const m = /^claude-bridge-(\d+)-\d+$/.exec(name.trim());
+        if (!m || Number(m[1]) === process.pid) continue;
+        await this.tmux(["delete-buffer", "-b", name.trim()], QUERY_TIMEOUT_MS).catch(
+          () => void 0
+        );
+        swept++;
+      }
+    } catch {
+    }
+    if (swept > 0) log10.warn("tmux_orphan_buffers_swept", { swept });
+    return { tmuxVersion: version, versionMeasured, sweptBuffers: swept };
   }
   async capturePane(sessionKey) {
     try {
@@ -10692,6 +10989,21 @@ ${content}`,
     return outcome.kind === "hit" || !await this.hasSession(sessionKey);
   }
 };
+var EMPTY_PANE_SNAPSHOT = {
+  found: false,
+  dead: false,
+  panePid: null,
+  currentCommand: "",
+  windowId: "",
+  inMode: false,
+  synchronized: false,
+  inputOff: false,
+  windowPanes: 1,
+  zoomed: false,
+  marked: false,
+  alternateOn: false,
+  clean: false
+};
 
 // src/hosts/mock-driver.ts
 var log11 = makeLogger("daemon.host.mock");
@@ -10725,12 +11037,14 @@ async function runDaemon(opts) {
   await saveState(state);
   const hostDriver = opts.hostDriver ?? defaultHostDriver();
   const sweptAcks = await sweepAllAcksAtStartup();
+  const hostHygiene = await hostDriver.startupHygiene?.().catch(() => null) ?? null;
   await writeDaemonEvent("daemon_started", {
     daemonVersion: opts.daemonVersion,
     pid: process.pid,
     stateVersion: state.stateVersion,
     peerCount: Object.keys(state.peers).length,
-    sweptCompactAcks: sweptAcks
+    sweptCompactAcks: sweptAcks,
+    ...hostHygiene ? { hostHygiene } : {}
   });
   await startHeartbeat();
   let stopping = false;
@@ -10915,7 +11229,8 @@ async function installSystemd() {
   await ensureBinariesExist(sourceBin, nodeBin);
   const daemonBin = await deployDaemonBinary(sourceBin);
   const template = await readTemplate();
-  const rendered = template.replace(/__NODE_BIN__/g, nodeBin).replace(/__DAEMON_BIN__/g, daemonBin);
+  const nodeDir = (0, import_node_path17.dirname)(nodeBin);
+  const rendered = template.replace(/__NODE_BIN__/g, nodeBin).replace(/__DAEMON_BIN__/g, daemonBin).replace(/__NODE_DIR__/g, nodeDir);
   await (0, import_promises19.mkdir)(systemdUserDir(), { recursive: true });
   await (0, import_promises19.writeFile)(unitPath(), rendered, "utf-8");
   log13.info("unit_written", { path: unitPath(), execStart: daemonBin });

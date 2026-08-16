@@ -80,6 +80,12 @@ export const PeerSpawnArgsSchema = z
      */
     inSession: z.string().min(1).optional(),
     /**
+     * Put the new window back at this index (#103). Set by `peer_restart`,
+     * which measures it while the old window still exists; a fresh spawn has
+     * no position to return to and omits it.
+     */
+    windowIndex: z.number().int().min(0).max(999).optional(),
+    /**
      * Values to build the peer's environment from, instead of the daemon's own.
      * Still filtered by the same whitelist — this changes where the values come
      * from, not which names get through.
@@ -403,6 +409,7 @@ export async function handlePeerSpawn(
     const record = await ctx.hostDriver.spawn({
       sessionKey,
       ...(args.inSession ? { inSession: args.inSession } : {}),
+      ...(args.windowIndex !== undefined ? { windowIndex: args.windowIndex } : {}),
       // Name the window after the peer. tmux otherwise names it after the
       // command, so every window read `claude`.
       // The same value the record stores, not a second derivation of it.

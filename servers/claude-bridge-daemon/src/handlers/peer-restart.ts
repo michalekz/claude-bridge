@@ -604,6 +604,29 @@ export async function handlePeerRestart(
   // written before homeSession existed — and it fails exactly when it matters
   // most, because a peer whose window already died has no window to ask.
   let inSession: string | null = record.desired.homeSession ?? null;
+  /**
+   * Where the peer sits RIGHT NOW (#103).
+   *
+   * Measured, not read from `desired.windowIndex`: with `renumber-windows on`
+   * a stored index describes a layout that may have shifted since — the very
+   * property this file's own comment recorded on 2026-08-04 and nobody carried
+   * through to restart. Asked while the window still exists, because a killed
+   * window has no position to report.
+   *
+   * The number travels to `peer_spawn` → the driver, which restores it with
+   * `move-window -b` after the new window is created. See `windowIndex` in
+   * SessionHostSpawnOptions for why a create cannot land there directly.
+   */
+  let windowIndex: number | undefined;
+  if (record.observed.tmuxTarget && ctx.hostDriver.listWindows) {
+    const here = (await ctx.hostDriver.listWindows()).find(
+      (w) => w.target === record.observed.tmuxTarget,
+    );
+    if (here) {
+      windowIndex = here.window;
+      inSession = inSession ?? here.session;
+    }
+  }
   if (
     inSession === null &&
     record.observed.tmuxTarget &&
@@ -808,6 +831,8 @@ export async function handlePeerRestart(
       command: process.env["CLAUDE_BRIDGE_TEST_COMMAND"] ?? command,
       args: commandArgs,
       ...(inSession ? { inSession } : {}),
+      // Measured above, while the window still existed (#103).
+      ...(windowIndex !== undefined ? { windowIndex } : {}),
       // The team, and the label derived from it.
       //
       // Omitted until v0.11.1, and that was not cosmetic: `peer_spawn` names
