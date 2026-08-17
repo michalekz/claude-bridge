@@ -66,6 +66,24 @@ flowchart LR
 - Pravidla switche: peer NEPŘEPÍNÁ — přepíná vlastník (CLI) nebo strážce;
   stand-by zprávy strážce = čekej, „obnoveno" tě probudí.
 
+## ✅ F1 AUDIT HISTORIE PROVEDEN (17. 8. ~17:20) — ČISTÝ
+
+- 29 commitů, VŠECHNY revize skenovány (`git grep` přes `rev-list --all`).
+- Vzory tokenů (sk-ant/glpat/oauth2:/PRIVATE-TOKEN/ANTHROPIC_API_KEY=):
+  1 unikátní zásah = maskovaný prefix `sk-ant-api03-r…` (14 znaků ze 108)
+  v pilotním logu — sankcionovaná forma „logovat prefix", ne únik.
+- `Bearer`/`claudeAiOauth`: jen zdrojový kód (probe/registry/switch) —
+  čtení klíčů, žádné hodnoty.
+- Entropie 60+ znaků: jen npm `integrity` sha512 (veřejné checksumy).
+- Force-added soubory: 1 (pilot log) — prohlédnut řádek po řádku kolem
+  „token/bearer/klíč": jen mody souborů, prefix, verdikty prózou.
+- V evidenci jsou vlastníkovy e-maily a org id — nejsou to přihlašovací
+  údaje; repo je interní (ai-tools skupina). Ponecháno vědomě.
+- ⇒ Přepis dějin NENÍ potřeba. Push dál čeká na: uzavření strážce
+  (G8/G9 + report designera) — podmínka ② designera.
+- Repo `ai-tools/fleet-plugins` ZALOŽENO Zdeňkem (GUI) 17. 8. — otevřené
+  body 1+2 uzavřeny; založení = jeho GO k publikaci tam.
+
 ## Bezpečnost push (F1 brána)
 
 - Registr tokeny NEKOPÍRUJE by-design (čte ~/.claude-bridge/control/accounts).
