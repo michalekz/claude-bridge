@@ -286,3 +286,5 @@ one is running on this peer), `too_old` (a leftover from an earlier request).
 
 `anchor_timeout` from `peer_compact`:
 - The peer didn't touch `~/.claude-bridge/control/compact-ack/<sessionId>.json` within the budget. Check the peer's session — did it receive the anchor request in its inbox? Its skill / playbook may need updating.
+
+> **Stav k 16. 8. 2026:** démon je VĚDOMĚ ZASTAVEN (strategický obrat #112 — flotila nad cc-daemonem). Mrtvý heartbeat není porucha; podrobnosti v `~/.claude-bridge/daemon-stopped.json`. Před návratem démona je nutné Zdeňkovo slovo.
