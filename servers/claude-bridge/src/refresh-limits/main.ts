@@ -216,7 +216,13 @@ export async function main(): Promise<number> {
 
   const data = await fetchUsageViaCurl(token);
   if (data === null) {
-    // Don't touch throttle marker on failure — retry sooner next PostToolUse.
+    // v0.11.27: throttle marker se dotýká I PŘI SELHÁNÍ. Původní "retry
+    // sooner next PostToolUse" znamenalo: trvalé selhání endpointu (429)
+    // → každý PostToolUse KAŽDÉHO peera = 1 curl → flotila buší do
+    // endpointu bez omezení (doloženo 18. 8.: 13 h nepřetržitě od 09:28,
+    // možná příčina samotného 429). Jednotná kadence 1/THROTTLE_SECONDS
+    // platí pro úspěch i neúspěch; oživení endpointu se pozná do minuty.
+    await touchThrottleMarker();
     await stdinDrained;
     return 0;
   }

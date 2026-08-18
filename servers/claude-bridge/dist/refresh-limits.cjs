@@ -326,6 +326,7 @@ async function main() {
   }
   const data = await fetchUsageViaCurl(token);
   if (data === null) {
+    await touchThrottleMarker();
     await stdinDrained;
     return 0;
   }
