@@ -1,25 +1,24 @@
-# Rotace předplatitelských účtů
+---
+status: historical
+verified_at: 2026-08-18
+verified_by: ai-bridge-dev
+purpose: Pointer — obsah rotace-učtů se přestěhoval do repa claude-identity.
+---
 
-Dva dokumenty z měření 9. 8. 2026. Zdroj publikovaných stránek — otevři je
-v prohlížeči, nebo je znovu publikuj beze změny obsahu.
+# Rotace účtů → přestěhováno do claude-identity
 
-| soubor | co je | komu |
-|---|---|---|
-| `rozhodnuti.html` | rozhodnutí a doporučení, krátké | vlastník |
-| `protokol.html` | metoda, chronologie, 22 hypotéz včetně vyvrácených, nástroje, návrh démona a jeho ovládání | designer, budoucí vývoj |
-| `zadani-samostatneho-nastroje.md` | **platné zadání** — rotace jako samostatný firemní nástroj mimo claude-bridge | implementace |
+Rotace identit je od 17. 8. 2026 **samostatný nástroj** (rozhodnutí
+vlastníka), žije v repu `/opt/claude-identity`
+(market: `git.oxyshop.cz/ai-tools/fleet-plugins`, plugin `claude-identity`).
 
-Uloženo jako HTML, ne jako markdown, **záměrně**: je to přesný zdroj
-publikovaných stránek. Druhý formát téhož textu by se rozešel a nikdo by nevěděl,
-který z nich platí.
+| co hledáš | kde |
+|---|---|
+| přehled, CLI, strážce v1.1 | `/opt/claude-identity/README.md` |
+| instalace a registrace identit | `/opt/claude-identity/docs/instalace.md` |
+| ratifikovaný design strážce | `/opt/claude-identity/docs/navrh-strazce-identit-v1.md` |
+| evidence pilotů a re-verifikace | `/opt/claude-identity/docs/protokol-pilot-strazce.md` |
+| PŮVODNÍ dokumenty z této složky | `/opt/claude-identity/docs/archiv/` (kopie) + git historie tohoto repa |
 
-## Stav k 9. 8. 2026
-
-- Doporučení: roční tokeny ze `setup-token` jako **cílové** řešení.
-- Distribuce ven: **vlastník rozhodl vydat veřejně.** Před vydáním je potřeba
-  změřit chování na macOS, nebo přiznat podporu platforem — Claude Code tam drží
-  přihlášení v Keychainu, ne v souboru.
-- Posudek designera zapracován.
-- **Směr se večer změnil:** rotace nepůjde do claude-bridge, ale vznikne jako samostatný
-  nástroj v privátním firemním repozitáři. Ruší to všech pět otázek kolem distribuce.
-  Návrh démona v `protokol.html` §7–8 je tím **historický** — platí `zadani-samostatneho-nastroje.md`.
+Původní soubory (zadání v0, protokol, rozhodnutí) zůstávají dostupné
+v archivu cílového repa i v git historii zde — smazány nebyly, jen
+přestaly být duplicitním zdrojem pravdy.
