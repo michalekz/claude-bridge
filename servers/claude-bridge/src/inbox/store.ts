@@ -81,6 +81,20 @@ export interface InboxStore {
   consume(peerId: string, msgId: string): Promise<MessageEnvelope | null>;
   /** Count pending messages without reading them. */
   countPending(peerId: string): Promise<number>;
+  /**
+   * Kinds waiting in pending/, counted from the RAW files.
+   *
+   * 🔴 Deliberately does NOT go through `listPending`. That one validates
+   * against the envelope schema and silently drops whatever fails — including
+   * daemon control kinds like `compact-anchor-request`, which are not in the
+   * kind enum. Counting through it would make those messages invisible by
+   * ACCIDENT rather than by decision, and an exception nobody can see is an
+   * exception nobody rechecks.
+   *
+   * Anything unreadable is counted under the key `"?"` — a file we cannot
+   * parse is still a file sitting in somebody's queue.
+   */
+  countPendingByKind(peerId: string): Promise<Record<string, number>>;
   /** Look up an archived message (for reply correlation). */
   findInDone(peerId: string, msgId: string): Promise<MessageEnvelope | null>;
   /**
@@ -241,6 +255,23 @@ export function createInboxStore(opts: InboxStoreOptions = {}): InboxStore {
     async countPending(peerId) {
       const entries = await listDir(join(peerBase(opts, peerId), "pending"));
       return entries.length;
+    },
+
+    async countPendingByKind(peerId) {
+      const dir = join(peerBase(opts, peerId), "pending");
+      const out: Record<string, number> = {};
+      for (const entry of await listDir(dir)) {
+        let kind = "?";
+        try {
+          const raw: unknown = JSON.parse(await readFile(join(dir, entry), "utf-8"));
+          const k = (raw as { kind?: unknown } | null)?.kind;
+          if (typeof k === "string" && k.length > 0) kind = k;
+        } catch {
+          // unreadable — still a file in somebody's queue, so it still counts
+        }
+        out[kind] = (out[kind] ?? 0) + 1;
+      }
+      return out;
     },
 
     async findInDone(peerId, msgId) {

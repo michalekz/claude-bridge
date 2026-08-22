@@ -1,4 +1,4 @@
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test } from "vitest";
@@ -186,6 +186,30 @@ describe("pumpInboxToChannel", () => {
 const textOf = (r: { content: Array<{ type: string; text?: string }> }) =>
   r.content.map((c) => c.text ?? "").join("");
 
+/** Obálka zapsaná na disk mimo `send` — tak, jak řídicí zprávy vznikají. */
+async function putRawEnvelope(
+  baseDir: string,
+  peerId: string,
+  id: string,
+  kind: string,
+): Promise<void> {
+  const dir = join(baseDir, "inbox", peerId, "pending");
+  await mkdir(dir, { recursive: true });
+  await writeFile(
+    join(dir, `${id}.json`),
+    JSON.stringify({
+      id,
+      from: "daemon",
+      fromName: "daemon",
+      to: peerId,
+      toName: "peer",
+      kind,
+      sentAt: new Date().toISOString(),
+      content: "x",
+    }),
+  );
+}
+
 describe("peer_ask vrací queued, ne delivered", () => {
   let baseDir: string;
   beforeEach(async () => {
@@ -217,5 +241,40 @@ describe("peer_ask vrací queued, ne delivered", () => {
     await piggybackInbox(mantis, "peer_list", { content: [] });
     const third = await peerAskTool(coord, { to: "mantis", content: "třetí" });
     expect(JSON.parse(textOf(third)).recipientPending).toBe(1);
+  });
+
+  // 🔴 `compact-anchor-request` je řídicí požadavek démona, který agent
+  // nekonzumuje NIKDY — u kb-deva ležel 17 dní, zatímco všechno ostatní
+  // tahal během vteřin. Kdyby se počítal, měl by `recipientPending` trvalou
+  // nenulovou podlahu z nesouvisejícího důvodu a četl by se jako „netahá".
+  test("řídicí druh nedělá podlahu, ale ani se neschovává", async () => {
+    const coord = await mkCtx(baseDir, "coordinator");
+    const mantis = await mkCtx(baseDir, "mantis");
+    await register(coord);
+    await register(mantis);
+
+    // Píšeme SOUBOR, ne přes `send` — přesně jak to dělá démon. `send`
+    // by řídicí druh odmítl schématem, takže testem přes něj bychom
+    // ověřovali jiný svět, než ve kterém ta zpráva vzniká.
+    await putRawEnvelope(baseDir, mantis.self.id, "ctl-1", "compact-anchor-request");
+
+    const r = JSON.parse(textOf(await peerAskTool(coord, { to: "mantis", content: "ahoj" })));
+    expect(r.recipientPending).toBe(1); // jen moje zpráva, ne ta řídicí
+    expect(r.recipientControlPending).toBe(1); // ale je VIDĚT, ne zahozená
+  });
+
+  // Vyloučení je JMENOVITÉ, ne vzorem: nový, neznámý druh se MUSÍ počítat.
+  // Vzor by tiše polkl další řídicí druh a číslo by lhalo zas, jen naopak.
+  test("neznámý druh se počítá, protože ho nikdo nevyloučil jménem", async () => {
+    const coord = await mkCtx(baseDir, "coordinator");
+    const mantis = await mkCtx(baseDir, "mantis");
+    await register(coord);
+    await register(mantis);
+
+    await putRawEnvelope(baseDir, mantis.self.id, "novy-1", "compact-something-new");
+
+    const r = JSON.parse(textOf(await peerAskTool(coord, { to: "mantis", content: "ahoj" })));
+    expect(r.recipientPending).toBe(2); // neznámý druh počítá — hlasitě
+    expect(r.recipientControlPending).toBeUndefined();
   });
 });

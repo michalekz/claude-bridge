@@ -492,16 +492,62 @@ export async function peerAskTool(
     // that always says the same thing says nothing. If it is > 1, earlier
     // messages are ALSO still sitting there — which is the signal that the
     // recipient is not draining at all.
-    const pendingForRecipient = await ctx.inbox.countPending(resolved.peer.id).catch(() => -1);
+    const { waiting, control } = await countRecipientQueue(ctx, resolved.peer.id);
     return ok({
       msgId: envelope.id,
       to: { id: resolved.peer.id, name: resolved.peer.name },
       delivery: "queued",
-      recipientPending: pendingForRecipient,
+      recipientPending: waiting,
+      ...(control > 0 ? { recipientControlPending: control } : {}),
     });
   } catch (e) {
     log.error("peer_ask_failed", { err: e instanceof Error ? e.message : String(e) });
     return err("peer_ask_failed", e instanceof Error ? e.message : "unknown");
+  }
+}
+
+/**
+ * Kinds an agent never consumes: they are control requests to the DAEMON, not
+ * messages to the peer. `compact-anchor-request` has been sitting in kb-dev's
+ * queue since 5 August — seventeen days — while that peer drains everything
+ * else within seconds.
+ *
+ * 🔴 Named ONE BY ONE, never by pattern. A pattern would silently swallow the
+ * next control kind somebody adds, and `recipientPending` would go back to
+ * lying — just in the other direction. An unknown kind MUST count, loudly.
+ */
+const CONTROL_KINDS = new Set(["compact-anchor-request"]);
+
+/**
+ * How much is actually waiting for the recipient, split so neither half can
+ * hide the other.
+ *
+ * `waiting` is the number that answers "is this peer draining?". Counting the
+ * control kinds in it would give it a permanent non-zero floor for an unrelated
+ * reason — and a floor reads as "not draining", which is exactly the false
+ * conclusion the field exists to prevent.
+ *
+ * `control` is reported separately rather than dropped: a silent exception
+ * counts as valid, and then nobody ever looks at it again.
+ */
+async function countRecipientQueue(
+  ctx: ServerContext,
+  peerId: string,
+): Promise<{ waiting: number; control: number }> {
+  try {
+    // Raw kinds, NOT listPending: that one drops control kinds on schema
+    // validation, which would make the exclusion an accident instead of a
+    // decision — and invisible either way.
+    const byKind = await ctx.inbox.countPendingByKind(peerId);
+    let waiting = 0;
+    let control = 0;
+    for (const [kind, n] of Object.entries(byKind)) {
+      if (CONTROL_KINDS.has(kind)) control += n;
+      else waiting += n;
+    }
+    return { waiting, control };
+  } catch {
+    return { waiting: -1, control: 0 }; // -1 = nezměřeno, ne nula
   }
 }
 
@@ -2202,7 +2248,7 @@ export const TOOLS: ToolSpec[] = [
     description:
       "Send a message to another claude-bridge peer. `to` accepts peer id (sessionId UUID, always unique) or display name (may be ambiguous — error returned if multiple peers share name). Use peer_list to discover peers.\n\n" +
       "RETURN VALUE — `delivery` is `queued`, and that is NOT `delivered`. The envelope is written to the recipient's `pending/`; whether anyone reads it is a separate question. A peer drains its queue only on its OWN tool calls, so an IDLE peer never takes the message — and `queued` never turns into anything by itself. The push notification is best-effort: it can be dropped by the client (org channel policy) without any error reaching you, and a file in `pushed/` records that WE sent it, not that anyone received it.\n\n" +
-      "`recipientPending` is the number of messages already waiting for that peer. Greater than 1 means it is not draining — earlier messages are sitting there too. To reach a peer that is not working, use another channel (e.g. tmux) and treat this tool as the content, not the doorbell.",
+      "`recipientPending` is the number of messages already waiting for that peer, counting only what an agent actually consumes. Greater than 1 means it is not draining — earlier messages are sitting there too. `recipientControlPending` (present only when non-zero) counts daemon control requests such as `compact-anchor-request`, which a peer never consumes and which would otherwise give the first number a permanent floor; they are shown rather than dropped, because a silent exception gets treated as valid. `-1` means the queue could not be read — not zero. To reach a peer that is not working, use another channel (e.g. tmux) and treat this tool as the content, not the doorbell.",
     inputSchema: {
       type: "object",
       properties: {
