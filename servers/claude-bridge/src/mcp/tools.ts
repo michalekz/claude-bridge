@@ -479,9 +479,25 @@ export async function peerAskTool(
       toName: resolved.peer.name,
       msgId: envelope.id,
     });
+    // `ok: true` used to be the whole answer, and it was read — by two
+    // people on 2026-08-22, for seven minutes — as "the peer got it". It
+    // never meant that. All we know is that the envelope is on disk in the
+    // recipient's `pending/`.
+    //
+    // Delivery happens when the RECIPIENT drains its queue, and it only
+    // drains on its own tool calls. An idle peer makes none. So the honest
+    // word is `queued`, and it never becomes anything by itself.
+    //
+    // `recipientPending` is what makes this more than a constant: a field
+    // that always says the same thing says nothing. If it is > 1, earlier
+    // messages are ALSO still sitting there — which is the signal that the
+    // recipient is not draining at all.
+    const pendingForRecipient = await ctx.inbox.countPending(resolved.peer.id).catch(() => -1);
     return ok({
       msgId: envelope.id,
       to: { id: resolved.peer.id, name: resolved.peer.name },
+      delivery: "queued",
+      recipientPending: pendingForRecipient,
     });
   } catch (e) {
     log.error("peer_ask_failed", { err: e instanceof Error ? e.message : String(e) });
@@ -2184,7 +2200,9 @@ export const TOOLS: ToolSpec[] = [
   {
     name: "peer_ask",
     description:
-      "Send a message to another claude-bridge peer. `to` accepts peer id (sessionId UUID, always unique) or display name (may be ambiguous — error returned if multiple peers share name). Use peer_list to discover peers.",
+      "Send a message to another claude-bridge peer. `to` accepts peer id (sessionId UUID, always unique) or display name (may be ambiguous — error returned if multiple peers share name). Use peer_list to discover peers.\n\n" +
+      "RETURN VALUE — `delivery` is `queued`, and that is NOT `delivered`. The envelope is written to the recipient's `pending/`; whether anyone reads it is a separate question. A peer drains its queue only on its OWN tool calls, so an IDLE peer never takes the message — and `queued` never turns into anything by itself. The push notification is best-effort: it can be dropped by the client (org channel policy) without any error reaching you, and a file in `pushed/` records that WE sent it, not that anyone received it.\n\n" +
+      "`recipientPending` is the number of messages already waiting for that peer. Greater than 1 means it is not draining — earlier messages are sitting there too. To reach a peer that is not working, use another channel (e.g. tmux) and treat this tool as the content, not the doorbell.",
     inputSchema: {
       type: "object",
       properties: {

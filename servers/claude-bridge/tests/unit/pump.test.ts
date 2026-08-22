@@ -1,10 +1,10 @@
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterAll, beforeAll, beforeEach, describe, expect, test } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test } from "vitest";
 import { createChannelSender } from "../../src/mcp/channel.ts";
 import { type ServerContext, buildContext, pumpInboxToChannel } from "../../src/mcp/context.ts";
-import { peerAskTool } from "../../src/mcp/tools.ts";
+import { peerAskTool, piggybackInbox } from "../../src/mcp/tools.ts";
 
 interface PushLog {
   id: string;
@@ -177,5 +177,45 @@ describe("pumpInboxToChannel", () => {
       "second",
       "third",
     ]);
+  });
+});
+
+// 🔴 `ok:true` se 22. 8. 2026 četlo jako „příjemce to dostal" — dvěma lidmi,
+// sedm minut, a vedlo k hlášení o dvou příčinách, které byla jedna.
+// Návratová hodnota musí říkat, co systém VÍ: obálka leží ve frontě.
+const textOf = (r: { content: Array<{ type: string; text?: string }> }) =>
+  r.content.map((c) => c.text ?? "").join("");
+
+describe("peer_ask vrací queued, ne delivered", () => {
+  let baseDir: string;
+  beforeEach(async () => {
+    baseDir = await mkdtemp(join(tmpdir(), "bridge-queued-"));
+  });
+  afterEach(async () => {
+    await rm(baseDir, { recursive: true, force: true });
+  });
+
+  test("delivery je 'queued' a recipientPending roste, dokud příjemce netahá", async () => {
+    const coord = await mkCtx(baseDir, "coordinator");
+    const mantis = await mkCtx(baseDir, "mantis");
+    await register(coord);
+    await register(mantis);
+
+    const first = await peerAskTool(coord, { to: "mantis", content: "první" });
+    const p1 = JSON.parse(textOf(first));
+    expect(p1.delivery).toBe("queued");
+    expect(p1.delivery).not.toBe("delivered");
+    expect(p1.recipientPending).toBe(1);
+
+    // Druhá zpráva témuž nečinnému peerovi: počet MUSÍ vzrůst. Pole, které
+    // by hlásilo pořád totéž, by neřeklo nic — to je táž vada jako `ok:true`.
+    const second = await peerAskTool(coord, { to: "mantis", content: "druhá" });
+    const p2 = JSON.parse(textOf(second));
+    expect(p2.recipientPending).toBe(2);
+
+    // Příjemce si frontu vytáhne (piggyback) ⇒ další odeslání vidí prázdno.
+    await piggybackInbox(mantis, "peer_list", { content: [] });
+    const third = await peerAskTool(coord, { to: "mantis", content: "třetí" });
+    expect(JSON.parse(textOf(third)).recipientPending).toBe(1);
   });
 });

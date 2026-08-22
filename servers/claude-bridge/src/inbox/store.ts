@@ -108,7 +108,23 @@ export interface InboxStore {
    * that race recreates a message that was already archived.
    */
   markPushed(peerId: string, msgId: string): Promise<void>;
-  /** When the push channel last took this message, or null if it never did. */
+  /**
+   * When the push channel last took this message, or null if it never did.
+   *
+   * 🔴 THIS IS A RECORD OF WHAT *WE* DID, NOT OF WHAT THE PEER RECEIVED.
+   * `pushedAt` means our `notification()` call did not throw — and a JSON-RPC
+   * notification has no response by definition, so there is nothing here that
+   * could have confirmed receipt. The client may drop it silently (org channel
+   * policy does exactly that) and this record still says `pushedAt`.
+   *
+   * On 2026-08-22 two people read a file in `pushed/` as proof of delivery and
+   * spent seven minutes explaining a fault that had a different cause. The
+   * warning was written where the record is CREATED; it was missing here,
+   * where it is read.
+   *
+   * A message with a push record that is STILL in `pending/` is the normal,
+   * expected shape of "pushed but nobody took it" — not an anomaly.
+   */
   pushRecord(peerId: string, msgId: string): Promise<PushRecord | null>;
 }
 
