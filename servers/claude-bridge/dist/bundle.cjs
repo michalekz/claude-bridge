@@ -18243,7 +18243,7 @@ var StdioServerTransport = class {
 // package.json
 var package_default = {
   name: "claude-bridge",
-  version: "0.11.28",
+  version: "0.11.29",
   private: true,
   description: "MCP server for cross-Claude-Code-chat orchestration over local session JSONL files",
   type: "module",
@@ -18417,17 +18417,63 @@ async function resumedSessionIdFromParent(ppid, procRoot = "/proc") {
     return null;
   }
 }
+var DEFAULT_SESSION_JSON_WAIT_MS = 15e3;
+async function identityFromProc(ppid, procRoot, resumedOverride) {
+  const id = resumedOverride ?? await resumedSessionIdFromParent(ppid, procRoot);
+  if (!id) return null;
+  let cwd;
+  try {
+    cwd = await (0, import_promises.readlink)((0, import_node_path2.join)(procRoot, String(ppid), "cwd"));
+  } catch {
+    cwd = void 0;
+  }
+  return { sessionId: id, cwd };
+}
+async function awaitSessionJson(sjPath, ceilingMs) {
+  const deadline = Date.now() + ceilingMs;
+  let logged = 0;
+  while (Date.now() < deadline) {
+    const sj = await readSessionJsonAt(sjPath);
+    if (sj?.sessionId) return { sessionId: sj.sessionId, cwd: sj.cwd, name: sj.name };
+    const waited = ceilingMs - (deadline - Date.now());
+    if (waited > logged + 1e4) {
+      logged = waited;
+      process.stderr.write(
+        `${JSON.stringify({
+          ts: (/* @__PURE__ */ new Date()).toISOString(),
+          level: "warn",
+          component: "identity",
+          msg: "waiting_for_session_json",
+          path: sjPath,
+          waitedMs: Math.round(waited),
+          ceilingMs
+        })}
+`
+      );
+    }
+    await new Promise((r) => setTimeout(r, Math.min(250, Math.max(0, deadline - Date.now()))));
+  }
+  return null;
+}
 async function resolvePeerIdentity(opts = {}) {
   const home = opts.home ?? (0, import_node_os2.homedir)();
   const ppid = opts.ppid ?? process.ppid;
   const env = opts.env ?? process.env;
   const cwd = opts.cwd ?? process.cwd();
   const sjPath = (0, import_node_path2.join)(home, ".claude", "sessions", `${ppid}.json`);
-  const sj = await readSessionJsonAt(sjPath);
+  let sj = await readSessionJsonAt(sjPath);
+  if (!sj?.sessionId) {
+    const fromProc = await identityFromProc(ppid, opts.procRoot ?? "/proc", opts.resumedSessionId);
+    if (fromProc) {
+      sj = fromProc;
+    } else {
+      sj = await awaitSessionJson(sjPath, opts.sessionJsonWaitMs ?? DEFAULT_SESSION_JSON_WAIT_MS);
+    }
+  }
   if (!sj?.sessionId) {
     throw new IdentityError(
-      `Cannot resolve peer identity \u2014 ${sjPath} ${sj ? "missing sessionId field" : "does not exist"}`,
-      "claude-bridge needs ~/.claude/sessions/<ppid>.json with .sessionId to assign a stable peer id. This file is written automatically by Claude Code CLI 2.1.x+ and the VS Code extension. Check that you're running a supported Claude Code version and that ppid resolution is correct."
+      `Cannot resolve peer identity \u2014 ${sjPath} does not exist, parent has no --resume, and waiting did not help`,
+      "claude-bridge needs ~/.claude/sessions/<ppid>.json with .sessionId, or a parent started with `--resume <uuid>` so the id can be read from /proc. The file is written by Claude Code AFTER the session loads; on a huge transcript that can take minutes."
     );
   }
   const resumedId = opts.resumedSessionId ?? await resumedSessionIdFromParent(ppid, opts.procRoot);

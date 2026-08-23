@@ -121,14 +121,26 @@ describe("resolvePeerIdentity — requires session.json with sessionId", () => {
 
   test("throws IdentityError when session.json is missing", async () => {
     await expect(
-      resolvePeerIdentity({ ppid: 111111, home: tmp, cwd: "/opt/foo", env: {} }),
+      resolvePeerIdentity({
+        ppid: 111111,
+        home: tmp,
+        cwd: "/opt/foo",
+        env: {},
+        sessionJsonWaitMs: 50,
+      }),
     ).rejects.toThrow(IdentityError);
   });
 
   test("throws IdentityError when session.json missing sessionId", async () => {
     await writeSessionJson(111112, { cwd: "/opt/foo" });
     await expect(
-      resolvePeerIdentity({ ppid: 111112, home: tmp, cwd: "/opt/foo", env: {} }),
+      resolvePeerIdentity({
+        ppid: 111112,
+        home: tmp,
+        cwd: "/opt/foo",
+        env: {},
+        sessionJsonWaitMs: 50,
+      }),
     ).rejects.toThrow(IdentityError);
   });
 
@@ -334,6 +346,7 @@ describe("resolvePeerIdentityWithRetry — cold-boot race condition", () => {
         cwd: "/opt/never",
         env: {},
         retryDelays: [1, 1, 1],
+        sessionJsonWaitMs: 50,
       }),
     ).rejects.toThrow(IdentityError);
   });
@@ -347,6 +360,7 @@ describe("resolvePeerIdentityWithRetry — cold-boot race condition", () => {
         cwd: "/opt/no-retry",
         env: {},
         retryDelays: [],
+        sessionJsonWaitMs: 0, // bez čekání — test měří, že se NEOPAKUJE pokus
       }),
     ).rejects.toThrow(IdentityError);
     // Should fail fast — no sleeps
@@ -379,7 +393,7 @@ describe("resolvePeerName (legacy shim — backwards compat)", () => {
 
   test("throws on missing session.json (no silent fallback)", async () => {
     await expect(
-      resolvePeerName({ ppid: 333333, home: tmp, cwd: "/opt/foo", env: {} }),
+      resolvePeerName({ ppid: 333333, home: tmp, cwd: "/opt/foo", env: {}, sessionJsonWaitMs: 50 }),
     ).rejects.toThrow(IdentityError);
   });
 });

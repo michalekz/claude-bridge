@@ -1,5 +1,5 @@
 import type { Stats } from "node:fs";
-import { open, readFile, stat } from "node:fs/promises";
+import { open, readFile, readlink, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, join } from "node:path";
 import { StringDecoder } from "node:string_decoder";
@@ -247,6 +247,8 @@ export type IdentityOptions = {
    * Production reads it from `/proc/<ppid>/cmdline`.
    */
   resumedSessionId?: string | null;
+  /** Strop čekání na sessions/<ppid>.json (ms) — testy. */
+  sessionJsonWaitMs?: number;
   /**
    * Skip the JSONL title scan (cascade step A) and fall straight through to
    * the cheap sources.
@@ -326,21 +328,125 @@ export async function resumedSessionIdFromParent(
   }
 }
 
+/** Strop čekání na `sessions/<ppid>.json`. POJISTKA, ne odhad — cesta přes
+ *  `/proc` se k němu u peerů s `--resume` vůbec nedostane. */
+export const DEFAULT_SESSION_JSON_WAIT_MS = 3_000;
+// 🔴 Proč 3 s a ne víc (Zdeněk 23. 8.: „bez --resume to musí být bleskové —
+// a pokud není, je někde chyba"):
+//
+// Tahle větev platí JEN pro ČERSTVOU session, která nemá co načítat.
+// Změřeno 23. 8., tři běhy v důvěryhodném adresáři: soubor vzniká za
+// 1854 / 1917 / 2040 ms — je to startovní režie Claude Code, ne velikost
+// dat. 3 s to pokrývají s rezervou a přitom nechají SKUTEČNOU poruchu
+// selhat rychle a nahlas. Delší strop by ji jen schoval.
+//
+// Peeři s `--resume` sem nedojdou vůbec — jdou přes /proc za 0 ms.
+
+/**
+ * Identita ze `/proc` — bez jediného souboru v `~/.claude`.
+ *
+ * Použitelné jen u peera, jehož rodič běží s `--resume <uuid>`: id je
+ * v cmdline, cwd je `/proc/<ppid>/cwd`. Tím se celá závislost na tom, kdy
+ * host stihne napsat svůj soubor, ODSTRAŇUJE — ne prodlužuje.
+ */
+export async function identityFromProc(
+  ppid: number,
+  procRoot: string,
+  resumedOverride?: string | null,
+): Promise<{ sessionId: string; cwd?: string; name?: string } | null> {
+  const id = resumedOverride ?? (await resumedSessionIdFromParent(ppid, procRoot));
+  if (!id) return null;
+  let cwd: string | undefined;
+  try {
+    cwd = await readlink(join(procRoot, String(ppid), "cwd"));
+  } catch {
+    // Bez cwd se pořád dá registrovat — jméno spadne na slabší zdroj, ale
+    // peer JE adresovatelný, a to je to, na čem visí doručování zpráv.
+    cwd = undefined;
+  }
+  return { sessionId: id, cwd };
+}
+
+/**
+ * Počká na vznik `sessions/<ppid>.json`.
+ *
+ * Sleduje ADRESÁŘ a pokračuje v okamžiku, kdy soubor vznikne — nečeká
+ * pevnou dobu. Strop je jen pojistka pro případ, že nevznikne nikdy
+ * (peer, kterému nikdo nikdy nic nenapíše).
+ */
+async function awaitSessionJson(
+  sjPath: string,
+  ceilingMs: number,
+): Promise<{ sessionId: string; cwd?: string; name?: string } | null> {
+  const deadline = Date.now() + ceilingMs;
+  let logged = 0;
+  while (Date.now() < deadline) {
+    const sj = await readSessionJsonAt(sjPath);
+    if (sj?.sessionId) return { sessionId: sj.sessionId, cwd: sj.cwd, name: sj.name };
+    const waited = ceilingMs - (deadline - Date.now());
+    if (waited > logged + 10_000) {
+      logged = waited;
+      // Ticho by tu bylo nejhorší: peer se nezaregistruje a nikdo neví proč.
+      process.stderr.write(
+        `${JSON.stringify({
+          ts: new Date().toISOString(),
+          level: "warn",
+          component: "identity",
+          msg: "waiting_for_session_json",
+          path: sjPath,
+          waitedMs: Math.round(waited),
+          ceilingMs,
+        })}\n`,
+      );
+    }
+    // Nepřespat strop: čekání má skončit, když vyprší, ne o tik později.
+    await new Promise((r) => setTimeout(r, Math.min(250, Math.max(0, deadline - Date.now()))));
+  }
+  return null;
+}
+
 export async function resolvePeerIdentity(opts: IdentityOptions = {}): Promise<ResolvedIdentity> {
   const home = opts.home ?? homedir();
   const ppid = opts.ppid ?? process.ppid;
   const env = opts.env ?? process.env;
   const cwd = opts.cwd ?? process.cwd();
 
-  // Hard prerequisite: session.json with sessionId
+  // 🔴 NENÍ to tvrdý předpoklad, je to PREFEROVANÝ zdroj (oprava 23. 8. 2026).
+  //
+  // Claude Code píše `sessions/<ppid>.json` až PO načtení session. U velkého
+  // transkriptu to trvá déle než náš retry rozpočet (3 s) — plt-velitel
+  // 275 MB / 156 s — a server umřel dřív, než host stihl soubor napsat.
+  // Umřel navíc PŘED `server.connect`, takže Claude Code neviděl pomalý
+  // server, ale mrtvý proces, a sám se už nepřipojil.
+  //
+  // 🔴 Vlastnost, kvůli které to bylo tak zákeřné: cesta selhání byla LEVNÁ
+  // (3 s) a cesta úspěchu DRAHÁ (načtení session). Čím větší peer, tím
+  // jistější pád ⇒ porucha si VYBÍRALA velitele týmů. A když se 23. 8.
+  // respawnovalo 22 peerů naráz, srazila se načítání a spadla celá flotila.
+  //
+  // Řešení není čekat déle, ale NEZÁVISET: u peera spuštěného s `--resume`
+  // je identita celá v `/proc` — session id v cmdline rodiče, cwd v
+  // `/proc/<ppid>/cwd`. Změřeno 23. 8.: `/proc/<ppid>/cwd` == `sj.cwd`
+  // ve 26 případech z 26, včetně resume z cizího adresáře.
   const sjPath = join(home, ".claude", "sessions", `${ppid}.json`);
-  const sj = await readSessionJsonAt(sjPath);
+  let sj = await readSessionJsonAt(sjPath);
   if (!sj?.sessionId) {
+    const fromProc = await identityFromProc(ppid, opts.procRoot ?? "/proc", opts.resumedSessionId);
+    if (fromProc) {
+      sj = fromProc;
+    } else {
+      // Ani /proc nestačí (peer bez `--resume`). Teprve TEĎ se čeká — a čeká
+      // se na UDÁLOST, ne na odhad: strop je pojistka, ne měřítko.
+      sj = await awaitSessionJson(sjPath, opts.sessionJsonWaitMs ?? DEFAULT_SESSION_JSON_WAIT_MS);
+    }
+  }
+  if (!sj?.sessionId) {
+    // Fatál zůstává — jen už není nejlevnější větví.
     throw new IdentityError(
-      `Cannot resolve peer identity — ${sjPath} ${sj ? "missing sessionId field" : "does not exist"}`,
-      "claude-bridge needs ~/.claude/sessions/<ppid>.json with .sessionId to assign a stable peer id. " +
-        "This file is written automatically by Claude Code CLI 2.1.x+ and the VS Code extension. " +
-        "Check that you're running a supported Claude Code version and that ppid resolution is correct.",
+      `Cannot resolve peer identity — ${sjPath} does not exist, parent has no --resume, and waiting did not help`,
+      "claude-bridge needs ~/.claude/sessions/<ppid>.json with .sessionId, or a parent started with " +
+        "`--resume <uuid>` so the id can be read from /proc. The file is written by Claude Code AFTER " +
+        "the session loads; on a huge transcript that can take minutes.",
     );
   }
 
@@ -462,10 +568,18 @@ export async function resolvePeerIdentityWithRetry(
   opts: RetryIdentityOptions = {},
 ): Promise<ResolvedIdentity> {
   const delays = opts.retryDelays ?? DEFAULT_IDENTITY_RETRY_DELAYS_MS;
+  // 🔴 SPOLEČNÝ strop, ne strop na pokus. Bez něj by se čekání násobilo
+  // počtem opakování (6 × 3 s = 18 s) a z „bleskové" pojistky by se stala
+  // dlouhá — přesně to, co má tenhle strop vylučovat.
+  const ceiling = opts.sessionJsonWaitMs ?? DEFAULT_SESSION_JSON_WAIT_MS;
+  const deadline = Date.now() + ceiling;
   let lastError: unknown;
   for (let attempt = 0; attempt <= delays.length; attempt++) {
     try {
-      return await resolvePeerIdentity(opts);
+      return await resolvePeerIdentity({
+        ...opts,
+        sessionJsonWaitMs: Math.max(0, deadline - Date.now()),
+      });
     } catch (e) {
       lastError = e;
       if (attempt < delays.length) {

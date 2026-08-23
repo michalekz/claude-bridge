@@ -152,7 +152,15 @@ describe("identity migration (id-change recovery)", () => {
     const ctx = await startCtx();
 
     await rm(join(homeBase, ".claude", "sessions", `${PPID}.json`));
-    await refreshIdentityNow(ctx, { ppid: PPID, home: homeBase, cwd: "/opt/test-cwd", env: {} });
+    // sessionJsonWaitMs: 0 — test měří, že zmizení souboru NESHODÍ běžící
+    // identitu, ne jak dlouho se na jeho návrat čeká.
+    await refreshIdentityNow(ctx, {
+      ppid: PPID,
+      home: homeBase,
+      cwd: "/opt/test-cwd",
+      env: {},
+      sessionJsonWaitMs: 0,
+    });
 
     // Should NOT throw, ctx.self should remain at OLD_ID
     expect(ctx.self.id).toBe(OLD_ID);

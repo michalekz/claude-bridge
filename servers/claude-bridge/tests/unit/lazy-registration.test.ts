@@ -73,3 +73,67 @@ describe("líná registrace: jméno se nesmí plést do cesty adresovatelnosti",
     expect(full.source).not.toBe("jsonl-title");
   });
 });
+
+/**
+ * 🔴 Boot race: `sessions/<ppid>.json` píše Claude Code AŽ PO načtení session.
+ * U 275MB transkriptu to trvalo 156 s proti našemu 3s rozpočtu — server umřel
+ * dřív, než host stihl zapsat, a umřel PŘED handshake, takže se CC nepřipojil.
+ * 23. 8. to při respawnu 22 peerů naráz shodilo most celé flotile.
+ */
+describe("identita ze /proc, když sessions soubor ještě není", () => {
+  let home: string;
+  const SID = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
+  beforeEach(async () => {
+    home = await mkdtemp(join(tmpdir(), "procid-"));
+    await mkdir(join(home, ".claude", "sessions"), { recursive: true });
+  });
+  afterEach(async () => {
+    await rm(home, { recursive: true, force: true });
+  });
+
+  test("peer s --resume se zaregistruje BEZ souboru a bez čekání", async () => {
+    const t0 = Date.now();
+    const id = await resolvePeerIdentity({
+      ppid: process.ppid,
+      cwd: "/opt/hmh",
+      home,
+      env: {} as NodeJS.ProcessEnv,
+      resumedSessionId: SID,
+      skipTitleScan: true,
+      sessionJsonWaitMs: 50,
+    });
+    expect(id.id).toBe(SID);
+    expect(Date.now() - t0).toBeLessThan(1000); // 0 ms cesta, ne čekání
+  });
+
+  test("bez --resume a bez souboru se ČEKÁ a pak selže HLASITĚ", async () => {
+    await expect(
+      resolvePeerIdentity({
+        ppid: 999999,
+        cwd: "/opt/hmh",
+        home,
+        env: {} as NodeJS.ProcessEnv,
+        resumedSessionId: null,
+        procRoot: join(home, "noproc"),
+        skipTitleScan: true,
+        sessionJsonWaitMs: 300,
+      }),
+    ).rejects.toThrow(/does not exist/);
+  });
+
+  test("existující soubor má přednost — /proc ho nepřebíjí", async () => {
+    await writeFile(
+      join(home, ".claude", "sessions", `${process.ppid}.json`),
+      JSON.stringify({ sessionId: SID, cwd: "/opt/hmh" }),
+    );
+    const id = await resolvePeerIdentity({
+      ppid: process.ppid,
+      cwd: "/opt/hmh",
+      home,
+      env: {} as NodeJS.ProcessEnv,
+      resumedSessionId: null,
+      skipTitleScan: true,
+    });
+    expect(id.id).toBe(SID);
+  });
+});
