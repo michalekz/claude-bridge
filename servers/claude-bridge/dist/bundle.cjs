@@ -18446,7 +18446,7 @@ async function resolvePeerIdentity(opts = {}) {
 `
     );
   }
-  if (sj.cwd) {
+  if (sj.cwd && !opts.skipTitleScan) {
     const encoded = encodeProjectDir(sj.cwd);
     const jsonlPath = (0, import_node_path2.join)(home, ".claude", "projects", encoded, `${id}.jsonl`);
     const title = await readLatestTitleFromJsonl(jsonlPath);
@@ -18680,6 +18680,21 @@ function createInboxStore(opts = {}) {
     async countPending(peerId) {
       const entries = await listDir((0, import_node_path4.join)(peerBase(opts, peerId), "pending"));
       return entries.length;
+    },
+    async countPendingByKind(peerId) {
+      const dir = (0, import_node_path4.join)(peerBase(opts, peerId), "pending");
+      const out = {};
+      for (const entry of await listDir(dir)) {
+        let kind = "?";
+        try {
+          const raw = JSON.parse(await (0, import_promises3.readFile)((0, import_node_path4.join)(dir, entry), "utf-8"));
+          const k = raw?.kind;
+          if (typeof k === "string" && k.length > 0) kind = k;
+        } catch {
+        }
+        out[kind] = (out[kind] ?? 0) + 1;
+      }
+      return out;
     },
     async findInDone(peerId, msgId) {
       const path = (0, import_node_path4.join)(peerBase(opts, peerId), "done", `${msgId}.json`);
@@ -20709,8 +20724,23 @@ function peerPid() {
   log4.warn("peer_pid_unresolved", { fallback: process.pid });
   return process.pid;
 }
+async function refreshNameFromTranscript(self, heartbeat, identityOptions) {
+  try {
+    const full = await resolvePeerIdentity({ ...identityOptions, resumedSessionId: self.id });
+    if (full.source !== "jsonl-title" || full.name === self.name) return;
+    heartbeat.update({ name: full.name, displayName: full.displayName, source: full.source });
+    await heartbeat.flush();
+    log4.info("name_refreshed_from_transcript", {
+      id: self.id,
+      from: self.name,
+      to: full.name
+    });
+  } catch (e) {
+    log4.warn("name_refresh_failed", { id: self.id, err: e instanceof Error ? e.message : String(e) });
+  }
+}
 async function buildContext(opts = {}) {
-  const self = opts.identity ?? await resolvePeerIdentityWithRetry(opts.identityOptions ?? {});
+  const self = opts.identity ?? await resolvePeerIdentityWithRetry({ ...opts.identityOptions ?? {}, skipTitleScan: true });
   log4.info("identity_resolved", { id: self.id, name: self.name, source: self.source });
   const inbox = createInboxStore({ baseDir: opts.baseDir });
   const registry2 = createPeerRegistry({ baseDir: opts.baseDir });
@@ -20731,6 +20761,7 @@ async function buildContext(opts = {}) {
       version: version2
     });
     log4.info("heartbeat_started", { id: self.id, name: self.name, pid: process.pid });
+    void refreshNameFromTranscript(self, heartbeat, opts.identityOptions ?? {});
   }
   const titleAllowed = opts.emitTerminalTitle ?? isTerminalTitleEnabled();
   const parentTty = titleAllowed ? findParentTty(process.ppid) : null;
@@ -22692,13 +22723,32 @@ async function peerAskTool(ctx, args) {
       toName: resolved.peer.name,
       msgId: envelope.id
     });
+    const { waiting, control } = await countRecipientQueue(ctx, resolved.peer.id);
     return ok2({
       msgId: envelope.id,
-      to: { id: resolved.peer.id, name: resolved.peer.name }
+      to: { id: resolved.peer.id, name: resolved.peer.name },
+      delivery: "queued",
+      recipientPending: waiting,
+      ...control > 0 ? { recipientControlPending: control } : {}
     });
   } catch (e) {
     log6.error("peer_ask_failed", { err: e instanceof Error ? e.message : String(e) });
     return err2("peer_ask_failed", e instanceof Error ? e.message : "unknown");
+  }
+}
+var CONTROL_KINDS = /* @__PURE__ */ new Set(["compact-anchor-request"]);
+async function countRecipientQueue(ctx, peerId) {
+  try {
+    const byKind = await ctx.inbox.countPendingByKind(peerId);
+    let waiting = 0;
+    let control = 0;
+    for (const [kind, n] of Object.entries(byKind)) {
+      if (CONTROL_KINDS.has(kind)) control += n;
+      else waiting += n;
+    }
+    return { waiting, control };
+  } catch {
+    return { waiting: -1, control: 0 };
   }
 }
 var PeerReplyArgs = external_exports.object({
@@ -23851,7 +23901,7 @@ var TOOLS = [
   },
   {
     name: "peer_ask",
-    description: "Send a message to another claude-bridge peer. `to` accepts peer id (sessionId UUID, always unique) or display name (may be ambiguous \u2014 error returned if multiple peers share name). Use peer_list to discover peers.",
+    description: "Send a message to another claude-bridge peer. `to` accepts peer id (sessionId UUID, always unique) or display name (may be ambiguous \u2014 error returned if multiple peers share name). Use peer_list to discover peers.\n\nRETURN VALUE \u2014 `delivery` is `queued`, and that is NOT `delivered`. The envelope is written to the recipient's `pending/`; whether anyone reads it is a separate question. A peer drains its queue only on its OWN tool calls, so an IDLE peer never takes the message \u2014 and `queued` never turns into anything by itself. The push notification is best-effort: it can be dropped by the client (org channel policy) without any error reaching you, and a file in `pushed/` records that WE sent it, not that anyone received it.\n\n`recipientPending` is the number of messages already waiting for that peer, counting only what an agent actually consumes. Greater than 1 means it is not draining \u2014 earlier messages are sitting there too. `recipientControlPending` (present only when non-zero) counts daemon control requests such as `compact-anchor-request`, which a peer never consumes and which would otherwise give the first number a permanent floor; they are shown rather than dropped, because a silent exception gets treated as valid. `-1` means the queue could not be read \u2014 not zero. To reach a peer that is not working, use another channel (e.g. tmux) and treat this tool as the content, not the doorbell.",
     inputSchema: {
       type: "object",
       properties: {

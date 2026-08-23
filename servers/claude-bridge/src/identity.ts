@@ -247,6 +247,24 @@ export type IdentityOptions = {
    * Production reads it from `/proc/<ppid>/cmdline`.
    */
   resumedSessionId?: string | null;
+  /**
+   * Skip the JSONL title scan (cascade step A) and fall straight through to
+   * the cheap sources.
+   *
+   * 🔴 Registrace u mostu na tom závisela (oprava 23. 8. 2026). Sken je
+   * lineární ve velikosti transkriptu — změřeno **8,6 ms/MB**, tedy
+   * **2,49 s u 275 MB** proti 0,16 s u malé session — a běžel PŘED zápisem
+   * `status/<sid>.json`, tedy před tím, než je peer vůbec adresovatelný.
+   *
+   * `plt-velitel` (275 MB) se 22. 8. při přepojení nezaregistroval a deset
+   * hodin byl nedosažitelný; dva sourozenecké MCP servery v téže session
+   * naběhly, takže hostitel pomalý nebyl.
+   *
+   * ⚠ Není to „rychlejší sken", je to ODSTRANĚNÍ ZÁVISLOSTI: s tímhle
+   * příznakem registrace netrvá déle proto, že je co procházet. Titulek se
+   * dopočítá až potom a jméno se v registru přepíše.
+   */
+  skipTitleScan?: boolean;
 };
 
 /**
@@ -382,7 +400,7 @@ export async function resolvePeerIdentity(opts: IdentityOptions = {}): Promise<R
   // Display name cascade
 
   // A: JSONL title (Claude Code auto-generates after first user message)
-  if (sj.cwd) {
+  if (sj.cwd && !opts.skipTitleScan) {
     const encoded = encodeProjectDir(sj.cwd);
     // `id`, not `sj.sessionId` — during the provisional window those differ,
     // and reading the title out of the phantom's (nonexistent) transcript

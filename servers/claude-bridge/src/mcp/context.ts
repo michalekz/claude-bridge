@@ -112,8 +112,57 @@ export function peerPid(): number {
   return process.pid;
 }
 
+/**
+ * Dohledání jména z transkriptu PO registraci.
+ *
+ * Běží na pozadí a nikdo na ni nečeká. Selže-li, nestane se nic: peer je
+ * v registru pod prozatímním jménem (`session-json-name`, `env`, `cwd-slug`)
+ * a je adresovatelný, což je to, na čem visí doručování zpráv celé flotile.
+ *
+ * ⚠ Jméno se přepíše jen tehdy, když se SKUTEČNĚ najde titulek. Prázdný
+ * výsledek prozatímní jméno NEPŘEPISUJE — jinak by líná cesta uměla peera
+ * přejmenovat na horší hodnotu, než jakou už měl.
+ */
+async function refreshNameFromTranscript(
+  self: ResolvedIdentity,
+  heartbeat: HeartbeatHandle,
+  identityOptions: IdentityOptions,
+): Promise<void> {
+  try {
+    const full = await resolvePeerIdentity({ ...identityOptions, resumedSessionId: self.id });
+    if (full.source !== "jsonl-title" || full.name === self.name) return;
+    heartbeat.update({ name: full.name, displayName: full.displayName, source: full.source });
+    await heartbeat.flush();
+    log.info("name_refreshed_from_transcript", {
+      id: self.id,
+      from: self.name,
+      to: full.name,
+    });
+  } catch (e) {
+    // Jméno je popisek. Peer je dosažitelný i bez něj a tohle selhání
+    // nesmí být vidět jako porucha registrace — ta už proběhla.
+    log.warn("name_refresh_failed", { id: self.id, err: e instanceof Error ? e.message : String(e) });
+  }
+}
+
 export async function buildContext(opts: BuildContextOptions = {}): Promise<ServerContext> {
-  const self = opts.identity ?? (await resolvePeerIdentityWithRetry(opts.identityOptions ?? {}));
+  // 🔴 LÍNÁ REGISTRACE (Zdeněk 23. 8. 2026: „předělej registraci na lazy").
+  //
+  // Do 23. 8. se před zápisem `status/<sid>.json` prošel CELÝ transkript,
+  // aby se z něj vzal titulek pro jméno peera. Sken je lineární ve velikosti
+  // — změřeno 8,6 ms/MB, tedy 2,49 s u 275 MB proti 0,16 s u malé session —
+  // a byl na kritické cestě: dokud neskončil, peer NEEXISTOVAL pro nikoho.
+  // `plt-velitel` (275 MB) byl takhle 10 hodin nedosažitelný.
+  //
+  // Pořadí je teď obrácené: nejdřív být adresovatelný, potom se jmenovat.
+  // Jméno je popisek, adresovatelnost je funkce.
+  //
+  // ⚠ Není to zkrácení skenu ani delší timeout — obojí by tu závislost
+  // nechalo. Tohle ji odstraňuje: registrace už netrvá déle proto, že je
+  // co procházet.
+  const self =
+    opts.identity ??
+    (await resolvePeerIdentityWithRetry({ ...(opts.identityOptions ?? {}), skipTitleScan: true }));
   log.info("identity_resolved", { id: self.id, name: self.name, source: self.source });
 
   const inbox = createInboxStore({ baseDir: opts.baseDir });
@@ -136,6 +185,10 @@ export async function buildContext(opts: BuildContextOptions = {}): Promise<Serv
       version,
     });
     log.info("heartbeat_started", { id: self.id, name: self.name, pid: process.pid });
+    // Teprve TEĎ, když je peer v registru a dosažitelný, se dohledá titulek.
+    // Doběhne-li, jméno se v registru přepíše; nedoběhne-li, peer zůstane pod
+    // prozatímním jménem — což je pořád nekonečně lepší než nebýt v registru.
+    void refreshNameFromTranscript(self, heartbeat, opts.identityOptions ?? {});
   }
 
   // Resolve parent CC's controlling tty so we can write OSC 2 sequences for
