@@ -18243,7 +18243,7 @@ var StdioServerTransport = class {
 // package.json
 var package_default = {
   name: "claude-bridge",
-  version: "0.11.27",
+  version: "0.11.28",
   private: true,
   description: "MCP server for cross-Claude-Code-chat orchestration over local session JSONL files",
   type: "module",
@@ -20736,7 +20736,10 @@ async function refreshNameFromTranscript(self, heartbeat, identityOptions) {
       to: full.name
     });
   } catch (e) {
-    log4.warn("name_refresh_failed", { id: self.id, err: e instanceof Error ? e.message : String(e) });
+    log4.warn("name_refresh_failed", {
+      id: self.id,
+      err: e instanceof Error ? e.message : String(e)
+    });
   }
 }
 async function buildContext(opts = {}) {

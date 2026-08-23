@@ -141,7 +141,10 @@ async function refreshNameFromTranscript(
   } catch (e) {
     // Jméno je popisek. Peer je dosažitelný i bez něj a tohle selhání
     // nesmí být vidět jako porucha registrace — ta už proběhla.
-    log.warn("name_refresh_failed", { id: self.id, err: e instanceof Error ? e.message : String(e) });
+    log.warn("name_refresh_failed", {
+      id: self.id,
+      err: e instanceof Error ? e.message : String(e),
+    });
   }
 }
 
