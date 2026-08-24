@@ -4404,11 +4404,11 @@ var require_core = __commonJS({
     Ajv2.ValidationError = validation_error_1.default;
     Ajv2.MissingRefError = ref_error_1.default;
     exports2.default = Ajv2;
-    function checkOptions(checkOpts, options, msg, log10 = "error") {
+    function checkOptions(checkOpts, options, msg, log11 = "error") {
       for (const key in checkOpts) {
         const opt = key;
         if (opt in options)
-          this.logger[log10](`${msg}: option ${key}. ${checkOpts[opt]}`);
+          this.logger[log11](`${msg}: option ${key}. ${checkOpts[opt]}`);
       }
     }
     function getSchEnv(keyRef) {
@@ -6967,7 +6967,7 @@ function envDays(name, fallbackMs) {
   if (!raw) return fallbackMs;
   const days = Number(raw);
   if (!Number.isFinite(days) || days <= 0) {
-    log7.warn("hygiene_bad_retention_env", { name, raw });
+    log8.warn("hygiene_bad_retention_env", { name, raw });
     return fallbackMs;
   }
   return days * DAY_MS;
@@ -6988,7 +6988,7 @@ async function claim(baseDir, now, throttleMs) {
     const asDate = new Date(now);
     await (0, import_promises17.utimes)(path, asDate, asDate).catch(() => void 0);
   } catch (e) {
-    log7.warn("hygiene_marker_write_failed", {
+    log8.warn("hygiene_marker_write_failed", {
       err: e instanceof Error ? e.message : String(e)
     });
     return false;
@@ -7078,7 +7078,7 @@ async function runHygieneSweep(opts = {}) {
   report.durationMs = Date.now() - started;
   const removed = report.tmpRemoved + report.statusLineRemoved + report.doneRemoved + report.controlRemoved;
   if (removed > 0 || report.errors > 0) {
-    log7.info("hygiene_sweep", {
+    log8.info("hygiene_sweep", {
       tmpRemoved: report.tmpRemoved,
       statusLineRemoved: report.statusLineRemoved,
       doneRemoved: report.doneRemoved,
@@ -7090,7 +7090,7 @@ async function runHygieneSweep(opts = {}) {
   }
   return report;
 }
-var import_promises17, import_node_path13, log7, HOUR_MS, DAY_MS, DEFAULT_TMP_MAX_AGE_MS, DEFAULT_STATUSLINE_MAX_AGE_MS, DEFAULT_DONE_MAX_AGE_MS, DEFAULT_CONTROL_MAX_AGE_MS, DEFAULT_THROTTLE_MS, MAX_DEPTH, TMP_PATTERN;
+var import_promises17, import_node_path13, log8, HOUR_MS, DAY_MS, DEFAULT_TMP_MAX_AGE_MS, DEFAULT_STATUSLINE_MAX_AGE_MS, DEFAULT_DONE_MAX_AGE_MS, DEFAULT_CONTROL_MAX_AGE_MS, DEFAULT_THROTTLE_MS, MAX_DEPTH, TMP_PATTERN;
 var init_hygiene = __esm({
   "src/util/hygiene.ts"() {
     "use strict";
@@ -7098,7 +7098,7 @@ var init_hygiene = __esm({
     import_node_path13 = require("node:path");
     init_logger();
     init_paths();
-    log7 = makeLogger("hygiene");
+    log8 = makeLogger("hygiene");
     HOUR_MS = 60 * 60 * 1e3;
     DAY_MS = 24 * HOUR_MS;
     DEFAULT_TMP_MAX_AGE_MS = HOUR_MS;
@@ -18243,7 +18243,7 @@ var StdioServerTransport = class {
 // package.json
 var package_default = {
   name: "claude-bridge",
-  version: "0.11.29",
+  version: "0.11.30",
   private: true,
   description: "MCP server for cross-Claude-Code-chat orchestration over local session JSONL files",
   type: "module",
@@ -18417,7 +18417,7 @@ async function resumedSessionIdFromParent(ppid, procRoot = "/proc") {
     return null;
   }
 }
-var DEFAULT_SESSION_JSON_WAIT_MS = 15e3;
+var DEFAULT_SESSION_JSON_WAIT_MS = 3e3;
 async function identityFromProc(ppid, procRoot, resumedOverride) {
   const id = resumedOverride ?? await resumedSessionIdFromParent(ppid, procRoot);
   if (!id) return null;
@@ -18522,10 +18522,15 @@ async function resolvePeerIdentity(opts = {}) {
 var DEFAULT_IDENTITY_RETRY_DELAYS_MS = [100, 200, 400, 800, 1500];
 async function resolvePeerIdentityWithRetry(opts = {}) {
   const delays = opts.retryDelays ?? DEFAULT_IDENTITY_RETRY_DELAYS_MS;
+  const ceiling = opts.sessionJsonWaitMs ?? DEFAULT_SESSION_JSON_WAIT_MS;
+  const deadline = Date.now() + ceiling;
   let lastError;
   for (let attempt = 0; attempt <= delays.length; attempt++) {
     try {
-      return await resolvePeerIdentity(opts);
+      return await resolvePeerIdentity({
+        ...opts,
+        sessionJsonWaitMs: Math.max(0, deadline - Date.now())
+      });
     } catch (e) {
       lastError = e;
       if (attempt < delays.length) {
@@ -18610,6 +18615,8 @@ async function atomicWriteJson(targetPath, value, options) {
 }
 
 // src/inbox/store.ts
+init_logger();
+var log = makeLogger("inbox");
 var MessageKindSchema = external_exports.enum(["ask", "reply", "broadcast"]);
 var MessageEnvelopeSchema = external_exports.object({
   id: external_exports.string().min(1),
@@ -18638,15 +18645,26 @@ function defaultBridgeRoot() {
 function peerBase(opts, peerId) {
   return (0, import_node_path4.join)(opts.baseDir ?? defaultBridgeRoot(), "inbox", peerId);
 }
-async function readEnvelope(path) {
+async function readEnvelopeWhy(path) {
+  let raw;
   try {
-    const raw = await (0, import_promises3.readFile)(path, "utf-8");
-    const parsed = JSON.parse(raw);
-    const result = MessageEnvelopeSchema.safeParse(parsed);
-    return result.success ? result.data : null;
-  } catch {
-    return null;
+    raw = await (0, import_promises3.readFile)(path, "utf-8");
+  } catch (e) {
+    if (e.code === "ENOENT") return { env: null };
+    return { env: null, why: "unreadable" };
   }
+  let parsed;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return { env: null, why: "bad-json" };
+  }
+  const result = MessageEnvelopeSchema.safeParse(parsed);
+  if (!result.success) return { env: null, why: "schema" };
+  return { env: result.data };
+}
+async function readEnvelope(path) {
+  return (await readEnvelopeWhy(path)).env;
 }
 async function listDir(dir) {
   try {
@@ -18662,8 +18680,12 @@ async function listEnvelopes(dir) {
   entries.sort();
   const result = [];
   for (const entry of entries) {
-    const env = await readEnvelope((0, import_node_path4.join)(dir, entry));
-    if (env) result.push(env);
+    const { env, why } = await readEnvelopeWhy((0, import_node_path4.join)(dir, entry));
+    if (env) {
+      result.push(env);
+      continue;
+    }
+    if (why) log.warn("inbox_envelope_dropped", { dir, file: entry, why });
   }
   return result;
 }
@@ -18726,6 +18748,21 @@ function createInboxStore(opts = {}) {
     async countPending(peerId) {
       const entries = await listDir((0, import_node_path4.join)(peerBase(opts, peerId), "pending"));
       return entries.length;
+    },
+    async listPendingRaw(peerId) {
+      const dir = (0, import_node_path4.join)(peerBase(opts, peerId), "pending");
+      const out = [];
+      for (const entry of await listDir(dir)) {
+        let kind = "?";
+        try {
+          const raw = JSON.parse(await (0, import_promises3.readFile)((0, import_node_path4.join)(dir, entry), "utf-8"));
+          const k = raw?.kind;
+          if (typeof k === "string" && k.length > 0) kind = k;
+        } catch {
+        }
+        out.push({ id: entry.replace(/\.json$/, ""), kind });
+      }
+      return out;
     },
     async countPendingByKind(peerId) {
       const dir = (0, import_node_path4.join)(peerBase(opts, peerId), "pending");
@@ -20461,11 +20498,11 @@ var esm_default = { watch, FSWatcher };
 
 // src/inbox/watcher.ts
 init_logger();
-var log = makeLogger("inbox-watcher");
+var log2 = makeLogger("inbox-watcher");
 function startInboxWatcher(peerId, onArrived, opts = {}) {
   const dir = (0, import_node_path6.join)(opts.baseDir ?? defaultBridgeRoot(), "inbox", peerId, "pending");
   const dirReady = (0, import_promises7.mkdir)(dir, { recursive: true }).catch((e) => {
-    log.warn("mkdir_failed", { dir, err: e instanceof Error ? e.message : String(e) });
+    log2.warn("mkdir_failed", { dir, err: e instanceof Error ? e.message : String(e) });
   });
   let resolveReady;
   const ready = new Promise((res) => {
@@ -20487,20 +20524,20 @@ function startInboxWatcher(peerId, onArrived, opts = {}) {
     watcherInstance = watcher;
     watcher.on("add", (path) => {
       if (!path.endsWith(".json")) return;
-      log.debug("file_added", { path });
+      log2.debug("file_added", { path });
       void (async () => {
         try {
           await onArrived();
         } catch (e) {
-          log.error("onArrived_failed", { err: e instanceof Error ? e.message : String(e) });
+          log2.error("onArrived_failed", { err: e instanceof Error ? e.message : String(e) });
         }
       })();
     });
     watcher.on("error", (e) => {
-      log.warn("watcher_error", { err: e instanceof Error ? e.message : String(e) });
+      log2.warn("watcher_error", { err: e instanceof Error ? e.message : String(e) });
     });
     watcher.on("ready", () => {
-      log.info("started", { dir });
+      log2.info("started", { dir });
       resolveReady();
     });
   });
@@ -20510,7 +20547,7 @@ function startInboxWatcher(peerId, onArrived, opts = {}) {
       if (watcherInstance) {
         await watcherInstance.close();
       }
-      log.info("stopped", { dir });
+      log2.info("stopped", { dir });
     }
   };
 }
@@ -20651,7 +20688,7 @@ init_logger();
 var import_node_child_process = require("node:child_process");
 var import_node_fs = require("node:fs");
 init_logger();
-var log2 = makeLogger("terminal-title");
+var log3 = makeLogger("terminal-title");
 function parseTtyNrFromProcStat(stat12) {
   const lastParen = stat12.lastIndexOf(")");
   if (lastParen === -1) return null;
@@ -20703,7 +20740,7 @@ function emitTerminalTitle(tty, title) {
     fd = (0, import_node_fs.openSync)(tty, "w");
     (0, import_node_fs.writeSync)(fd, `\x1B]2;${title}\x07`);
   } catch (e) {
-    log2.debug("emit_failed", { tty, err: e instanceof Error ? e.message : String(e) });
+    log3.debug("emit_failed", { tty, err: e instanceof Error ? e.message : String(e) });
   } finally {
     if (fd !== null) {
       try {
@@ -20722,7 +20759,7 @@ function isTerminalTitleEnabled(env = process.env) {
 
 // src/mcp/channel.ts
 init_logger();
-var log3 = makeLogger("channel");
+var log4 = makeLogger("channel");
 var CHANNEL_METHOD = "notifications/claude/channel";
 function buildChannelNotification(envelope) {
   const meta = {
@@ -20748,10 +20785,10 @@ function createChannelSender(server) {
       const notif = buildChannelNotification(envelope);
       try {
         await server.notification(notif);
-        log3.debug("pushed", { msgId: envelope.id, from: envelope.from });
+        log4.debug("pushed", { msgId: envelope.id, from: envelope.from });
         return { delivered: true };
       } catch (e) {
-        log3.warn("push_failed", {
+        log4.warn("push_failed", {
           msgId: envelope.id,
           err: e instanceof Error ? e.message : String(e)
         });
@@ -20762,12 +20799,12 @@ function createChannelSender(server) {
 }
 
 // src/mcp/context.ts
-var log4 = makeLogger("context");
+var log5 = makeLogger("context");
 var DEFAULT_NAME_REFRESH_MS = 6e4;
 function peerPid() {
   const pp = process.ppid;
   if (typeof pp === "number" && pp > 1) return pp;
-  log4.warn("peer_pid_unresolved", { fallback: process.pid });
+  log5.warn("peer_pid_unresolved", { fallback: process.pid });
   return process.pid;
 }
 async function refreshNameFromTranscript(self, heartbeat, identityOptions) {
@@ -20776,13 +20813,13 @@ async function refreshNameFromTranscript(self, heartbeat, identityOptions) {
     if (full.source !== "jsonl-title" || full.name === self.name) return;
     heartbeat.update({ name: full.name, displayName: full.displayName, source: full.source });
     await heartbeat.flush();
-    log4.info("name_refreshed_from_transcript", {
+    log5.info("name_refreshed_from_transcript", {
       id: self.id,
       from: self.name,
       to: full.name
     });
   } catch (e) {
-    log4.warn("name_refresh_failed", {
+    log5.warn("name_refresh_failed", {
       id: self.id,
       err: e instanceof Error ? e.message : String(e)
     });
@@ -20790,7 +20827,7 @@ async function refreshNameFromTranscript(self, heartbeat, identityOptions) {
 }
 async function buildContext(opts = {}) {
   const self = opts.identity ?? await resolvePeerIdentityWithRetry({ ...opts.identityOptions ?? {}, skipTitleScan: true });
-  log4.info("identity_resolved", { id: self.id, name: self.name, source: self.source });
+  log5.info("identity_resolved", { id: self.id, name: self.name, source: self.source });
   const inbox = createInboxStore({ baseDir: opts.baseDir });
   const registry2 = createPeerRegistry({ baseDir: opts.baseDir });
   const version2 = opts.version ?? "0.0.1";
@@ -20809,13 +20846,13 @@ async function buildContext(opts = {}) {
       source: self.source,
       version: version2
     });
-    log4.info("heartbeat_started", { id: self.id, name: self.name, pid: process.pid });
+    log5.info("heartbeat_started", { id: self.id, name: self.name, pid: process.pid });
     void refreshNameFromTranscript(self, heartbeat, opts.identityOptions ?? {});
   }
   const titleAllowed = opts.emitTerminalTitle ?? isTerminalTitleEnabled();
   const parentTty = titleAllowed ? findParentTty(process.ppid) : null;
   if (parentTty) {
-    log4.info("terminal_title_emit_enabled", { tty: parentTty });
+    log5.info("terminal_title_emit_enabled", { tty: parentTty });
     emitTerminalTitle(parentTty, self.displayName);
   }
   const context = {
@@ -20838,7 +20875,7 @@ async function buildContext(opts = {}) {
       if (refreshInFlight) {
         refreshSkipped++;
         if ((refreshSkipped & refreshSkipped - 1) === 0) {
-          log4.warn("name_refresh_skipped_busy", { skipped: refreshSkipped });
+          log5.warn("name_refresh_skipped_busy", { skipped: refreshSkipped });
         }
         return;
       }
@@ -20846,7 +20883,7 @@ async function buildContext(opts = {}) {
       try {
         await refreshDisplayName(context, opts.identityOptions ?? {});
       } catch (e) {
-        log4.warn("name_refresh_failed", { err: e instanceof Error ? e.message : String(e) });
+        log5.warn("name_refresh_failed", { err: e instanceof Error ? e.message : String(e) });
       } finally {
         refreshInFlight = false;
         refreshSkipped = 0;
@@ -20872,7 +20909,7 @@ async function refreshDisplayName(ctx, identityOptions) {
   if (fresh.name === ctx.self.name && fresh.source === ctx.self.source && fresh.displayName === ctx.self.displayName) {
     return;
   }
-  log4.info("name_refreshed", {
+  log5.info("name_refreshed", {
     from: ctx.self.name,
     to: fresh.name,
     source: fresh.source
@@ -20890,7 +20927,7 @@ async function refreshDisplayName(ctx, identityOptions) {
 }
 async function migrateIdentity(ctx, fresh) {
   const oldId = ctx.self.id;
-  log4.info("identity_migrated", {
+  log5.info("identity_migrated", {
     from: oldId,
     to: fresh.id,
     newName: fresh.name,
@@ -20902,11 +20939,11 @@ async function migrateIdentity(ctx, fresh) {
   try {
     await (0, import_promises9.mkdir)((0, import_node_path8.dirname)(newInbox), { recursive: true });
     await (0, import_promises9.rename)(oldInbox, newInbox);
-    log4.info("inbox_dir_migrated", { from: oldInbox, to: newInbox });
+    log5.info("inbox_dir_migrated", { from: oldInbox, to: newInbox });
   } catch (e) {
     const code = e.code;
     if (code !== "ENOENT") {
-      log4.warn("inbox_dir_migrate_failed", { err: e instanceof Error ? e.message : String(e) });
+      log5.warn("inbox_dir_migrate_failed", { err: e instanceof Error ? e.message : String(e) });
     }
   }
   if (ctx.heartbeat) {
@@ -20929,7 +20966,7 @@ async function migrateIdentity(ctx, fresh) {
       fresh.id,
       async () => {
         const { pushed: pushed2 } = await pumpInboxToChannel(ctx);
-        if (pushed2 > 0) log4.info("pump_pushed", { count: pushed2 });
+        if (pushed2 > 0) log5.info("pump_pushed", { count: pushed2 });
       },
       ctx.baseDir ? { baseDir: ctx.baseDir } : {}
     );
@@ -20937,7 +20974,7 @@ async function migrateIdentity(ctx, fresh) {
     await newWatcher.ready;
   }
   const { pushed } = await pumpInboxToChannel(ctx);
-  if (pushed > 0) log4.info("post_migrate_drain", { pushed });
+  if (pushed > 0) log5.info("post_migrate_drain", { pushed });
 }
 async function pumpInboxToChannel(ctx) {
   if (!ctx.channel) return { pushed: 0 };
@@ -20947,7 +20984,7 @@ async function pumpInboxToChannel(ctx) {
     if (ctx.pushedMsgIds.has(env.id)) continue;
     const { delivered } = await ctx.channel.push(env);
     if (!delivered) {
-      log4.debug("push_failed_left_in_pending", { msgId: env.id });
+      log5.debug("push_failed_left_in_pending", { msgId: env.id });
       continue;
     }
     ctx.pushedMsgIds.add(env.id);
@@ -20963,11 +21000,11 @@ async function attachServer(ctx, server, opts = {}) {
       ctx.self.id,
       async () => {
         const { pushed } = await pumpInboxToChannel(ctx);
-        if (pushed > 0) log4.info("pump_pushed", { count: pushed });
+        if (pushed > 0) log5.info("pump_pushed", { count: pushed });
       },
       ctx.baseDir ? { baseDir: ctx.baseDir } : {}
     );
-    log4.info("watcher_attached", { id: ctx.self.id, name: ctx.self.name });
+    log5.info("watcher_attached", { id: ctx.self.id, name: ctx.self.name });
   }
 }
 async function shutdownContext(ctx) {
@@ -21989,7 +22026,7 @@ var import_promises14 = require("node:fs/promises");
 var import_node_os4 = require("node:os");
 var import_node_path11 = require("node:path");
 init_logger();
-var log5 = makeLogger("control-plane");
+var log6 = makeLogger("control-plane");
 function controlDir() {
   return (0, import_node_path11.join)((0, import_node_os4.homedir)(), ".claude-bridge", "control");
 }
@@ -22016,7 +22053,7 @@ async function readLock() {
   } catch (e) {
     const code = e.code;
     if (code === "ENOENT") return null;
-    log5.warn("lock_read_failed", { err: String(e) });
+    log6.warn("lock_read_failed", { err: String(e) });
     return null;
   }
 }
@@ -22027,7 +22064,7 @@ async function readState() {
   } catch (e) {
     const code = e.code;
     if (code === "ENOENT") return null;
-    log5.warn("state_read_failed", { err: String(e) });
+    log6.warn("state_read_failed", { err: String(e) });
     return null;
   }
 }
@@ -22508,7 +22545,7 @@ async function teamRestartTool(ctx, args) {
 }
 
 // src/mcp/tools.ts
-var log6 = makeLogger("tools");
+var log7 = makeLogger("tools");
 function ok2(data) {
   return {
     content: [{ type: "text", text: JSON.stringify({ ok: true, ...data }) }]
@@ -22537,7 +22574,7 @@ async function listProjectsTool() {
       projects: projects.map((p) => ({ projectDir: p.projectDir, path: p.absolutePath }))
     });
   } catch (e) {
-    log6.error("list_projects_failed", { err: e instanceof Error ? e.message : String(e) });
+    log7.error("list_projects_failed", { err: e instanceof Error ? e.message : String(e) });
     return err2("list_projects_failed", e instanceof Error ? e.message : "unknown");
   }
 }
@@ -22603,7 +22640,7 @@ async function listSessionsTool(args) {
             extras.userPrompts = meta.userPrompts;
             extras.assistantReplies = meta.assistantReplies;
           } catch (e) {
-            log6.warn("list_sessions_meta_scan_failed", {
+            log7.warn("list_sessions_meta_scan_failed", {
               file: s.filePath,
               err: e instanceof Error ? e.message : String(e)
             });
@@ -22614,7 +22651,7 @@ async function listSessionsTool(args) {
     );
     return ok2({ count: enriched.length, sessions: enriched });
   } catch (e) {
-    log6.error("list_sessions_failed", { err: e instanceof Error ? e.message : String(e) });
+    log7.error("list_sessions_failed", { err: e instanceof Error ? e.message : String(e) });
     return err2("list_sessions_failed", e instanceof Error ? e.message : "unknown");
   }
 }
@@ -22645,7 +22682,7 @@ async function sessionStatsTool(args) {
     }
     return ok2({ sessionId: args.sessionId, instances: results });
   } catch (e) {
-    log6.error("session_stats_failed", { err: e instanceof Error ? e.message : String(e) });
+    log7.error("session_stats_failed", { err: e instanceof Error ? e.message : String(e) });
     return err2("session_stats_failed", e instanceof Error ? e.message : "unknown");
   }
 }
@@ -22727,7 +22764,7 @@ async function peerListTool(ctx) {
       }))
     });
   } catch (e) {
-    log6.error("peer_list_failed", { err: e instanceof Error ? e.message : String(e) });
+    log7.error("peer_list_failed", { err: e instanceof Error ? e.message : String(e) });
     return err2("peer_list_failed", e instanceof Error ? e.message : "unknown");
   }
 }
@@ -22767,37 +22804,43 @@ async function peerAskTool(ctx, args) {
   };
   try {
     await ctx.inbox.send(envelope);
-    log6.info("peer_ask_sent", {
+    log7.info("peer_ask_sent", {
       to: resolved.peer.id,
       toName: resolved.peer.name,
       msgId: envelope.id
     });
-    const { waiting, control } = await countRecipientQueue(ctx, resolved.peer.id);
+    const { waiting, control, neverPushed } = await countRecipientQueue(ctx, resolved.peer.id);
     return ok2({
       msgId: envelope.id,
       to: { id: resolved.peer.id, name: resolved.peer.name },
       delivery: "queued",
       recipientPending: waiting,
+      recipientNeverPushed: neverPushed,
       ...control > 0 ? { recipientControlPending: control } : {}
     });
   } catch (e) {
-    log6.error("peer_ask_failed", { err: e instanceof Error ? e.message : String(e) });
+    log7.error("peer_ask_failed", { err: e instanceof Error ? e.message : String(e) });
     return err2("peer_ask_failed", e instanceof Error ? e.message : "unknown");
   }
 }
 var CONTROL_KINDS = /* @__PURE__ */ new Set(["compact-anchor-request"]);
 async function countRecipientQueue(ctx, peerId) {
   try {
-    const byKind = await ctx.inbox.countPendingByKind(peerId);
+    const entries = await ctx.inbox.listPendingRaw(peerId);
     let waiting = 0;
     let control = 0;
-    for (const [kind, n] of Object.entries(byKind)) {
-      if (CONTROL_KINDS.has(kind)) control += n;
-      else waiting += n;
+    let neverPushed = 0;
+    for (const { id, kind } of entries) {
+      if (CONTROL_KINDS.has(kind)) {
+        control += 1;
+        continue;
+      }
+      waiting += 1;
+      if (!await ctx.inbox.pushRecord(peerId, id)) neverPushed += 1;
     }
-    return { waiting, control };
+    return { waiting, control, neverPushed };
   } catch {
-    return { waiting: -1, control: 0 };
+    return { waiting: -1, control: 0, neverPushed: -1 };
   }
 }
 var PeerReplyArgs = external_exports.object({
@@ -22843,7 +22886,7 @@ async function peerReplyTool(ctx, args) {
   };
   try {
     await ctx.inbox.send(reply);
-    log6.info("peer_reply_sent", {
+    log7.info("peer_reply_sent", {
       to: original.from,
       toName: original.fromName,
       msgId: reply.id,
@@ -22855,7 +22898,7 @@ async function peerReplyTool(ctx, args) {
       inReplyTo: args.inReplyTo
     });
   } catch (e) {
-    log6.error("peer_reply_failed", { err: e instanceof Error ? e.message : String(e) });
+    log7.error("peer_reply_failed", { err: e instanceof Error ? e.message : String(e) });
     return err2("peer_reply_failed", e instanceof Error ? e.message : "unknown");
   }
 }
@@ -22870,7 +22913,7 @@ async function peerInboxReadTool(ctx) {
     }
     return ok2({ count: consumed.length, messages: consumed });
   } catch (e) {
-    log6.error("peer_inbox_read_failed", { err: e instanceof Error ? e.message : String(e) });
+    log7.error("peer_inbox_read_failed", { err: e instanceof Error ? e.message : String(e) });
     return err2("peer_inbox_read_failed", e instanceof Error ? e.message : "unknown");
   }
 }
@@ -23163,7 +23206,7 @@ async function peerChatReadTool(ctx, args) {
       }
     }
   } catch (e) {
-    log6.error("peer_chat_read_parse_err", {
+    log7.error("peer_chat_read_parse_err", {
       file: sessionFile.filePath,
       err: e instanceof Error ? e.message : String(e)
     });
@@ -23397,7 +23440,7 @@ async function peerChatSearchTool(ctx, args) {
         });
       }
     } catch (e) {
-      log6.warn("peer_chat_search_parse_warning", {
+      log7.warn("peer_chat_search_parse_warning", {
         file: session.filePath,
         err: e instanceof Error ? e.message : String(e)
       });
@@ -23676,7 +23719,7 @@ async function peerContextStatusTool(ctx, args) {
     }
     return ok2({ count: peers.length, peers });
   } catch (e) {
-    log6.error("peer_context_status_failed", { err: e instanceof Error ? e.message : String(e) });
+    log7.error("peer_context_status_failed", { err: e instanceof Error ? e.message : String(e) });
     return err2("peer_context_status_failed", e instanceof Error ? e.message : "unknown");
   }
 }
@@ -23730,7 +23773,7 @@ async function peerSetContextGuardTool(ctx, args) {
     await writeContextGuard(ctx.self.id, next);
     return ok2({ guard: next, sessionId: ctx.self.id });
   } catch (e) {
-    log6.error("peer_set_context_guard_failed", { err: e instanceof Error ? e.message : String(e) });
+    log7.error("peer_set_context_guard_failed", { err: e instanceof Error ? e.message : String(e) });
     return err2("peer_set_context_guard_failed", e instanceof Error ? e.message : "unknown");
   }
 }
@@ -23769,7 +23812,7 @@ async function peerSetNotificationTool(ctx, args) {
     await writeNotificationConfig(ctx.self.id, next);
     return ok2({ notification: next, sessionId: ctx.self.id });
   } catch (e) {
-    log6.error("peer_set_notification_failed", { err: e instanceof Error ? e.message : String(e) });
+    log7.error("peer_set_notification_failed", { err: e instanceof Error ? e.message : String(e) });
     return err2("peer_set_notification_failed", e instanceof Error ? e.message : "unknown");
   }
 }
@@ -23780,7 +23823,7 @@ async function rateLimitStatusTool() {
     const guard = await readRateLimitGuard();
     return ok2({ ...status, ...guard ? { guard } : {} });
   } catch (e) {
-    log6.error("rate_limit_status_failed", { err: e instanceof Error ? e.message : String(e) });
+    log7.error("rate_limit_status_failed", { err: e instanceof Error ? e.message : String(e) });
     return err2("rate_limit_status_failed", e instanceof Error ? e.message : "unknown");
   }
 }
@@ -23843,7 +23886,7 @@ async function peerSetRateLimitGuardTool(_ctx, args) {
     await writeRateLimitGuard(next);
     return ok2({ guard: next });
   } catch (e) {
-    log6.error("peer_set_rate_limit_guard_failed", {
+    log7.error("peer_set_rate_limit_guard_failed", {
       err: e instanceof Error ? e.message : String(e)
     });
     return err2("peer_set_rate_limit_guard_failed", e instanceof Error ? e.message : "unknown");
@@ -23880,7 +23923,7 @@ async function modelInfoTool(args) {
       models: list.map((m) => ({ ...m, effectivePricing: effectivePricing(m) }))
     });
   } catch (e) {
-    log6.error("model_info_failed", { err: e instanceof Error ? e.message : String(e) });
+    log7.error("model_info_failed", { err: e instanceof Error ? e.message : String(e) });
     return err2("model_info_failed", e instanceof Error ? e.message : "unknown");
   }
 }
@@ -23950,7 +23993,7 @@ var TOOLS = [
   },
   {
     name: "peer_ask",
-    description: "Send a message to another claude-bridge peer. `to` accepts peer id (sessionId UUID, always unique) or display name (may be ambiguous \u2014 error returned if multiple peers share name). Use peer_list to discover peers.\n\nRETURN VALUE \u2014 `delivery` is `queued`, and that is NOT `delivered`. The envelope is written to the recipient's `pending/`; whether anyone reads it is a separate question. A peer drains its queue only on its OWN tool calls, so an IDLE peer never takes the message \u2014 and `queued` never turns into anything by itself. The push notification is best-effort: it can be dropped by the client (org channel policy) without any error reaching you, and a file in `pushed/` records that WE sent it, not that anyone received it.\n\n`recipientPending` is the number of messages already waiting for that peer, counting only what an agent actually consumes. Greater than 1 means it is not draining \u2014 earlier messages are sitting there too. `recipientControlPending` (present only when non-zero) counts daemon control requests such as `compact-anchor-request`, which a peer never consumes and which would otherwise give the first number a permanent floor; they are shown rather than dropped, because a silent exception gets treated as valid. `-1` means the queue could not be read \u2014 not zero. To reach a peer that is not working, use another channel (e.g. tmux) and treat this tool as the content, not the doorbell.",
+    description: "Send a message to another claude-bridge peer. `to` accepts peer id (sessionId UUID, always unique) or display name (may be ambiguous \u2014 error returned if multiple peers share name). Use peer_list to discover peers.\n\nRETURN VALUE \u2014 `delivery` is `queued`, and that is NOT `delivered`. The envelope is written to the recipient's `pending/`; whether anyone reads it is a separate question. A peer drains its queue only on its OWN tool calls, so an IDLE peer never takes the message \u2014 and `queued` never turns into anything by itself. The push notification is best-effort: it can be dropped by the client (org channel policy) without any error reaching you, and a file in `pushed/` records that WE sent it, not that anyone received it.\n\n`recipientPending` counts FILES still sitting in that peer's queue, and a file sits there in two very different situations: delivered by push and not yet tidied away, or never delivered at all. `recipientNeverPushed` is the half worth chasing \u2014 non-zero means the content did not reach them. A high `recipientPending` with `recipientNeverPushed: 0` means everything arrived and nobody swept up; it is NOT a deaf peer, and reading it as one has cost this fleet hours twice. `recipientControlPending` (present only when non-zero) counts daemon control requests such as `compact-anchor-request`, which a peer never consumes and which would otherwise give the first number a permanent floor; they are shown rather than dropped, because a silent exception gets treated as valid. `-1` means the queue could not be read \u2014 not zero. To reach a peer that is not working, use another channel (e.g. tmux) and treat this tool as the content, not the doorbell.",
     inputSchema: {
       type: "object",
       properties: {
@@ -24810,7 +24853,7 @@ var TOOLS = [
 ];
 
 // src/mcp/server.ts
-var log8 = makeLogger("mcp-server");
+var log9 = makeLogger("mcp-server");
 var SERVER_NAME = "claude-bridge";
 var SERVER_VERSION = package_default.version;
 var INSTRUCTIONS = `
@@ -24875,10 +24918,10 @@ function wireTools(server, ctx) {
     const toolName = request.params.name;
     const args = request.params.arguments ?? {};
     const started = Date.now();
-    log8.debug("tool_call", { tool: toolName });
+    log9.debug("tool_call", { tool: toolName });
     const spec = TOOLS.find((t) => t.name === toolName);
     if (!spec) {
-      log8.warn("tool_not_found", { tool: toolName });
+      log9.warn("tool_not_found", { tool: toolName });
       const result = {
         isError: true,
         content: [
@@ -24897,14 +24940,14 @@ function wireTools(server, ctx) {
     try {
       let result = await spec.handler(args, ctx);
       result = await piggybackInbox(ctx, toolName, result);
-      log8.debug("tool_result", {
+      log9.debug("tool_result", {
         tool: toolName,
         ok: !result.isError,
         duration_ms: Date.now() - started
       });
       return result;
     } catch (e) {
-      log8.error("tool_call_err", {
+      log9.error("tool_call_err", {
         tool: toolName,
         err: e instanceof Error ? e.message : String(e),
         duration_ms: Date.now() - started
@@ -24932,14 +24975,14 @@ async function startStdioServer() {
     ctx = await buildContext({ version: SERVER_VERSION });
   } catch (e) {
     if (e instanceof IdentityError) {
-      log8.error("identity_unresolvable", { message: e.message, hint: e.hint });
+      log9.error("identity_unresolvable", { message: e.message, hint: e.hint });
       process.stderr.write(`
 claude-bridge fatal: ${e.message}
 Hint: ${e.hint}
 
 `);
     } else {
-      log8.error("boot_failed", {
+      log9.error("boot_failed", {
         err: e instanceof Error ? e.message : String(e)
       });
     }
@@ -24953,16 +24996,16 @@ Hint: ${e.hint}
   const keepAlive = setInterval(() => void 0, 6e4);
   process.on("beforeExit", () => clearInterval(keepAlive));
   process.stdin.on("end", () => {
-    log8.warn("stdin_eof_ignored", {
+    log9.warn("stdin_eof_ignored", {
       reason: "windows-stdio-probe-close-survival"
     });
   });
   process.stdin.on("close", () => {
-    log8.warn("stdin_close_ignored", {
+    log9.warn("stdin_close_ignored", {
       reason: "windows-stdio-probe-close-survival"
     });
   });
-  log8.info("started", {
+  log9.info("started", {
     name: SERVER_NAME,
     version: SERVER_VERSION,
     tools: TOOLS.length,
@@ -24970,7 +25013,7 @@ Hint: ${e.hint}
     selfName: ctx.self.name
   });
   const { pushed } = await pumpInboxToChannel(ctx);
-  if (pushed > 0) log8.info("backlog_drained", { pushed });
+  if (pushed > 0) log9.info("backlog_drained", { pushed });
   try {
     const { spawn } = await import("node:child_process");
     const { join: join15, dirname: dirname6 } = await import("node:path");
@@ -24985,17 +25028,17 @@ Hint: ${e.hint}
       child.on("error", () => void 0);
     }
   } catch (e) {
-    log8.warn("setup_check_spawn_failed", {
+    log9.warn("setup_check_spawn_failed", {
       err: e instanceof Error ? e.message : String(e)
     });
   }
   void Promise.resolve().then(() => (init_hygiene(), hygiene_exports)).then(({ runHygieneSweep: runHygieneSweep2 }) => runHygieneSweep2()).catch((e) => {
-    log8.warn("hygiene_sweep_failed", {
+    log9.warn("hygiene_sweep_failed", {
       err: e instanceof Error ? e.message : String(e)
     });
   });
   const shutdown = async (signal) => {
-    log8.info("shutdown", { signal });
+    log9.info("shutdown", { signal });
     await shutdownContext(ctx).catch(() => void 0);
     await server.close().catch(() => void 0);
     process.exit(0);
@@ -25006,13 +25049,13 @@ Hint: ${e.hint}
 
 // src/index.ts
 init_logger();
-var log9 = makeLogger("entry");
+var log10 = makeLogger("entry");
 async function main() {
-  log9.info("boot");
+  log10.info("boot");
   try {
     await startStdioServer();
   } catch (e) {
-    log9.error("fatal", { err: e instanceof Error ? e.message : String(e) });
+    log10.error("fatal", { err: e instanceof Error ? e.message : String(e) });
     process.exit(1);
   }
 }
