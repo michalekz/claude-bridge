@@ -18243,7 +18243,7 @@ var StdioServerTransport = class {
 // package.json
 var package_default = {
   name: "claude-bridge",
-  version: "0.11.30",
+  version: "0.11.31",
   private: true,
   description: "MCP server for cross-Claude-Code-chat orchestration over local session JSONL files",
   type: "module",
@@ -22809,7 +22809,11 @@ async function peerAskTool(ctx, args) {
       toName: resolved.peer.name,
       msgId: envelope.id
     });
-    const { waiting, control, neverPushed } = await countRecipientQueue(ctx, resolved.peer.id);
+    const { waiting, control, neverPushed } = await countRecipientQueue(
+      ctx,
+      resolved.peer.id,
+      envelope.id
+    );
     return ok2({
       msgId: envelope.id,
       to: { id: resolved.peer.id, name: resolved.peer.name },
@@ -22824,7 +22828,7 @@ async function peerAskTool(ctx, args) {
   }
 }
 var CONTROL_KINDS = /* @__PURE__ */ new Set(["compact-anchor-request"]);
-async function countRecipientQueue(ctx, peerId) {
+async function countRecipientQueue(ctx, peerId, exceptId) {
   try {
     const entries = await ctx.inbox.listPendingRaw(peerId);
     let waiting = 0;
@@ -22836,6 +22840,7 @@ async function countRecipientQueue(ctx, peerId) {
         continue;
       }
       waiting += 1;
+      if (id === exceptId) continue;
       if (!await ctx.inbox.pushRecord(peerId, id)) neverPushed += 1;
     }
     return { waiting, control, neverPushed };
@@ -23993,7 +23998,7 @@ var TOOLS = [
   },
   {
     name: "peer_ask",
-    description: "Send a message to another claude-bridge peer. `to` accepts peer id (sessionId UUID, always unique) or display name (may be ambiguous \u2014 error returned if multiple peers share name). Use peer_list to discover peers.\n\nRETURN VALUE \u2014 `delivery` is `queued`, and that is NOT `delivered`. The envelope is written to the recipient's `pending/`; whether anyone reads it is a separate question. A peer drains its queue only on its OWN tool calls, so an IDLE peer never takes the message \u2014 and `queued` never turns into anything by itself. The push notification is best-effort: it can be dropped by the client (org channel policy) without any error reaching you, and a file in `pushed/` records that WE sent it, not that anyone received it.\n\n`recipientPending` counts FILES still sitting in that peer's queue, and a file sits there in two very different situations: delivered by push and not yet tidied away, or never delivered at all. `recipientNeverPushed` is the half worth chasing \u2014 non-zero means the content did not reach them. A high `recipientPending` with `recipientNeverPushed: 0` means everything arrived and nobody swept up; it is NOT a deaf peer, and reading it as one has cost this fleet hours twice. `recipientControlPending` (present only when non-zero) counts daemon control requests such as `compact-anchor-request`, which a peer never consumes and which would otherwise give the first number a permanent floor; they are shown rather than dropped, because a silent exception gets treated as valid. `-1` means the queue could not be read \u2014 not zero. To reach a peer that is not working, use another channel (e.g. tmux) and treat this tool as the content, not the doorbell.",
+    description: "Send a message to another claude-bridge peer. `to` accepts peer id (sessionId UUID, always unique) or display name (may be ambiguous \u2014 error returned if multiple peers share name). Use peer_list to discover peers.\n\nRETURN VALUE \u2014 `delivery` is `queued`, and that is NOT `delivered`. The envelope is written to the recipient's `pending/`; whether anyone reads it is a separate question. A peer drains its queue only on its OWN tool calls, so an IDLE peer never takes the message \u2014 and `queued` never turns into anything by itself. The push notification is best-effort: it can be dropped by the client (org channel policy) without any error reaching you, and a file in `pushed/` records that WE sent it, not that anyone received it.\n\n`recipientPending` counts FILES still sitting in that peer's queue, and a file sits there in two very different situations: delivered by push and not yet tidied away, or never delivered at all. `recipientNeverPushed` is the half worth chasing \u2014 non-zero means EARLIER content did not reach them. The message you just sent is excluded: it cannot have been pushed yet, and counting it would make the field unable to ever say zero. A high `recipientPending` with `recipientNeverPushed: 0` means everything arrived and nobody swept up; it is NOT a deaf peer, and reading it as one has cost this fleet hours twice. `recipientControlPending` (present only when non-zero) counts daemon control requests such as `compact-anchor-request`, which a peer never consumes and which would otherwise give the first number a permanent floor; they are shown rather than dropped, because a silent exception gets treated as valid. `-1` means the queue could not be read \u2014 not zero. To reach a peer that is not working, use another channel (e.g. tmux) and treat this tool as the content, not the doorbell.",
     inputSchema: {
       type: "object",
       properties: {

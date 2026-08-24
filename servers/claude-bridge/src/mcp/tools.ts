@@ -492,7 +492,11 @@ export async function peerAskTool(
     // that always says the same thing says nothing. If it is > 1, earlier
     // messages are ALSO still sitting there — which is the signal that the
     // recipient is not draining at all.
-    const { waiting, control, neverPushed } = await countRecipientQueue(ctx, resolved.peer.id);
+    const { waiting, control, neverPushed } = await countRecipientQueue(
+      ctx,
+      resolved.peer.id,
+      envelope.id,
+    );
     return ok({
       msgId: envelope.id,
       to: { id: resolved.peer.id, name: resolved.peer.name },
@@ -534,6 +538,20 @@ const CONTROL_KINDS = new Set(["compact-anchor-request"]);
 async function countRecipientQueue(
   ctx: ServerContext,
   peerId: string,
+  /**
+   * The envelope we just wrote. It MUST be excluded from `neverPushed`.
+   *
+   * 🔴 Found by the v0.11.30 pilot (mic-tester, 24. 8.), twice in a row:
+   * the field came back `1` where it should have been `0`. Not a fluke —
+   * `markPushed` runs in the RECIPIENT's pump (context.ts), while this count
+   * runs synchronously in the sender right after `send()`. The message being
+   * sent can therefore NEVER be pushed yet, so it was counted every single
+   * time and the field could not reach 0.
+   *
+   * A field that always says the same thing says nothing — the exact failure
+   * this field was added to fix, reproduced one layer up.
+   */
+  exceptId: string,
 ): Promise<{ waiting: number; control: number; neverPushed: number }> {
   try {
     // Raw entries, NOT listPending: that one drops control kinds on schema
@@ -549,6 +567,7 @@ async function countRecipientQueue(
         continue;
       }
       waiting += 1;
+      if (id === exceptId) continue; // právě odeslaná: o doručení nevypovídá
       // 🔴 A file in `pending/` is TWO different situations and the count
       // alone cannot tell them apart: delivered by push and not yet tidied
       // away, or never delivered at all. On 2026-08-05 that cost plt-designer
@@ -2266,7 +2285,7 @@ export const TOOLS: ToolSpec[] = [
     description:
       "Send a message to another claude-bridge peer. `to` accepts peer id (sessionId UUID, always unique) or display name (may be ambiguous — error returned if multiple peers share name). Use peer_list to discover peers.\n\n" +
       "RETURN VALUE — `delivery` is `queued`, and that is NOT `delivered`. The envelope is written to the recipient's `pending/`; whether anyone reads it is a separate question. A peer drains its queue only on its OWN tool calls, so an IDLE peer never takes the message — and `queued` never turns into anything by itself. The push notification is best-effort: it can be dropped by the client (org channel policy) without any error reaching you, and a file in `pushed/` records that WE sent it, not that anyone received it.\n\n" +
-      "`recipientPending` counts FILES still sitting in that peer's queue, and a file sits there in two very different situations: delivered by push and not yet tidied away, or never delivered at all. `recipientNeverPushed` is the half worth chasing — non-zero means the content did not reach them. A high `recipientPending` with `recipientNeverPushed: 0` means everything arrived and nobody swept up; it is NOT a deaf peer, and reading it as one has cost this fleet hours twice. `recipientControlPending` (present only when non-zero) counts daemon control requests such as `compact-anchor-request`, which a peer never consumes and which would otherwise give the first number a permanent floor; they are shown rather than dropped, because a silent exception gets treated as valid. `-1` means the queue could not be read — not zero. To reach a peer that is not working, use another channel (e.g. tmux) and treat this tool as the content, not the doorbell.",
+      "`recipientPending` counts FILES still sitting in that peer's queue, and a file sits there in two very different situations: delivered by push and not yet tidied away, or never delivered at all. `recipientNeverPushed` is the half worth chasing — non-zero means EARLIER content did not reach them. The message you just sent is excluded: it cannot have been pushed yet, and counting it would make the field unable to ever say zero. A high `recipientPending` with `recipientNeverPushed: 0` means everything arrived and nobody swept up; it is NOT a deaf peer, and reading it as one has cost this fleet hours twice. `recipientControlPending` (present only when non-zero) counts daemon control requests such as `compact-anchor-request`, which a peer never consumes and which would otherwise give the first number a permanent floor; they are shown rather than dropped, because a silent exception gets treated as valid. `-1` means the queue could not be read — not zero. To reach a peer that is not working, use another channel (e.g. tmux) and treat this tool as the content, not the doorbell.",
     inputSchema: {
       type: "object",
       properties: {

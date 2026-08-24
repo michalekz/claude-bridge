@@ -254,21 +254,31 @@ describe("peer_ask vrací queued, ne delivered", () => {
     await register(coord);
     await register(mantis);
 
-    // Nic se nepředalo ⇒ oba počty stejné.
+    // 🔴 Nalezeno pilotem 0.11.30: PRÁVĚ ODESLANÁ zpráva se nesmí počítat.
+    // `markPushed` běží v příjemcově pumpě, tenhle počet synchronně
+    // u odesílatele — vlastní zpráva tedy NIKDY nemůže být pushnutá a pole
+    // by se nedostalo na nulu. Pole, které říká pořád totéž, neříká nic.
     const first = await peerAskTool(coord, { to: "mantis", content: "první" });
     const p1 = JSON.parse(textOf(first));
-    expect(p1.recipientPending).toBe(1);
-    expect(p1.recipientNeverPushed).toBe(1);
+    expect(p1.recipientPending).toBe(1); // leží tam (ta moje)
+    expect(p1.recipientNeverPushed).toBe(0); // ale nic STARŠÍHO nechybí
+
+    // Druhá zpráva, zatímco první se nikam nepředala ⇒ starší nedoručená JE.
+    const second = await peerAskTool(coord, { to: "mantis", content: "druhá" });
+    const p2 = JSON.parse(textOf(second));
+    expect(p2.recipientPending).toBe(2);
+    expect(p2.recipientNeverPushed).toBe(1); // ta první
 
     // Push proběhl: soubor v pending/ ZŮSTÁVÁ (konzumuje jen piggyback),
     // ale obsah u příjemce JE. Tohle je ta situace, která se dvakrát
-    // přečetla jako hluchý peer.
+    // přečetla jako hluchý peer — a teď je odlišitelná.
     await mantis.inbox.markPushed(mantis.self.id, p1.msgId);
+    await mantis.inbox.markPushed(mantis.self.id, p2.msgId);
 
-    const second = await peerAskTool(coord, { to: "mantis", content: "druhá" });
-    const p2 = JSON.parse(textOf(second));
-    expect(p2.recipientPending).toBe(2); // dva soubory pořád leží
-    expect(p2.recipientNeverPushed).toBe(1); // ale nedoručená je JEN jedna
+    const third = await peerAskTool(coord, { to: "mantis", content: "třetí" });
+    const p3 = JSON.parse(textOf(third));
+    expect(p3.recipientPending).toBe(3); // tři soubory leží
+    expect(p3.recipientNeverPushed).toBe(0); // ale všechno starší dorazilo
   });
 
   // 🔴 `compact-anchor-request` je řídicí požadavek démona, který agent
