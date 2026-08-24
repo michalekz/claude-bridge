@@ -492,12 +492,13 @@ export async function peerAskTool(
     // that always says the same thing says nothing. If it is > 1, earlier
     // messages are ALSO still sitting there — which is the signal that the
     // recipient is not draining at all.
-    const { waiting, control } = await countRecipientQueue(ctx, resolved.peer.id);
+    const { waiting, control, neverPushed } = await countRecipientQueue(ctx, resolved.peer.id);
     return ok({
       msgId: envelope.id,
       to: { id: resolved.peer.id, name: resolved.peer.name },
       delivery: "queued",
       recipientPending: waiting,
+      recipientNeverPushed: neverPushed,
       ...(control > 0 ? { recipientControlPending: control } : {}),
     });
   } catch (e) {
@@ -533,21 +534,38 @@ const CONTROL_KINDS = new Set(["compact-anchor-request"]);
 async function countRecipientQueue(
   ctx: ServerContext,
   peerId: string,
-): Promise<{ waiting: number; control: number }> {
+): Promise<{ waiting: number; control: number; neverPushed: number }> {
   try {
-    // Raw kinds, NOT listPending: that one drops control kinds on schema
+    // Raw entries, NOT listPending: that one drops control kinds on schema
     // validation, which would make the exclusion an accident instead of a
     // decision — and invisible either way.
-    const byKind = await ctx.inbox.countPendingByKind(peerId);
+    const entries = await ctx.inbox.listPendingRaw(peerId);
     let waiting = 0;
     let control = 0;
-    for (const [kind, n] of Object.entries(byKind)) {
-      if (CONTROL_KINDS.has(kind)) control += n;
-      else waiting += n;
+    let neverPushed = 0;
+    for (const { id, kind } of entries) {
+      if (CONTROL_KINDS.has(kind)) {
+        control += 1;
+        continue;
+      }
+      waiting += 1;
+      // 🔴 A file in `pending/` is TWO different situations and the count
+      // alone cannot tell them apart: delivered by push and not yet tidied
+      // away, or never delivered at all. On 2026-08-05 that cost plt-designer
+      // and me hours each — of nineteen decidable files, SEVENTEEN had been
+      // delivered and answered. On 2026-08-23 I read `13` off my own tool
+      // output and called it an undrained queue; all thirteen had arrived.
+      //
+      // The discriminator exists (`pushRecord`) and was simply not asked.
+      // A counter that mixes two states must carry its discriminator NEXT
+      // TO IT, or the reader invents the wrong one.
+      if (!(await ctx.inbox.pushRecord(peerId, id))) neverPushed += 1;
     }
-    return { waiting, control };
+    return { waiting, control, neverPushed };
   } catch {
-    return { waiting: -1, control: 0 }; // -1 = nezměřeno, ne nula
+    // -1 = not measured, NOT zero. Same for neverPushed: an unread queue
+    // must not look like a clean one.
+    return { waiting: -1, control: 0, neverPushed: -1 };
   }
 }
 
@@ -2248,7 +2266,7 @@ export const TOOLS: ToolSpec[] = [
     description:
       "Send a message to another claude-bridge peer. `to` accepts peer id (sessionId UUID, always unique) or display name (may be ambiguous — error returned if multiple peers share name). Use peer_list to discover peers.\n\n" +
       "RETURN VALUE — `delivery` is `queued`, and that is NOT `delivered`. The envelope is written to the recipient's `pending/`; whether anyone reads it is a separate question. A peer drains its queue only on its OWN tool calls, so an IDLE peer never takes the message — and `queued` never turns into anything by itself. The push notification is best-effort: it can be dropped by the client (org channel policy) without any error reaching you, and a file in `pushed/` records that WE sent it, not that anyone received it.\n\n" +
-      "`recipientPending` is the number of messages already waiting for that peer, counting only what an agent actually consumes. Greater than 1 means it is not draining — earlier messages are sitting there too. `recipientControlPending` (present only when non-zero) counts daemon control requests such as `compact-anchor-request`, which a peer never consumes and which would otherwise give the first number a permanent floor; they are shown rather than dropped, because a silent exception gets treated as valid. `-1` means the queue could not be read — not zero. To reach a peer that is not working, use another channel (e.g. tmux) and treat this tool as the content, not the doorbell.",
+      "`recipientPending` counts FILES still sitting in that peer's queue, and a file sits there in two very different situations: delivered by push and not yet tidied away, or never delivered at all. `recipientNeverPushed` is the half worth chasing — non-zero means the content did not reach them. A high `recipientPending` with `recipientNeverPushed: 0` means everything arrived and nobody swept up; it is NOT a deaf peer, and reading it as one has cost this fleet hours twice. `recipientControlPending` (present only when non-zero) counts daemon control requests such as `compact-anchor-request`, which a peer never consumes and which would otherwise give the first number a permanent floor; they are shown rather than dropped, because a silent exception gets treated as valid. `-1` means the queue could not be read — not zero. To reach a peer that is not working, use another channel (e.g. tmux) and treat this tool as the content, not the doorbell.",
     inputSchema: {
       type: "object",
       properties: {

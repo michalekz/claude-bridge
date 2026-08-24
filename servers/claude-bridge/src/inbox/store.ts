@@ -4,6 +4,9 @@ import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { z } from "zod";
 import { atomicWriteJson } from "../util/atomic-write.ts";
+import { makeLogger } from "../util/logger.ts";
+
+const log = makeLogger("inbox");
 
 /**
  * File-based inbox store.
@@ -95,6 +98,15 @@ export interface InboxStore {
    * parse is still a file sitting in somebody's queue.
    */
   countPendingByKind(peerId: string): Promise<Record<string, number>>;
+  /**
+   * Raw pending entries: id + kind, one per FILE on disk.
+   *
+   * Deliberately not `listPending`, which validates against the schema and
+   * drops what fails — a count built on it is a count of what we can parse,
+   * not of what is there. Callers that need to reason about the queue need
+   * the file, not our opinion of it.
+   */
+  listPendingRaw(peerId: string): Promise<Array<{ id: string; kind: string }>>;
   /** Look up an archived message (for reply correlation). */
   findInDone(peerId: string, msgId: string): Promise<MessageEnvelope | null>;
   /**
@@ -151,15 +163,43 @@ function peerBase(opts: InboxStoreOptions, peerId: string): string {
   return join(opts.baseDir ?? defaultBridgeRoot(), "inbox", peerId);
 }
 
-async function readEnvelope(path: string): Promise<MessageEnvelope | null> {
+/**
+ * Read one envelope, or explain why not.
+ *
+ * 🔴 This used to return a bare `null` for three very different situations —
+ * file gone, unparseable JSON, valid JSON that fails the schema — and
+ * `listEnvelopes` dropped every null without a word. A message could sit on
+ * disk in somebody's queue and be invisible to every consumer, including the
+ * counters that answer "is this peer draining?".
+ *
+ * A missing file is normal (it was consumed). The other two are NOT: they
+ * mean a message exists and nobody will ever see it. The layer knows which
+ * of the three happened; saying so is the whole difference.
+ */
+async function readEnvelopeWhy(
+  path: string,
+): Promise<{ env: MessageEnvelope | null; why?: "unreadable" | "bad-json" | "schema" }> {
+  let raw: string;
   try {
-    const raw = await readFile(path, "utf-8");
-    const parsed: unknown = JSON.parse(raw);
-    const result = MessageEnvelopeSchema.safeParse(parsed);
-    return result.success ? result.data : null;
-  } catch {
-    return null;
+    raw = await readFile(path, "utf-8");
+  } catch (e) {
+    // ENOENT is the normal case: consume() renamed it away underneath us.
+    if ((e as NodeJS.ErrnoException).code === "ENOENT") return { env: null };
+    return { env: null, why: "unreadable" };
   }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return { env: null, why: "bad-json" };
+  }
+  const result = MessageEnvelopeSchema.safeParse(parsed);
+  if (!result.success) return { env: null, why: "schema" };
+  return { env: result.data };
+}
+
+async function readEnvelope(path: string): Promise<MessageEnvelope | null> {
+  return (await readEnvelopeWhy(path)).env;
 }
 
 async function listDir(dir: string): Promise<string[]> {
@@ -177,8 +217,15 @@ async function listEnvelopes(dir: string): Promise<MessageEnvelope[]> {
   entries.sort();
   const result: MessageEnvelope[] = [];
   for (const entry of entries) {
-    const env = await readEnvelope(join(dir, entry));
-    if (env) result.push(env);
+    const { env, why } = await readEnvelopeWhy(join(dir, entry));
+    if (env) {
+      result.push(env);
+      continue;
+    }
+    // Dropping it silently is how a message becomes invisible while still
+    // occupying a queue. It stays dropped — a malformed envelope cannot be
+    // rendered — but it stops being a secret.
+    if (why) log.warn("inbox_envelope_dropped", { dir, file: entry, why });
   }
   return result;
 }
@@ -255,6 +302,23 @@ export function createInboxStore(opts: InboxStoreOptions = {}): InboxStore {
     async countPending(peerId) {
       const entries = await listDir(join(peerBase(opts, peerId), "pending"));
       return entries.length;
+    },
+
+    async listPendingRaw(peerId) {
+      const dir = join(peerBase(opts, peerId), "pending");
+      const out: Array<{ id: string; kind: string }> = [];
+      for (const entry of await listDir(dir)) {
+        let kind = "?";
+        try {
+          const raw: unknown = JSON.parse(await readFile(join(dir, entry), "utf-8"));
+          const k = (raw as { kind?: unknown } | null)?.kind;
+          if (typeof k === "string" && k.length > 0) kind = k;
+        } catch {
+          // unreadable — still a file in somebody's queue, so it still counts
+        }
+        out.push({ id: entry.replace(/\.json$/, ""), kind });
+      }
+      return out;
     },
 
     async countPendingByKind(peerId) {

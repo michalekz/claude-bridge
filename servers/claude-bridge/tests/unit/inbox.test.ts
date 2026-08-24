@@ -304,3 +304,43 @@ describe("push provenance separates 'not confirmed' from 'never sent'", () => {
     expect(await store.pushRecord("peer-e", "msg-1")).toBeNull();
   });
 });
+
+// 🔴 Dluh #4: `listPending` zahazoval neschématické obálky BEZE STOPY.
+// Zpráva mohla ležet v cizí frontě a být neviditelná pro každého čtenáře
+// včetně počítadel, která odpovídají na otázku „tahá ten peer frontu?".
+describe("neschématická obálka se zahodí, ale ne potichu", () => {
+  let baseDir: string;
+  beforeEach(async () => {
+    baseDir = await mkdtemp(join(tmpdir(), "bridge-drop-"));
+  });
+
+  test("nečitelná obálka se nevrátí, ale ohlásí se do logu", async () => {
+    const store = createInboxStore({ baseDir });
+    const peer = "11111111-1111-4111-8111-111111111111";
+    const dir = join(baseDir, "inbox", peer, "pending");
+    await mkdir(dir, { recursive: true });
+
+    // Jedna platná, jedna rozbitý JSON, jedna platný JSON mimo schéma.
+    const good: MessageEnvelope = MessageEnvelopeSchema.parse({
+      id: generateMessageId(),
+      kind: "ask",
+      from: "22222222-2222-4222-8222-222222222222",
+      fromName: "odesilatel",
+      to: peer,
+      toName: "prijemce",
+      content: "platná",
+      sentAt: new Date().toISOString(),
+    });
+    await writeFile(join(dir, `${good.id}.json`), JSON.stringify(good), "utf-8");
+    await writeFile(join(dir, "aaa-rozbity.json"), "{tohle není json", "utf-8");
+    await writeFile(join(dir, "bbb-mimo-schema.json"), JSON.stringify({ kind: "ask" }), "utf-8");
+
+    const listed = await store.listPending(peer);
+    expect(listed.map((e) => e.content)).toEqual(["platná"]);
+
+    // Podstata dluhu: počítadlo je vidělo, čtenář ne. Surový výpis je
+    // musí vidět pořád — jinak by se fronta jevila kratší, než je.
+    const raw = await store.listPendingRaw(peer);
+    expect(raw).toHaveLength(3);
+  });
+});

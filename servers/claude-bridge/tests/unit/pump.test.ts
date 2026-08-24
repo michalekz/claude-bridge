@@ -243,6 +243,34 @@ describe("peer_ask vrací queued, ne delivered", () => {
     expect(JSON.parse(textOf(third)).recipientPending).toBe(1);
   });
 
+  // 🔴 Soubor v `pending/` je DVOJÍ situace a samotný počet je nerozliší:
+  // doručeno pushem a neuklizeno × nedoručeno vůbec. 5. 8. to stálo
+  // plt-designera i mě hodiny (17 z 19 rozhodnutelných souborů bylo
+  // doručeno i zodpovězeno) a 23. 8. jsem si `13` přečetl z vlastního
+  // výstupu a prohlásil frontu za nevybranou — dorazilo všech třináct.
+  test("recipientNeverPushed odliší doručené od nedoručeného", async () => {
+    const coord = await mkCtx(baseDir, "coordinator");
+    const mantis = await mkCtx(baseDir, "mantis");
+    await register(coord);
+    await register(mantis);
+
+    // Nic se nepředalo ⇒ oba počty stejné.
+    const first = await peerAskTool(coord, { to: "mantis", content: "první" });
+    const p1 = JSON.parse(textOf(first));
+    expect(p1.recipientPending).toBe(1);
+    expect(p1.recipientNeverPushed).toBe(1);
+
+    // Push proběhl: soubor v pending/ ZŮSTÁVÁ (konzumuje jen piggyback),
+    // ale obsah u příjemce JE. Tohle je ta situace, která se dvakrát
+    // přečetla jako hluchý peer.
+    await mantis.inbox.markPushed(mantis.self.id, p1.msgId);
+
+    const second = await peerAskTool(coord, { to: "mantis", content: "druhá" });
+    const p2 = JSON.parse(textOf(second));
+    expect(p2.recipientPending).toBe(2); // dva soubory pořád leží
+    expect(p2.recipientNeverPushed).toBe(1); // ale nedoručená je JEN jedna
+  });
+
   // 🔴 `compact-anchor-request` je řídicí požadavek démona, který agent
   // nekonzumuje NIKDY — u kb-deva ležel 17 dní, zatímco všechno ostatní
   // tahal během vteřin. Kdyby se počítal, měl by `recipientPending` trvalou
