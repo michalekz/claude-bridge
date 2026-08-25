@@ -158,4 +158,21 @@ const SPAWN_ESSENTIAL_CLAUDE_VARS = new Set<string>([
   // Points CC at a specific config/credentials profile — the mechanism
   // subscription-based auth uses.
   "CLAUDE_CONFIG_DIR",
+
+  // Points CC at the identity proxy. Same class as CLAUDE_CONFIG_DIR: a
+  // mechanism the daemon must be able to SET, not a leak it must block.
+  //
+  // 🔴 The distinction this list encodes is INHERITED vs DELIBERATE, not
+  // "which prefix". The 22 July incident was a stray `ANTHROPIC_API_KEY`
+  // in the operator's shell reaching a spawned peer — inheritance, and the
+  // strip still blocks that (an inherited value is dropped by the allowlist
+  // before the strip even sees it, and by the strip if someone extraAllows
+  // it). An override is the opposite: the daemon saying what the peer needs.
+  //
+  // Without this entry a daemon-spawned peer could never reach the proxy,
+  // and since 25 August — when the machine's live credentials became a
+  // fail-closed placeholder — it would freeze on a direct 401 instead.
+  // It survived unnoticed since 22 July only because nobody spawns peers
+  // through the daemon today.
+  "ANTHROPIC_BASE_URL",
 ]);
