@@ -4320,7 +4320,7 @@ async function resolvePeer(idOrName, root = bridgeRoot(), now = Date.now()) {
 // package.json
 var package_default = {
   name: "claude-bridge-daemon",
-  version: "0.11.33",
+  version: "0.11.34",
   private: true,
   description: "Control-plane daemon for the claude-bridge plugin: peer lifecycle, telemetry, audit. Distributed as opt-in artefact \u2014 see ADR-008.",
   type: "module",
@@ -8735,13 +8735,36 @@ async function handleTeamLayout(req, ctx) {
   const runningExtras = [...runningIds].filter((id) => !specIds.has(id));
   const toStop = args.prune ? runningExtras : [];
   const toForget = args.prune ? [...stoppedIds].filter((id) => !specIds.has(id)) : [];
+  const argsOf = (rec) => rec.desired.spawnArgs ?? [];
+  const sameArgs = (a, b) => a.length === b.length && a.every((v, i) => v === b[i]);
+  const toRedeclare = spec.peers.filter((p) => runningIds.has(p.handle) && p.args.length > 0).map((p) => ({ peer: p, record: ctx.state.peers[p.handle] })).filter(
+    (x) => x.record !== void 0 && !sameArgs(argsOf(x.record), x.peer.args)
+  ).map(({ peer, record }) => ({
+    handle: peer.handle,
+    was: argsOf(record),
+    will: peer.args
+  }));
+  const launchConflicts = spec.peers.filter((p) => runningIds.has(p.handle)).flatMap((p) => {
+    const rec = ctx.state.peers[p.handle];
+    if (!rec) return [];
+    const out = [];
+    if (rec.desired.command && rec.desired.command !== p.command) {
+      out.push({ handle: p.handle, field: "command", record: rec.desired.command, spec: p.command });
+    }
+    if (rec.desired.cwd && rec.desired.cwd !== p.cwd) {
+      out.push({ handle: p.handle, field: "cwd", record: rec.desired.cwd, spec: p.cwd });
+    }
+    return out;
+  });
   const diff = {
     team: spec.team,
     plannedSpawn: toSpawn.map((p) => p.handle),
     plannedResume: toResume.map((p) => p.handle),
     plannedStop: toStop,
     plannedForget: toForget,
-    keptExtras: args.prune ? [] : runningExtras
+    keptExtras: args.prune ? [] : runningExtras,
+    plannedRedeclare: toRedeclare,
+    ...launchConflicts.length > 0 ? { launchConflicts } : {}
   };
   await writeEvent({
     event: "team_layout_reconciling",
@@ -8750,7 +8773,13 @@ async function handleTeamLayout(req, ctx) {
     details: { ...diff, apply: args.apply, prune: args.prune }
   });
   if (!args.apply) {
-    return okResult(req.id, req.tool, { mode: "plan", diff });
+    return okResult(req.id, req.tool, {
+      mode: "plan",
+      diff,
+      ...toRedeclare.length > 0 ? {
+        redeclareNote: "`plannedRedeclare` zap\xED\u0161e `desired.spawnArgs` b\u011B\u017E\xEDc\xEDm peer\u016Fm. \xDA\u010CINEK A\u017D OD P\u0158\xCD\u0160T\xCDHO RESTARTU \u2014 z\xE1pis nen\xED \xFA\u010Dinek."
+      } : {}
+    });
   }
   const spawnOne = async (p, forceResume, label) => {
     const record = ctx.state.peers[p.handle];
@@ -8914,6 +8943,29 @@ async function handleTeamLayout(req, ctx) {
       keptExtras: diff.keptExtras
     }
   });
+  const redeclared = [];
+  for (const item of toRedeclare) {
+    const rec = ctx.state.peers[item.handle];
+    if (!rec) continue;
+    rec.desired.spawnArgs = [...item.will];
+    redeclared.push(item);
+  }
+  if (redeclared.length > 0) {
+    await saveState(ctx.state);
+    await writeEvent({
+      event: "team_layout_args_redeclared",
+      by: { sessionId: req.requestedBy.sessionId, name: req.requestedBy.name },
+      requestId: req.id,
+      details: {
+        team: spec.team,
+        redeclared,
+        // Aby se zápis nečetl jako účinek — tatáž lekce jako u `switch`,
+        // kde věta „platí od dalšího požadavku" musela být opravena na TŘECH
+        // místech, protože ji každé z nich tvrdilo jinak.
+        effect: "od P\u0158\xCD\u0160T\xCDHO restartu peera; b\u011B\u017E\xEDc\xED proces se nem\u011Bn\xED"
+      }
+    });
+  }
   const failed = spawnedFailed.length > 0 || resumedFailed.length > 0 || stoppedFailed.length > 0;
   const result = {
     team: spec.team,
@@ -8927,7 +8979,15 @@ async function handleTeamLayout(req, ctx) {
     stoppedRefused,
     stoppedFailed,
     forgotten,
-    keptExtras: diff.keptExtras
+    keptExtras: diff.keptExtras,
+    redeclared,
+    ...launchConflicts.length > 0 ? { launchConflicts } : {},
+    ...redeclared.length > 0 ? {
+      redeclareNote: "Zaps\xE1no do `desired.spawnArgs`. \xDA\u010CINEK A\u017D OD P\u0158\xCD\u0160T\xCDHO RESTARTU peera \u2014 b\u011B\u017E\xEDc\xED proces se nezm\u011Bnil a jeho argv je d\xE1l to star\xE9. Z\xE1pis nen\xED \xFA\u010Dinek."
+    } : {},
+    ...launchConflicts.length > 0 ? {
+      conflictNote: "`command`/`cwd` se ze specifikace NEP\u0158EPISUJ\xCD, jen hl\xE1s\xED: \u0161patn\xE1 hodnota znamen\xE1 peer, kter\xFD se u\u017E nespust\xED. Rozd\xEDl vy\u0159e\u0161 \u010Dlov\u011Bkem \u2014 bu\u010F zest\xE1rla specifikace, nebo peer b\u011B\u017E\xED jinak, ne\u017E m\xE1."
+    } : {}
   };
   if (failed) {
     return errResult(

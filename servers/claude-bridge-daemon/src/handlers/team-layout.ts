@@ -5,6 +5,7 @@ import { z } from "zod";
 import { writeEvent } from "../events.ts";
 import type { RequestEnvelope, ResultEnvelope } from "../rpc.ts";
 import { errResult, okResult } from "../rpc.ts";
+import { saveState } from "../state.ts";
 import type { HandlerContext } from "./context.ts";
 import { bridgeIdOf } from "./peer-identity.ts";
 import { handlePeerSpawn } from "./peer-spawn.ts";
@@ -197,6 +198,71 @@ export async function handleTeamLayout(
   // on every state write, and they survive daemon restarts).
   const toForget = args.prune ? [...stoppedIds].filter((id) => !specIds.has(id)) : [];
 
+  /**
+   * ARGS PRO PEERY, KTEŘÍ UŽ BĚŽÍ (v0.11.34, GO ai-velitele 27. 8.).
+   *
+   * Do teď reconcile živý záznam nesahal: spawnoval chybějící a resumoval
+   * uspané. Peer, který ve stavu JE, si svoje `spawnArgs` nesl z adopce
+   * navěky — a když v nich něco chybělo, nedalo se to vrátit. Změřeno na
+   * `mic-bitrix-dev`: jeho `--mcp-config` (primární MCP server) v záznamu
+   * není, a NENÍ ANI na živém procesu, takže ho nešlo získat ani novou
+   * adopcí. Jediná cesta zpět byla ruční přeložení peera.
+   *
+   * `control_config` to nastavit nesmí a je to záměr — viz whitelist tam:
+   * `command`, `cwd` a `spawnArgs` se z živého procesu MĚŘÍ a ruční editace
+   * je způsob, jak se peer stane nerestartovatelným. Specifikace týmu je
+   * ale deklarativní domov, který už dnes pole `args` má; jen se pro
+   * existující záznam nepoužíval.
+   *
+   * 🔴 PRÁZDNÝ SEZNAM ZNAMENÁ „NEDEKLAROVÁNO", NE „ŽÁDNÉ ARGUMENTY".
+   *
+   * `args` má ve schématu `.default([])`, takže KAŽDÁ dnešní specifikace,
+   * která args neuvádí, jich nese nula. Bez téhle podmínky by první
+   * `apply` vymazal `spawnArgs` celé flotile — a peer bez `--channels` už
+   * nedostane budíček, což by se poznalo až tím, že přestanou chodit
+   * zprávy. Vyprázdnit args tudy tedy NELZE; je to cena za to, že
+   * neuvedené pole nesmí nic přepsat.
+   */
+  const argsOf = (rec: (typeof ctx.state.peers)[string]): string[] => rec.desired.spawnArgs ?? [];
+  const sameArgs = (a: string[], b: string[]): boolean =>
+    a.length === b.length && a.every((v, i) => v === b[i]);
+
+  const toRedeclare = spec.peers
+    .filter((p) => runningIds.has(p.handle) && p.args.length > 0)
+    .map((p) => ({ peer: p, record: ctx.state.peers[p.handle] }))
+    .filter(
+      (x): x is { peer: PeerSpec; record: NonNullable<typeof x.record> } =>
+        x.record !== undefined && !sameArgs(argsOf(x.record), x.peer.args),
+    )
+    .map(({ peer, record }) => ({
+      handle: peer.handle,
+      was: argsOf(record),
+      will: peer.args,
+    }));
+
+  /**
+   * `command` a `cwd` se HLÁSÍ, nikdy nepřepisují (pojistka ① ai-velitele).
+   *
+   * Ty dvě jsou přesně to, čeho se poznámka u `control_config` bojí: špatná
+   * hodnota znamená peer, který se už nespustí. Rozdíl proti specifikaci je
+   * nález — buď specifikace zestárla, nebo peer běží jinak, než má — a obojí
+   * chce člověka, ne tichý zápis.
+   */
+  const launchConflicts = spec.peers
+    .filter((p) => runningIds.has(p.handle))
+    .flatMap((p) => {
+      const rec = ctx.state.peers[p.handle];
+      if (!rec) return [];
+      const out: Array<{ handle: string; field: string; record: string; spec: string }> = [];
+      if (rec.desired.command && rec.desired.command !== p.command) {
+        out.push({ handle: p.handle, field: "command", record: rec.desired.command, spec: p.command });
+      }
+      if (rec.desired.cwd && rec.desired.cwd !== p.cwd) {
+        out.push({ handle: p.handle, field: "cwd", record: rec.desired.cwd, spec: p.cwd });
+      }
+      return out;
+    });
+
   const diff = {
     team: spec.team,
     plannedSpawn: toSpawn.map((p) => p.handle),
@@ -204,6 +270,8 @@ export async function handleTeamLayout(
     plannedStop: toStop,
     plannedForget: toForget,
     keptExtras: args.prune ? [] : runningExtras,
+    plannedRedeclare: toRedeclare,
+    ...(launchConflicts.length > 0 ? { launchConflicts } : {}),
   };
   await writeEvent({
     event: "team_layout_reconciling",
@@ -213,7 +281,17 @@ export async function handleTeamLayout(
   });
 
   if (!args.apply) {
-    return okResult(req.id, req.tool, { mode: "plan", diff });
+    return okResult(req.id, req.tool, {
+      mode: "plan",
+      diff,
+      ...(toRedeclare.length > 0
+        ? {
+            redeclareNote:
+              "`plannedRedeclare` zapíše `desired.spawnArgs` běžícím peerům. " +
+              "ÚČINEK AŽ OD PŘÍŠTÍHO RESTARTU — zápis není účinek.",
+          }
+        : {}),
+    });
   }
 
   /** Shared by the spawn and resume paths — same tool, different intent. */
@@ -401,6 +479,38 @@ export async function handleTeamLayout(
     },
   });
 
+  /**
+   * Zápis deklarovaných `args` do živých záznamů — až TADY, po spawnech.
+   *
+   * Pořadí je záměrné: peer, který se v tomhle běhu spawnuje nebo resumuje,
+   * dostane args od `peer_spawn`, takže by mu je tenhle krok přepisoval
+   * podruhé. `toRedeclare` proto obsahuje jen BĚŽÍCÍ peery, kterých se
+   * reconcile jinak nedotkne.
+   */
+  const redeclared: Array<{ handle: string; was: string[]; will: string[] }> = [];
+  for (const item of toRedeclare) {
+    const rec = ctx.state.peers[item.handle];
+    if (!rec) continue;
+    rec.desired.spawnArgs = [...item.will];
+    redeclared.push(item);
+  }
+  if (redeclared.length > 0) {
+    await saveState(ctx.state);
+    await writeEvent({
+      event: "team_layout_args_redeclared",
+      by: { sessionId: req.requestedBy.sessionId, name: req.requestedBy.name },
+      requestId: req.id,
+      details: {
+        team: spec.team,
+        redeclared,
+        // Aby se zápis nečetl jako účinek — tatáž lekce jako u `switch`,
+        // kde věta „platí od dalšího požadavku" musela být opravena na TŘECH
+        // místech, protože ji každé z nich tvrdilo jinak.
+        effect: "od PŘÍŠTÍHO restartu peera; běžící proces se nemění",
+      },
+    });
+  }
+
   const failed = spawnedFailed.length > 0 || resumedFailed.length > 0 || stoppedFailed.length > 0;
   const result = {
     team: spec.team,
@@ -415,6 +525,23 @@ export async function handleTeamLayout(
     stoppedFailed,
     forgotten,
     keptExtras: diff.keptExtras,
+    redeclared,
+    ...(launchConflicts.length > 0 ? { launchConflicts } : {}),
+    ...(redeclared.length > 0
+      ? {
+          redeclareNote:
+            "Zapsáno do `desired.spawnArgs`. ÚČINEK AŽ OD PŘÍŠTÍHO RESTARTU peera — " +
+            "běžící proces se nezměnil a jeho argv je dál to staré. Zápis není účinek.",
+        }
+      : {}),
+    ...(launchConflicts.length > 0
+      ? {
+          conflictNote:
+            "`command`/`cwd` se ze specifikace NEPŘEPISUJÍ, jen hlásí: špatná hodnota " +
+            "znamená peer, který se už nespustí. Rozdíl vyřeš člověkem — buď zestárla " +
+            "specifikace, nebo peer běží jinak, než má.",
+        }
+      : {}),
   };
   if (failed) {
     return errResult(
