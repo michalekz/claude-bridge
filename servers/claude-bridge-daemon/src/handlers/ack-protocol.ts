@@ -46,9 +46,17 @@ const ACK_FILENAME_EXTENSION = ".json";
 
 export interface AckVerdict {
   accepted: boolean;
-  reason: "fresh" | "none" | "too_old" | "wrong_thread";
+  reason: "fresh" | "none" | "too_old" | "wrong_thread" | "orphan_thread";
   ackThreadId?: string | null;
   writtenAt?: string | null;
+  /**
+   * How many OTHER requests were waiting on this peer when the ack was judged.
+   *
+   * The number is what makes a `wrong_thread` readable: with rivals present the
+   * refusal protects a concurrent run, with none present it would have been the
+   * bug this field was added to diagnose.
+   */
+  otherPending?: number;
 }
 
 async function fileExists(path: string): Promise<boolean> {
@@ -72,11 +80,41 @@ async function fileExists(path: string): Promise<boolean> {
  * such: the operator playbook has always said "touch the file", a human
  * following it writes nothing inside, and refusing that would break the
  * documented path to close a hole the sweep has already closed.
+ *
+ * 🔴 A FOREIGN `threadId` IS NOT AUTOMATICALLY A REJECTION (v0.11.33).
+ *
+ * Until now any ack naming a different thread was `wrong_thread`, and that
+ * turned a CORRECT answer into a refusal in the ordinary case. Measured on
+ * 2026-08-26: a peer answered a request that had already timed out, the next
+ * run found the ack, saw a thread it did not recognise, and refused — while the
+ * peer sat there having done exactly what was asked. The rule also made
+ * `skipAnchorRequest` unusable by construction: it says "the ack is already
+ * there", and an ack written before this request cannot carry this request's
+ * thread.
+ *
+ * What the thread binding is actually FOR is telling two concurrent requests on
+ * one peer apart, and that purpose is kept intact: the caller passes the
+ * threadIds of the OTHER requests still waiting on this peer.
+ *
+ *   ack names our thread            → accept (`fresh`)
+ *   ack names a thread nobody waits on, and we are the only claimant
+ *                                   → accept (`orphan_thread`)
+ *   ack names a rival's thread      → refuse (`wrong_thread`)
+ *   ack is foreign AND a rival is waiting too
+ *                                   → refuse (`wrong_thread`) — an ack that
+ *                                     names nobody cannot be assigned when
+ *                                     there is more than one candidate, and
+ *                                     guessing would inject twice.
+ *
+ * The ack means one thing regardless of which thread it names: "my anchor is
+ * flushed and I am ready." Whose request prompted it changes nothing about that
+ * fact — it only matters when two runs could each claim it.
  */
 export async function verifyAckFile(
   path: string,
   requestedAtMs: number,
   threadId: string,
+  otherPendingThreadIds: readonly string[] = [],
 ): Promise<AckVerdict> {
   let stat: Awaited<ReturnType<typeof lstat>>;
   try {
@@ -96,19 +134,28 @@ export async function verifyAckFile(
   } catch {
     // Not JSON, or empty — a `touch`ed file. Freshness is the only check left.
   }
+  const writtenAt = new Date(stat.mtimeMs).toISOString();
+  const rivals = otherPendingThreadIds.filter((t) => t !== threadId);
   if (ackThreadId !== null && ackThreadId !== threadId) {
-    return {
-      accepted: false,
-      reason: "wrong_thread",
-      ackThreadId,
-      writtenAt: new Date(stat.mtimeMs).toISOString(),
-    };
+    // Refuse only while somebody else could have meant it. With no rival
+    // waiting there is exactly one request this ack can belong to — ours.
+    if (rivals.length > 0) {
+      return {
+        accepted: false,
+        reason: "wrong_thread",
+        ackThreadId,
+        writtenAt,
+        otherPending: rivals.length,
+      };
+    }
+    return { accepted: true, reason: "orphan_thread", ackThreadId, writtenAt, otherPending: 0 };
   }
   return {
     accepted: true,
     reason: "fresh",
     ackThreadId,
-    writtenAt: new Date(stat.mtimeMs).toISOString(),
+    writtenAt,
+    otherPending: rivals.length,
   };
 }
 
@@ -142,6 +189,24 @@ export interface AckChannel {
     threadId: string,
   ): Promise<AckVerdict>;
   consume(sessionId: string): Promise<void>;
+  /**
+   * Declare that this request is now waiting on this peer, and get back the
+   * function that says it has stopped.
+   *
+   * This is what lets `verifyAckFile` tell "an ack nobody is waiting for" from
+   * "an ack the OTHER concurrent run is waiting for" — the distinction the
+   * thread binding exists to make, and the only reason a foreign thread is ever
+   * refused. Call it in a `try`/`finally` around the wait: a registration that
+   * outlives its request would make the next run refuse a perfectly good ack,
+   * which is the bug this whole change removes.
+   *
+   * In-memory and per-channel on purpose. Concurrency across daemons is
+   * prevented by the lock, so the only concurrency this must model is the one
+   * inside this process.
+   */
+  beginWaiting(sessionId: string, threadId: string): () => void;
+  /** The threadIds of the OTHER requests waiting on this peer right now. */
+  otherPending(sessionId: string, threadId: string): string[];
 }
 
 export function createAckChannel(channel: string): AckChannel {
@@ -150,11 +215,44 @@ export function createAckChannel(channel: string): AckChannel {
   // module load would outlive that redirection.
   const dir = (): string => join(controlDir(), channel);
   const path = (sessionId: string): string => join(dir(), `${sessionId}${ACK_FILENAME_EXTENSION}`);
+  /** sessionId → threadIds currently waiting. Empty sets are removed, not kept. */
+  const waiting = new Map<string, Set<string>>();
+  // A free function, not `this.otherPending`: `poll` is a method on an object
+  // literal, and a destructured `poll` would lose its receiver and read rivals
+  // off `undefined` — a crash in the one path that must not have surprises.
+  const beginWaitingOf = (sessionId: string, threadId: string): (() => void) => {
+    let set = waiting.get(sessionId);
+    if (!set) {
+      set = new Set<string>();
+      waiting.set(sessionId, set);
+    }
+    set.add(threadId);
+    let released = false;
+    return () => {
+      // Idempotent: releasing twice must not drop a thread a LATER request
+      // registered under the same id, and nothing would report that.
+      if (released) return;
+      released = true;
+      const current = waiting.get(sessionId);
+      if (!current) return;
+      current.delete(threadId);
+      if (current.size === 0) waiting.delete(sessionId);
+    };
+  };
+  const otherPendingOf = (sessionId: string, threadId: string): string[] => {
+    const set = waiting.get(sessionId);
+    if (!set) return [];
+    return [...set].filter((t) => t !== threadId);
+  };
 
   return {
     channel,
     dir,
     path,
+
+    beginWaiting: beginWaitingOf,
+
+    otherPending: otherPendingOf,
 
     async sweepStale(sessionId, reason) {
       const src = path(sessionId);
@@ -200,20 +298,33 @@ export function createAckChannel(channel: string): AckChannel {
 
     async poll(sessionId, deadline, pollMs, requestedAtMs, threadId) {
       const p = path(sessionId);
-      // A rejected ack is not a reason to stop waiting — the right one may still
-      // arrive. It IS a reason to remember why the last one failed, so the
-      // timeout can say "an ack was there and it was not yours".
-      let last: AckVerdict = { accepted: false, reason: "none" };
-      const outcome = await pollUntil<AckVerdict>(
-        async () => {
-          last = await verifyAckFile(p, requestedAtMs, threadId);
-          return last.accepted ? last : null;
-        },
-        { timeoutMs: Math.max(0, deadline - Date.now()), pollMs },
-      );
-      if (outcome.kind === "hit") return outcome.value;
-      const final = await verifyAckFile(p, requestedAtMs, threadId);
-      return final.accepted ? final : final.reason === "none" ? last : final;
+      // Registration happens HERE rather than at the three call sites, for the
+      // same reason `ALL_ACK_CHANNELS` exists a few lines below: a step every
+      // caller must remember is a step one of them eventually will not. Waiting
+      // is exactly the window in which a rival can exist, so the wait owns it.
+      const release = beginWaitingOf(sessionId, threadId);
+      try {
+        // Read on EVERY probe, not captured once: a rival may register or
+        // finish while we wait, and a snapshot taken at the top would judge the
+        // ack against a world that has moved on.
+        const rivals = (): string[] => otherPendingOf(sessionId, threadId);
+        // A rejected ack is not a reason to stop waiting — the right one may
+        // still arrive. It IS a reason to remember why the last one failed, so
+        // the timeout can say "an ack was there and it was not yours".
+        let last: AckVerdict = { accepted: false, reason: "none" };
+        const outcome = await pollUntil<AckVerdict>(
+          async () => {
+            last = await verifyAckFile(p, requestedAtMs, threadId, rivals());
+            return last.accepted ? last : null;
+          },
+          { timeoutMs: Math.max(0, deadline - Date.now()), pollMs },
+        );
+        if (outcome.kind === "hit") return outcome.value;
+        const final = await verifyAckFile(p, requestedAtMs, threadId, rivals());
+        return final.accepted ? final : final.reason === "none" ? last : final;
+      } finally {
+        release();
+      }
     },
 
     async consume(sessionId) {

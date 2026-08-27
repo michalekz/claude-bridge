@@ -69,15 +69,66 @@ describe("an ack is only accepted as the answer to THIS request", () => {
     expect(v.writtenAt).toBeTruthy();
   });
 
-  it("an ack for a different thread is refused even when it is fresh", async () => {
+  it("an ack for a RIVAL's thread is refused even when it is fresh", async () => {
     // Two compacts racing on one peer: the second must not consume the first's
     // anchor. Timestamps cannot separate these — only the thread can.
+    //
+    // v0.11.33 narrowed WHEN this fires: the rival has to actually be waiting.
+    // The protection is unchanged; what went away is the refusal in the case
+    // where there was no rival at all.
     const { verifyAck } = await importCompact();
     const path = await writeAck({ threadId: "compact:peer:aaa" });
-    const v = await verifyAck(path, Date.now() - 5_000, "compact:peer:bbb");
+    const v = await verifyAck(path, Date.now() - 5_000, "compact:peer:bbb", ["compact:peer:aaa"]);
     expect(v.accepted).toBe(false);
     expect(v.reason).toBe("wrong_thread");
     expect(v.ackThreadId).toBe("compact:peer:aaa");
+    expect(v.otherPending).toBe(1);
+  });
+
+  it("🔴 v0.11.33: an ack naming a thread NOBODY waits on is accepted", async () => {
+    // The measured defect of 2026-08-26. A peer answered a request that had
+    // already timed out; the next run saw a thread it did not recognise and
+    // refused — while the peer sat there having done exactly what was asked.
+    //
+    // With no rival registered there is exactly one request the ack can belong
+    // to, and refusing it was the bug. The ack means the same thing either way:
+    // "my anchor is flushed and I am ready."
+    const { verifyAck } = await importCompact();
+    const path = await writeAck({ threadId: "compact:peer:abandoned" });
+    const v = await verifyAck(path, Date.now() - 5_000, "compact:peer:bbb");
+    expect(v.accepted).toBe(true);
+    expect(v.reason).toBe("orphan_thread");
+    // The verdict still NAMES the foreign thread — accepting it is a decision,
+    // not a shrug, and the log has to show which ack was claimed.
+    expect(v.ackThreadId).toBe("compact:peer:abandoned");
+  });
+
+  it("🔴 v0.11.33: an orphan ack is refused while ANY rival waits — two claimants, no guess", async () => {
+    // The ack names neither of us. One of the two would inject on an ack that
+    // was never theirs, and the peer would be compacted twice. An ack that
+    // names nobody cannot be assigned when there is more than one candidate.
+    const { verifyAck } = await importCompact();
+    const path = await writeAck({ threadId: "compact:peer:abandoned" });
+    const v = await verifyAck(path, Date.now() - 5_000, "compact:peer:bbb", ["compact:peer:ccc"]);
+    expect(v.accepted).toBe(false);
+    expect(v.reason).toBe("wrong_thread");
+    expect(v.otherPending).toBe(1);
+  });
+
+  it("🔴 v0.11.33: `poll` registers its own thread, so a rival is visible without the caller helping", async () => {
+    // The registration lives in `poll` and not at the three call sites, for the
+    // same reason ALL_ACK_CHANNELS exists: a step every caller must remember is
+    // a step one of them eventually will not. Proven by measuring the registry
+    // DURING a wait, and again after it — a registration that outlives its
+    // request would make the next run refuse a good ack.
+    const { compactAcks } = await import("../src/handlers/ack-protocol.ts");
+    const peer = "peer-registry";
+    expect(compactAcks.otherPending(peer, "someone-else")).toEqual([]);
+    const waiting = compactAcks.poll(peer, Date.now() + 300, 50, Date.now(), "compact:peer:mine");
+    await new Promise((r) => setTimeout(r, 60));
+    expect(compactAcks.otherPending(peer, "someone-else")).toEqual(["compact:peer:mine"]);
+    await waiting;
+    expect(compactAcks.otherPending(peer, "someone-else")).toEqual([]);
   });
 
   it("a fresh ack with the right thread is accepted", async () => {

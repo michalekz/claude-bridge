@@ -10,7 +10,8 @@ import {
 } from "../compact-verify.ts";
 import { publishLifecycleEvent } from "../event-subscribers.ts";
 import { writeEvent } from "../events.ts";
-import { blocksInject, busyOf, probeAgents } from "../hosts/agents-json.ts";
+import { type AgentBusy, blocksInject, busyOf, probeAgents } from "../hosts/agents-json.ts";
+import { pollUntil } from "../poll.ts";
 import type { RequestEnvelope, ResultEnvelope } from "../rpc.ts";
 import { errResult, okResult } from "../rpc.ts";
 import {
@@ -100,6 +101,58 @@ import { ambiguousPeerMessage, resolvePeerRef, unresolvedPeerError } from "./pee
 const DEFAULT_ANCHOR_TIMEOUT_MS = 300_000;
 const DEFAULT_ACK_POLL_MS = 500;
 
+/**
+ * How long to WAIT for the peer to go idle after it acked — v0.11.33.
+ *
+ * 🔴 THE ONE-SHOT CHECK REFUSED ALMOST EVERY TIME, BY CONSTRUCTION.
+ *
+ * Writing the ack IS a turn. v0.11.26 knew that — it is why the probe was moved
+ * to after the ack rather than before it — but it then asked ONCE, immediately,
+ * and the tail of the acking turn is still running at that moment. Measured on
+ * 2026-08-26 across three consecutive attempts by the same operator:
+ *
+ *     22:13:38.9  peer writes the ack     (mid-turn, by definition)
+ *     22:13:39.3  daemon probes → busy    (0.4 s later)
+ *     22:13:45    that turn finally ends  (5.7 s of tail the probe never saw)
+ *
+ * All three attempts returned `skipped_busy`, and the third one was followed by
+ * a human typing `/compact` by hand into a peer that had been ready for
+ * minutes. The gate was not catching a busy peer; it was catching the peer
+ * obeying the request.
+ *
+ * So the question is asked repeatedly instead of once. 90 s is the ceiling
+ * because the tail of an ack turn is seconds — if a peer is still busy a minute
+ * and a half after saying it was ready, it has started something new, and
+ * waiting longer would hold the caller for work nobody asked us to wait for.
+ *
+ * ONE idle reading is enough, and a second confirming read would be an
+ * unmeasured invention: the failure this fixes is "the ack turn has not
+ * finished", and a turn that is still finishing cannot report idle. What the
+ * loop does NOT do is close the race — a turn may start in the gap between the
+ * reading and the keys landing (0.4 s in the P0, and the read itself costs
+ * ~600 ms). The transcript verification after the inject remains the authority,
+ * exactly as in v0.11.26.
+ */
+const DEFAULT_IDLE_TIMEOUT_MS = 90_000;
+/** `claude agents --json` costs ~600 ms, so a shorter gap would just queue probes. */
+const IDLE_POLL_MS = 1_000;
+/**
+ * A FAILED PROBE GETS A DIFFERENT BUDGET FROM A BUSY PEER — and it must.
+ *
+ * `blocksInject` refuses on both, but they are not the same fact. `busy` is a
+ * statement about the peer, and waiting is exactly the right response: the turn
+ * will end. `probe-failed` is a statement about US — the daemon could not run
+ * `claude agents --json` — and waiting does not make the peer idle, it only
+ * hopes our own tooling starts working.
+ *
+ * The 2026-08-10 P0 was `spawn claude ENOENT` on every call for a whole deploy.
+ * Under a 90 s wait that would have become 90 failed probes and 90 log lines
+ * per compact, and the answer would still have been "we do not know". So a
+ * failed probe gets a few retries — enough for a timeout under load to
+ * recover — and then the honest refusal, which is what it was before.
+ */
+const PROBE_RETRY_ATTEMPTS = 3;
+
 export const PeerCompactArgsSchema = z
   .object({
     peer: z.string().min(1),
@@ -125,6 +178,16 @@ export const PeerCompactArgsSchema = z
      * lying the day somebody grows past it.
      */
     verifyTimeoutMs: z.number().int().positive().max(600_000).optional(),
+    /**
+     * How long to wait for the peer to go idle after it acked (default 90 s).
+     *
+     * Pass a small value to get the pre-v0.11.33 behaviour — one look, then
+     * `skipped_busy`. There is no way to skip the check itself, for the same
+     * reason there is no `force`: a gate that can be turned off is the gate
+     * that was off during the 2026-08-09 double compact.
+     */
+    idleTimeoutMs: z.number().int().nonnegative().max(600_000).optional(),
+    idlePollMs: z.number().int().positive().max(10_000).optional(),
     reason: z.string().optional(),
   })
   .strict();
@@ -336,6 +399,8 @@ export async function handlePeerCompact(
 
   const anchorTimeoutMs = args.anchorTimeoutMs ?? DEFAULT_ANCHOR_TIMEOUT_MS;
   const ackPollMs = args.ackPollMs ?? DEFAULT_ACK_POLL_MS;
+  const idleTimeoutMs = args.idleTimeoutMs ?? DEFAULT_IDLE_TIMEOUT_MS;
+  const idlePollMs = args.idlePollMs ?? IDLE_POLL_MS;
   const threadId = `compact:${bridgeId}:${Date.now().toString(36)}`;
 
   await mkdir(compactAcks.dir(), { recursive: true });
@@ -486,8 +551,41 @@ export async function handlePeerCompact(
    * systemd unit never sets.
    */
   const peerSessionId = record.observed.sessionId ?? undefined;
-  const probe = await probeAgents(record.desired.command);
-  const agentBusy = busyOf(probe, peerSessionId);
+  /**
+   * ASKED REPEATEDLY, NOT ONCE (v0.11.33) — see DEFAULT_IDLE_TIMEOUT_MS.
+   *
+   * The first probe is the common case and costs nothing extra. Only when it
+   * says "not yet" does the loop start, and what it is waiting out is almost
+   * always the tail of the very turn that wrote the ack.
+   */
+  const idleStartedAt = Date.now();
+  let probe = await probeAgents(record.desired.command);
+  let agentBusy = busyOf(probe, peerSessionId);
+  let probeFailures = probe.ok ? 0 : 1;
+  if (blocksInject(agentBusy) && idleTimeoutMs > 0) {
+    await pollUntil<AgentBusy>(
+      async () => {
+        probe = await probeAgents(record.desired.command);
+        agentBusy = busyOf(probe, peerSessionId);
+        probeFailures = probe.ok ? 0 : probeFailures + 1;
+        return blocksInject(agentBusy) ? null : agentBusy;
+      },
+      {
+        timeoutMs: idleTimeoutMs,
+        pollMs: idlePollMs,
+        // Not "give up early on a slow peer" — give up on OUR broken tooling.
+        // See PROBE_RETRY_ATTEMPTS.
+        abort: () =>
+          probeFailures >= PROBE_RETRY_ATTEMPTS
+            ? { aborted: true, reason: "probe_failed_repeatedly" }
+            : { aborted: false },
+      },
+    );
+  }
+  // MEASURED, never the budget — `poll.ts`'s one invariant. Reported on both
+  // outcomes: on a success it says how much of the wait was the ack's own turn
+  // finishing, which is the number that justifies this loop existing.
+  const idleWaitedMs = Date.now() - idleStartedAt;
   if (blocksInject(agentBusy)) {
     await writeEvent({
       event: "peer_compact_skipped_busy",
@@ -502,11 +600,14 @@ export async function handlePeerCompact(
         contextPercentBefore,
         source: "claude agents --json",
         agentBusy,
+        idleWaitedMs,
+        idleTimeoutMs,
+        probeFailures,
         ...(probe.err ? { probeErr: probe.err, claudeBin: record.desired.command } : {}),
         note:
           agentBusy === "busy"
-            ? "The peer is mid-turn. Injecting now would put /compact in its queue, to run at a time nobody chose — the 2026-08-09 incident."
-            : "The probe never ran, so nothing is known about this peer's state. Refusing is the cheap side of an asymmetric bet — see the 2026-08-10 P0, where a failed probe passed as `unknown` and the gate had never once stopped anything.",
+            ? `The peer was still mid-turn after ${idleWaitedMs} ms of waiting. Injecting would put /compact in its queue, to run at a time nobody chose — the 2026-08-09 incident.`
+            : `The probe failed ${probeFailures}× in a row, so nothing is known about this peer's state. Refusing is the cheap side of an asymmetric bet — see the 2026-08-10 P0, where a failed probe passed as \`unknown\` and the gate had never once stopped anything.`,
       },
     });
     return okResult(req.id, req.tool, {
@@ -519,13 +620,16 @@ export async function handlePeerCompact(
       verified: false,
       outcome: "skipped_busy",
       agentBusy,
+      idleWaitedMs,
+      idleTimeoutMs,
+      probeFailures,
       // The failure travels in the ANSWER, not only in the log. `agentBusy:
       // "unknown"` read as "we asked and could not tell"; it meant "we never
       // asked", and the operator had no way to see the difference.
       ...(probe.err ? { probeErr: probe.err } : {}),
       note:
         agentBusy === "busy"
-          ? "Nothing was injected: `claude agents --json` reports this peer as busy, and a command sent into a busy pane is queued rather than run. The peer's anchor has been written, so a retry once it is idle costs only the inject."
+          ? `Nothing was injected: the peer was still reported busy after ${idleWaitedMs} ms of waiting (budget ${idleTimeoutMs} ms), and a command sent into a busy pane is queued rather than run. Unlike before v0.11.33 this is no longer the tail of the acking turn — that is waited out. A peer busy this long has started something else. Its anchor is written, so a retry costs only the inject.`
           : "Nothing was injected: the `claude agents --json` probe could not be run, so this peer's state is unknown. The anchor has been written, so a retry once the probe works costs only the inject. Check that the daemon can reach the `claude` binary — its systemd unit does not set PATH.",
     });
   }
@@ -541,6 +645,8 @@ export async function handlePeerCompact(
       sessionKey,
       threadId,
       injectedKeys: "[daemon] /compact",
+      agentBusy,
+      idleWaitedMs,
       contextPercentBefore,
       raceRisk: raceRisk?.level ?? null,
       transcriptPath,
@@ -584,6 +690,11 @@ export async function handlePeerCompact(
     contextPercentBefore,
     raceRisk,
     agentBusy,
+    // How long the acking turn took to finish. Reported on SUCCESS as well as
+    // on refusal, because it is the number that says whether the v0.11.33 wait
+    // is earning its keep on this fleet — and a number only the log carries is
+    // a number nobody reads. (v0.11.26 learned the same thing about `probeErr`.)
+    idleWaitedMs,
   };
   if (!transcriptPath) {
     // No statusLine capture for this peer → no transcript path → nothing to
