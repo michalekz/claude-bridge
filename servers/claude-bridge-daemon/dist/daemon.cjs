@@ -4320,7 +4320,7 @@ async function resolvePeer(idOrName, root = bridgeRoot(), now = Date.now()) {
 // package.json
 var package_default = {
   name: "claude-bridge-daemon",
-  version: "0.11.32",
+  version: "0.11.33",
   private: true,
   description: "Control-plane daemon for the claude-bridge plugin: peer lifecycle, telemetry, audit. Distributed as opt-in artefact \u2014 see ADR-008.",
   type: "module",
@@ -5681,7 +5681,7 @@ async function fileExists(path) {
     return false;
   }
 }
-async function verifyAckFile(path, requestedAtMs, threadId) {
+async function verifyAckFile(path, requestedAtMs, threadId, otherPendingThreadIds = []) {
   let stat5;
   try {
     stat5 = await (0, import_promises10.lstat)(path);
@@ -5697,28 +5697,60 @@ async function verifyAckFile(path, requestedAtMs, threadId) {
     if (typeof parsed.threadId === "string") ackThreadId = parsed.threadId;
   } catch {
   }
+  const writtenAt = new Date(stat5.mtimeMs).toISOString();
+  const rivals = otherPendingThreadIds.filter((t) => t !== threadId);
   if (ackThreadId !== null && ackThreadId !== threadId) {
-    return {
-      accepted: false,
-      reason: "wrong_thread",
-      ackThreadId,
-      writtenAt: new Date(stat5.mtimeMs).toISOString()
-    };
+    if (rivals.length > 0) {
+      return {
+        accepted: false,
+        reason: "wrong_thread",
+        ackThreadId,
+        writtenAt,
+        otherPending: rivals.length
+      };
+    }
+    return { accepted: true, reason: "orphan_thread", ackThreadId, writtenAt, otherPending: 0 };
   }
   return {
     accepted: true,
     reason: "fresh",
     ackThreadId,
-    writtenAt: new Date(stat5.mtimeMs).toISOString()
+    writtenAt,
+    otherPending: rivals.length
   };
 }
 function createAckChannel(channel) {
   const dir = () => (0, import_node_path8.join)(controlDir(), channel);
   const path = (sessionId) => (0, import_node_path8.join)(dir(), `${sessionId}${ACK_FILENAME_EXTENSION}`);
+  const waiting = /* @__PURE__ */ new Map();
+  const beginWaitingOf = (sessionId, threadId) => {
+    let set = waiting.get(sessionId);
+    if (!set) {
+      set = /* @__PURE__ */ new Set();
+      waiting.set(sessionId, set);
+    }
+    set.add(threadId);
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      const current = waiting.get(sessionId);
+      if (!current) return;
+      current.delete(threadId);
+      if (current.size === 0) waiting.delete(sessionId);
+    };
+  };
+  const otherPendingOf = (sessionId, threadId) => {
+    const set = waiting.get(sessionId);
+    if (!set) return [];
+    return [...set].filter((t) => t !== threadId);
+  };
   return {
     channel,
     dir,
     path,
+    beginWaiting: beginWaitingOf,
+    otherPending: otherPendingOf,
     async sweepStale(sessionId, reason) {
       const src = path(sessionId);
       if (!await fileExists(src)) return null;
@@ -5760,17 +5792,23 @@ function createAckChannel(channel) {
     },
     async poll(sessionId, deadline, pollMs, requestedAtMs, threadId) {
       const p = path(sessionId);
-      let last = { accepted: false, reason: "none" };
-      const outcome = await pollUntil(
-        async () => {
-          last = await verifyAckFile(p, requestedAtMs, threadId);
-          return last.accepted ? last : null;
-        },
-        { timeoutMs: Math.max(0, deadline - Date.now()), pollMs }
-      );
-      if (outcome.kind === "hit") return outcome.value;
-      const final = await verifyAckFile(p, requestedAtMs, threadId);
-      return final.accepted ? final : final.reason === "none" ? last : final;
+      const release = beginWaitingOf(sessionId, threadId);
+      try {
+        const rivals = () => otherPendingOf(sessionId, threadId);
+        let last = { accepted: false, reason: "none" };
+        const outcome = await pollUntil(
+          async () => {
+            last = await verifyAckFile(p, requestedAtMs, threadId, rivals());
+            return last.accepted ? last : null;
+          },
+          { timeoutMs: Math.max(0, deadline - Date.now()), pollMs }
+        );
+        if (outcome.kind === "hit") return outcome.value;
+        const final = await verifyAckFile(p, requestedAtMs, threadId, rivals());
+        return final.accepted ? final : final.reason === "none" ? last : final;
+      } finally {
+        release();
+      }
     },
     async consume(sessionId) {
       const src = path(sessionId);
@@ -6053,6 +6091,9 @@ async function measureIdentity(panePid, opts = {}) {
 // src/handlers/peer-compact.ts
 var DEFAULT_ANCHOR_TIMEOUT_MS = 3e5;
 var DEFAULT_ACK_POLL_MS = 500;
+var DEFAULT_IDLE_TIMEOUT_MS = 9e4;
+var IDLE_POLL_MS = 1e3;
+var PROBE_RETRY_ATTEMPTS = 3;
 var PeerCompactArgsSchema = external_exports.object({
   peer: external_exports.string().min(1),
   anchorTimeoutMs: external_exports.number().int().positive().max(3e5).optional(),
@@ -6077,6 +6118,16 @@ var PeerCompactArgsSchema = external_exports.object({
    * lying the day somebody grows past it.
    */
   verifyTimeoutMs: external_exports.number().int().positive().max(6e5).optional(),
+  /**
+   * How long to wait for the peer to go idle after it acked (default 90 s).
+   *
+   * Pass a small value to get the pre-v0.11.33 behaviour — one look, then
+   * `skipped_busy`. There is no way to skip the check itself, for the same
+   * reason there is no `force`: a gate that can be turned off is the gate
+   * that was off during the 2026-08-09 double compact.
+   */
+  idleTimeoutMs: external_exports.number().int().nonnegative().max(6e5).optional(),
+  idlePollMs: external_exports.number().int().positive().max(1e4).optional(),
   reason: external_exports.string().optional()
 }).strict();
 async function sweepAllAcksAtStartup() {
@@ -6175,6 +6226,8 @@ async function handlePeerCompact(req, ctx) {
   }
   const anchorTimeoutMs = args.anchorTimeoutMs ?? DEFAULT_ANCHOR_TIMEOUT_MS;
   const ackPollMs = args.ackPollMs ?? DEFAULT_ACK_POLL_MS;
+  const idleTimeoutMs = args.idleTimeoutMs ?? DEFAULT_IDLE_TIMEOUT_MS;
+  const idlePollMs = args.idlePollMs ?? IDLE_POLL_MS;
   const threadId = `compact:${bridgeId}:${Date.now().toString(36)}`;
   await (0, import_promises12.mkdir)(compactAcks.dir(), { recursive: true });
   const requestedAtMs = Date.now();
@@ -6262,8 +6315,28 @@ async function handlePeerCompact(req, ctx) {
   } : null;
   const transcriptPath = snapshot.transcriptPath;
   const peerSessionId = record.observed.sessionId ?? void 0;
-  const probe = await probeAgents(record.desired.command);
-  const agentBusy = busyOf(probe, peerSessionId);
+  const idleStartedAt = Date.now();
+  let probe = await probeAgents(record.desired.command);
+  let agentBusy = busyOf(probe, peerSessionId);
+  let probeFailures = probe.ok ? 0 : 1;
+  if (blocksInject(agentBusy) && idleTimeoutMs > 0) {
+    await pollUntil(
+      async () => {
+        probe = await probeAgents(record.desired.command);
+        agentBusy = busyOf(probe, peerSessionId);
+        probeFailures = probe.ok ? 0 : probeFailures + 1;
+        return blocksInject(agentBusy) ? null : agentBusy;
+      },
+      {
+        timeoutMs: idleTimeoutMs,
+        pollMs: idlePollMs,
+        // Not "give up early on a slow peer" — give up on OUR broken tooling.
+        // See PROBE_RETRY_ATTEMPTS.
+        abort: () => probeFailures >= PROBE_RETRY_ATTEMPTS ? { aborted: true, reason: "probe_failed_repeatedly" } : { aborted: false }
+      }
+    );
+  }
+  const idleWaitedMs = Date.now() - idleStartedAt;
   if (blocksInject(agentBusy)) {
     await writeEvent({
       event: "peer_compact_skipped_busy",
@@ -6278,8 +6351,11 @@ async function handlePeerCompact(req, ctx) {
         contextPercentBefore,
         source: "claude agents --json",
         agentBusy,
+        idleWaitedMs,
+        idleTimeoutMs,
+        probeFailures,
         ...probe.err ? { probeErr: probe.err, claudeBin: record.desired.command } : {},
-        note: agentBusy === "busy" ? "The peer is mid-turn. Injecting now would put /compact in its queue, to run at a time nobody chose \u2014 the 2026-08-09 incident." : "The probe never ran, so nothing is known about this peer's state. Refusing is the cheap side of an asymmetric bet \u2014 see the 2026-08-10 P0, where a failed probe passed as `unknown` and the gate had never once stopped anything."
+        note: agentBusy === "busy" ? `The peer was still mid-turn after ${idleWaitedMs} ms of waiting. Injecting would put /compact in its queue, to run at a time nobody chose \u2014 the 2026-08-09 incident.` : `The probe failed ${probeFailures}\xD7 in a row, so nothing is known about this peer's state. Refusing is the cheap side of an asymmetric bet \u2014 see the 2026-08-10 P0, where a failed probe passed as \`unknown\` and the gate had never once stopped anything.`
       }
     });
     return okResult(req.id, req.tool, {
@@ -6292,11 +6368,14 @@ async function handlePeerCompact(req, ctx) {
       verified: false,
       outcome: "skipped_busy",
       agentBusy,
+      idleWaitedMs,
+      idleTimeoutMs,
+      probeFailures,
       // The failure travels in the ANSWER, not only in the log. `agentBusy:
       // "unknown"` read as "we asked and could not tell"; it meant "we never
       // asked", and the operator had no way to see the difference.
       ...probe.err ? { probeErr: probe.err } : {},
-      note: agentBusy === "busy" ? "Nothing was injected: `claude agents --json` reports this peer as busy, and a command sent into a busy pane is queued rather than run. The peer's anchor has been written, so a retry once it is idle costs only the inject." : "Nothing was injected: the `claude agents --json` probe could not be run, so this peer's state is unknown. The anchor has been written, so a retry once the probe works costs only the inject. Check that the daemon can reach the `claude` binary \u2014 its systemd unit does not set PATH."
+      note: agentBusy === "busy" ? `Nothing was injected: the peer was still reported busy after ${idleWaitedMs} ms of waiting (budget ${idleTimeoutMs} ms), and a command sent into a busy pane is queued rather than run. Unlike before v0.11.33 this is no longer the tail of the acking turn \u2014 that is waited out. A peer busy this long has started something else. Its anchor is written, so a retry costs only the inject.` : "Nothing was injected: the `claude agents --json` probe could not be run, so this peer's state is unknown. The anchor has been written, so a retry once the probe works costs only the inject. Check that the daemon can reach the `claude` binary \u2014 its systemd unit does not set PATH."
     });
   }
   await writeEvent({
@@ -6308,6 +6387,8 @@ async function handlePeerCompact(req, ctx) {
       sessionKey,
       threadId,
       injectedKeys: "[daemon] /compact",
+      agentBusy,
+      idleWaitedMs,
       contextPercentBefore,
       raceRisk: raceRisk?.level ?? null,
       transcriptPath
@@ -6335,7 +6416,12 @@ async function handlePeerCompact(req, ctx) {
     anchorMsgId,
     contextPercentBefore,
     raceRisk,
-    agentBusy
+    agentBusy,
+    // How long the acking turn took to finish. Reported on SUCCESS as well as
+    // on refusal, because it is the number that says whether the v0.11.33 wait
+    // is earning its keep on this fleet — and a number only the log carries is
+    // a number nobody reads. (v0.11.26 learned the same thing about `probeErr`.)
+    idleWaitedMs
   };
   if (!transcriptPath) {
     await writeEvent({
