@@ -255,7 +255,12 @@ export async function handleTeamLayout(
       if (!rec) return [];
       const out: Array<{ handle: string; field: string; record: string; spec: string }> = [];
       if (rec.desired.command && rec.desired.command !== p.command) {
-        out.push({ handle: p.handle, field: "command", record: rec.desired.command, spec: p.command });
+        out.push({
+          handle: p.handle,
+          field: "command",
+          record: rec.desired.command,
+          spec: p.command,
+        });
       }
       if (rec.desired.cwd && rec.desired.cwd !== p.cwd) {
         out.push({ handle: p.handle, field: "cwd", record: rec.desired.cwd, spec: p.cwd });

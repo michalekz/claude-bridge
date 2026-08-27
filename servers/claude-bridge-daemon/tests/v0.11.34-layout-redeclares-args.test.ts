@@ -98,7 +98,9 @@ describe("args běžícího peera se dají deklarovat ze specifikace", () => {
     ];
     expect(rec?.desired.spawnArgs).toEqual([...BASE, MCP, MCP_PATH]);
 
-    const data = res.data as { redeclared: Array<{ handle: string; was: string[]; will: string[] }> };
+    const data = res.data as {
+      redeclared: Array<{ handle: string; was: string[]; will: string[] }>;
+    };
     expect(data.redeclared).toHaveLength(1);
     expect(data.redeclared[0]?.was).toEqual(BASE);
     expect(data.redeclared[0]?.will).toContain(MCP_PATH);
@@ -128,13 +130,18 @@ describe("args běžícího peera se dají deklarovat ze specifikace", () => {
     expect(rec?.desired.spawnArgs).toEqual(BASE);
   });
 
-  it("🔴 PRÁZDNÝ SEZNAM = NEDEKLAROVÁNO, ne „žádné argumenty\"", async () => {
+  it('🔴 PRÁZDNÝ SEZNAM = NEDEKLAROVÁNO, ne „žádné argumenty"', async () => {
     // `args` má ve schématu `.default([])`, takže KAŽDÁ dnešní specifikace,
     // která args neuvádí, jich nese nula. Bez téhle podmínky by první `apply`
     // vymazal spawnArgs celé flotile — a peer bez `--channels` už nedostane
     // budíček, což by se poznalo až tím, že přestanou chodit zprávy.
     const doc = await fleet(BASE);
-    const spec = { team: "mic", peers: [{ handle: HANDLE, displayName: HANDLE, cwd: "/opt/micronic", command: "/bin/claude" }] };
+    const spec = {
+      team: "mic",
+      peers: [
+        { handle: HANDLE, displayName: HANDLE, cwd: "/opt/micronic", command: "/bin/claude" },
+      ],
+    };
 
     const res = await layout(doc, spec, true);
     const rec = (doc as { peers: Record<string, { desired: { spawnArgs: string[] } }> }).peers[
@@ -154,9 +161,11 @@ describe("args běžícího peera se dají deklarovat ze specifikace", () => {
     });
 
     const res = await layout(doc, spec, true);
-    const rec = (doc as {
-      peers: Record<string, { desired: { command: string; cwd: string; spawnArgs: string[] } }>;
-    }).peers[HANDLE];
+    const rec = (
+      doc as {
+        peers: Record<string, { desired: { command: string; cwd: string; spawnArgs: string[] } }>;
+      }
+    ).peers[HANDLE];
 
     expect(rec?.desired.command).toBe("/bin/claude");
     expect(rec?.desired.cwd).toBe("/opt/micronic");
