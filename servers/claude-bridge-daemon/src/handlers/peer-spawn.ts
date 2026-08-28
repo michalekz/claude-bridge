@@ -2,6 +2,8 @@ import { existsSync, readdirSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import { projectsRoot, sessionFile } from "@claude-bridge/shared";
 import { z } from "zod";
+import { resolveBaseUrl } from "../base-url.ts";
+import { readConfig } from "../config.ts";
 import { harvestEnv, sanitizeEnv } from "../env-whitelist.ts";
 import { publishLifecycleEvent } from "../event-subscribers.ts";
 import { writeEvent } from "../events.ts";
@@ -90,6 +92,11 @@ export const PeerSpawnArgsSchema = z
      * Still filtered by the same whitelist — this changes where the values come
      * from, not which names get through.
      */
+    /**
+     * Kudy peer chodí na Anthropic. `null` = ZÁMĚRNĚ napřímo, vynechání =
+     * spadni na flotilový default z `config.json`. Viz `base-url.ts`.
+     */
+    anthropicBaseUrl: z.string().nullable().optional(),
     envBase: z.record(z.string()).optional(),
     model: z.string().nullable().optional(),
     accountProfile: z
@@ -245,6 +252,26 @@ export async function handlePeerSpawn(
   }
 
   const overrides: Record<string, string> = { ...args.extraEnv };
+  /**
+   * 🔴 TOHLE JE TA OPRAVA. v0.11.32 přidala `ANTHROPIC_BASE_URL` do
+   * `SPAWN_ESSENTIAL_CLAUDE_VARS`, což znamená jen „override s tímhle jménem
+   * SMÍ projít". Otevřela bránu — a NIKDO JÍ NEPROŠEL, protože žádné volací
+   * místo tu hodnotu nedosazovalo. Ověřeno grepem: nula výskytů v celém
+   * `src/` mimo whitelist. Naostro se to poprvé použilo 27. 8. v 19:07 a
+   * peer se vrátil mimo proxy, tedy na tokenu STROJE.
+   *
+   * Test u té změny to nechytil, protože si override dodával sám —
+   * `sanitizeEnv({}, {overrides: {ANTHROPIC_BASE_URL: …}})` testuje
+   * `sanitizeEnv`, ne tuhle cestu. KÁNON: opravit oprávnění není opravit akci.
+   */
+  const baseUrl = resolveBaseUrl(
+    {
+      anthropicBaseUrl:
+        args.anthropicBaseUrl ?? ctx.state.peers[args.handle]?.desired.anthropicBaseUrl,
+    },
+    await readConfig(),
+  );
+  if (baseUrl.value !== null) overrides["ANTHROPIC_BASE_URL"] = baseUrl.value;
   if (args.accountProfile) {
     // Real profile paths land in F3; the daemon still applies the
     // override so tests can assert on env composition.
@@ -358,6 +385,10 @@ export async function handlePeerSpawn(
         cwd: args.cwd,
         command: args.command,
         spawnArgs: args.args,
+        // Jen když o tom NĚKDO rozhodl. Zapsat `null` i za „nikdo nerozhodl"
+        // by z nerozhodnutí udělalo deklaraci „záměrně napřímo" a umlčelo
+        // bránu — tedy přesně to, čemu se ty tři stavy vyhýbají.
+        ...(args.anthropicBaseUrl !== undefined ? { anthropicBaseUrl: args.anthropicBaseUrl } : {}),
         // Where this peer belongs, so a later restart does not have to ask a
         // window that may no longer exist.
         ...(args.inSession ? { homeSession: args.inSession } : {}),

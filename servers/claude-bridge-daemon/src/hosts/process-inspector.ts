@@ -76,6 +76,19 @@ export interface ProcessInspector {
    * pane owns a process. Stops at pid 1 or `maxDepth`.
    */
   ancestorsOf(pid: number, maxDepth?: number): Promise<number[]>;
+  /**
+   * Peerovo VLASTNÍ prostředí, jak ho má proces teď. Nefiltrované.
+   *
+   * Na rozhraní od v0.11.35, protože brána restartu se musí zeptat, co peer
+   * skutečně má — `spawnEnv` v záznamu to odpovědět neumí: harvest
+   * `ANTHROPIC_*` stripuje, takže uložená kopie tu proměnnou z principu nikdy
+   * nenese. Jediný pramen je proces sám.
+   *
+   * VOLITELNÁ: `/proc` umí číst jen linuxový inspektor. Kdo ji nemá, musí
+   * volajícímu vyjít jako „NEVÍM", ne jako „peer nic nemá" — ten rozdíl
+   * řídí, jestli brána restartu odmítne, nebo mlčí.
+   */
+  readProcEnviron?(pid: number): Promise<Record<string, string>>;
 }
 
 const DEFAULT_MAX_DEPTH = 8;

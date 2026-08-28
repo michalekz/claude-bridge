@@ -59,7 +59,14 @@ import { applyStateChange } from "./state-writer.ts";
  * approval, 2026-08-06 — written here rather than in a meeting note so that
  * whoever reaches for the obvious completion in a month reads the reason.)
  */
-export const PEER_SETTABLE = ["label", "windowIndex", "model", "accountProfile", "role"] as const;
+export const PEER_SETTABLE = [
+  "label",
+  "windowIndex",
+  "model",
+  "accountProfile",
+  "role",
+  "anthropicBaseUrl",
+] as const;
 
 const PeerSetSchema = z
   .object({
@@ -78,6 +85,21 @@ const PeerSetSchema = z
     windowIndex: z.number().int().min(0).max(999).optional(),
     model: z.string().min(1).nullable().optional(),
     accountProfile: z.string().min(1).nullable().optional(),
+    /**
+     * Kudy peer chodí na Anthropic. `null` = ZÁMĚRNĚ napřímo.
+     *
+     * 🔴 PROČ TOHLE SMÍ, KDYŽ `spawnArgs` NESMÍ. Whitelist výš odmítá
+     * `cwd`, `command` a `spawnArgs` s odůvodněním, že se MĚŘÍ z živého
+     * procesu při adopci a ruční editace z peera udělá nerestartovatelného.
+     * Tahle proměnná se do záznamu neměří NIKDY: harvest `ANTHROPIC_*`
+     * stripuje, takže jinak než deklarací do `desired` nevstoupí. Je to
+     * čistý záměr, jako `model`.
+     *
+     * Bez ní by brána z v0.11.35 („restart by peerovi vzal proxy")
+     * odmítala a nenabízela žádnou podporovanou cestu ven — přesně slepá
+     * ulička, do které jsme 27. 8. zabředli u `spawnArgs`.
+     */
+    anthropicBaseUrl: z.string().min(1).nullable().optional(),
     /**
      * `team` is NOT here, and its absence is the decision.
      *

@@ -464,6 +464,7 @@ describe("N — a peer is adopted under its own name", () => {
         },
       ],
       ancestorsOf: async () => [],
+      readProcEnviron: async () => ({}) as Record<string, string>,
     };
     const res = await handlers.dispatch(
       makeRequest("team_adopt", { team: "hmh", dryRun: false }, "req-n"),

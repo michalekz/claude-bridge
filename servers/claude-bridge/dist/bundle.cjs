@@ -18243,7 +18243,7 @@ var StdioServerTransport = class {
 // package.json
 var package_default = {
   name: "claude-bridge",
-  version: "0.11.34",
+  version: "0.11.35",
   private: true,
   description: "MCP server for cross-Claude-Code-chat orchestration over local session JSONL files",
   type: "module",
@@ -22127,9 +22127,13 @@ var ControlConfigArgs = external_exports.object({
     role: external_exports.string().min(1).max(32).nullable().optional(),
     windowIndex: external_exports.number().int().min(0).max(999).optional(),
     model: external_exports.string().min(1).nullable().optional(),
-    accountProfile: external_exports.string().min(1).nullable().optional()
+    accountProfile: external_exports.string().min(1).nullable().optional(),
+    /** v0.11.35 — kudy peer chodí na Anthropic; `null` = ZÁMĚRNĚ napřímo. */
+    anthropicBaseUrl: external_exports.string().min(1).nullable().optional()
   }).strict().optional(),
-  unset: external_exports.array(external_exports.enum(["label", "role", "windowIndex", "model", "accountProfile"])).optional(),
+  unset: external_exports.array(
+    external_exports.enum(["label", "role", "windowIndex", "model", "accountProfile", "anthropicBaseUrl"])
+  ).optional(),
   dryRun: external_exports.boolean().optional(),
   reason: external_exports.string().optional(),
   wait: external_exports.boolean().optional(),
@@ -24345,7 +24349,7 @@ var TOOLS = [
   },
   {
     name: "control_config",
-    description: 'Read and DECLARE peer intent \u2014 the single configuration tool for the control plane (v0.11.0). No args: every peer\'s declared values plus any drift. `peer`: one peer (session id, full name, or short name inside your team). `team`: that team\'s peers. `set`: declare values \u2014 allowed keys are label, role, windowIndex, model, accountProfile. `role: "velitel"` is the one the daemon acts on: that peer is ordered LAST in a team stop or restart, because a coordinator goes down after the peers it coordinates. Undeclared peers fall back to matching the name, and both tools report which source decided \u2014 a name match is a guess (`mic-velitel-zastupce` contains the word and is not the coordinator). `unset: ["windowIndex"]` withdraws a declaration entirely, which is different from setting it empty. `team` is deliberately NOT settable: moving a peer between teams is lifecycle work (window, home session, label) and belongs to team_adopt/team_release. `dryRun:true` shows the change and writes nothing. IMPORTANT: this writes the DESIRED half of the record only; it changes nothing in the world. windowIndex is recorded and drift is reported, but NO WINDOW IS MOVED: asserting intent is not implemented yet, and will require an explicit opt-in when it is. Drift entries carry BOTH the declared and the measured value and BOTH ways out: `assert` (make the world match) and `adopt` (accept reality as the new intent). Destructive lifecycle operations are deliberately NOT here \u2014 see peer_stop / peer_restart / team_stop. The same function is reachable from a shell: `claude-bridge-daemon config --help`.',
+    description: 'Read and DECLARE peer intent \u2014 the single configuration tool for the control plane (v0.11.0). No args: every peer\'s declared values plus any drift. `peer`: one peer (session id, full name, or short name inside your team). `team`: that team\'s peers. `set`: declare values \u2014 allowed keys are label, role, windowIndex, model, accountProfile, anthropicBaseUrl. **`anthropicBaseUrl` (v0.11.35) says how this peer reaches Anthropic and has THREE states, not two:** a string routes it there, `null` means DELIBERATELY DIRECT, and an absent key means nobody decided \u2014 which falls back to `spawn.anthropicBaseUrl` in the daemon config. Absent and `null` are not the same, and `unset` (withdraw) is not `set: null` (declare direct). It is settable although `command`/`cwd`/`spawnArgs` are not, and the difference is where the value comes from: those three are MEASURED off a live process at adopt time, while this one is never measured at all \u2014 the harvest strips `ANTHROPIC_*`, so it can only ever enter the record as a declaration. It exists because on 2026-08-27 a `peer_restart` returned a peer OUTSIDE the identity proxy, onto the machine token, and there was no supported way to say where it belonged. `role: "velitel"` is the one the daemon acts on: that peer is ordered LAST in a team stop or restart, because a coordinator goes down after the peers it coordinates. Undeclared peers fall back to matching the name, and both tools report which source decided \u2014 a name match is a guess (`mic-velitel-zastupce` contains the word and is not the coordinator). `unset: ["windowIndex"]` withdraws a declaration entirely, which is different from setting it empty. `team` is deliberately NOT settable: moving a peer between teams is lifecycle work (window, home session, label) and belongs to team_adopt/team_release. `dryRun:true` shows the change and writes nothing. IMPORTANT: this writes the DESIRED half of the record only; it changes nothing in the world. windowIndex is recorded and drift is reported, but NO WINDOW IS MOVED: asserting intent is not implemented yet, and will require an explicit opt-in when it is. Drift entries carry BOTH the declared and the measured value and BOTH ways out: `assert` (make the world match) and `adopt` (accept reality as the new intent). Destructive lifecycle operations are deliberately NOT here \u2014 see peer_stop / peer_restart / team_stop. The same function is reachable from a shell: `claude-bridge-daemon config --help`.',
     inputSchema: {
       type: "object",
       properties: {
@@ -24367,13 +24371,20 @@ var TOOLS = [
               description: "Requested window position. Recorded only in v0.11.0."
             },
             model: { type: ["string", "null"], description: "Model the peer SHOULD run" },
-            accountProfile: { type: ["string", "null"], description: "Billing identity" }
+            accountProfile: { type: ["string", "null"], description: "Billing identity" },
+            anthropicBaseUrl: {
+              type: ["string", "null"],
+              description: "How this peer reaches Anthropic. String = route there; null = DELIBERATELY DIRECT; omit = nobody decided, fall back to the fleet default. `unset` withdraws the declaration and is NOT the same as setting null."
+            }
           },
           additionalProperties: false
         },
         unset: {
           type: "array",
-          items: { type: "string", enum: ["label", "windowIndex", "model", "accountProfile"] },
+          items: {
+            type: "string",
+            enum: ["label", "windowIndex", "model", "accountProfile", "anthropicBaseUrl"]
+          },
           description: "Withdraw a declaration, returning the key to 'nobody has said'. NOT the same as setting it empty: an undeclared windowIndex reports no drift wherever the window sits, a declared one that disagrees does."
         },
         dryRun: { type: "boolean", description: "Preview the change without writing" },
@@ -24542,7 +24553,7 @@ var TOOLS = [
   },
   {
     name: "peer_restart",
-    description: 'Restart a peer through the control-plane daemon \u2014 the owner\'s protocol a)-g). **BREAKING in v0.11.18: this is now GRACEFUL by default and can take minutes.** Sequence: the daemon decides WHAT to resume from the peer\'s measured identity, puts a "get ready, you are coming back" request in its inbox, waits for the ack, stops it with the graceful peer_stop primitive, relaunches it with its stored environment and its own transcript, confirms the peer that came back is the one that left, and finally tells the peer what happened and why. If the peer does NOT say it is ready within `readyTimeoutMs` (default 120 s), the call FAILS with `restart_ready_timeout` and **nothing is stopped and nothing is killed** \u2014 the peer is running exactly as before. The request stands: calling again resumes the SAME request, and a late ack still counts. `force:true` is the old behaviour \u2014 no asking, relaunch now; it skips WAITING, never EVIDENCE (the pane archive, the identity check, and the message warning the peer that its anchor may be half-written all still happen). A peer whose identity is UNKNOWN is REFUSED (`restart_identity_unknown`) rather than guessed at, because resuming its handle would relaunch it EMPTY and resuming nothing would drop its context \u2014 run team_reconcile to measure it first. Note the interaction with `wait`: a graceful restart legitimately exceeds the default 10 s, so you get `outcome: "pending"` and collect the verdict with control_result \u2014 that is not a failure. The peer is asked ONCE: a ready-ack is a full agent turn (measured 30 s on a live peer), and asking again for a stop-ack would need a second one. The result reports `resumedSessionId` (did the context survive?), `mode`, `readyWaitedMs`, `stoppedCleanly` and `reported` (did step g reach the peer?).',
+    description: 'Restart a peer through the control-plane daemon \u2014 the owner\'s protocol a)-g). **BREAKING in v0.11.18: this is now GRACEFUL by default and can take minutes.** Sequence: the daemon decides WHAT to resume from the peer\'s measured identity, puts a "get ready, you are coming back" request in its inbox, waits for the ack, stops it with the graceful peer_stop primitive, relaunches it with its stored environment and its own transcript, confirms the peer that came back is the one that left, and finally tells the peer what happened and why. If the peer does NOT say it is ready within `readyTimeoutMs` (default 120 s), the call FAILS with `restart_ready_timeout` and **nothing is stopped and nothing is killed** \u2014 the peer is running exactly as before. The request stands: calling again resumes the SAME request, and a late ack still counts. `force:true` is the old behaviour \u2014 no asking, relaunch now; it skips WAITING, never EVIDENCE (the pane archive, the identity check, and the message warning the peer that its anchor may be half-written all still happen). \u{1F534} **v0.11.35 \u2014 a restart that would silently drop the peer out of the identity proxy is REFUSED** (`restart_would_drop_proxy`). On 2026-08-27 a restart returned a peer without `ANTHROPIC_BASE_URL`, i.e. onto the MACHINE token and outside identity routing; only a five-minute-latency watchdog noticed. The check is COMPARATIVE, not absolute: it refuses only when the live process demonstrably HAS that variable (read from its own `/proc/<pid>/environ`, because the stored `spawnEnv` never carries it \u2014 the harvest strips `ANTHROPIC_*`) and nobody has declared where the peer belongs. An installation with no proxy at all is never bothered. **The refusal asks for a DECISION, not for a particular value**: declare `control_config peer:\u2026 set:{anthropicBaseUrl: <url>}` to keep it, or `set:{anthropicBaseUrl:null}` to put it deliberately direct, or set `spawn.anthropicBaseUrl` in the daemon config as the fleet default. There is no force: a force here could only mean `drop it silently`, which is the incident. A peer whose identity is UNKNOWN is REFUSED (`restart_identity_unknown`) rather than guessed at, because resuming its handle would relaunch it EMPTY and resuming nothing would drop its context \u2014 run team_reconcile to measure it first. Note the interaction with `wait`: a graceful restart legitimately exceeds the default 10 s, so you get `outcome: "pending"` and collect the verdict with control_result \u2014 that is not a failure. The peer is asked ONCE: a ready-ack is a full agent turn (measured 30 s on a live peer), and asking again for a stop-ack would need a second one. The result reports `resumedSessionId` (did the context survive?), `mode`, `readyWaitedMs`, `stoppedCleanly` and `reported` (did step g reach the peer?).',
     inputSchema: {
       type: "object",
       properties: {

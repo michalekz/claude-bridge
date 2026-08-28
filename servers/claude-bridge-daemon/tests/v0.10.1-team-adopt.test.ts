@@ -53,6 +53,9 @@ function fakeInspector(peers: ProcRec[], parents: Record<number, number> = {}) {
       }
       return chain;
     },
+    // Adopce prostředí nečte; brána restartu ano. Prázdná mapa = „peer nic
+    // takového nemá", což je pro tenhle test správná odpověď.
+    readProcEnviron: async (_pid: number) => ({}) as Record<string, string>,
   };
 }
 

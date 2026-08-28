@@ -91,6 +91,26 @@ export interface PeerRecord {
 
 /** Intent. Written by the config path and by spawn/adopt; replayed by restart. */
 export interface PeerDesired {
+  /**
+   * Kudy tenhle peer chodí na Anthropic. TŘI STAVY:
+   *
+   *   chybí      nerozhodnuto → použije se flotilový default z config.json
+   *   řetězec    tahle adresa, bez ohledu na flotilový default
+   *   null       ZÁMĚRNĚ NAPŘÍMO — výjimka, brána restartu mlčí
+   *
+   * 🔴 NENÍ to měřená hodnota. `command`, `cwd` a `spawnArgs` se sbírají
+   * z živého procesu při adopci, a proto je `control_config` nastavit
+   * NESMÍ (ruční editace = nerestartovatelný peer). Tohle pole se
+   * neměří nikdy: harvest `ANTHROPIC_*` stripuje, takže do záznamu jinak
+   * než deklarací nevstoupí. Je to čistý záměr, jako `model` — a proto
+   * `control_config` nastavit SMÍ.
+   *
+   * Přidáno po incidentu 27. 8. 19:07: `peer_restart` vrátil peera bez
+   * proxy, protože v0.11.32 přidala proměnnou jen na seznam POVOLENÝCH
+   * override a žádné volací místo ji nedosazovalo. Brána otevřená, nikdo
+   * jí neprošel.
+   */
+  anthropicBaseUrl?: string | null;
   /** Team identifier from team_layout apply or team_adopt; undefined for ad-hoc peer_spawn. */
   team?: string;
   /**

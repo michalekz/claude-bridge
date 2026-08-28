@@ -91,6 +91,7 @@ describe("team_reconcile reports the gap between state and reality", () => {
     const inspector = {
       listClaudePeers: async () => (opts.peers ?? []) as never[],
       ancestorsOf: async () => [],
+      readProcEnviron: async () => ({}) as Record<string, string>,
     };
     return {
       handlers,

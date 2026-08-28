@@ -2,8 +2,11 @@ import { existsSync } from "node:fs";
 import { mkdir } from "node:fs/promises";
 import { join } from "node:path";
 import { z } from "zod";
+import { resolveBaseUrl, restartWouldDropProxy } from "../base-url.ts";
+import { readConfig } from "../config.ts";
 import { writeEvent } from "../events.ts";
 import { parseHostTarget } from "../hosts/driver.ts";
+import { defaultProcessInspector } from "../hosts/process-inspector.ts";
 import { pollUntil } from "../poll.ts";
 import type { RequestEnvelope, ResultEnvelope } from "../rpc.ts";
 import { errResult, okResult } from "../rpc.ts";
@@ -509,6 +512,58 @@ export async function handlePeerRestart(
       `A restart of '${record.handle}' is already in its ${inFlight.phase} phase (requested at ${inFlight.requestedAt} by ${inFlight.requestId}). Entering it twice would risk two processes behind one record. Wait for it, or check team_reconcile for a restart_pending drift if the caller is gone.`,
       { handle: record.handle, phase: inFlight.phase, since: inFlight.requestedAt },
     );
+  }
+
+  /**
+   * 🔴 BRÁNA: VZAL BY TENHLE RESTART PEEROVI PROXY? (v0.11.35)
+   *
+   * Incident 27. 8. 19:07: `peer_restart` vrátil `mic-bitrix-dev` BEZ
+   * `ANTHROPIC_BASE_URL`, tedy mimo směrování identit a na tokenu STROJE.
+   * Chytil to až detektor C po deseti minutách. Příčina byla ve spawnu
+   * (nikdo tu proměnnou nedosazoval); tohle je pojistka, aby se opravená
+   * cesta nedala znovu tiše obejít.
+   *
+   * ⚠ PTÁ SE NA ROZHODNUTÍ, NE NA HODNOTU. Kdo chce peera vědomě mimo
+   * proxy, deklaruje `anthropicBaseUrl: null` a brána mlčí. Odmítnutí
+   * přijde jen tehdy, když peer proxy PROKAZATELNĚ MÁ (čteno z jeho
+   * `/proc/<pid>/environ`) a nikdo neřekl, co má být po restartu.
+   *
+   * Proto srovnávací a ne absolutní: absolutní podmínka by odmítala
+   * restartovat peery každé instalaci, která žádný router identit nemá —
+   * a most se rozdává ven.
+   */
+  const baseUrlDecision = resolveBaseUrl(record.desired, await readConfig());
+  if (!baseUrlDecision.decided) {
+    const pid = record.observed.pid;
+    const inspector = defaultProcessInspector();
+    // `null` = NEVÍME (starý pid, jiná platforma, nepřečtený /proc). Brána
+    // pak mlčí: hlídá doloženou ztrátu, ne domněnku.
+    const liveEnviron =
+      pid && inspector.readProcEnviron
+        ? await inspector.readProcEnviron(pid).catch(() => null)
+        : null;
+    if (restartWouldDropProxy(baseUrlDecision, liveEnviron)) {
+      const had = liveEnviron?.["ANTHROPIC_BASE_URL"] ?? "";
+      await writeEvent({
+        event: "peer_restart_refused_would_drop_proxy",
+        level: "warn",
+        by: { sessionId: req.requestedBy.sessionId, name: req.requestedBy.name },
+        requestId: req.id,
+        details: { handle: record.handle, liveBaseUrl: had, source: baseUrlDecision.source },
+      });
+      return errResult(
+        req.id,
+        req.tool,
+        "restart_would_drop_proxy",
+        `Peer '${record.handle}' běží s ANTHROPIC_BASE_URL=${had}, ale nikdo nedeklaroval, kudy má chodit po restartu — restart by ho vyhodil mimo proxy, na token stroje, a poznalo by se to až z hlídky. Nic se nestalo. Rozhodni: control_config peer:"${record.observed.name}" set:{anthropicBaseUrl:"${had}"} pro zachování, nebo set:{anthropicBaseUrl:null} pro vědomý přímý běh. Flotilový default patří do ~/.claude-bridge/control/config.json → spawn.anthropicBaseUrl.`,
+        {
+          handle: record.handle,
+          liveBaseUrl: had,
+          // Aby se „nikdo nerozhodl" nečetlo jako „rozhodnuto napřímo".
+          decisionSource: baseUrlDecision.source,
+        },
+      );
+    }
   }
 
   // NOTE: sanitized env pulled from process.env — daemon's own process.

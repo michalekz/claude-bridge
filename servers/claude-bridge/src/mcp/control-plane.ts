@@ -183,10 +183,16 @@ export const ControlConfigArgs = z
         windowIndex: z.number().int().min(0).max(999).optional(),
         model: z.string().min(1).nullable().optional(),
         accountProfile: z.string().min(1).nullable().optional(),
+        /** v0.11.35 — kudy peer chodí na Anthropic; `null` = ZÁMĚRNĚ napřímo. */
+        anthropicBaseUrl: z.string().min(1).nullable().optional(),
       })
       .strict()
       .optional(),
-    unset: z.array(z.enum(["label", "role", "windowIndex", "model", "accountProfile"])).optional(),
+    unset: z
+      .array(
+        z.enum(["label", "role", "windowIndex", "model", "accountProfile", "anthropicBaseUrl"]),
+      )
+      .optional(),
     dryRun: z.boolean().optional(),
     reason: z.string().optional(),
     wait: z.boolean().optional(),
