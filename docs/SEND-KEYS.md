@@ -158,9 +158,31 @@ type the word. A payload starting with `-` is parsed as a tmux option. `-l`
 (literal) and `--` (end of options) remove both. The Enter at step 5 is sent
 *without* `-l`, because there the key is what is wanted.
 
-**`capture-pane -p` returns clean text.** No ANSI escapes, so no stripping is
-needed before matching — and none is done. If anyone ever adds `-e` to capture
-colours for an audit trail, they must add the stripping in the same change.
+**The capture is taken with `-e`, and the stripping is ours** (v0.11.38). Until
+then it was `capture-pane -p`, which returns clean text and needed no
+stripping. The escapes had to come back for one reason: Claude Code draws a
+PROMPT SUGGESTION in an empty box, and in a clean capture that suggestion is
+byte-for-byte a person's unsent sentence. On 2026-08-28 the hygiene phase spent
+all 40 strokes trying to clear 47 characters nobody had typed and then refused
+the send — a safeguard against typing on a human's text, fired by text the
+machine had written to itself.
+
+A suggestion is drawn DIM (SGR 2); human text is not. So `decodeCapture` reads
+the escapes and returns two views of the same instant:
+
+| view | what it is | who reads it |
+|---|---|---|
+| `plain` | byte-identical to the old `capture-pane -p` | delivery predicates, the log |
+| `withoutGhosts` | every dimmed character replaced by a space | "is the box empty", "what draft is in it" |
+| `ghostChars` | non-blank characters that blanking removed | the log, so the two views can differ visibly |
+
+Three measurements shape the decoder, and all three are in its comment:
+dim state **carries across rows** (a wrapped suggestion declares `ESC[2m` once,
+so a per-line regular expression filters nothing); a capture region **declares
+the state it starts in** (nothing is inherited from above it); and stripping
+OSC + SGR and right-trimming each row **reproduces `capture-pane -p` byte for
+byte**, which is why turning `-e` on did not disturb what the delivery
+predicates read.
 
 ---
 

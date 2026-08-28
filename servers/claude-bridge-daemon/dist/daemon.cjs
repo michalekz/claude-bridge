@@ -4320,7 +4320,7 @@ async function resolvePeer(idOrName, root = bridgeRoot(), now = Date.now()) {
 // package.json
 var package_default = {
   name: "claude-bridge-daemon",
-  version: "0.11.37",
+  version: "0.11.38",
   private: true,
   description: "Control-plane daemon for the claude-bridge plugin: peer lifecycle, telemetry, audit. Distributed as opt-in artefact \u2014 see ADR-008.",
   type: "module",
@@ -10242,6 +10242,60 @@ var PASTE_COLLAPSE_LIMIT = 800;
 var MAX_CLEAR_STROKES = 40;
 var CLEAR_STROKE_BATCH = 4;
 var KILL_RING_HINT = "Ctrl+Y to paste deleted text";
+var ESCAPE_SEQUENCE = /\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b[@-_]/g;
+var SGR = /^\x1b\[([0-9;]*)m$/;
+function nextDimState(current, params) {
+  let dim = current;
+  for (const p of params.split(";")) {
+    if (p === "" || p === "0") dim = false;
+    else if (p === "2") dim = true;
+    else if (p === "22") dim = false;
+  }
+  return dim;
+}
+function blankRun(text) {
+  return text.replace(/[^\n]/g, " ");
+}
+function countVisible(text) {
+  return (text.match(/\S/g) ?? []).length;
+}
+function trimRows(text) {
+  return text.split("\n").map((row) => row.replace(/[ \t]+$/, "")).join("\n");
+}
+function decodeCapture(raw) {
+  const plain = [];
+  const ghostFree = [];
+  let dim = false;
+  let ghostChars = 0;
+  let at = 0;
+  ESCAPE_SEQUENCE.lastIndex = 0;
+  for (let m = ESCAPE_SEQUENCE.exec(raw); m !== null; m = ESCAPE_SEQUENCE.exec(raw)) {
+    const text = raw.slice(at, m.index);
+    plain.push(text);
+    if (dim) {
+      ghostFree.push(blankRun(text));
+      ghostChars += countVisible(text);
+    } else {
+      ghostFree.push(text);
+    }
+    at = m.index + m[0].length;
+    const sgr = SGR.exec(m[0]);
+    if (sgr) dim = nextDimState(dim, sgr[1] ?? "");
+  }
+  const tail = raw.slice(at);
+  plain.push(tail);
+  if (dim) {
+    ghostFree.push(blankRun(tail));
+    ghostChars += countVisible(tail);
+  } else {
+    ghostFree.push(tail);
+  }
+  return {
+    plain: trimRows(plain.join("")),
+    withoutGhosts: trimRows(ghostFree.join("")),
+    ghostChars
+  };
+}
 var RULE = /^[─-╿\s]+$/;
 function readInputLine(captured) {
   const lines = captured.split("\n");
@@ -10818,6 +10872,7 @@ var TmuxDriver = class _TmuxDriver {
     let delivered = false;
     let attempts = 0;
     let capturedTail = "";
+    let ghostChars = 0;
     let lastError = null;
     let where = "absent";
     let boxAfterAttempt = "empty";
@@ -10834,8 +10889,10 @@ var TmuxDriver = class _TmuxDriver {
         continue;
       }
       await new Promise((r) => setTimeout(r, this.sendVerifyDelayMs));
-      capturedTail = await this.capturePane(canonical);
-      const probe = inputLineHolds(capturedTail, keys);
+      const capture = await this.capturePane(canonical);
+      capturedTail = capture.plain;
+      ghostChars = capture.ghostChars;
+      const probe = inputLineHolds(capture.withoutGhosts, keys);
       delivered = probe.delivered;
       where = probe.where;
       boxAfterAttempt = probe.inputLine.kind;
@@ -10855,6 +10912,16 @@ var TmuxDriver = class _TmuxDriver {
       boxAfterAttempt,
       inputLine: cleared.kind,
       clearStrokes: cleared.strokes,
+      // Non-blank characters that were on the pane but drawn dim, i.e. the
+      // client's own suggestion text. Recorded even when zero: it is what makes
+      // "the box looked full and we called it empty" legible instead of odd.
+      //
+      // TWO FIELDS, NEVER A SUM. The hygiene phase and the delivery check look
+      // at the same box at two different moments, and a suggestion is usually
+      // present at both — adding them reports 48 characters of ghost where 24
+      // were ever drawn. Two numbers over one phenomenon get a NAME each.
+      ghostCharsBeforeClear: cleared.ghostChars,
+      ghostCharsAtVerify: ghostChars,
       ...cleared.kind === "displaced" ? { displacedDraft: cleared.draft, restorable: cleared.restorable } : {},
       ...lastError ? { error: lastError } : {},
       capturedTail: capturedTail.slice(-240)
@@ -10893,15 +10960,17 @@ var TmuxDriver = class _TmuxDriver {
    * verdict is claimed about what was there.
    */
   async clearInputLine(target) {
-    const before = readInputLine(await this.capturePane(target));
+    const first = await this.capturePane(target);
+    const before = readInputLine(first.withoutGhosts);
+    let ghostChars = first.ghostChars;
     if (before.kind === "no-marker") {
       await this.tmux(["send-keys", "-t", target, "C-u"], SEND_KEYS_TIMEOUT_MS).catch(
         () => void 0
       );
-      return { kind: "not-an-input-box", draft: "", strokes: 1, restorable: false };
+      return { kind: "not-an-input-box", draft: "", strokes: 1, restorable: false, ghostChars };
     }
     if (before.kind === "empty") {
-      return { kind: "was-empty", draft: "", strokes: 0, restorable: false };
+      return { kind: "was-empty", draft: "", strokes: 0, restorable: false, ghostChars };
     }
     let strokes = 0;
     let probe = before;
@@ -10914,19 +10983,24 @@ var TmuxDriver = class _TmuxDriver {
       ).catch(() => void 0);
       strokes += batch;
       await new Promise((r) => setTimeout(r, this.sendVerifyDelayMs));
-      captured = await this.capturePane(target);
-      probe = readInputLine(captured);
+      const capture = await this.capturePane(target);
+      captured = capture.plain;
+      ghostChars = capture.ghostChars;
+      probe = readInputLine(capture.withoutGhosts);
       if (probe.kind !== "draft") break;
     }
     if (probe.kind === "draft") {
-      return { kind: "stuck", draft: probe.text, strokes, restorable: false };
+      return { kind: "stuck", draft: probe.text, strokes, restorable: false, ghostChars };
     }
     return {
       kind: "displaced",
       draft: before.text,
       strokes,
-      // Claude Code says so itself, in the status row, right after a kill.
-      restorable: captured.includes(KILL_RING_HINT)
+      // Claude Code says so itself, in the status row, right after a kill. Read
+      // from the UNFILTERED pane: the hint is the client's own offer to undo,
+      // not a suggestion, and losing it would understate what can be restored.
+      restorable: captured.includes(KILL_RING_HINT),
+      ghostChars
     };
   }
   /**
@@ -11070,15 +11144,24 @@ var TmuxDriver = class _TmuxDriver {
     if (swept > 0) log11.warn("tmux_orphan_buffers_swept", { swept });
     return { tmuxVersion: version, versionMeasured, sweptBuffers: swept };
   }
+  /**
+   * The visible pane, in TWO views of the same instant.
+   *
+   * `-e` keeps the escape sequences, which is the only way to tell Claude
+   * Code's greyed-out prompt suggestion from a person's unsent sentence — see
+   * `decodeCapture`, where the measurements live. `plain` is byte-identical to
+   * what `capture-pane -p` used to return, so the predicates that read it were
+   * not disturbed by turning `-e` on.
+   */
   async capturePane(sessionKey) {
     try {
       const { stdout } = await this.tmux(
-        ["capture-pane", "-p", "-t", sessionKey],
+        ["capture-pane", "-e", "-p", "-t", sessionKey],
         QUERY_TIMEOUT_MS
       );
-      return stdout;
+      return decodeCapture(stdout);
     } catch {
-      return "";
+      return { plain: "", withoutGhosts: "", ghostChars: 0 };
     }
   }
   /**

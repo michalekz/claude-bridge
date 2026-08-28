@@ -29,11 +29,13 @@ import {
 const PROBE_RETRY_PAUSE_MS = 200;
 import {
   CLEAR_STROKE_BATCH,
+  type DecodedCapture,
   type DeliveryWhere,
   type InputLineProbe,
   KILL_RING_HINT,
   MAX_CLEAR_STROKES,
   type PayloadRoute,
+  decodeCapture,
   displacedDraftNotice,
   inputLineHolds,
   payloadRoute,
@@ -195,6 +197,8 @@ export interface ClearOutcome {
   strokes: number;
   /** Whether Claude Code offered `Ctrl+Y`, i.e. confirmed it holds the text. */
   restorable: boolean;
+  /** Dimmed characters seen in the box — the client's suggestion, not a draft. */
+  ghostChars: number;
 }
 
 /**
@@ -835,6 +839,7 @@ export class TmuxDriver implements SessionHostDriver {
     let delivered = false;
     let attempts = 0;
     let capturedTail = "";
+    let ghostChars = 0;
     let lastError: string | null = null;
     let where: DeliveryWhere = "absent";
     let boxAfterAttempt: InputLineProbe["kind"] = "empty";
@@ -862,11 +867,19 @@ export class TmuxDriver implements SessionHostDriver {
         continue;
       }
       await new Promise((r) => setTimeout(r, this.sendVerifyDelayMs));
-      capturedTail = await this.capturePane(canonical);
+      const capture = await this.capturePane(canonical);
+      capturedTail = capture.plain;
+      ghostChars = capture.ghostChars;
       // v0.11.25: the payload must be in the INPUT LINE, not merely on screen.
       // See `inputLineHolds` for what the old whole-pane check was actually
       // answering, and why the palette is not part of the test.
-      const probe = inputLineHolds(capturedTail, keys);
+      //
+      // v0.11.38: on the GHOST-FREE view. A prompt suggestion can neither prove
+      // a delivery nor block one — it is not our payload, and a box holding
+      // only a suggestion is a box that took nothing, which is exactly the
+      // state the retry below was written for. The log keeps the unfiltered
+      // pane plus `ghostChars`, so a reader can see why the two differ.
+      const probe = inputLineHolds(capture.withoutGhosts, keys);
       delivered = probe.delivered;
       where = probe.where;
       boxAfterAttempt = probe.inputLine.kind;
@@ -901,6 +914,16 @@ export class TmuxDriver implements SessionHostDriver {
       boxAfterAttempt,
       inputLine: cleared.kind,
       clearStrokes: cleared.strokes,
+      // Non-blank characters that were on the pane but drawn dim, i.e. the
+      // client's own suggestion text. Recorded even when zero: it is what makes
+      // "the box looked full and we called it empty" legible instead of odd.
+      //
+      // TWO FIELDS, NEVER A SUM. The hygiene phase and the delivery check look
+      // at the same box at two different moments, and a suggestion is usually
+      // present at both — adding them reports 48 characters of ghost where 24
+      // were ever drawn. Two numbers over one phenomenon get a NAME each.
+      ghostCharsBeforeClear: cleared.ghostChars,
+      ghostCharsAtVerify: ghostChars,
       ...(cleared.kind === "displaced"
         ? { displacedDraft: cleared.draft, restorable: cleared.restorable }
         : {}),
@@ -948,15 +971,22 @@ export class TmuxDriver implements SessionHostDriver {
    * verdict is claimed about what was there.
    */
   private async clearInputLine(target: string): Promise<ClearOutcome> {
-    const before = readInputLine(await this.capturePane(target));
+    // GHOST-FREE, and this is the whole point of v0.11.38: what the client
+    // SUGGESTS in an empty box is not text anyone typed, and `C-u` cannot
+    // clear it. Read as a draft it spends every stroke and then refuses the
+    // send to protect a sentence nobody wrote — measured on this peer,
+    // 2026-08-28, 47 characters, `peer_compact` failed in its send stage.
+    const first = await this.capturePane(target);
+    const before = readInputLine(first.withoutGhosts);
+    let ghostChars = first.ghostChars;
     if (before.kind === "no-marker") {
       await this.tmux(["send-keys", "-t", target, "C-u"], SEND_KEYS_TIMEOUT_MS).catch(
         () => undefined,
       );
-      return { kind: "not-an-input-box", draft: "", strokes: 1, restorable: false };
+      return { kind: "not-an-input-box", draft: "", strokes: 1, restorable: false, ghostChars };
     }
     if (before.kind === "empty") {
-      return { kind: "was-empty", draft: "", strokes: 0, restorable: false };
+      return { kind: "was-empty", draft: "", strokes: 0, restorable: false, ghostChars };
     }
 
     let strokes = 0;
@@ -970,20 +1000,25 @@ export class TmuxDriver implements SessionHostDriver {
       ).catch(() => undefined);
       strokes += batch;
       await new Promise((r) => setTimeout(r, this.sendVerifyDelayMs));
-      captured = await this.capturePane(target);
-      probe = readInputLine(captured);
+      const capture = await this.capturePane(target);
+      captured = capture.plain;
+      ghostChars = capture.ghostChars;
+      probe = readInputLine(capture.withoutGhosts);
       if (probe.kind !== "draft") break;
     }
 
     if (probe.kind === "draft") {
-      return { kind: "stuck", draft: probe.text, strokes, restorable: false };
+      return { kind: "stuck", draft: probe.text, strokes, restorable: false, ghostChars };
     }
     return {
       kind: "displaced",
       draft: before.text,
       strokes,
-      // Claude Code says so itself, in the status row, right after a kill.
+      // Claude Code says so itself, in the status row, right after a kill. Read
+      // from the UNFILTERED pane: the hint is the client's own offer to undo,
+      // not a suggestion, and losing it would understate what can be restored.
       restorable: captured.includes(KILL_RING_HINT),
+      ghostChars,
     };
   }
 
@@ -1144,15 +1179,24 @@ export class TmuxDriver implements SessionHostDriver {
     return { tmuxVersion: version, versionMeasured, sweptBuffers: swept };
   }
 
-  private async capturePane(sessionKey: string): Promise<string> {
+  /**
+   * The visible pane, in TWO views of the same instant.
+   *
+   * `-e` keeps the escape sequences, which is the only way to tell Claude
+   * Code's greyed-out prompt suggestion from a person's unsent sentence — see
+   * `decodeCapture`, where the measurements live. `plain` is byte-identical to
+   * what `capture-pane -p` used to return, so the predicates that read it were
+   * not disturbed by turning `-e` on.
+   */
+  private async capturePane(sessionKey: string): Promise<DecodedCapture> {
     try {
       const { stdout } = await this.tmux(
-        ["capture-pane", "-p", "-t", sessionKey],
+        ["capture-pane", "-e", "-p", "-t", sessionKey],
         QUERY_TIMEOUT_MS,
       );
-      return stdout;
+      return decodeCapture(stdout);
     } catch {
-      return "";
+      return { plain: "", withoutGhosts: "", ghostChars: 0 };
     }
   }
 

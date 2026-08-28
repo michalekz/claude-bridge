@@ -91,6 +91,136 @@ export type InputLineProbe =
   | { kind: "draft"; text: string }
   | { kind: "no-marker" };
 
+/**
+ * Reading a capture that still has its escape sequences — and why we now take one.
+ *
+ * MEASURED 2026-08-28, after `peer_compact` on peer `ai-bridge-dev` failed in
+ * its send stage. The clear-verify reported 47 characters it could not clear,
+ * and the "draft" it refused to type onto was never a draft: it was Claude
+ * Code's own PROMPT SUGGESTION, the greyed-out sentence the client offers in an
+ * empty box. `C-u` cannot clear it, because there is nothing in the box to
+ * clear — so every stroke was spent and the send was refused to protect a
+ * person's text that nobody had written.
+ *
+ * A suggestion is drawn DIM (SGR 2) and a person's text is not, so the two are
+ * distinguishable — but only in a capture taken with `-e`, which keeps the
+ * escape sequences. Without it the client's suggestion and a human sentence are
+ * the same bytes. The fleet's delivery watchdog found this first and filters
+ * the same attribute (/opt/hmh, commit dcc5fd5).
+ *
+ * THREE MEASUREMENTS SHAPE WHAT IS BELOW.
+ *
+ * 1. DIM STATE CARRIES ACROSS ROWS. A suggestion too long for one row declares
+ *    `ESC[2m` on its first row only; continuation rows carry no sequence at all
+ *    and the run closes at the end of the last one. A per-line regular
+ *    expression therefore sees an unterminated run and filters NOTHING on a
+ *    wrapped suggestion. That is why this is a state machine over the whole
+ *    capture and not a substitution per line.
+ *
+ * 2. A CAPTURE REGION DECLARES THE STATE IT STARTS IN. Capturing only the
+ *    continuation row of a wrapped run re-emits `ESC[2m` at its head, so no
+ *    attribute is inherited from above the region. The state machine is
+ *    complete with what it is handed.
+ *
+ * 3. STRIPPING OSC AND SGR AND TRIMMING EACH ROW'S TRAILING WHITESPACE
+ *    REPRODUCES `capture-pane -p` BYTE FOR BYTE — checked on a static pane and
+ *    on a live pane that did not change between the two reads. That equality is
+ *    what lets `plain` keep feeding the delivery predicates unchanged: turning
+ *    `-e` on changes what we can SEE, not what they read.
+ *
+ * Dimmed characters are BLANKED, not deleted, because `readInputLine` un-wraps
+ * the box by column arithmetic — deleting would slide the rest of a row left
+ * and take the geometry with it. Blanking is done per UTF-16 unit for the same
+ * reason: one unit in, one unit out.
+ */
+export interface DecodedCapture {
+  /** Byte-identical to what `capture-pane -p` would have returned. */
+  plain: string;
+  /** The same pane with every dimmed character replaced by a space. */
+  withoutGhosts: string;
+  /** Non-blank characters that blanking removed. 0 means the two views agree. */
+  ghostChars: number;
+}
+
+/** OSC (hyperlinks), CSI (SGR among them), and two-character escapes. */
+// biome-ignore lint/suspicious/noControlCharactersInRegex: ESC is the subject — this reads terminal output
+const ESCAPE_SEQUENCE = /\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b[@-_]/g;
+
+/** An SGR sequence and its parameters — the only kind that changes dim state. */
+// biome-ignore lint/suspicious/noControlCharactersInRegex: ESC is the subject — this reads terminal output
+const SGR = /^\x1b\[([0-9;]*)m$/;
+
+/**
+ * Apply one SGR sequence to the dim state.
+ *
+ * Only three parameters matter: `2` turns dim on, `22` turns it off, and `0`
+ * (as does a bare `ESC[m`) resets everything. Colours are the bulk of what
+ * Claude Code emits and they leave dim exactly as they found it — which is why
+ * a filter that keyed on "grey" would be wrong: the status row draws grey with
+ * `38;5;246`, a colour, while a suggestion is an ATTRIBUTE.
+ */
+function nextDimState(current: boolean, params: string): boolean {
+  let dim = current;
+  for (const p of params.split(";")) {
+    if (p === "" || p === "0") dim = false;
+    else if (p === "2") dim = true;
+    else if (p === "22") dim = false;
+  }
+  return dim;
+}
+
+/** Same length, same rows — only the characters go. */
+function blankRun(text: string): string {
+  return text.replace(/[^\n]/g, " ");
+}
+
+function countVisible(text: string): number {
+  return (text.match(/\S/g) ?? []).length;
+}
+
+/** tmux drops trailing whitespace per row without `-e`; with `-e` it does not. */
+function trimRows(text: string): string {
+  return text
+    .split("\n")
+    .map((row) => row.replace(/[ \t]+$/, ""))
+    .join("\n");
+}
+
+export function decodeCapture(raw: string): DecodedCapture {
+  const plain: string[] = [];
+  const ghostFree: string[] = [];
+  let dim = false;
+  let ghostChars = 0;
+  let at = 0;
+  ESCAPE_SEQUENCE.lastIndex = 0;
+  for (let m = ESCAPE_SEQUENCE.exec(raw); m !== null; m = ESCAPE_SEQUENCE.exec(raw)) {
+    const text = raw.slice(at, m.index);
+    plain.push(text);
+    if (dim) {
+      ghostFree.push(blankRun(text));
+      ghostChars += countVisible(text);
+    } else {
+      ghostFree.push(text);
+    }
+    at = m.index + m[0].length;
+    const sgr = SGR.exec(m[0]);
+    if (sgr) dim = nextDimState(dim, sgr[1] ?? "");
+  }
+  const tail = raw.slice(at);
+  plain.push(tail);
+  if (dim) {
+    ghostFree.push(blankRun(tail));
+    ghostChars += countVisible(tail);
+  } else {
+    ghostFree.push(tail);
+  }
+  return {
+    plain: trimRows(plain.join("")),
+    withoutGhosts: trimRows(ghostFree.join("")),
+    ghostChars,
+  };
+}
+
 /** Box-drawing rule that closes the input box. */
 const RULE = /^[─-╿\s]+$/;
 
