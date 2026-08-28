@@ -516,3 +516,50 @@ describe("piggyback inbox consumption", () => {
     expect((await mantis.inbox.listDone(mantis.self.id)).length).toBe(1);
   });
 });
+
+// 🔴 `self.name` musí říct, ODKUD je — nález ai-process-deva 28. 8.
+//
+// Po respawnu tvrdila jedna odpověď `peer_list` dvě jména: `self.name`
+// „oxy-kb" (poslední článek řetězce, `basename(cwd)`) proti `peers[].name`
+// „ai-process-dev" z heartbeatu. `self` se rozhoduje JEDNOU při startu MCP
+// serveru — kdy je informací nejmíň — a už se nepřepočítá.
+//
+// Cache zůstává (rozhodnutí ai-velitele: přepočet je změna chování za běhu).
+// Přibývá JMENOVKA, zrcadlí `servedBy_odvozen` ai-kb-opse: dopočet, který
+// o sobě nic neřekne, nelze vyšetřit. A `cwd-slug` je jméno SDÍLENÉ —
+// v `/opt/oxy-kb` sedí pět sessions, takže neurčuje nikoho.
+describe("self nese provenienci jména", () => {
+  let dir = "";
+  beforeAll(async () => {
+    dir = await mkdtemp(join(tmpdir(), "cb-selfsrc-"));
+  });
+  afterAll(async () => {
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  async function selfOf(source: "cwd-slug" | "jsonl-title", name: string) {
+    const ctx = await buildContext({
+      identity: { id: makeId(name), name, displayName: name, source },
+      baseDir: dir,
+      withHeartbeat: false,
+      emitTerminalTitle: false,
+      version: "0.0.1-test",
+      nameRefreshIntervalMs: 0,
+    });
+    const res = await peerListTool(ctx);
+    return JSON.parse(res.content[0]?.text ?? "{}").self;
+  }
+
+  test("fallback z cwd se PŘIZNÁ", async () => {
+    const self = await selfOf("cwd-slug", "oxy-kb");
+    expect(self.nameSource).toBe("cwd-slug");
+    expect(self.nameIsFallback).toBe(true);
+  });
+
+  test("skutečná identita se jako fallback NEOZNAČÍ", async () => {
+    const self = await selfOf("jsonl-title", "ai-process-dev");
+    expect(self.nameSource).toBe("jsonl-title");
+    // Nepřítomnost je tu záměr: příznak nese jen ten, kdo ho má.
+    expect(self.nameIsFallback).toBeUndefined();
+  });
+});

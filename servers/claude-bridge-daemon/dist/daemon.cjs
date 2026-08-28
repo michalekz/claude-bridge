@@ -4320,7 +4320,7 @@ async function resolvePeer(idOrName, root = bridgeRoot(), now = Date.now()) {
 // package.json
 var package_default = {
   name: "claude-bridge-daemon",
-  version: "0.11.35",
+  version: "0.11.36",
   private: true,
   description: "Control-plane daemon for the claude-bridge plugin: peer lifecycle, telemetry, audit. Distributed as opt-in artefact \u2014 see ADR-008.",
   type: "module",
@@ -7943,7 +7943,7 @@ async function handlePeerRestart(req, ctx) {
         req.id,
         req.tool,
         "restart_would_drop_proxy",
-        `Peer '${record.handle}' b\u011B\u017E\xED s ANTHROPIC_BASE_URL=${had}, ale nikdo nedeklaroval, kudy m\xE1 chodit po restartu \u2014 restart by ho vyhodil mimo proxy, na token stroje, a poznalo by se to a\u017E z hl\xEDdky. Nic se nestalo. Rozhodni: control_config peer:"${record.observed.name}" set:{anthropicBaseUrl:"${had}"} pro zachov\xE1n\xED, nebo set:{anthropicBaseUrl:null} pro v\u011Bdom\xFD p\u0159\xEDm\xFD b\u011Bh. Flotilov\xFD default pat\u0159\xED do ~/.claude-bridge/control/config.json \u2192 spawn.anthropicBaseUrl.`,
+        `Peer '${record.handle}' b\u011B\u017E\xED s ANTHROPIC_BASE_URL=${had}, ale nikdo nedeklaroval, kudy m\xE1 chodit po restartu \u2014 restart by ho vyhodil mimo proxy, na token stroje, a poznalo by se to a\u017E z hl\xEDdky. Nic se nestalo. Rozhodni: control_config peer:"${record.observed.name}" set:{anthropicBaseUrl:"${had}"} pro zachov\xE1n\xED, nebo set:{anthropicBaseUrl:null} pro v\u011Bdom\xFD p\u0159\xEDm\xFD b\u011Bh. Flotilov\xFD default pat\u0159\xED do ~/.claude-bridge/control/config.json \u2192 spawn.anthropicBaseUrl. \u26A0 Per-peer deklarace p\u0159es control_config funguje a\u017E ze session s pluginem v0.11.35+ \u2014 star\u0161\xED most ten kl\xED\u010D odm\xEDtne d\u0159\xEDv, ne\u017E se sem dostane, a restart peera plugin NEAKTUALIZUJE. Do t\xE9 doby je funk\u010Dn\xED cesta flotilov\xFD default, kter\xFD \u010Dte d\xE9mon.`,
         {
           handle: record.handle,
           liveBaseUrl: had,

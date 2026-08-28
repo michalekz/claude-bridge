@@ -555,7 +555,7 @@ export async function handlePeerRestart(
         req.id,
         req.tool,
         "restart_would_drop_proxy",
-        `Peer '${record.handle}' běží s ANTHROPIC_BASE_URL=${had}, ale nikdo nedeklaroval, kudy má chodit po restartu — restart by ho vyhodil mimo proxy, na token stroje, a poznalo by se to až z hlídky. Nic se nestalo. Rozhodni: control_config peer:"${record.observed.name}" set:{anthropicBaseUrl:"${had}"} pro zachování, nebo set:{anthropicBaseUrl:null} pro vědomý přímý běh. Flotilový default patří do ~/.claude-bridge/control/config.json → spawn.anthropicBaseUrl.`,
+        `Peer '${record.handle}' běží s ANTHROPIC_BASE_URL=${had}, ale nikdo nedeklaroval, kudy má chodit po restartu — restart by ho vyhodil mimo proxy, na token stroje, a poznalo by se to až z hlídky. Nic se nestalo. Rozhodni: control_config peer:"${record.observed.name}" set:{anthropicBaseUrl:"${had}"} pro zachování, nebo set:{anthropicBaseUrl:null} pro vědomý přímý běh. Flotilový default patří do ~/.claude-bridge/control/config.json → spawn.anthropicBaseUrl. ⚠ Per-peer deklarace přes control_config funguje až ze session s pluginem v0.11.35+ — starší most ten klíč odmítne dřív, než se sem dostane, a restart peera plugin NEAKTUALIZUJE. Do té doby je funkční cesta flotilový default, který čte démon.`,
         {
           handle: record.handle,
           liveBaseUrl: had,
