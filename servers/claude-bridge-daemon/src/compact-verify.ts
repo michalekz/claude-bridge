@@ -76,7 +76,31 @@ function statuslineFile(sessionId: string): string {
 }
 
 /** How long to watch for the compact by default. */
-export const DEFAULT_VERIFY_TIMEOUT_MS = 180_000;
+/**
+ * 🔴 ZVEDNUTO ZE 180 s 28. 8., PROTOŽE 180 s LHALO — a moje vlastní poznámka
+ * u té konstanty to předpověděla.
+ *
+ * Stálo tam: „poctivá měření jsou 122 s a 130 s na peerech kolem 760 tis.
+ * tokenů… číslo vyladěné na dnes největšího peera začne lhát dnem, kdy někdo
+ * povyroste." Povyrostl. `mic-velitel` na 877 tis.:
+ *
+ *     08:42:55,626  inject /compact
+ *     08:45:56      hlídka to vzdala      ← 180 s
+ *     08:46:46,728  compactMetadata, durationMs 230 224
+ *
+ * Compact PROBĚHL a doběhl o 50 s po verdiktu. Operátor podle toho verdiktu
+ * vstřikl druhý `/compact` do session, která už byla zkomprimovaná.
+ *
+ * ⚠ 360 s JE VYBRANÉ, NE ODVOZENÉ. Body jsou tři (122 a 130 @ 760k, 230 @ 877k)
+ * a nelineární — model z nich nepostavím a předstírat opak by byl přesně ten
+ * druh čísla, které vypadá jako měření a je to rozhodnutí. Je to ~1,5násobek
+ * největšího naměřeného, s rezervou k 1M. Až někdo naměří víc, zvedne se to
+ * zas; strop nemá být přesný, má být velkorysý.
+ *
+ * A hlavně: čekání není jediná obrana. Když okno vyprší, ptáme se ještě, jestli
+ * peer PRACUJE — viz `compact_still_running` v `peer-compact.ts`.
+ */
+export const DEFAULT_VERIFY_TIMEOUT_MS = 360_000;
 export const DEFAULT_VERIFY_POLL_MS = 2_000;
 
 /**

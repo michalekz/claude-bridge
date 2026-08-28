@@ -223,6 +223,23 @@ export async function sweepAllAcksAtStartup(): Promise<number> {
   return swept;
 }
 
+/**
+ * Vypršelo okno — je to výrok o SVĚTĚ, nebo o MĚŘIDLE?
+ *
+ * Jediné `busy` znamená „něco se děje", což je slučitelné s běžícím compactem:
+ * `compactMetadata` se zapíše až na konci a naměřeno bylo 230 s na peerovi
+ * s 877 tis. tokeny. Není to důkaz, že běží PRÁVĚ compact — je to doklad,
+ * že mlčení transkriptu není mlčením peera.
+ *
+ * `absent` a `probe-failed` sem NEPATŘÍ, ačkoli je `blocksInject` bere jako
+ * důvod neposílat. Tam je asymetrie správná (nevíš → neposílej), tady by byla
+ * obrácená: „nevíme, co peer dělá" nesmí vyjít jako „nejspíš to běží, počkej".
+ * Z neznalosti se nesmí stát uklidnění.
+ */
+export function stillRunningAtExpiry(tailBusy: AgentBusy): boolean {
+  return tailBusy === "busy";
+}
+
 /** Public name kept for the v0.11.3 stale-ack regression tests. */
 export const verifyAck = verifyAckFile;
 
@@ -823,6 +840,8 @@ export async function handlePeerCompact(
   // window. None of it is `peer_compacted`, and none of it is silent.
   await writeEvent({
     event: "peer_compact_unresolved",
+    // `silent` je od 28. 8. jen VÝROK O MĚŘIDLE — rozlišení „ještě běží"
+    // × „nic se nestalo" padá níž, podle toho, jestli peer pracuje.
     level: watch.kind === "silent" ? "warn" : "error",
     by: { sessionId: req.requestedBy.sessionId, name: req.requestedBy.name },
     requestId: req.id,
@@ -847,12 +866,43 @@ export async function handlePeerCompact(
       { ...common, auto: watch.auto, queuedAt: watch.queuedAt, waitedMs: watch.waitedMs },
     );
   }
+  /**
+   * 🔴 VYPRŠELÉ OKNO JE VÝROK O MĚŘIDLE, NE O SVĚTĚ (28. 8.).
+   *
+   * Do teď se sem propadlo všechno, co hlídka nestihla, a odešlo to jako
+   * `error`. Text byl přitom opatrný („nothing is KNOWN to have happened"),
+   * ale TVAR ho přebil: operátor přečetl chybu jako „neproběhlo", vstřikl
+   * druhý `/compact` do session, která už byla zkomprimovaná, a compact,
+   * který mezitím doběhl, si připsal jako svůj.
+   *
+   * Příčina není jen krátký limit. **Hlídka neuměla stav „právě probíhá".**
+   * Běžící compact vypadá v transkriptu přesně jako žádný — `compactMetadata`
+   * se objeví až na konci, a ten byl 50 s za oknem.
+   *
+   * Takže se ptáme ještě jednou a jinde: PRACUJE ten peer? `busy` v tu chvíli
+   * není důkaz, že běží compact — je to doklad, že se něco děje, a to je
+   * o celou třídu víc než mlčení. Verdikt to říká přesně tak: „slučitelné
+   * s probíhajícím compactem", ne „compact běží".
+   */
+  const tailProbe = await probeAgents(record.desired.command);
+  const tailBusy = busyOf(tailProbe, peerSessionId);
+  if (stillRunningAtExpiry(tailBusy)) {
+    return okResult(req.id, req.tool, {
+      ...common,
+      verified: false,
+      outcome: "compact_still_running",
+      waitedMs: watch.waitedMs,
+      agentBusyAtExpiry: tailBusy,
+      note: `Okno hlídky (${watch.waitedMs} ms) vypršelo dřív, než se v transkriptu objevil compact — ALE peer v tu chvíli PRACUJE. To je slučitelné s tím, že compact běží: \`compactMetadata\` se zapíše až na konci, a naměřeno bylo 230 s na peerovi s 877 tis. tokeny. NEVSTŘIKUJ druhý /compact. Přečti \`compactMetadata\` v transkriptu peera; až tam bude, je hotovo. Tohle NENÍ chyba operace, je to konec pozorování.`,
+    });
+  }
+
   return errResult(
     req.id,
     req.tool,
     "compact_not_observed",
-    `Keys reached the input line of peer '${handle}', but its transcript shows no compact and no queued command after ${watch.waitedMs} ms. Nothing is known to have happened — do not assume it did.`,
-    { ...common, waitedMs: watch.waitedMs },
+    `Keys reached the input line of peer '${handle}', but its transcript shows no compact and no queued command after ${watch.waitedMs} ms, and the peer is NOT working (${tailBusy}). Nothing is known to have happened — do not assume it did.`,
+    { ...common, waitedMs: watch.waitedMs, agentBusyAtExpiry: tailBusy },
   );
 }
 

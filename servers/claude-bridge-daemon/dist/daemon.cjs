@@ -4320,7 +4320,7 @@ async function resolvePeer(idOrName, root = bridgeRoot(), now = Date.now()) {
 // package.json
 var package_default = {
   name: "claude-bridge-daemon",
-  version: "0.11.36",
+  version: "0.11.37",
   private: true,
   description: "Control-plane daemon for the claude-bridge plugin: peer lifecycle, telemetry, audit. Distributed as opt-in artefact \u2014 see ADR-008.",
   type: "module",
@@ -5438,7 +5438,7 @@ var log5 = makeLogger("daemon.compact-verify");
 function statuslineFile(sessionId) {
   return (0, import_node_path6.join)(bridgeRoot(), "live", "statusline", `${sessionId}.json`);
 }
-var DEFAULT_VERIFY_TIMEOUT_MS = 18e4;
+var DEFAULT_VERIFY_TIMEOUT_MS = 36e4;
 var DEFAULT_VERIFY_POLL_MS = 2e3;
 var COMPACT_RACE_PERCENT = 85;
 var COMPACT_MIN_PERCENT = 85;
@@ -6157,6 +6157,9 @@ async function sweepAllAcksAtStartup() {
   for (const channel of ALL_ACK_CHANNELS) swept += await channel.sweepAllAtStartup();
   return swept;
 }
+function stillRunningAtExpiry(tailBusy) {
+  return tailBusy === "busy";
+}
 async function writeAnchorRequestMsg(peerId, threadId) {
   return requestFromPeer(
     peerId,
@@ -6544,6 +6547,8 @@ async function handlePeerCompact(req, ctx) {
   }
   await writeEvent({
     event: "peer_compact_unresolved",
+    // `silent` je od 28. 8. jen VÝROK O MĚŘIDLE — rozlišení „ještě běží"
+    // × „nic se nestalo" padá níž, podle toho, jestli peer pracuje.
     level: watch.kind === "silent" ? "warn" : "error",
     by: { sessionId: req.requestedBy.sessionId, name: req.requestedBy.name },
     requestId: req.id,
@@ -6567,12 +6572,24 @@ async function handlePeerCompact(req, ctx) {
       { ...common, auto: watch.auto, queuedAt: watch.queuedAt, waitedMs: watch.waitedMs }
     );
   }
+  const tailProbe = await probeAgents(record.desired.command);
+  const tailBusy = busyOf(tailProbe, peerSessionId);
+  if (stillRunningAtExpiry(tailBusy)) {
+    return okResult(req.id, req.tool, {
+      ...common,
+      verified: false,
+      outcome: "compact_still_running",
+      waitedMs: watch.waitedMs,
+      agentBusyAtExpiry: tailBusy,
+      note: `Okno hl\xEDdky (${watch.waitedMs} ms) vypr\u0161elo d\u0159\xEDv, ne\u017E se v transkriptu objevil compact \u2014 ALE peer v tu chv\xEDli PRACUJE. To je slu\u010Diteln\xE9 s t\xEDm, \u017Ee compact b\u011B\u017E\xED: \`compactMetadata\` se zap\xED\u0161e a\u017E na konci, a nam\u011B\u0159eno bylo 230 s na peerovi s 877 tis. tokeny. NEVST\u0158IKUJ druh\xFD /compact. P\u0159e\u010Dti \`compactMetadata\` v transkriptu peera; a\u017E tam bude, je hotovo. Tohle NEN\xCD chyba operace, je to konec pozorov\xE1n\xED.`
+    });
+  }
   return errResult(
     req.id,
     req.tool,
     "compact_not_observed",
-    `Keys reached the input line of peer '${handle}', but its transcript shows no compact and no queued command after ${watch.waitedMs} ms. Nothing is known to have happened \u2014 do not assume it did.`,
-    { ...common, waitedMs: watch.waitedMs }
+    `Keys reached the input line of peer '${handle}', but its transcript shows no compact and no queued command after ${watch.waitedMs} ms, and the peer is NOT working (${tailBusy}). Nothing is known to have happened \u2014 do not assume it did.`,
+    { ...common, waitedMs: watch.waitedMs, agentBusyAtExpiry: tailBusy }
   );
 }
 function wakeAfterCompactLine() {
