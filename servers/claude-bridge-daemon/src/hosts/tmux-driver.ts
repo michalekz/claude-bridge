@@ -9,6 +9,7 @@ import { pollUntil } from "../poll.ts";
 import {
   type CanonicalTarget,
   type HostWindowRecord,
+  type KillOutcome,
   type PaneProbe,
   type SessionHostDriver,
   type SessionHostRecord,
@@ -591,7 +592,7 @@ export class TmuxDriver implements SessionHostDriver {
     };
   }
 
-  async kill(sessionKey: string, opts: { force?: boolean } = {}): Promise<void> {
+  async kill(sessionKey: string, opts: { force?: boolean } = {}): Promise<KillOutcome> {
     const t = parseHostTarget(sessionKey);
     const canonical = formatHostTarget(t);
 
@@ -634,7 +635,15 @@ export class TmuxDriver implements SessionHostDriver {
     }
     // Idempotent — the caller may not know whether the session is still
     // there (v0.10.0-rc.2 fix for T2 „stopping without host" reconcile).
-    if (!(await this.hasSession(canonical))) return;
+    //
+    // 🔴 Idempotence zůstává, MLČENÍ ne (29. 8.). Vrátit se odsud potichu
+    // znamenalo, že „zabito" a „nebylo co zabít" vypadaly v záznamu stejně —
+    // a peer, který mezitím sedí v jiném okně, běží dál pod hlášením
+    // o úspěšném stopu.
+    if (!(await this.hasSession(canonical))) {
+      log.warn("tmux_kill_target_missing", { sessionKey: canonical });
+      return "target-missing";
+    }
 
     // A window target must NEVER reach kill-session. `kill-session -t hmh:3`
     // kills the session `hmh` — on this fleet that is seven peers instead of
@@ -646,12 +655,18 @@ export class TmuxDriver implements SessionHostDriver {
       if (linked.length > 0) {
         // Unlink rather than kill: the window belongs to other sessions too and
         // kill-window would remove it from all of them.
-        log.warn("tmux_window_linked_unlinking", { target: t.windowId, linkedSessions: linked });
+        log.warn("tmux_window_linked_unlinking", {
+          target: t.windowId,
+          linkedSessions: linked,
+        });
         await execFileAsync(this.tmuxBin, ["unlink-window", "-t", t.windowId], {
           ...EXEC_DEFAULTS,
           timeout: MUTATE_TIMEOUT_MS,
         });
-        return;
+        // 🔴 ODLINKOVÁNO NENÍ ZABITO. Ochrana cizí session je správná, ale
+        // proces peera BĚŽÍ DÁL — a do 29. 8. se to od úspěchu nedalo odlišit.
+        // Reprodukováno naživo: `kill` se vrátil bez chyby a pid peera žil.
+        return "unlinked-not-killed";
       }
     }
 
@@ -661,9 +676,10 @@ export class TmuxDriver implements SessionHostDriver {
         timeout: MUTATE_TIMEOUT_MS,
       });
     } catch (e) {
-      if (!(await this.hasSession(canonical))) return;
+      if (!(await this.hasSession(canonical))) return "target-missing";
       const msg = e instanceof Error ? e.message : String(e);
-      if (msg.includes("can't find session") || msg.includes("can't find window")) return;
+      if (msg.includes("can't find session") || msg.includes("can't find window"))
+        return "target-missing";
       throw e;
     }
     const budget = opts.force === true ? this.verifyTimeoutMs / 2 : this.verifyTimeoutMs;
@@ -674,6 +690,7 @@ export class TmuxDriver implements SessionHostDriver {
         `Session '${canonical}' respawned within ${budget}ms after kill — investigate supervisor (bg-pty-host?)`,
       );
     }
+    return "killed";
   }
 
   async listSessions(): Promise<SessionHostRecord[]> {
@@ -767,7 +784,10 @@ export class TmuxDriver implements SessionHostDriver {
     const refusal = refusePayload(keys);
     if (refusal) {
       // Before any tmux call: a refused payload must not disturb the pane.
-      log.error("tmux_send_keys_refused", { sessionKey, reason: refusal.reason });
+      log.error("tmux_send_keys_refused", {
+        sessionKey,
+        reason: refusal.reason,
+      });
       throw new Error(`send-keys to '${sessionKey}' refused — ${refusal.message}`);
     }
     // `parseHostTarget`, not `sanitizeSessionKey`. A window id IS canonical, and
@@ -798,7 +818,10 @@ export class TmuxDriver implements SessionHostDriver {
       );
     }
     if (snap.dead) {
-      log.error("tmux_send_keys_pane_dead", { sessionKey: canonical, panePid: snap.panePid });
+      log.error("tmux_send_keys_pane_dead", {
+        sessionKey: canonical,
+        panePid: snap.panePid,
+      });
       throw new Error(
         `send-keys to '${canonical}' refused — the pane's process is DEAD (remain-on-exit corpse). Keys typed here reach nobody. This peer belongs to lifecycle (restart), not to delivery.`,
       );
@@ -829,7 +852,10 @@ export class TmuxDriver implements SessionHostDriver {
         strokes: cleared.strokes,
         draftChars: cleared.draft.length,
       });
-      log.error("tmux_send_keys_input_stuck", { sessionKey: canonical, strokes: cleared.strokes });
+      log.error("tmux_send_keys_input_stuck", {
+        sessionKey: canonical,
+        strokes: cleared.strokes,
+      });
       throw new Error(
         `send-keys to '${canonical}' refused — the input line still holds ${cleared.draft.length} characters after ${cleared.strokes} clear strokes, and typing onto a person's unsent text is not an option. Look at the pane: tmux capture-pane -p -t ${canonical}`,
       );
@@ -983,10 +1009,22 @@ export class TmuxDriver implements SessionHostDriver {
       await this.tmux(["send-keys", "-t", target, "C-u"], SEND_KEYS_TIMEOUT_MS).catch(
         () => undefined,
       );
-      return { kind: "not-an-input-box", draft: "", strokes: 1, restorable: false, ghostChars };
+      return {
+        kind: "not-an-input-box",
+        draft: "",
+        strokes: 1,
+        restorable: false,
+        ghostChars,
+      };
     }
     if (before.kind === "empty") {
-      return { kind: "was-empty", draft: "", strokes: 0, restorable: false, ghostChars };
+      return {
+        kind: "was-empty",
+        draft: "",
+        strokes: 0,
+        restorable: false,
+        ghostChars,
+      };
     }
 
     let strokes = 0;
@@ -1008,7 +1046,13 @@ export class TmuxDriver implements SessionHostDriver {
     }
 
     if (probe.kind === "draft") {
-      return { kind: "stuck", draft: probe.text, strokes, restorable: false, ghostChars };
+      return {
+        kind: "stuck",
+        draft: probe.text,
+        strokes,
+        restorable: false,
+        ghostChars,
+      };
     }
     return {
       kind: "displaced",
@@ -1269,7 +1313,11 @@ export class TmuxDriver implements SessionHostDriver {
     try {
       const dir = join(controlDir(), "logs");
       await mkdir(dir, { recursive: true });
-      const line = JSON.stringify({ ts: new Date().toISOString(), sessionKey, ...entry });
+      const line = JSON.stringify({
+        ts: new Date().toISOString(),
+        sessionKey,
+        ...entry,
+      });
       await appendFile(join(dir, `sendkeys-${sessionKey}.log`), `${line}\n`, "utf-8");
     } catch {
       // Never let the audit log break the operation it is auditing.
@@ -1290,7 +1338,10 @@ export class TmuxDriver implements SessionHostDriver {
    * half-life.
    */
   private async tmuxWithStdin(args: string[], timeout: number, input: string): Promise<void> {
-    const running = execFileAsync(this.tmuxBin, args, { ...EXEC_DEFAULTS, timeout });
+    const running = execFileAsync(this.tmuxBin, args, {
+      ...EXEC_DEFAULTS,
+      timeout,
+    });
     const child = (running as unknown as { child?: ChildProcess }).child;
     // v0.10.2 lesson, same shape as refresh-limits: if tmux dies before reading
     // its stdin, `end()` emits 'error' on the stream rather than throwing, and

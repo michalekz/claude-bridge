@@ -189,7 +189,12 @@ describe("team_reconcile makes a corpse readable", () => {
         requestedBy: { sessionId: "operator", name: "operator" },
       },
       // `procRoot` points at a directory with no pids, so every record reads dead.
-      { state: doc, hostDriver: driver, daemonVersion: "0.11.8-test", procRoot: "/nonexistent" },
+      {
+        state: doc,
+        hostDriver: driver,
+        daemonVersion: "0.11.8-test",
+        procRoot: "/nonexistent",
+      },
     );
   }
 
@@ -263,7 +268,14 @@ describe("team_reconcile makes a corpse readable", () => {
     // window said it "belongs to no record". Both untrue, and between them they
     // hid the only useful fact — there is a pane, and it is this peer's.
     const res = await reconcile(
-      [{ ...corpseWindow, target: "@9", session: "solo-session", windowName: "solo" }],
+      [
+        {
+          ...corpseWindow,
+          target: "@9",
+          session: "solo-session",
+          windowName: "solo",
+        },
+      ],
       {
         "peer-3": {
           handle: "peer-3",
@@ -344,12 +356,18 @@ describe("peer_spawn meets a process that already exited", () => {
         ...rec,
         alive: false,
         pid: 4242,
-        probe: { kind: "dead", pid: 4242, exitStatus: 127, raw: "4242\t1\t127" },
+        probe: {
+          kind: "dead",
+          pid: 4242,
+          exitStatus: 127,
+          raw: "4242\t1\t127",
+        },
         // biome-ignore lint/suspicious/noExplicitAny: narrow shim for the probe field
       } as any;
     };
     driver.kill = async (k: string) => {
       killed.push(k);
+      return "killed" as const;
     };
     // biome-ignore lint/suspicious/noExplicitAny: mock gains an optional method
     (driver as any).archivePane = async (k: string) => {

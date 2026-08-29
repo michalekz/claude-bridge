@@ -2,6 +2,7 @@ import { spawn as spawnProcess } from "node:child_process";
 import type { ChildProcess } from "node:child_process";
 import { makeLogger } from "@claude-bridge/shared";
 import {
+  type KillOutcome,
   type SessionHostDriver,
   type SessionHostRecord,
   type SessionHostSpawnOptions,
@@ -80,7 +81,11 @@ export class MockDriver implements SessionHostDriver {
         this.sessions.delete(canonicalKey);
       });
     } catch (e) {
-      log.warn("mock_spawn_failed", { sessionKey: opts.sessionKey, canonicalKey, err: String(e) });
+      log.warn("mock_spawn_failed", {
+        sessionKey: opts.sessionKey,
+        canonicalKey,
+        err: String(e),
+      });
       // For tests we still register — some acceptance cases assert on
       // state independent of whether the binary actually runs.
     }
@@ -92,11 +97,13 @@ export class MockDriver implements SessionHostDriver {
     return { sessionKey: canonicalKey, alive: pid !== null, pid };
   }
 
-  async kill(sessionKey: string): Promise<void> {
+  async kill(sessionKey: string): Promise<KillOutcome> {
     // Idempotent — matches the TmuxDriver contract (v0.10.0-rc.2).
+    // Verdikt vrací stejně jako TmuxDriver (29. 8.): mock, který o no-opu
+    // mlčí, by testům dovolil projít nad chováním, které v produkci selhalo.
     const canonical = canonicalHostTarget(sessionKey);
     const entry = this.sessions.get(canonical);
-    if (!entry) return;
+    if (!entry) return "target-missing";
     if (entry.proc && entry.pid !== null) {
       try {
         process.kill(-entry.pid, "SIGKILL");
@@ -108,14 +115,23 @@ export class MockDriver implements SessionHostDriver {
     if (this.hostRespawnHook?.(canonical)) {
       // Simulated supervisor respawn — insert a synthetic record so the
       // daemon's verify step trips.
-      this.sessions.set(canonical, { proc: null, pid: null, respawnPending: true });
+      this.sessions.set(canonical, {
+        proc: null,
+        pid: null,
+        respawnPending: true,
+      });
     }
+    return "killed";
   }
 
   async listSessions(): Promise<SessionHostRecord[]> {
     const out: SessionHostRecord[] = [];
     for (const [sessionKey, entry] of this.sessions.entries()) {
-      out.push({ sessionKey: trustCanonicalTarget(sessionKey), alive: true, pid: entry.pid });
+      out.push({
+        sessionKey: trustCanonicalTarget(sessionKey),
+        alive: true,
+        pid: entry.pid,
+      });
     }
     return out;
   }

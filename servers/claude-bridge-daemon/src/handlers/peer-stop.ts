@@ -3,6 +3,9 @@ import { resolvePeer } from "@claude-bridge/shared";
 import { z } from "zod";
 import { publishLifecycleEvent } from "../event-subscribers.ts";
 import { writeEvent } from "../events.ts";
+import type { KillOutcome } from "../hosts/driver.ts";
+import { defaultProcessInspector } from "../hosts/process-inspector.ts";
+import { type ProcessMark, markProcess, markedProcessAlive } from "../pid.ts";
 import type { RequestEnvelope, ResultEnvelope } from "../rpc.ts";
 import { errResult, okResult } from "../rpc.ts";
 import type { PeerRecord } from "../state.ts";
@@ -218,7 +221,10 @@ async function runCourtesyPhase(
       await writeEvent({
         event: "peer_stop_stale_ack_swept",
         level: "warn",
-        by: { sessionId: req.requestedBy.sessionId, name: req.requestedBy.name },
+        by: {
+          sessionId: req.requestedBy.sessionId,
+          name: req.requestedBy.name,
+        },
         requestId: req.id,
         details: { handle, movedTo: swept },
       });
@@ -273,6 +279,61 @@ async function runCourtesyPhase(
   return { kind: "acked", threadId, waitedMs, resumed };
 }
 
+/**
+ * Počká, až proces zmizí — a řekne, jestli zmizel.
+ *
+ * Zabití je asynchronní: signál doletí, proces má chvíli na doběhnutí.
+ * Krátká sonda v cyklu je proto poctivější než jedno čtení hned po killu,
+ * které by z „ještě doumírá" udělalo „přežil".
+ */
+const PROCESS_GONE_BUDGET_MS = 3_000;
+const PROCESS_GONE_POLL_MS = 100;
+
+async function awaitProcessGone(mark: ProcessMark, procRoot: string): Promise<boolean> {
+  const deadline = Date.now() + PROCESS_GONE_BUDGET_MS;
+  while (Date.now() < deadline) {
+    if (!markedProcessAlive(mark, procRoot)) return true;
+    await new Promise((r) => setTimeout(r, PROCESS_GONE_POLL_MS));
+  }
+  return !markedProcessAlive(mark, procRoot);
+}
+
+/**
+ * Drží ten hostitelský cíl proces, který máme v záznamu?
+ *
+ * Porovnává se PŘES PŘEDKY: v panelu bývá mezi tmuxem a peerem ještě shell
+ * nebo obal, takže „pane_pid se nerovná našemu pidu" samo o sobě rozchod
+ * neznamená (týž argument jako `ownsProcess` v `team_reconcile`).
+ *
+ * Vrací `null`, když se to zjistit nedá — driver okna neumí vypsat, cíl
+ * v seznamu není, nebo panel drží mrtvolu. Nevědomost není rozchod.
+ */
+async function targetHoldsPid(
+  ctx: HandlerContext,
+  sessionKey: string,
+  mark: ProcessMark | null,
+  procRoot: string,
+): Promise<boolean | null> {
+  if (mark === null || !ctx.hostDriver.listWindows) return null;
+  let windows: Awaited<ReturnType<NonNullable<typeof ctx.hostDriver.listWindows>>>;
+  try {
+    windows = await ctx.hostDriver.listWindows();
+  } catch {
+    return null;
+  }
+  const here = windows.find((w) => w.target === sessionKey);
+  if (!here || here.pid === null || here.dead) return null;
+  if (here.pid === mark.pid) return true;
+  if (!markedProcessAlive(mark, procRoot)) return null; // náš proces už neběží — není co srovnávat
+  try {
+    const inspector = ctx.processInspector ?? defaultProcessInspector();
+    const ancestors = await inspector.ancestorsOf(mark.pid);
+    return ancestors.includes(here.pid);
+  } catch {
+    return null;
+  }
+}
+
 export async function handlePeerStop(
   req: RequestEnvelope,
   ctx: HandlerContext,
@@ -291,7 +352,11 @@ export async function handlePeerStop(
       level: "warn",
       by: { sessionId: req.requestedBy.sessionId, name: req.requestedBy.name },
       requestId: req.id,
-      details: { peer: args.peer, reason: "ambiguous_peer", candidates: resolved.candidates },
+      details: {
+        peer: args.peer,
+        reason: "ambiguous_peer",
+        candidates: resolved.candidates,
+      },
     });
     return errResult(
       req.id,
@@ -348,9 +413,17 @@ export async function handlePeerStop(
       await writeEvent({
         event: "peer_stop_refused_alive",
         level: "warn",
-        by: { sessionId: req.requestedBy.sessionId, name: req.requestedBy.name },
+        by: {
+          sessionId: req.requestedBy.sessionId,
+          name: req.requestedBy.name,
+        },
         requestId: req.id,
-        details: { handle, sessionKey, lastSeenAgeMs: ageMs, thresholdMs: LIVE_HEARTBEAT_MS },
+        details: {
+          handle,
+          sessionKey,
+          lastSeenAgeMs: ageMs,
+          thresholdMs: LIVE_HEARTBEAT_MS,
+        },
       });
       return errResult(
         req.id,
@@ -392,7 +465,10 @@ export async function handlePeerStop(
       await writeEvent({
         event: "stop_ack_timeout",
         level: "warn",
-        by: { sessionId: req.requestedBy.sessionId, name: req.requestedBy.name },
+        by: {
+          sessionId: req.requestedBy.sessionId,
+          name: req.requestedBy.name,
+        },
         requestId: req.id,
         details: {
           handle,
@@ -441,8 +517,56 @@ export async function handlePeerStop(
     }
   });
 
+  // 🔴 IDENTITU PROCESU SI VEZMI DŘÍV, NEŽ HO ZABIJEŠ (v0.11.40).
+  //
+  // 29. 8. přežil restart starý plt-velitel a běžel souběžně s novým nad
+  // JEDNÍM transkriptem — dvojí `--resume`, dvojí drain fronty. Stop přitom
+  // hlásil úspěch, protože `stoppedCleanly` měří SOUHLAS peera (ack), ne jeho
+  // smrt, a nikdo se pak už nezeptal, jestli ten proces zmizel.
+  //
+  // Dvojice (pid, čas startu) se bere PŘED zabitím, aby recyklovaný pid
+  // nemohl vypadat jako přeživší — pidy se recyklují a moje vlastní úvaha
+  // opřená o pořadí pidů byla téhož dne vyvrácena.
+  // `procRoot` z kontextu, ne natvrdo: testy tím míří na přípravek místo na
+  // živý systém — a bez toho by fixture s `pid: 100` (což je na Linuxu ŽIVÉ
+  // jádrové vlákno) hlásil přeživšího peera. Vymyšlené číslo v testu může být
+  // skutečný pid; táž rodina jako recyklace pidů.
+  const procRoot = ctx.procRoot ?? "/proc";
+  const markBefore =
+    record.observed.pid !== null ? markProcess(record.observed.pid, procRoot) : null;
+
+  // 🔴 BRÁNA PŘED KILLEM: DRŽÍ TEN CÍL NAŠEHO PEERA? (v0.11.40)
+  //
+  // `team_reconcile` tenhle rozchod detekuje jako `pid_changed` a já si u něj
+  // sám napsal, že je „ten nebezpečný, protože každé volání lifecyclu by pak
+  // sáhlo na peera, kterého nikdo nemyslel". Napsal jsem to o DETEKCI a do
+  // lifecyclu to nezavedl — 29. 8. se to vybralo.
+  //
+  // Škoda je jiná než u přeživšího procesu a proto se hlídá ZVLÁŠŤ: tam náš
+  // peer nezemře, tady zemře CIZÍ. Ověření po killu tu druhou nezachytí.
+  //
+  // `null` = nevíme (driver okna neumí vypsat, nebo cíl v seznamu není);
+  // z nevědomosti se odmítnutí nedělá — jen se zapíše.
+  const targetHoldsRecordedPid = await targetHoldsPid(ctx, sessionKey, markBefore, procRoot);
+  if (targetHoldsRecordedPid === false) {
+    await writeEvent({
+      event: "peer_stop_target_mismatch",
+      level: "error",
+      by: { sessionId: req.requestedBy.sessionId, name: req.requestedBy.name },
+      requestId: req.id,
+      details: { handle, sessionKey, pid: markBefore?.pid ?? null },
+    });
+    return errResult(
+      req.id,
+      req.tool,
+      "target_holds_another_process",
+      `Refusing to stop '${handle}': its recorded host target ${sessionKey} is held by a DIFFERENT process than the recorded pid ${markBefore?.pid}. Killing it would take down whoever is in there now, and would not stop this peer. Run \`team_reconcile\` to see the drift, then stop the peer by its real target.`,
+      { handle, sessionKey, pid: markBefore?.pid ?? null },
+    );
+  }
+  let killOutcome: KillOutcome;
   try {
-    await ctx.hostDriver.kill(sessionKey, { force: forceFlag });
+    killOutcome = await ctx.hostDriver.kill(sessionKey, { force: forceFlag });
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
     // Special case: driver's verify caught a respawn (bg-pty-host class).
@@ -452,11 +576,17 @@ export async function handlePeerStop(
       await writeEvent({
         event: "peer_stop_respawn_detected",
         level: "error",
-        by: { sessionId: req.requestedBy.sessionId, name: req.requestedBy.name },
+        by: {
+          sessionId: req.requestedBy.sessionId,
+          name: req.requestedBy.name,
+        },
         requestId: req.id,
         details: { handle, sessionKey, err: msg },
       });
-      return errResult(req.id, req.tool, "supervisor_respawn", msg, { handle, sessionKey });
+      return errResult(req.id, req.tool, "supervisor_respawn", msg, {
+        handle,
+        sessionKey,
+      });
     }
     await writeEvent({
       event: "peer_stop_failed",
@@ -465,7 +595,55 @@ export async function handlePeerStop(
       requestId: req.id,
       details: { handle, sessionKey, err: msg },
     });
-    return errResult(req.id, req.tool, "host_kill_failed", msg, { handle, sessionKey });
+    return errResult(req.id, req.tool, "host_kill_failed", msg, {
+      handle,
+      sessionKey,
+    });
+  }
+
+  // ---------------------------------------------------------------------
+  // Zemřel ten proces?
+  // ---------------------------------------------------------------------
+  //
+  // Tohle je ta otázka, kterou se do 29. 8. nikdo neptal. `kill` vrací
+  // verdikt (`target-missing`, `unlinked-not-killed`) a i po `killed` se
+  // smrt OVĚŘUJE — reprodukováno naživo: cíl, který neexistuje, i okno
+  // nalinkované do druhé session projdou bez chyby a peer běží dál.
+  //
+  // `null` = nevíme (záznam pid nenesl). NENÍ to „umřel".
+  const pidBeforeDead = markBefore === null ? null : await awaitProcessGone(markBefore, procRoot);
+  if (pidBeforeDead === false) {
+    await writeEvent({
+      event: "peer_stop_process_survived",
+      level: "error",
+      by: { sessionId: req.requestedBy.sessionId, name: req.requestedBy.name },
+      requestId: req.id,
+      details: {
+        handle,
+        sessionKey,
+        pid: markBefore?.pid ?? null,
+        killOutcome,
+      },
+    });
+    return errResult(
+      req.id,
+      req.tool,
+      "process_survived_stop",
+      `Peer '${handle}' still has a LIVE process ${markBefore?.pid} after the stop (kill outcome: ${killOutcome}). ${
+        killOutcome === "unlinked-not-killed"
+          ? "Its window is linked into another tmux session, so it was unlinked rather than killed — killing it would have removed the window from that session too. "
+          : killOutcome === "target-missing"
+            ? "The recorded host target no longer exists, so nothing was killed — the process is living somewhere the record does not name. "
+            : ""
+      }The record is NOT marked stopped: two processes on one transcript is the failure this refuses to hide. Find the pane with \`tmux list-panes -a -F '#{pane_pid} #{window_id} #{session_name}'\` and stop it by hand.`,
+      {
+        handle,
+        sessionKey,
+        pid: markBefore?.pid ?? null,
+        killOutcome,
+        pidBeforeDead,
+      },
+    );
   }
 
   const keepInState = args.keepInState;
@@ -517,7 +695,18 @@ export async function handlePeerStop(
     reason: args.reason ?? null,
     force: forceFlag,
     keepInState,
+    // 🔴 `stoppedCleanly` MĚŘÍ SOUHLAS, NE SMRT — peer potvrdil, že měl šanci
+    // uložit práci. Čte se jako doklad o teardownu (29. 8. tak přečten
+    // velitelem), a proto vedle něj od v0.11.40 stojí `pidBeforeDead`, které
+    // měří to druhé. Jedno pole na jednu otázku.
     stoppedCleanly,
+    /** Zemřel proces, který tu byl před stopem? `null` = záznam pid nenesl. */
+    pidBeforeDead,
+    /** Držel cíl náš proces, než jsme zabíjeli? `null` = nešlo zjistit. */
+    targetHoldsRecordedPid,
+    /** Co kill udělal: killed | target-missing | unlinked-not-killed. */
+    killOutcome,
+    pidBefore: markBefore?.pid ?? null,
     mode,
     ackWaitedMs,
     threadId,
@@ -532,7 +721,13 @@ export async function handlePeerStop(
     event: "peer_stopped",
     handle,
     sessionKey,
-    details: { reason: args.reason ?? null, force: forceFlag, keepInState, stoppedCleanly, mode },
+    details: {
+      reason: args.reason ?? null,
+      force: forceFlag,
+      keepInState,
+      stoppedCleanly,
+      mode,
+    },
   });
   return okResult(req.id, req.tool, {
     handle,
@@ -542,6 +737,9 @@ export async function handlePeerStop(
     force: forceFlag,
     keepInState,
     stoppedCleanly,
+    // Dvě různé otázky, dvě pole: souhlas × smrt. Viz `details` výš.
+    pidBeforeDead,
+    killOutcome,
     ackWaitedMs,
     threadId,
   });

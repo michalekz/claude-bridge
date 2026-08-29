@@ -74,6 +74,7 @@ describe("team_release drops the record and leaves the process running", () => {
     const killed: string[] = [];
     driver.kill = async (k: string) => {
       killed.push(k);
+      return "killed" as const;
     };
     return {
       handlers,
@@ -88,7 +89,10 @@ describe("team_release drops the record and leaves the process running", () => {
     const res = await handlers.dispatch(makeRequest("team_release", { peers: ["plt-alpha"] }), ctx);
 
     expect(res.outcome).toBe("ok");
-    const plan = res.data as { dryRun: boolean; releasing: Array<{ name: string }> };
+    const plan = res.data as {
+      dryRun: boolean;
+      releasing: Array<{ name: string }>;
+    };
     expect(plan.dryRun).toBe(true);
     expect(plan.releasing.map((r) => r.name)).toEqual(["plt-alpha"]);
     // Nothing gone.
@@ -120,7 +124,11 @@ describe("team_release drops the record and leaves the process running", () => {
   it("the audit trail records that the process outlived the record", async () => {
     const { handlers, ctx } = await fixture();
     await handlers.dispatch(
-      makeRequest("team_release", { peers: ["plt-alpha"], dryRun: false, reason: "mis-adopted" }),
+      makeRequest("team_release", {
+        peers: ["plt-alpha"],
+        dryRun: false,
+        reason: "mis-adopted",
+      }),
       ctx,
     );
 
@@ -146,7 +154,10 @@ describe("team_release drops the record and leaves the process running", () => {
   it("an unknown peer is named, not silently skipped", async () => {
     const { handlers, ctx, doc } = await fixture();
     const res = await handlers.dispatch(
-      makeRequest("team_release", { peers: ["plt-alpha", "plt-ghost"], dryRun: false }),
+      makeRequest("team_release", {
+        peers: ["plt-alpha", "plt-ghost"],
+        dryRun: false,
+      }),
       ctx,
     );
 

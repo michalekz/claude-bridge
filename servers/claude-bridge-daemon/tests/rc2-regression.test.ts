@@ -95,7 +95,11 @@ describe("v0.10.0-rc.2 regression — T1 sessionKey + T2 stop reconcile", () => 
         { state: doc, hostDriver: driver, daemonVersion: "0.10.0-rc.2" },
       );
       const statusData = statusRes.data as {
-        peers: Array<{ sessionId: string; hostAlive: boolean; tmuxTarget: string }>;
+        peers: Array<{
+          sessionId: string;
+          hostAlive: boolean;
+          tmuxTarget: string;
+        }>;
       };
       expect(statusData.peers[0]?.hostAlive).toBe(true);
       expect(statusData.peers[0]?.tmuxTarget).toBe("rc-test_alice");
@@ -104,10 +108,13 @@ describe("v0.10.0-rc.2 regression — T1 sessionKey + T2 stop reconcile", () => 
       // send-keys receives (rc.1 bug: raw "rc-test:alice" was fed to
       // tmux and parsed as session:window → failure).
       const sendKeysCalls: Array<{ key: string; keys: string }> = [];
-      (driver as unknown as { sendKeys: (k: string, keys: string) => Promise<void> }).sendKeys =
-        async (key, keys) => {
-          sendKeysCalls.push({ key, keys });
-        };
+      (
+        driver as unknown as {
+          sendKeys: (k: string, keys: string) => Promise<void>;
+        }
+      ).sendKeys = async (key, keys) => {
+        sendKeysCalls.push({ key, keys });
+      };
       const { shared } = await importAll();
       const ackDir = join(shared.controlDir(), "compact-ack");
       await mkdir(ackDir, { recursive: true });
@@ -146,7 +153,7 @@ describe("v0.10.0-rc.2 regression — T1 sessionKey + T2 stop reconcile", () => 
       const { mock } = await importAll();
       const driver = new mock.MockDriver();
       // No sessions registered — kill on a non-existent one is a no-op.
-      await expect(driver.kill("ghost")).resolves.toBeUndefined();
+      await expect(driver.kill("ghost")).resolves.toBe("target-missing");
     });
 
     it("peer_stop cleans state.peers even after host session vanished externally", async () => {
@@ -176,6 +183,25 @@ describe("v0.10.0-rc.2 regression — T1 sessionKey + T2 stop reconcile", () => 
       // Reach into the mock driver directly.
       (driver as unknown as { sessions: Map<string, unknown> }).sessions.delete("rc2-test-bob");
 
+      // 🔴 A TEĎ TO, CO TENHLE TEST DO 29. 8. NEŘÍKAL NAHLAS: zmizení hostitele
+      // není smrt procesu. Původní verze nechala `sleep 10` běžet a přesto
+      // čekala úklid stavu — a přesně tenhle tvar (hostitel pryč, proces žije)
+      // nechal 29. 8. běžet starého plt-velitele souběžně s novým nad jedním
+      // transkriptem. Předpoklad se proto vyslovuje: proces DOOPRAVDY končí.
+      const pid = doc.peers["peer-y"]?.observed.pid ?? 0;
+      if (pid > 0) {
+        try {
+          process.kill(-pid, "SIGKILL");
+        } catch {
+          try {
+            process.kill(pid, "SIGKILL");
+          } catch {
+            // už neběží — taky dobře
+          }
+        }
+      }
+      await new Promise((r) => setTimeout(r, 200));
+
       // peer_stop should now still succeed and remove the peer from state.
       // Regression target: rc.1 bug where this branch reported
       // `host_kill_failed` because kill was NOT idempotent, leaving
@@ -187,6 +213,52 @@ describe("v0.10.0-rc.2 regression — T1 sessionKey + T2 stop reconcile", () => 
       expect(stopRes.outcome).toBe("ok");
       expect(doc.peers["peer-y"]).toBeUndefined();
 
+      driver.reset();
+    });
+
+    it("host pryč, ale PROCES ŽIJE ⇒ stop odmítne a stav NEUKLIDÍ", async () => {
+      // Druhá půlka téhož: úklid stavu nad živým procesem by z peera udělal
+      // sirotka, kterého nikdo nevidí a který dál drží svůj transkript.
+      // 29. 8. přesně tohle skončilo dvojím `--resume` nad jedním souborem.
+      const { handlers, state, mock } = await importAll();
+      const doc = state.emptyState("0.10.0-rc.2");
+      const driver = new mock.MockDriver();
+
+      const spawnRes = await handlers.dispatch(
+        makeRequest(
+          "peer_spawn",
+          {
+            handle: "peer-z",
+            displayName: "rc2-test-zoe",
+            cwd: "/tmp",
+            command: "/bin/sleep",
+            args: ["30"],
+          },
+          "req-spawn-z",
+        ),
+        { state: doc, hostDriver: driver, daemonVersion: "0.10.0-rc.2" },
+      );
+      expect(spawnRes.outcome).toBe("ok");
+
+      // Hostitel zmizí zvenčí, proces NE.
+      (driver as unknown as { sessions: Map<string, unknown> }).sessions.delete("rc2-test-zoe");
+
+      const stopRes = await handlers.dispatch(
+        makeRequest("peer_stop", { peer: "peer-z", force: true }, "req-stop-z"),
+        { state: doc, hostDriver: driver, daemonVersion: "0.10.0-rc.2" },
+      );
+      expect(stopRes.outcome).toBe("error");
+      expect(stopRes.error?.code).toBe("process_survived_stop");
+      expect(doc.peers["peer-z"]).toBeDefined();
+
+      const pid = doc.peers["peer-z"]?.observed.pid ?? 0;
+      if (pid > 0) {
+        try {
+          process.kill(-pid, "SIGKILL");
+        } catch {
+          // ignore
+        }
+      }
       driver.reset();
     });
   });

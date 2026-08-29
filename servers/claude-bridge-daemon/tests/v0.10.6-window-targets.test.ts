@@ -120,9 +120,13 @@ describe.skipIf(!haveTmux)("window targets against a real tmux", () => {
     expect(after.map((w) => w.target).sort()).toEqual(survivors.sort());
   });
 
-  it("killing a window that is gone is silent, like the session path", async () => {
+  it("killing a window that is gone REPORTS that it killed nothing", async () => {
+    // Idempotence zůstává (žádná výjimka), MLČENÍ ne: do v0.11.40 vracel kill
+    // `void`, takže „zabito" a „nebylo co zabít" byly z volajícího místa
+    // k nerozeznání — a peer, který mezitím sedí v jiném okně, běžel dál pod
+    // hlášením o úspěšném stopu. Reprodukováno naživo 29. 8.
     const driver = new TmuxDriver({});
-    await expect(driver.kill("@999999")).resolves.toBeUndefined();
+    await expect(driver.kill("@999999")).resolves.toBe("target-missing");
   });
 });
 
@@ -184,7 +188,10 @@ describe.skipIf(!haveTmux)("an adopted peer stays in its session across a restar
       cwd: "/tmp",
       command: "/bin/sh",
       args: ["-c", "sleep 60"],
-      env: { PATH: process.env["PATH"] ?? "", HOME: process.env["HOME"] ?? "" },
+      env: {
+        PATH: process.env["PATH"] ?? "",
+        HOME: process.env["HOME"] ?? "",
+      },
     });
 
     // Before the fix this created a NEW session named after the peer, quietly

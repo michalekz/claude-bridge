@@ -188,7 +188,29 @@ export function parseHostTarget(key: string): HostTarget {
  * A brand turns "remember to canonicalise before storing" into a compile error,
  * which is the only form of a rule that survives the next caller.
  */
-export type CanonicalTarget = string & { readonly __canonicalHostTarget: unique symbol };
+/**
+ * Co kill SKUTEČNĚ udělal.
+ *
+ * 🔴 Do 29. 8. vracel `void`, a tím byly TŘI různé konce k nerozeznání —
+ * reprodukováno naživo na testovacích oknech téhož dne:
+ *
+ *   killed                proces peera umřel                     ✅ jediné „hotovo"
+ *   target-missing        cíl neexistoval, nezabilo se NIC       (záznam byl zastaralý)
+ *   unlinked-not-killed   okno patřilo i jiné session, ODLINKOVÁNO
+ *                         a proces peera BĚŽÍ DÁL
+ *
+ * Prostřední i poslední případ se z volajícího místa tvářily jako úspěch, což
+ * je přesně to, co 29. 8. nechalo starého plt-velitele běžet souběžně s novým:
+ * dva procesy nad JEDNÍM transkriptem, obojí `--resume`, dvojí drain fronty.
+ *
+ * Vrací se to TYPEM, ne dalším logem: log jde přehlédnout, návratovou hodnotu
+ * ne. `void` bylo to, co dovolilo „udělal jsem nic" splynout s „zabil jsem to".
+ */
+export type KillOutcome = "killed" | "target-missing" | "unlinked-not-killed";
+
+export type CanonicalTarget = string & {
+  readonly __canonicalHostTarget: unique symbol;
+};
 
 /** The canonical string form of a target — what goes into `PeerRecord.tmuxTarget`. */
 export function formatHostTarget(t: HostTarget): CanonicalTarget {
@@ -283,7 +305,7 @@ export interface SessionHostDriver {
    * Terminate the entire supervised tree (bg-pty lesson — msg mrxe9t7d).
    * `force:true` skips graceful signals — kills immediately.
    */
-  kill(sessionKey: string, opts?: { force?: boolean }): Promise<void>;
+  kill(sessionKey: string, opts?: { force?: boolean }): Promise<KillOutcome>;
 
   /** All sessions this driver knows about. One entry per tmux SESSION. */
   listSessions(): Promise<SessionHostRecord[]>;

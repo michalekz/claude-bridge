@@ -69,6 +69,9 @@ async function fixtureWithProbe(probe: unknown) {
   };
   driver.kill = async (k: string) => {
     killed.push(k);
+    // Verdikt, ne void (v0.11.40): stub, který mlčí, by testům dovolil
+    // projít nad chováním, kvůli kterému se verdikt zaváděl.
+    return "killed" as const;
   };
   return { handlers, doc, driver, killed };
 }
@@ -173,7 +176,11 @@ describe("a spawn that cannot be verified is not a spawn that failed", () => {
     const doc = state.emptyState("0.11.5-test");
     const driver = new mock.MockDriver();
     const originalSpawn = driver.spawn.bind(driver);
-    driver.spawn = async (opts) => ({ ...(await originalSpawn(opts)), alive: false, pid: null });
+    driver.spawn = async (opts) => ({
+      ...(await originalSpawn(opts)),
+      alive: false,
+      pid: null,
+    });
     const res = await handlers.dispatch(spawnRequest("probe-none"), {
       state: doc,
       hostDriver: driver,

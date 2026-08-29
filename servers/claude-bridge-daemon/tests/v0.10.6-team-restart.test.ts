@@ -1,3 +1,4 @@
+import { spawnSync } from "node:child_process";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { canonicalHostTarget } from "../src/hosts/driver.ts";
 import type { PeerDesired } from "../src/state.ts";
@@ -54,12 +55,26 @@ function record(sessionId: string, name: string, over: Partial<PeerDesired> = {}
     {
       name,
       tmuxTarget: canonicalHostTarget(name),
-      pid: 100,
+      pid: deadPid,
       startedAt: "2026-08-04T10:00:00.000Z",
       lastUpdatedAt: "2026-08-04T10:00:00.000Z",
     },
   );
 }
+
+/**
+ * Pid, který PROKAZATELNĚ neběží — zjištěný, ne vymyšlený.
+ *
+ * Fixture tu měla `pid: 100`, což je na Linuxu ŽIVÉ jádrové vlákno. Od
+ * v0.11.40 se po stopu ověřuje smrt procesu, takže z toho čísla byl
+ * „přeživší peer" a testy padaly na chování, které je správné.
+ * **Vymyšlené číslo v testu může být skutečný pid** — táž rodina jako
+ * recyklace pidů, kvůli které se vedle pidu nosí čas startu.
+ */
+const deadPid = (() => {
+  const p = spawnSync("/bin/true");
+  return p.pid ?? 999_999;
+})();
 
 describe("team_restart rolls a team, and stops when something is wrong", () => {
   beforeEach(() => {
@@ -77,7 +92,12 @@ describe("team_restart rolls a team, and stops when something is wrong", () => {
       handlers,
       doc,
       driver,
-      ctx: { state: doc, hostDriver: driver, daemonVersion: "0.10.6-test", restartSettleMs: 0 },
+      ctx: {
+        state: doc,
+        hostDriver: driver,
+        daemonVersion: "0.10.6-test",
+        restartSettleMs: 0,
+      },
     };
   }
 
@@ -86,16 +106,21 @@ describe("team_restart rolls a team, and stops when something is wrong", () => {
     const res = await handlers.dispatch(makeRequest("team_restart", { team: "hmh" }), ctx);
 
     expect(res.outcome).toBe("ok");
-    const plan = res.data as { dryRun: boolean; order: Array<{ name: string; command: string }> };
+    const plan = res.data as {
+      dryRun: boolean;
+      order: Array<{ name: string; command: string }>;
+    };
     expect(plan.dryRun).toBe(true);
     expect(plan.order.map((o) => o.name)).toEqual(["a", "b"]);
     // Visible BEFORE anything stops — that they exist is the precondition.
     expect(plan.order.every((o) => o.command === "/bin/sh")).toBe(true);
-    expect(doc.peers["a"]?.observed.pid).toBe(100);
+    expect(doc.peers["a"]?.observed.pid).toBe(deadPid);
   });
 
   it("THE REFUSAL: a peer with no recorded command stops the whole run up front", async () => {
-    const { handlers, ctx, doc } = await fixture(["a", "b"], { b: { command: undefined } });
+    const { handlers, ctx, doc } = await fixture(["a", "b"], {
+      b: { command: undefined },
+    });
     const res = await handlers.dispatch(
       makeRequest("team_restart", { team: "hmh", dryRun: false, settleMs: 0 }),
       ctx,
@@ -104,7 +129,7 @@ describe("team_restart rolls a team, and stops when something is wrong", () => {
     expect(res.outcome).toBe("error");
     expect(res.error?.code).toBe("launch_params_missing");
     // Discovered up front, not halfway through: peer `a` was never touched.
-    expect(doc.peers["a"]?.observed.pid).toBe(100);
+    expect(doc.peers["a"]?.observed.pid).toBe(deadPid);
   });
 
   it("velitel goes last", async () => {
@@ -118,12 +143,16 @@ describe("team_restart rolls a team, and stops when something is wrong", () => {
   it("an unknown peer refuses the whole run — no partial roll-out", async () => {
     const { handlers, ctx, doc } = await fixture(["a"]);
     const res = await handlers.dispatch(
-      makeRequest("team_restart", { peers: ["a", "ghost"], dryRun: false, settleMs: 0 }),
+      makeRequest("team_restart", {
+        peers: ["a", "ghost"],
+        dryRun: false,
+        settleMs: 0,
+      }),
       ctx,
     );
     expect(res.outcome).toBe("error");
     expect(res.error?.code).toBe("peer_not_found");
-    expect(doc.peers["a"]?.observed.pid).toBe(100);
+    expect(doc.peers["a"]?.observed.pid).toBe(deadPid);
   });
 
   it("restarts peers in order and reports the new pids", async () => {
@@ -134,7 +163,10 @@ describe("team_restart rolls a team, and stops when something is wrong", () => {
     );
 
     expect(res.outcome).toBe("ok");
-    const sum = res.data as { restarted: string[]; results: Array<{ pidAfter: number | null }> };
+    const sum = res.data as {
+      restarted: string[];
+      results: Array<{ pidAfter: number | null }>;
+    };
     expect(sum.restarted).toEqual(["a", "b"]);
     expect(sum.results.every((r) => (r.pidAfter ?? 0) > 0)).toBe(true);
     driver.reset();

@@ -1,3 +1,4 @@
+import { spawnSync } from "node:child_process";
 import { mkdir, readFile, readdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -49,6 +50,16 @@ async function writeAgentsStub(dir: string): Promise<string> {
   return path;
 }
 
+/**
+ * Pid, který PROKAZATELNĚ neběží — zjištěný, ne vymyšlený.
+ *
+ * Od v0.11.40 se po stopu ověřuje smrt procesu, a vymyšlené číslo ve fixture
+ * (tady bývalo `1111`) může být na stroji ŽIVÝ proces. Test by pak padal na
+ * chování, které je správné. Táž rodina jako recyklace pidů, kvůli které se
+ * vedle pidu nosí čas startu.
+ */
+const deadPid = (() => spawnSync("/bin/true").pid ?? 999_999)();
+
 function makeRequest(tool: string, args: Record<string, unknown>, id = "req-1") {
   return {
     schemaVersion: 1 as const,
@@ -82,7 +93,7 @@ describe("rc acceptance", () => {
           name: "extra:one",
           hostDriver: "mock",
           tmuxTarget: canonicalHostTarget("extra:one"),
-          pid: 1111,
+          pid: deadPid,
           status: "live",
           model: null,
           startedAt: "2026-07-23T12:00:00.000Z",
@@ -158,7 +169,13 @@ describe("rc acceptance", () => {
           // WHICH peers prune removes, not about whether they are asked first;
           // without it the graceful path waits out its full ack window on a
           // mock peer that has nobody to answer for it.
-          { team: "rc-test", apply: true, prune: true, pruneForce: true, inline: inlineSpec },
+          {
+            team: "rc-test",
+            apply: true,
+            prune: true,
+            pruneForce: true,
+            inline: inlineSpec,
+          },
           "req-prune",
         ),
         { state: doc, hostDriver: driver, daemonVersion: "0.10.0-rc.0" },
@@ -187,7 +204,9 @@ describe("rc acceptance", () => {
       await mkdir(shared.controlDir(), { recursive: true });
       await writeFile(
         subscribersPath,
-        JSON.stringify({ subscribers: [{ peerId: "keeper-peer", events: ["peer_started"] }] }),
+        JSON.stringify({
+          subscribers: [{ peerId: "keeper-peer", events: ["peer_started"] }],
+        }),
       );
 
       const spawnRes = await handlers.dispatch(
@@ -260,10 +279,13 @@ describe("rc acceptance", () => {
 
       // Spy on driver.sendKeys — MockDriver doesn't have one; wire it up.
       const sendKeysCalls: Array<{ key: string; keys: string }> = [];
-      (driver as unknown as { sendKeys: (key: string, keys: string) => Promise<void> }).sendKeys =
-        async (key, keys) => {
-          sendKeysCalls.push({ key, keys });
-        };
+      (
+        driver as unknown as {
+          sendKeys: (key: string, keys: string) => Promise<void>;
+        }
+      ).sendKeys = async (key, keys) => {
+        sendKeysCalls.push({ key, keys });
+      };
 
       // Simulate peer ack by pre-writing the ack file.
       const ackDir = join(shared.controlDir(), "compact-ack");
@@ -314,10 +336,13 @@ describe("rc acceptance", () => {
       const { handlers, state, mock } = await importAll();
       const doc = state.emptyState("0.10.0-rc.0");
       const driver = new mock.MockDriver();
-      (driver as unknown as { sendKeys: (key: string, keys: string) => Promise<void> }).sendKeys =
-        async () => {
-          throw new Error("sendKeys must NOT be called when ack times out");
-        };
+      (
+        driver as unknown as {
+          sendKeys: (key: string, keys: string) => Promise<void>;
+        }
+      ).sendKeys = async () => {
+        throw new Error("sendKeys must NOT be called when ack times out");
+      };
 
       await handlers.dispatch(
         makeRequest(
