@@ -4322,7 +4322,7 @@ async function resolvePeer(idOrName, root = bridgeRoot(), now = Date.now()) {
 // package.json
 var package_default = {
   name: "claude-bridge-daemon",
-  version: "0.11.41",
+  version: "0.11.42",
   private: true,
   description: "Control-plane daemon for the claude-bridge plugin: peer lifecycle, telemetry, audit. Distributed as opt-in artefact \u2014 see ADR-008.",
   type: "module",
@@ -5736,7 +5736,7 @@ async function fileExists(path) {
     return false;
   }
 }
-async function verifyAckFile(path, requestedAtMs, threadId, otherPendingThreadIds = []) {
+async function verifyAckFile(path, requestedAtMs, threadId, otherPendingThreadIds = [], ackDeadlineMs = null) {
   let stat5;
   try {
     stat5 = await (0, import_promises10.lstat)(path);
@@ -5745,6 +5745,13 @@ async function verifyAckFile(path, requestedAtMs, threadId, otherPendingThreadId
   }
   if (stat5.mtimeMs < requestedAtMs - 1e3) {
     return { accepted: false, reason: "too_old", writtenAt: new Date(stat5.mtimeMs).toISOString() };
+  }
+  if (ackDeadlineMs !== null && stat5.mtimeMs > ackDeadlineMs + 1e3) {
+    return {
+      accepted: false,
+      reason: "after_window",
+      writtenAt: new Date(stat5.mtimeMs).toISOString()
+    };
   }
   let ackThreadId = null;
   try {
@@ -5853,13 +5860,13 @@ function createAckChannel(channel) {
         let last = { accepted: false, reason: "none" };
         const outcome = await pollUntil(
           async () => {
-            last = await verifyAckFile(p, requestedAtMs, threadId, rivals());
+            last = await verifyAckFile(p, requestedAtMs, threadId, rivals(), deadline);
             return last.accepted ? last : null;
           },
           { timeoutMs: Math.max(0, deadline - Date.now()), pollMs }
         );
         if (outcome.kind === "hit") return outcome.value;
-        const final = await verifyAckFile(p, requestedAtMs, threadId, rivals());
+        const final = await verifyAckFile(p, requestedAtMs, threadId, rivals(), deadline);
         return final.accepted ? final : final.reason === "none" ? last : final;
       } finally {
         release();
@@ -8047,7 +8054,24 @@ async function runReadyPhase(req, ctx, target, args, resumeSessionId) {
   let threadId;
   let msgId;
   let requestedAtMs;
-  if (resumable && pending) {
+  const expiredAtResume = resumable && pending !== null && Date.now() >= Date.parse(pending.requestedAt) + timeoutMs;
+  const foreignRequester = resumable && pending !== null && pending.requestId !== req.id ? pending.requestedByName ?? "someone else" : null;
+  if (foreignRequester !== null) {
+    await writeEvent({
+      event: "peer_restart_request_already_pending",
+      level: "warn",
+      by: { sessionId: req.requestedBy.sessionId, name: req.requestedBy.name },
+      requestId: req.id,
+      details: {
+        handle,
+        pendingRequestId: pending?.requestId ?? null,
+        pendingRequestedBy: foreignRequester,
+        pendingRequestedAt: pending?.requestedAt ?? null,
+        pendingPhase: pending?.phase ?? null
+      }
+    });
+  }
+  if (resumable && pending && !expiredAtResume) {
     threadId = pending.threadId;
     msgId = pending.msgId;
     requestedAtMs = Date.parse(pending.requestedAt);
@@ -8058,7 +8082,7 @@ async function runReadyPhase(req, ctx, target, args, resumeSessionId) {
       details: { handle, threadId, requestedAt: pending.requestedAt, note: "no second request" }
     });
   } else {
-    await restartAcks.sweepStale(bridgeId, "pre-request");
+    await restartAcks.sweepStale(bridgeId, expiredAtResume ? "window-reopened" : "pre-request");
     threadId = restartThreadId(bridgeId);
     requestedAtMs = Date.now();
     msgId = await requestRestartReady(bridgeId, threadId, args.reason ?? null);
@@ -8068,8 +8092,24 @@ async function runReadyPhase(req, ctx, target, args, resumeSessionId) {
       requestedAt: new Date(requestedAtMs).toISOString(),
       timeoutMs,
       requestId: req.id,
+      requestedByName: req.requestedBy.name,
       resumeSessionId
     });
+    if (expiredAtResume && pending) {
+      await writeEvent({
+        event: "peer_restart_ready_window_reopened",
+        level: "warn",
+        by: { sessionId: req.requestedBy.sessionId, name: req.requestedBy.name },
+        requestId: req.id,
+        details: {
+          handle,
+          previousRequestedAt: pending.requestedAt,
+          previousThreadId: pending.threadId,
+          timeoutMs,
+          note: "previous window had expired \u2014 asking again rather than waiting 0 ms"
+        }
+      });
+    }
     await writeEvent({
       event: "peer_restart_requested",
       by: { sessionId: req.requestedBy.sessionId, name: req.requestedBy.name },
@@ -8097,7 +8137,8 @@ async function runReadyPhase(req, ctx, target, args, resumeSessionId) {
     timeoutMs,
     waitedMs,
     ackVerdict: verdict.reason,
-    resumed: resumable
+    resumed: resumable,
+    ...foreignRequester !== null ? { pendingRequestedBy: foreignRequester } : {}
   };
 }
 async function handlePeerRestart(req, ctx) {
@@ -8271,19 +8312,23 @@ async function handlePeerRestart(req, ctx) {
         timeoutMs: ready.timeoutMs,
         waitedMs: ready.waitedMs,
         ackVerdict: ready.ackVerdict,
-        resumed: ready.resumed
+        resumed: ready.resumed,
+        pendingRequestedBy: ready.pendingRequestedBy ?? null
       }
     });
     return errResult(
       req.id,
       req.tool,
       "restart_ready_timeout",
-      `Peer '${record.handle}' did not say it was ready within ${ready.timeoutMs} ms (waited ${ready.waitedMs} ms, last ack verdict: ${ready.ackVerdict}). NOTHING WAS STOPPED and nothing was killed \u2014 the peer is running exactly as before. The request stands: call peer_restart again to keep waiting on the same thread (a late ack still counts), or peer_restart with force:true to restart it now and lose whatever it had not written down.`,
+      `Peer '${record.handle}' did not say it was ready within ${ready.timeoutMs} ms (waited ${ready.waitedMs} ms, last ack verdict: ${ready.ackVerdict}). NOTHING WAS STOPPED and nothing was killed \u2014 the peer is running exactly as before. Call peer_restart again and it ASKS AGAIN on a fresh window of ${ready.timeoutMs} ms: an ack answers the window it was asked in, so one written after this window closed does not carry over. Or peer_restart with force:true to restart it now and lose whatever it had not written down.`,
       {
         handle: record.handle,
         threadId: ready.threadId,
         waitedMs: ready.waitedMs,
-        stillRunning: true
+        stillRunning: true,
+        // Kdo na téhle session drží lifecycle request. Bez toho se druhý
+        // volající o kolizi dozví až z výsledku — a to jen když má štěstí.
+        pendingRequestedBy: ready.pendingRequestedBy ?? null
       }
     );
   }

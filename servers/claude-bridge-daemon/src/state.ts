@@ -333,6 +333,16 @@ export interface PeerObserved {
     timeoutMs: number;
     /** The request that owns this restart, so a second caller can name it. */
     requestId: string;
+    /**
+     * KDO ho podal — jméno, ne jen id požadavku.
+     *
+     * 🔴 Souběžné lifecycle requesty na týž handle o sobě navzájem nevědí
+     * (29. 8.): mic-velitel podal restart 14 s po tom, co ho velitel zrušil,
+     * a o kolizi se dozvěděl až z výsledku. `requestId` tu byl od začátku
+     * „aby druhý volající mohl toho prvního pojmenovat" — jenže id požadavku
+     * nikoho nepojmenuje. Chybělo jméno.
+     */
+    requestedByName?: string;
     phase: "ready-ack" | "stopping" | "spawning" | "verifying";
     /** What `--resume` will be given. Null when the peer starts fresh. */
     resumeSessionId?: string | null;

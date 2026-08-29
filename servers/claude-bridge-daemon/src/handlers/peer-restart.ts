@@ -325,6 +325,7 @@ async function markRestart(
     requestedAt: string;
     timeoutMs: number;
     requestId: string;
+    requestedByName?: string;
     resumeSessionId: string | null;
   },
 ): Promise<void> {
@@ -362,6 +363,8 @@ type ReadyOutcome =
       waitedMs: number;
       ackVerdict: string;
       resumed: boolean;
+      /** Jméno toho, kdo na téhle session drží lifecycle request, když to není volající. */
+      pendingRequestedBy?: string;
     };
 
 /**
@@ -409,7 +412,46 @@ async function runReadyPhase(
   let msgId: string | null;
   let requestedAtMs: number;
 
-  if (resumable && pending) {
+  // 🔴 RESUME PO VYPRŠENÍ NENÍ POKRAČOVÁNÍ ČEKÁNÍ — je to NOVÉ OKNO (29. 8.).
+  //
+  // Do teď si resume vzal PŮVODNÍ `requestedAt` a deadline počítal z něj.
+  // Když už uplynul, vyšlo okno 0 ms: naměřeno naostro `waitedMs: 1` a hned
+  // `ready_timeout`. Chybová hláška přitom slibovala „call peer_restart again
+  // to keep waiting… a late ack still counts" — po vypršení ten slib NEPLATIL
+  // a člověk podle něj volal znovu do prázdna.
+  //
+  // Reopen znamená i NOVOU OTÁZKU pro peera: ack se nově váže na okno, které
+  // odpovídá (viz `ackDeadlineMs` v `verifyAckFile`), takže potvrzení psané
+  // pro staré okno už nepočítá — a peer o tom musí vědět. Pravidlo „jeden dotaz,
+  // ne dva" platí UVNITŘ okna; přes hranici dvou oken je druhý dotaz správný.
+  const expiredAtResume =
+    resumable && pending !== null && Date.now() >= Date.parse(pending.requestedAt) + timeoutMs;
+
+  // 🔴 SOUBĚŽNÝ ŽADATEL MÁ BÝT VIDĚT (29. 8.). Dva lifecycle requesty na týž
+  // handle o sobě nevěděly: druhý se o kolizi dozvěděl až z výsledku, a to jen
+  // proto, že vypršelé okno tehdy padlo za 14 ms. Po opravě ① by čekal celé
+  // okno, takže mlčení by bylo dražší, ne levnější.
+  const foreignRequester =
+    resumable && pending !== null && pending.requestId !== req.id
+      ? (pending.requestedByName ?? "someone else")
+      : null;
+  if (foreignRequester !== null) {
+    await writeEvent({
+      event: "peer_restart_request_already_pending",
+      level: "warn",
+      by: { sessionId: req.requestedBy.sessionId, name: req.requestedBy.name },
+      requestId: req.id,
+      details: {
+        handle,
+        pendingRequestId: pending?.requestId ?? null,
+        pendingRequestedBy: foreignRequester,
+        pendingRequestedAt: pending?.requestedAt ?? null,
+        pendingPhase: pending?.phase ?? null,
+      },
+    });
+  }
+
+  if (resumable && pending && !expiredAtResume) {
     threadId = pending.threadId;
     msgId = pending.msgId;
     requestedAtMs = Date.parse(pending.requestedAt);
@@ -420,7 +462,11 @@ async function runReadyPhase(
       details: { handle, threadId, requestedAt: pending.requestedAt, note: "no second request" },
     });
   } else {
-    await restartAcks.sweepStale(bridgeId, "pre-request");
+    // Staré potvrzení se ZAMETE i při znovuotevření okna. Ack, který zbyl po
+    // okně, jež skončilo, je mina: velitel 29. 8. našel potvrzení zapsané
+    // v 13:24 pro žádost, kterou v 13:23 zrušil — a další restart by ho vzal
+    // jako platný a pustil se rovnou do stopu ŽIVÉ pracovní session.
+    await restartAcks.sweepStale(bridgeId, expiredAtResume ? "window-reopened" : "pre-request");
     // The thread the PEER will echo back, so it is built from the address the
     // peer was written to — not from the key we file it under.
     threadId = restartThreadId(bridgeId);
@@ -432,8 +478,24 @@ async function runReadyPhase(
       requestedAt: new Date(requestedAtMs).toISOString(),
       timeoutMs,
       requestId: req.id,
+      requestedByName: req.requestedBy.name,
       resumeSessionId,
     });
+    if (expiredAtResume && pending) {
+      await writeEvent({
+        event: "peer_restart_ready_window_reopened",
+        level: "warn",
+        by: { sessionId: req.requestedBy.sessionId, name: req.requestedBy.name },
+        requestId: req.id,
+        details: {
+          handle,
+          previousRequestedAt: pending.requestedAt,
+          previousThreadId: pending.threadId,
+          timeoutMs,
+          note: "previous window had expired — asking again rather than waiting 0 ms",
+        },
+      });
+    }
     await writeEvent({
       event: "peer_restart_requested",
       by: { sessionId: req.requestedBy.sessionId, name: req.requestedBy.name },
@@ -465,6 +527,7 @@ async function runReadyPhase(
     waitedMs,
     ackVerdict: verdict.reason,
     resumed: resumable,
+    ...(foreignRequester !== null ? { pendingRequestedBy: foreignRequester } : {}),
   };
 }
 
@@ -755,18 +818,22 @@ export async function handlePeerRestart(
         waitedMs: ready.waitedMs,
         ackVerdict: ready.ackVerdict,
         resumed: ready.resumed,
+        pendingRequestedBy: ready.pendingRequestedBy ?? null,
       },
     });
     return errResult(
       req.id,
       req.tool,
       "restart_ready_timeout",
-      `Peer '${record.handle}' did not say it was ready within ${ready.timeoutMs} ms (waited ${ready.waitedMs} ms, last ack verdict: ${ready.ackVerdict}). NOTHING WAS STOPPED and nothing was killed — the peer is running exactly as before. The request stands: call peer_restart again to keep waiting on the same thread (a late ack still counts), or peer_restart with force:true to restart it now and lose whatever it had not written down.`,
+      `Peer '${record.handle}' did not say it was ready within ${ready.timeoutMs} ms (waited ${ready.waitedMs} ms, last ack verdict: ${ready.ackVerdict}). NOTHING WAS STOPPED and nothing was killed — the peer is running exactly as before. Call peer_restart again and it ASKS AGAIN on a fresh window of ${ready.timeoutMs} ms: an ack answers the window it was asked in, so one written after this window closed does not carry over. Or peer_restart with force:true to restart it now and lose whatever it had not written down.`,
       {
         handle: record.handle,
         threadId: ready.threadId,
         waitedMs: ready.waitedMs,
         stillRunning: true,
+        // Kdo na téhle session drží lifecycle request. Bez toho se druhý
+        // volající o kolizi dozví až z výsledku — a to jen když má štěstí.
+        pendingRequestedBy: ready.pendingRequestedBy ?? null,
       },
     );
   }

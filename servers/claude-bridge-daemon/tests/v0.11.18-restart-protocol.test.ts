@@ -257,15 +257,20 @@ describe("step b) — ask, and wait", () => {
     expect(state.peers[HANDLE].observed.status).toBe("restarting");
   }, 15_000);
 
-  it("a retry RESUMES the same request — it does not ask twice", async () => {
+  it("retry UVNITŘ okna resumuje tutéž žádost — neptá se dvakrát", async () => {
     stubPrimitives();
     const { handlePeerRestart } = await import("../src/handlers/peer-restart.ts");
     const state = stateWith(recordFor());
     const ctx = ctxWith(state);
 
+    // Druhé volání přijde DŘÍV, než první okno vyprší (60 s), takže jde
+    // opravdu o pokračování téhož čekání.
     await handlePeerRestart(restartRequest({ readyTimeoutMs: 200, readyPollMs: 50 }), ctx);
     const firstThread = state.peers[HANDLE].observed.restartRequest?.threadId;
-    await handlePeerRestart(restartRequest({ readyTimeoutMs: 200, readyPollMs: 50 }), ctx);
+    if (state.peers[HANDLE].observed.restartRequest) {
+      state.peers[HANDLE].observed.restartRequest.requestedAt = new Date().toISOString();
+    }
+    await handlePeerRestart(restartRequest({ readyTimeoutMs: 1_000, readyPollMs: 50 }), ctx);
 
     // Same thread, and one message in the inbox rather than two. A peer that
     // acks late is answering a question that was asked ONCE.
@@ -274,7 +279,19 @@ describe("step b) — ask, and wait", () => {
     expect((await readdir(inboxRoot)).length).toBe(1);
   }, 15_000);
 
-  it("a LATE ack still counts — the retry collects it", async () => {
+  it("🔴 ack zapsaný PO konci okna už nepustí stop — retry se ptá ZNOVU", async () => {
+    // ZMĚNA KONTRAKTU 29. 8., a je to oprava dvou děr, které patří k sobě.
+    //
+    // ① Resume vypršelé žádosti si bral PŮVODNÍ deadline, takže okno vyšlo
+    //    0 ms (naměřeno naostro `waitedMs: 1`) — a hláška přitom slibovala
+    //    „call again to keep waiting, a late ack still counts".
+    // ② Ack zapsaný po konci okna zůstával na disku jako MINA: velitel našel
+    //    potvrzení z 13:24 pro žádost, kterou v 13:23 zrušil, a další restart
+    //    by ho vzal jako platný a pustil se rovnou do stopu ŽIVÉ session.
+    //
+    // Samostatná oprava ① by ②-minu AKTIVOVALA (nulové okno ji do té doby
+    // nechtěně krylo), proto jdou spolu. Ack odpovídá OKNU, ve kterém byl
+    // vyžádán; po jeho konci se zametá a peer dostane novou otázku.
     const { stopArgs } = stubPrimitives();
     const { handlePeerRestart } = await import("../src/handlers/peer-restart.ts");
     const { restartAcks } = await import("../src/handlers/restart-protocol.ts");
@@ -284,25 +301,26 @@ describe("step b) — ask, and wait", () => {
     await handlePeerRestart(restartRequest({ readyTimeoutMs: 200, readyPollMs: 50 }), ctx);
     const threadId = state.peers[HANDLE].observed.restartRequest?.threadId as string;
 
-    // The peer answers after the first call gave up.
+    // Peer odpoví, až když první volání dávno vzdalo.
     await writeFile(restartAcks.path(IDENTITY), JSON.stringify({ threadId }), "utf-8");
     const res = await handlePeerRestart(
       restartRequest({ readyTimeoutMs: 200, readyPollMs: 50 }),
       ctx,
     );
 
-    expect(res.outcome).toBe("ok");
-    expect((res.data as Record<string, unknown>)["mode"]).toBe("graceful");
-    // 🔴 ONE ASK, corrected by the acceptance run. The design gave the following
-    // stop a short window of its own; measured on a live peer, the ready-ack was
-    // a full agent turn (30 s) and the stop-request needed another. So the
-    // asking happens once, here, and the measurement travels with it.
-    expect(stopArgs[0]?.["ackTimeoutMs"]).toBeUndefined();
-    expect(stopArgs[0]?.["skipCourtesy"]).toBe(true);
-    // Not a caller's opinion: this handler saw the ack file, fresh and on the
-    // right thread. The measurement moved, it did not disappear.
-    expect(stopArgs[0]?.["stoppedCleanly"]).toBe(true);
+    expect(res.outcome).toBe("error");
+    expect(stopArgs).toHaveLength(0);
+    // Nová otázka: druhá zpráva v inboxu a nové vlákno.
+    const inboxRoot = join(tempHome, ".claude-bridge", "inbox", IDENTITY, "pending");
+    expect((await readdir(inboxRoot)).length).toBe(2);
+    expect(state.peers[HANDLE].observed.restartRequest?.threadId).not.toBe(threadId);
   }, 15_000);
+
+  // ODSTRANĚN 29. 8.: „a LATE ack still counts — the retry collects it".
+  // Ten kontrakt přestal platit a nahradil ho test nad tímhle komentářem.
+  // Slib „opožděný ack se ještě počítá" nešel držet bezpečně: potvrzení, které
+  // přišlo po konci okna, nelze odlišit od potvrzení pro žádost, kterou mezitím
+  // někdo zrušil — a to druhé je mina pod živou session.
 });
 
 describe("idempotence and abandonment", () => {
@@ -504,9 +522,15 @@ describe("step g) — the peer is told what happened", () => {
     const ctx = ctxWith(state);
     await handlePeerRestart(restartRequest({ readyTimeoutMs: 200, readyPollMs: 50 }), ctx);
     const threadId = state.peers[HANDLE].observed.restartRequest?.threadId as string;
+    // Ack UVNITŘ okna: značka se posune na „teď", takže druhé volání okno
+    // resumuje místo aby ho otevíralo znovu (od 29. 8. je ack platný jen pro
+    // okno, ve kterém byl vyžádán).
+    if (state.peers[HANDLE].observed.restartRequest) {
+      state.peers[HANDLE].observed.restartRequest.requestedAt = new Date().toISOString();
+    }
     await writeFile(restartAcks.path(IDENTITY), JSON.stringify({ threadId }), "utf-8");
     const res = await handlePeerRestart(
-      restartRequest({ readyTimeoutMs: 200, readyPollMs: 50 }),
+      restartRequest({ readyTimeoutMs: 2_000, readyPollMs: 50 }),
       ctx,
     );
 

@@ -46,7 +46,7 @@ const ACK_FILENAME_EXTENSION = ".json";
 
 export interface AckVerdict {
   accepted: boolean;
-  reason: "fresh" | "none" | "too_old" | "wrong_thread" | "orphan_thread";
+  reason: "fresh" | "none" | "too_old" | "after_window" | "wrong_thread" | "orphan_thread";
   ackThreadId?: string | null;
   writtenAt?: string | null;
   /**
@@ -115,6 +115,18 @@ export async function verifyAckFile(
   requestedAtMs: number,
   threadId: string,
   otherPendingThreadIds: readonly string[] = [],
+  /**
+   * Konec okna, na které se ten ack ptá. `null` = neomezeně (staré chování).
+   *
+   * 🔴 ACK ODPOVÍDÁ OKNU, VE KTERÉM BYL VYŽÁDÁN (29. 8.). Potvrzení zapsané
+   * potom, co okno skončilo, není opožděná odpověď — je to MINA: velitel našel
+   * ack z 13:24 pro žádost, kterou v 13:23 zrušil, a další restart by ho vzal
+   * jako platný a pustil se rovnou do stopu ŽIVÉ pracovní session.
+   *
+   * Samotná „čerstvost" (mtime ≥ požadavek) tuhle otázku nezodpoví: čerstvý je
+   * i ack, který dorazil dávno po konci čekání.
+   */
+  ackDeadlineMs: number | null = null,
 ): Promise<AckVerdict> {
   let stat: Awaited<ReturnType<typeof lstat>>;
   try {
@@ -126,6 +138,15 @@ export async function verifyAckFile(
   // request was written, and a filesystem timestamp is not a precision clock.
   if (stat.mtimeMs < requestedAtMs - 1_000) {
     return { accepted: false, reason: "too_old", writtenAt: new Date(stat.mtimeMs).toISOString() };
+  }
+  // Táž vteřina rezervy jako u dolní hranice, a ze stejného důvodu: hodiny
+  // souborového systému nejsou přesné měřidlo.
+  if (ackDeadlineMs !== null && stat.mtimeMs > ackDeadlineMs + 1_000) {
+    return {
+      accepted: false,
+      reason: "after_window",
+      writtenAt: new Date(stat.mtimeMs).toISOString(),
+    };
   }
   let ackThreadId: string | null = null;
   try {
@@ -314,13 +335,13 @@ export function createAckChannel(channel: string): AckChannel {
         let last: AckVerdict = { accepted: false, reason: "none" };
         const outcome = await pollUntil<AckVerdict>(
           async () => {
-            last = await verifyAckFile(p, requestedAtMs, threadId, rivals());
+            last = await verifyAckFile(p, requestedAtMs, threadId, rivals(), deadline);
             return last.accepted ? last : null;
           },
           { timeoutMs: Math.max(0, deadline - Date.now()), pollMs },
         );
         if (outcome.kind === "hit") return outcome.value;
-        const final = await verifyAckFile(p, requestedAtMs, threadId, rivals());
+        const final = await verifyAckFile(p, requestedAtMs, threadId, rivals(), deadline);
         return final.accepted ? final : final.reason === "none" ? last : final;
       } finally {
         release();
