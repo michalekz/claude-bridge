@@ -93,6 +93,15 @@ export interface ResolvedPeer {
   name: string;
   displayName?: string;
   lastSeenAgeMs: number;
+  /**
+   * `interactive` | `bg` — co ta session JE, když to její heartbeat řekl.
+   *
+   * CHYBÍ u peerů se starším pluginem (pole vzniklo v v0.11.39), a chybějící
+   * hodnota NENÍ „interactive". Kdo z toho odvozuje radu, musí umět mlčet.
+   */
+  kind?: string;
+  /** Pid peera z heartbeatu — pro dohledání `kind` ze `sessions/<pid>.json`. */
+  pid?: number;
 }
 
 export type PeerLookup =
@@ -132,6 +141,8 @@ export async function resolvePeer(
         id,
         name,
         ...(typeof raw["displayName"] === "string" ? { displayName: raw["displayName"] } : {}),
+        ...(typeof raw["kind"] === "string" ? { kind: raw["kind"] } : {}),
+        ...(typeof raw["pid"] === "number" ? { pid: raw["pid"] } : {}),
         lastSeenAgeMs: Number.isNaN(lastSeen) ? Number.POSITIVE_INFINITY : now - lastSeen,
       });
     } catch {

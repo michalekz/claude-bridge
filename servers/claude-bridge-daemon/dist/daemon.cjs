@@ -4304,6 +4304,8 @@ async function resolvePeer(idOrName, root = bridgeRoot(), now = Date.now()) {
         id,
         name,
         ...typeof raw["displayName"] === "string" ? { displayName: raw["displayName"] } : {},
+        ...typeof raw["kind"] === "string" ? { kind: raw["kind"] } : {},
+        ...typeof raw["pid"] === "number" ? { pid: raw["pid"] } : {},
         lastSeenAgeMs: Number.isNaN(lastSeen) ? Number.POSITIVE_INFINITY : now - lastSeen
       });
     } catch {
@@ -4320,7 +4322,7 @@ async function resolvePeer(idOrName, root = bridgeRoot(), now = Date.now()) {
 // package.json
 var package_default = {
   name: "claude-bridge-daemon",
-  version: "0.11.40",
+  version: "0.11.41",
   private: true,
   description: "Control-plane daemon for the claude-bridge plugin: peer lifecycle, telemetry, audit. Distributed as opt-in artefact \u2014 see ADR-008.",
   type: "module",
@@ -4511,17 +4513,48 @@ function errResult(id, tool, code, message, details) {
 }
 
 // src/handlers/peer-ref.ts
+var import_node_fs = require("node:fs");
+var import_node_os3 = require("node:os");
+var import_node_path6 = require("node:path");
+function sessionKind(pid) {
+  if (pid === void 0) return void 0;
+  try {
+    const raw = (0, import_node_fs.readFileSync)((0, import_node_path6.join)((0, import_node_os3.homedir)(), ".claude", "sessions", `${pid}.json`), "utf-8");
+    const parsed = JSON.parse(raw);
+    return typeof parsed.kind === "string" ? parsed.kind : void 0;
+  } catch {
+    return void 0;
+  }
+}
 async function unresolvedPeerError(ref) {
   const heartbeat = await resolvePeer(ref);
   if (heartbeat.outcome === "found") {
+    const age = Math.round(heartbeat.peer.lastSeenAgeMs);
+    const kind = heartbeat.peer.kind ?? sessionKind(heartbeat.peer.pid);
+    if (kind === "bg") {
+      return {
+        code: "peer_unmanaged",
+        message: `Peer '${ref}' IS RUNNING but it is a session hosted by the Claude Code daemon (kind=bg), not by tmux \u2014 so the control plane cannot reach it BY DESIGN, and this is not a fault to repair. Its heartbeat is ${age} ms old. Do NOT adopt it: the daemon's lifecycle is built on a tmux target, and a record without one is a record every stop, restart and compact would lie about. Its lifecycle belongs to whoever started it; for compaction the only path is the session itself.`,
+        details: {
+          peer: ref,
+          sessionId: heartbeat.peer.id,
+          name: heartbeat.peer.name,
+          lastSeenAgeMs: age,
+          kind,
+          remedy: "owner-of-the-session"
+        }
+      };
+    }
+    const sure = kind === "interactive";
     return {
       code: "peer_unmanaged",
-      message: `Peer '${ref}' IS RUNNING but the control plane does not manage it, so lifecycle tools cannot reach it. Its heartbeat is ${Math.round(heartbeat.peer.lastSeenAgeMs)} ms old. This happens when a session is started or revived outside the daemon \u2014 adopt it with team_adopt, then retry.`,
+      message: `Peer '${ref}' IS RUNNING but the control plane does not manage it, so lifecycle tools cannot reach it. Its heartbeat is ${age} ms old. This happens when a session is started or revived outside the daemon \u2014 adopt it with team_adopt, then retry.${sure ? "" : " (Its kind could not be read, so first check it HAS a tmux window: a session hosted by the Claude Code daemon must NOT be adopted.)"}`,
       details: {
         peer: ref,
         sessionId: heartbeat.peer.id,
         name: heartbeat.peer.name,
-        lastSeenAgeMs: Math.round(heartbeat.peer.lastSeenAgeMs),
+        lastSeenAgeMs: age,
+        kind: kind ?? null,
         remedy: "team_adopt"
       }
     };
@@ -5163,7 +5196,7 @@ async function handleControlConfig(req, ctx) {
 }
 
 // src/lock.ts
-var import_node_fs = require("node:fs");
+var import_node_fs2 = require("node:fs");
 var import_promises6 = require("node:fs/promises");
 var log4 = makeLogger("daemon.lock");
 var LockAcquireError = class extends Error {
@@ -5176,7 +5209,7 @@ var LockAcquireError = class extends Error {
 function readProcStart(pid) {
   if (process.platform !== "linux") return null;
   try {
-    const stat5 = (0, import_node_fs.readFileSync)(`/proc/${pid}/stat`, "utf-8");
+    const stat5 = (0, import_node_fs2.readFileSync)(`/proc/${pid}/stat`, "utf-8");
     const afterComm = stat5.slice(stat5.lastIndexOf(")") + 1).trim();
     const fields = afterComm.split(/\s+/);
     const starttime = fields[19];
@@ -5433,10 +5466,10 @@ var import_promises12 = require("node:fs/promises");
 
 // src/compact-verify.ts
 var import_promises8 = require("node:fs/promises");
-var import_node_path6 = require("node:path");
+var import_node_path7 = require("node:path");
 var log5 = makeLogger("daemon.compact-verify");
 function statuslineFile(sessionId) {
-  return (0, import_node_path6.join)(bridgeRoot(), "live", "statusline", `${sessionId}.json`);
+  return (0, import_node_path7.join)(bridgeRoot(), "live", "statusline", `${sessionId}.json`);
 }
 var DEFAULT_VERIFY_TIMEOUT_MS = 36e4;
 var DEFAULT_VERIFY_POLL_MS = 2e3;
@@ -5558,10 +5591,10 @@ async function watchForCompact(opts) {
 // src/event-subscribers.ts
 var import_node_crypto4 = require("node:crypto");
 var import_promises9 = require("node:fs/promises");
-var import_node_path7 = require("node:path");
+var import_node_path8 = require("node:path");
 var log6 = makeLogger("daemon.subscribers");
 function subscribersFilePath() {
-  return (0, import_node_path7.join)(controlDir(), "subscribers.json");
+  return (0, import_node_path8.join)(controlDir(), "subscribers.json");
 }
 async function readSubscribers() {
   try {
@@ -5693,7 +5726,7 @@ function blocksInject(busy) {
 
 // src/handlers/ack-protocol.ts
 var import_promises10 = require("node:fs/promises");
-var import_node_path8 = require("node:path");
+var import_node_path9 = require("node:path");
 var ACK_FILENAME_EXTENSION = ".json";
 async function fileExists(path) {
   try {
@@ -5742,8 +5775,8 @@ async function verifyAckFile(path, requestedAtMs, threadId, otherPendingThreadId
   };
 }
 function createAckChannel(channel) {
-  const dir = () => (0, import_node_path8.join)(controlDir(), channel);
-  const path = (sessionId) => (0, import_node_path8.join)(dir(), `${sessionId}${ACK_FILENAME_EXTENSION}`);
+  const dir = () => (0, import_node_path9.join)(controlDir(), channel);
+  const path = (sessionId) => (0, import_node_path9.join)(dir(), `${sessionId}${ACK_FILENAME_EXTENSION}`);
   const waiting = /* @__PURE__ */ new Map();
   const beginWaitingOf = (sessionId, threadId) => {
     let set = waiting.get(sessionId);
@@ -5776,9 +5809,9 @@ function createAckChannel(channel) {
     async sweepStale(sessionId, reason) {
       const src = path(sessionId);
       if (!await fileExists(src)) return null;
-      const done = (0, import_node_path8.join)(dir(), "done");
+      const done = (0, import_node_path9.join)(dir(), "done");
       await (0, import_promises10.mkdir)(done, { recursive: true });
-      const dest = (0, import_node_path8.join)(done, `${sessionId}-${reason}-${Date.now()}.json`);
+      const dest = (0, import_node_path9.join)(done, `${sessionId}-${reason}-${Date.now()}.json`);
       try {
         await (0, import_promises10.rename)(src, dest);
       } catch {
@@ -5793,15 +5826,15 @@ function createAckChannel(channel) {
       } catch {
         return 0;
       }
-      const done = (0, import_node_path8.join)(dir(), "done");
+      const done = (0, import_node_path9.join)(dir(), "done");
       await (0, import_promises10.mkdir)(done, { recursive: true });
       let swept = 0;
       for (const name of names) {
         if (!name.endsWith(ACK_FILENAME_EXTENSION)) continue;
         try {
           await (0, import_promises10.rename)(
-            (0, import_node_path8.join)(dir(), name),
-            (0, import_node_path8.join)(
+            (0, import_node_path9.join)(dir(), name),
+            (0, import_node_path9.join)(
               done,
               `${name.slice(0, -ACK_FILENAME_EXTENSION.length)}-startup-${Date.now()}.json`
             )
@@ -5834,10 +5867,10 @@ function createAckChannel(channel) {
     },
     async consume(sessionId) {
       const src = path(sessionId);
-      const done = (0, import_node_path8.join)(dir(), "done");
+      const done = (0, import_node_path9.join)(dir(), "done");
       try {
         await (0, import_promises10.mkdir)(done, { recursive: true });
-        await (0, import_promises10.rename)(src, (0, import_node_path8.join)(done, `${sessionId}-${Date.now()}.json`));
+        await (0, import_promises10.rename)(src, (0, import_node_path9.join)(done, `${sessionId}-${Date.now()}.json`));
       } catch {
         await (0, import_promises10.unlink)(src).catch(() => void 0);
       }
@@ -5864,14 +5897,14 @@ var restartAcks = createAckChannel("restart-ack");
 var ALL_ACK_CHANNELS = [compactAcks, stopAcks, restartAcks];
 
 // src/handlers/peer-identity.ts
-var import_node_fs3 = require("node:fs");
-var import_node_path10 = require("node:path");
+var import_node_fs4 = require("node:fs");
+var import_node_path11 = require("node:path");
 
 // src/hosts/process-inspector.ts
-var import_node_fs2 = require("node:fs");
+var import_node_fs3 = require("node:fs");
 var import_promises11 = require("node:fs/promises");
-var import_node_os3 = require("node:os");
-var import_node_path9 = require("node:path");
+var import_node_os4 = require("node:os");
+var import_node_path10 = require("node:path");
 var DEFAULT_MAX_DEPTH = 8;
 var UUID_RE = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i;
 function parsePpidFromStat(stat5) {
@@ -5886,7 +5919,7 @@ function sessionIdFromCmdline(cmdline) {
   if (idx === -1) return null;
   const rest = cmdline.slice(idx + "--resume".length).trim();
   const token = rest.split(/\s+/)[0] ?? "";
-  const match = UUID_RE.exec((0, import_node_path9.basename)(token));
+  const match = UUID_RE.exec((0, import_node_path10.basename)(token));
   return match ? match[0] : null;
 }
 var LinuxProcessInspector = class {
@@ -5894,7 +5927,7 @@ var LinuxProcessInspector = class {
   sessionsDir;
   constructor(opts = {}) {
     this.procRoot = opts.procRoot ?? "/proc";
-    this.sessionsDir = opts.sessionsDir ?? (0, import_node_path9.join)((0, import_node_os3.homedir)(), ".claude", "sessions");
+    this.sessionsDir = opts.sessionsDir ?? (0, import_node_path10.join)((0, import_node_os4.homedir)(), ".claude", "sessions");
   }
   async listClaudePeers() {
     let entries;
@@ -5961,9 +5994,9 @@ var LinuxProcessInspector = class {
     if (!pathVar) return null;
     for (const dir of pathVar.split(":")) {
       if (dir.length === 0) continue;
-      const candidate = (0, import_node_path9.join)(dir, command);
+      const candidate = (0, import_node_path10.join)(dir, command);
       try {
-        await (0, import_promises11.access)(candidate, import_node_fs2.constants.X_OK);
+        await (0, import_promises11.access)(candidate, import_node_fs3.constants.X_OK);
         return candidate;
       } catch {
       }
@@ -5972,7 +6005,7 @@ var LinuxProcessInspector = class {
   }
   async readProcCwd(pid) {
     try {
-      return await (0, import_promises11.readlink)((0, import_node_path9.join)(this.procRoot, String(pid), "cwd"));
+      return await (0, import_promises11.readlink)((0, import_node_path10.join)(this.procRoot, String(pid), "cwd"));
     } catch {
       return null;
     }
@@ -5998,7 +6031,7 @@ var LinuxProcessInspector = class {
    */
   async resolveSessionId(pid, cmdline) {
     try {
-      const raw = await (0, import_promises11.readFile)((0, import_node_path9.join)(this.sessionsDir, `${pid}.json`), "utf-8");
+      const raw = await (0, import_promises11.readFile)((0, import_node_path10.join)(this.sessionsDir, `${pid}.json`), "utf-8");
       const parsed = JSON.parse(raw);
       if (parsed.sessionId) return { sessionId: parsed.sessionId, source: "sessions-json" };
     } catch {
@@ -6009,7 +6042,7 @@ var LinuxProcessInspector = class {
   }
   async readProcFile(pid, name) {
     try {
-      return await (0, import_promises11.readFile)((0, import_node_path9.join)(this.procRoot, String(pid), name), "utf-8");
+      return await (0, import_promises11.readFile)((0, import_node_path10.join)(this.procRoot, String(pid), name), "utf-8");
     } catch {
       return null;
     }
@@ -6026,7 +6059,7 @@ function bridgeIdOf(record) {
 var IDENTITY_MEASURE_TIMEOUT_MS = 5e3;
 var IDENTITY_POLL_MS = 150;
 function pidExists(pid, procRoot) {
-  return (0, import_node_fs3.existsSync)((0, import_node_path10.join)(procRoot, String(pid)));
+  return (0, import_node_fs4.existsSync)((0, import_node_path11.join)(procRoot, String(pid)));
 }
 async function probeOnce(panePid, inspector, askAgents) {
   const claudes = await inspector.listClaudePeers().catch(() => []);
@@ -6597,9 +6630,9 @@ function wakeAfterCompactLine() {
 }
 
 // src/handlers/peer-restart.ts
-var import_node_fs6 = require("node:fs");
+var import_node_fs7 = require("node:fs");
 var import_promises15 = require("node:fs/promises");
-var import_node_path14 = require("node:path");
+var import_node_path15 = require("node:path");
 
 // src/base-url.ts
 function resolveBaseUrl(desired, config) {
@@ -6624,7 +6657,7 @@ function restartWouldDropProxy(decision, liveEnviron) {
 
 // src/config.ts
 var import_promises13 = require("node:fs/promises");
-var import_node_path11 = require("node:path");
+var import_node_path12 = require("node:path");
 var log8 = makeLogger("daemon.config");
 var DEFAULT_CONFIG = Object.freeze({
   compactWatchdog: Object.freeze({
@@ -6635,7 +6668,7 @@ var DEFAULT_CONFIG = Object.freeze({
   spawn: Object.freeze({})
 });
 function configFilePath() {
-  return (0, import_node_path11.join)(controlDir(), "config.json");
+  return (0, import_node_path12.join)(controlDir(), "config.json");
 }
 async function readConfig() {
   try {
@@ -6661,8 +6694,8 @@ async function readConfig() {
 }
 
 // src/handlers/peer-spawn.ts
-var import_node_fs4 = require("node:fs");
-var import_node_path12 = require("node:path");
+var import_node_fs5 = require("node:fs");
+var import_node_path13 = require("node:path");
 
 // src/handlers/fork-guard.ts
 async function forkGuard(state, driver, opts) {
@@ -6769,11 +6802,11 @@ var PeerSpawnArgsSchema = external_exports.object({
 }).strict();
 function findTranscriptElsewhere(sessionId, cwd) {
   try {
-    const here = (0, import_node_path12.dirname)(sessionFile(cwd, sessionId));
-    for (const dir of (0, import_node_fs4.readdirSync)(projectsRoot())) {
-      const candidate = (0, import_node_path12.join)(projectsRoot(), dir, `${sessionId}.jsonl`);
-      if ((0, import_node_path12.basename)((0, import_node_path12.join)(projectsRoot(), dir)) === (0, import_node_path12.basename)(here)) continue;
-      if ((0, import_node_fs4.existsSync)(candidate)) return candidate;
+    const here = (0, import_node_path13.dirname)(sessionFile(cwd, sessionId));
+    for (const dir of (0, import_node_fs5.readdirSync)(projectsRoot())) {
+      const candidate = (0, import_node_path13.join)(projectsRoot(), dir, `${sessionId}.jsonl`);
+      if ((0, import_node_path13.basename)((0, import_node_path13.join)(projectsRoot(), dir)) === (0, import_node_path13.basename)(here)) continue;
+      if ((0, import_node_fs5.existsSync)(candidate)) return candidate;
     }
   } catch {
   }
@@ -6836,7 +6869,7 @@ async function handlePeerSpawn(req, ctx) {
   const resumeTarget = args.resumeSessionId ?? args.handle;
   if (args.resume) {
     const transcript = sessionFile(args.cwd, resumeTarget);
-    if (isClaude && isResumableSessionId(resumeTarget) && !(0, import_node_fs4.existsSync)(transcript)) {
+    if (isClaude && isResumableSessionId(resumeTarget) && !(0, import_node_fs5.existsSync)(transcript)) {
       const elsewhere = findTranscriptElsewhere(resumeTarget, args.cwd);
       await writeEvent({
         event: "peer_spawn_refused",
@@ -7181,14 +7214,14 @@ async function handlePeerSpawn(req, ctx) {
 var import_promises14 = require("node:fs/promises");
 
 // src/pid.ts
-var import_node_fs5 = require("node:fs");
-var import_node_path13 = require("node:path");
+var import_node_fs6 = require("node:fs");
+var import_node_path14 = require("node:path");
 function pidAlive(pid, procRoot = "/proc") {
-  return (0, import_node_fs5.existsSync)((0, import_node_path13.join)(procRoot, String(pid)));
+  return (0, import_node_fs6.existsSync)((0, import_node_path14.join)(procRoot, String(pid)));
 }
 function statFields(pid, procRoot) {
   try {
-    const raw = (0, import_node_fs5.readFileSync)((0, import_node_path13.join)(procRoot, String(pid), "stat"), "utf-8");
+    const raw = (0, import_node_fs6.readFileSync)((0, import_node_path14.join)(procRoot, String(pid), "stat"), "utf-8");
     return raw.slice(raw.lastIndexOf(")") + 1).trim().split(/\s+/);
   } catch {
     return null;
@@ -7920,7 +7953,7 @@ async function confirmStillRunning(pid, identity, expectedSessionId, opts = {}) 
   if (pid === null) return { ok: false, reason: "no pid was reported by the spawn" };
   const windowMs = opts.settleMs ?? 2500;
   const procRoot = opts.procRoot ?? "/proc";
-  const alive = () => (0, import_node_fs6.existsSync)((0, import_node_path14.join)(procRoot, String(pid)));
+  const alive = () => (0, import_node_fs7.existsSync)((0, import_node_path15.join)(procRoot, String(pid)));
   const isClaude = (opts.command ?? "").split("/").pop() === "claude";
   const mustRegister = isClaude && isResumableSessionId(expectedSessionId);
   const registered = identity.actual !== null;
@@ -8903,7 +8936,7 @@ async function handleTeamAdopt(req, ctx) {
 
 // src/handlers/team-layout.ts
 var import_promises16 = require("node:fs/promises");
-var import_node_path15 = require("node:path");
+var import_node_path16 = require("node:path");
 var PeerSpecSchema = external_exports.object({
   /**
    * The registry key for this peer — renamed from `sessionId` in R3
@@ -8979,7 +9012,7 @@ var TeamLayoutArgsSchema = external_exports.object({
   wakeDelayMs: external_exports.number().int().min(0).max(12e4).optional()
 }).strict();
 function teamFilePath(team) {
-  return (0, import_node_path15.join)(teamsDir(), `${team}.json`);
+  return (0, import_node_path16.join)(teamsDir(), `${team}.json`);
 }
 async function loadTeamSpec(team) {
   try {
@@ -9307,8 +9340,8 @@ async function handleTeamLayout(req, ctx) {
 }
 
 // src/handlers/team-reconcile.ts
-var import_node_fs7 = require("node:fs");
-var import_node_path16 = require("node:path");
+var import_node_fs8 = require("node:fs");
+var import_node_path17 = require("node:path");
 var TeamReconcileArgsSchema = external_exports.object({
   /** Restrict the report to one team. Unmanaged processes are still listed. */
   team: external_exports.string().min(1).optional(),
@@ -9319,7 +9352,7 @@ var TeamReconcileArgsSchema = external_exports.object({
   markDead: external_exports.boolean().default(false)
 }).strict();
 function pidAlive2(pid, procRoot) {
-  return (0, import_node_fs7.existsSync)((0, import_node_path16.join)(procRoot, String(pid)));
+  return (0, import_node_fs8.existsSync)((0, import_node_path17.join)(procRoot, String(pid)));
 }
 async function ownsProcess(inspector, panePid, childPid) {
   if (panePid === childPid) return true;
@@ -10096,7 +10129,7 @@ async function handleTeamStatus(req, ctx) {
 
 // src/handlers/team-stop.ts
 var import_promises17 = require("node:fs/promises");
-var import_node_path17 = require("node:path");
+var import_node_path18 = require("node:path");
 var DEFAULT_ANCHOR_TIMEOUT_MS2 = 12e4;
 var DEFAULT_ACK_POLL_MS2 = 500;
 var PeerOrderableSchema = external_exports.object({
@@ -10118,7 +10151,7 @@ var TeamStopArgsSchema = external_exports.object({
   inline: TeamStopFileSchema.optional()
 }).strict();
 function teamFilePath2(team) {
-  return (0, import_node_path17.join)(teamsDir(), `${team}.json`);
+  return (0, import_node_path18.join)(teamsDir(), `${team}.json`);
 }
 async function loadTeamOrder(team) {
   try {
@@ -10389,9 +10422,9 @@ function stopHeartbeat() {
 
 // src/hosts/tmux-driver.ts
 var import_node_child_process2 = require("node:child_process");
-var import_node_fs8 = require("node:fs");
+var import_node_fs9 = require("node:fs");
 var import_promises19 = require("node:fs/promises");
-var import_node_path18 = require("node:path");
+var import_node_path19 = require("node:path");
 var import_node_util2 = require("node:util");
 
 // src/hosts/input-line.ts
@@ -10571,7 +10604,7 @@ function shQuote(value) {
   return `'${value.replaceAll("'", `'\\''`)}'`;
 }
 function paneCommand(env, command, args) {
-  const envBin = (0, import_node_fs8.existsSync)("/usr/bin/env") ? "/usr/bin/env" : "env";
+  const envBin = (0, import_node_fs9.existsSync)("/usr/bin/env") ? "/usr/bin/env" : "env";
   const assignments = Object.entries(env).filter(([k]) => !TMUX_OWNED_VARS.includes(k) && k !== "TERM").map(([k, v]) => `${k}=${shQuote(v)}`);
   const script = [
     "exec",
@@ -11373,10 +11406,10 @@ var TmuxDriver = class _TmuxDriver {
     const content = await this.capturePaneWithHistory(canonical);
     if (content.trim().length === 0) return null;
     try {
-      const dir = (0, import_node_path18.join)(controlDir(), "archive");
+      const dir = (0, import_node_path19.join)(controlDir(), "archive");
       await (0, import_promises19.mkdir)(dir, { recursive: true });
       const stamp = (/* @__PURE__ */ new Date()).toISOString().replace(/[:.]/g, "-");
-      const path = (0, import_node_path18.join)(dir, `pane-${canonical}-${stamp}.log`);
+      const path = (0, import_node_path19.join)(dir, `pane-${canonical}-${stamp}.log`);
       await (0, import_promises19.appendFile)(
         path,
         `# archived ${(/* @__PURE__ */ new Date()).toISOString()} \u2014 target ${canonical} \u2014 ${reason}
@@ -11417,14 +11450,14 @@ ${content}`,
   }
   async logSendKeys(sessionKey, entry) {
     try {
-      const dir = (0, import_node_path18.join)(controlDir(), "logs");
+      const dir = (0, import_node_path19.join)(controlDir(), "logs");
       await (0, import_promises19.mkdir)(dir, { recursive: true });
       const line = JSON.stringify({
         ts: (/* @__PURE__ */ new Date()).toISOString(),
         sessionKey,
         ...entry
       });
-      await (0, import_promises19.appendFile)((0, import_node_path18.join)(dir, `sendkeys-${sessionKey}.log`), `${line}
+      await (0, import_promises19.appendFile)((0, import_node_path19.join)(dir, `sendkeys-${sessionKey}.log`), `${line}
 `, "utf-8");
     } catch {
     }
@@ -11733,15 +11766,15 @@ async function runDaemon(opts) {
 // src/install.ts
 var import_node_child_process3 = require("node:child_process");
 var import_promises20 = require("node:fs/promises");
-var import_node_os4 = require("node:os");
-var import_node_path19 = require("node:path");
+var import_node_os5 = require("node:os");
+var import_node_path20 = require("node:path");
 var log14 = makeLogger("daemon.install");
 var UNIT_NAME = "claude-bridge-daemon.service";
 function systemdUserDir() {
-  return (0, import_node_path19.join)((0, import_node_os4.homedir)(), ".config", "systemd", "user");
+  return (0, import_node_path20.join)((0, import_node_os5.homedir)(), ".config", "systemd", "user");
 }
 function unitPath() {
-  return (0, import_node_path19.join)(systemdUserDir(), UNIT_NAME);
+  return (0, import_node_path20.join)(systemdUserDir(), UNIT_NAME);
 }
 function assertLinux() {
   if (process.platform !== "linux") {
@@ -11753,15 +11786,15 @@ function assertLinux() {
 function resolveDaemonBin() {
   const argv1 = process.argv[1];
   if (!argv1) throw new Error("process.argv[1] missing \u2014 cannot determine daemon binary path");
-  if (!argv1.startsWith("/")) return (0, import_node_path19.resolve)(process.cwd(), argv1);
+  if (!argv1.startsWith("/")) return (0, import_node_path20.resolve)(process.cwd(), argv1);
   return argv1;
 }
 async function readTemplate() {
   const anchor = resolveDaemonBin();
-  const anchorDir = (0, import_node_path19.dirname)(anchor);
+  const anchorDir = (0, import_node_path20.dirname)(anchor);
   const candidates = [
-    (0, import_node_path19.resolve)(anchorDir, "..", "templates", UNIT_NAME),
-    (0, import_node_path19.resolve)(anchorDir, "templates", UNIT_NAME)
+    (0, import_node_path20.resolve)(anchorDir, "..", "templates", UNIT_NAME),
+    (0, import_node_path20.resolve)(anchorDir, "templates", UNIT_NAME)
   ];
   for (const candidate of candidates) {
     try {
@@ -11775,24 +11808,24 @@ function findNodeBin() {
   return process.execPath;
 }
 function deployedDaemonPath() {
-  return (0, import_node_path19.join)((0, import_node_os4.homedir)(), ".claude-bridge", "bin", "claude-bridge-daemon.cjs");
+  return (0, import_node_path20.join)((0, import_node_os5.homedir)(), ".claude-bridge", "bin", "claude-bridge-daemon.cjs");
 }
 function deployMetaPath() {
-  return (0, import_node_path19.join)((0, import_node_path19.dirname)(deployedDaemonPath()), "deployed-from.json");
+  return (0, import_node_path20.join)((0, import_node_path20.dirname)(deployedDaemonPath()), "deployed-from.json");
 }
 async function deployDaemonBinary(sourceBin) {
   const target = deployedDaemonPath();
-  if ((0, import_node_path19.resolve)(sourceBin) === (0, import_node_path19.resolve)(target)) {
+  if ((0, import_node_path20.resolve)(sourceBin) === (0, import_node_path20.resolve)(target)) {
     log14.info("deploy_skipped_same_path", { path: target });
     return target;
   }
-  await (0, import_promises20.mkdir)((0, import_node_path19.dirname)(target), { recursive: true });
+  await (0, import_promises20.mkdir)((0, import_node_path20.dirname)(target), { recursive: true });
   await (0, import_promises20.copyFile)(sourceBin, target);
   await (0, import_promises20.chmod)(target, 493);
   try {
     const templateSource = await readTemplate();
-    const templateTarget = (0, import_node_path19.join)((0, import_node_path19.dirname)(target), "templates", UNIT_NAME);
-    await (0, import_promises20.mkdir)((0, import_node_path19.dirname)(templateTarget), { recursive: true });
+    const templateTarget = (0, import_node_path20.join)((0, import_node_path20.dirname)(target), "templates", UNIT_NAME);
+    await (0, import_promises20.mkdir)((0, import_node_path20.dirname)(templateTarget), { recursive: true });
     await (0, import_promises20.writeFile)(templateTarget, templateSource, "utf-8");
   } catch (e) {
     log14.warn("template_deploy_failed", { err: String(e) });
@@ -11800,14 +11833,14 @@ async function deployDaemonBinary(sourceBin) {
   let version = "unknown";
   try {
     const pkg = JSON.parse(
-      await (0, import_promises20.readFile)((0, import_node_path19.resolve)((0, import_node_path19.dirname)(sourceBin), "..", "package.json"), "utf-8")
+      await (0, import_promises20.readFile)((0, import_node_path20.resolve)((0, import_node_path20.dirname)(sourceBin), "..", "package.json"), "utf-8")
     );
     version = pkg.version ?? "unknown";
   } catch {
   }
   await (0, import_promises20.writeFile)(
     deployMetaPath(),
-    `${JSON.stringify({ source: (0, import_node_path19.resolve)(sourceBin), version, deployedAt: (/* @__PURE__ */ new Date()).toISOString() }, null, 2)}
+    `${JSON.stringify({ source: (0, import_node_path20.resolve)(sourceBin), version, deployedAt: (/* @__PURE__ */ new Date()).toISOString() }, null, 2)}
 `,
     "utf-8"
   );
@@ -11821,7 +11854,7 @@ async function installSystemd() {
   await ensureBinariesExist(sourceBin, nodeBin);
   const daemonBin = await deployDaemonBinary(sourceBin);
   const template = await readTemplate();
-  const nodeDir = (0, import_node_path19.dirname)(nodeBin);
+  const nodeDir = (0, import_node_path20.dirname)(nodeBin);
   const rendered = template.replace(/__NODE_BIN__/g, nodeBin).replace(/__DAEMON_BIN__/g, daemonBin).replace(/__NODE_DIR__/g, nodeDir);
   await (0, import_promises20.mkdir)(systemdUserDir(), { recursive: true });
   await (0, import_promises20.writeFile)(unitPath(), rendered, "utf-8");

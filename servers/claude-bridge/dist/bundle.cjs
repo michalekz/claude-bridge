@@ -18243,7 +18243,7 @@ var StdioServerTransport = class {
 // package.json
 var package_default = {
   name: "claude-bridge",
-  version: "0.11.40",
+  version: "0.11.41",
   private: true,
   description: "MCP server for cross-Claude-Code-chat orchestration over local session JSONL files",
   type: "module",
@@ -21052,8 +21052,10 @@ async function shutdownContext(ctx) {
 }
 
 // src/mcp/tools.ts
+var import_node_fs3 = require("node:fs");
 var import_promises15 = require("node:fs/promises");
 var import_promises16 = require("node:fs/promises");
+var import_node_os5 = require("node:os");
 var import_node_path12 = require("node:path");
 
 // ../../packages/shared/src/logger.ts
@@ -22630,9 +22632,9 @@ var ListSessionsArgs = external_exports.object({
 var HEARTBEAT_ACTIVE_THRESHOLD_MS = 3e4;
 async function isSessionActive(sessionId) {
   const { stat: stat12 } = await import("node:fs/promises");
-  const { homedir: homedir5 } = await import("node:os");
+  const { homedir: homedir6 } = await import("node:os");
   const { join: join15 } = await import("node:path");
-  const hbPath = join15(homedir5(), ".claude-bridge", "status", `${sessionId}.json`);
+  const hbPath = join15(homedir6(), ".claude-bridge", "status", `${sessionId}.json`);
   try {
     const s = await stat12(hbPath);
     return Date.now() - s.mtimeMs <= HEARTBEAT_ACTIVE_THRESHOLD_MS;
@@ -22779,6 +22781,16 @@ async function queueHealth(ctx, peerId) {
     return { pending: 0, pendingNeverPushed: 0 };
   }
 }
+function sessionKindOf(pid) {
+  if (pid === void 0) return void 0;
+  try {
+    const raw = (0, import_node_fs3.readFileSync)((0, import_node_path12.join)((0, import_node_os5.homedir)(), ".claude", "sessions", `${pid}.json`), "utf-8");
+    const parsed = JSON.parse(raw);
+    return typeof parsed.kind === "string" ? parsed.kind : void 0;
+  } catch {
+    return void 0;
+  }
+}
 async function peerListTool(ctx) {
   try {
     const peers = await ctx.registry.listActivePeers();
@@ -22822,6 +22834,22 @@ async function peerListTool(ctx) {
         ageMs: p.ageMs,
         source: p.source,
         version: p.version,
+        /**
+         * Co ta session JE — a hlavně, jestli ji řídicí rovina vůbec může
+         * dosáhnout.
+         *
+         * `bg` = session hostovaná cc-démonem (SDK/CLI úloha). NEMÁ tmux
+         * hostitele a mít ho nebude, takže lifecycle démona se jí netýká
+         * BY DESIGN. Do 29. 8. se to poznalo AŽ ODMÍTNUTÍM requestu —
+         * mic-velitel dostal `peer_unmanaged` na skutečnou pracovní session
+         * a rada v tom verdiktu byla pro tuhle třídu neproveditelná.
+         *
+         * CHYBÍ u peerů se starším pluginem než v0.11.39; chybějící hodnota
+         * NENÍ „interactive", a proto se `hostedByDaemon` dopočítává jen tam,
+         * kde se `kind` opravdu přečetl.
+         */
+        kind: p.kind ?? sessionKindOf(p.pid) ?? null,
+        ...p.jobId ? { jobId: p.jobId } : {},
         ...queues[i]
       }))
     });

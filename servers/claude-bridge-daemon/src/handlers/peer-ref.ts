@@ -1,3 +1,6 @@
+import { readFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
 import { resolvePeer } from "@claude-bridge/shared";
 import type { PeerRecord } from "../state.ts";
 
@@ -28,17 +31,73 @@ export interface UnresolvedPeerError {
  * Absence of a heartbeat is NOT read as proof of anything: no heartbeat gives
  * the old answer, unchanged.
  */
+/**
+ * Co ta session JE, přečtené z `~/.claude/sessions/<pid>.json`.
+ *
+ * Záloha pro peery, jejichž heartbeat `kind` ještě nenese (plugin starší než
+ * v0.11.39). Soubor píše Claude Code sám a nese `kind` i `jobId`.
+ *
+ * `undefined` = nevíme. NENÍ to „interactive".
+ */
+function sessionKind(pid: number | undefined): string | undefined {
+  if (pid === undefined) return undefined;
+  try {
+    const raw = readFileSync(join(homedir(), ".claude", "sessions", `${pid}.json`), "utf-8");
+    const parsed = JSON.parse(raw) as { kind?: unknown };
+    return typeof parsed.kind === "string" ? parsed.kind : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 export async function unresolvedPeerError(ref: string): Promise<UnresolvedPeerError> {
   const heartbeat = await resolvePeer(ref);
   if (heartbeat.outcome === "found") {
+    const age = Math.round(heartbeat.peer.lastSeenAgeMs);
+    const kind = heartbeat.peer.kind ?? sessionKind(heartbeat.peer.pid);
+    // 🔴 DVĚ TŘÍDY NEDOSAŽITELNOSTI, DVĚ RŮZNÉ RADY (29. 8.).
+    //
+    // `team_adopt` je lék jen pro peera, který MÁ hostitele v tmuxu a nikdo ho
+    // nepřipsal. Session hostovaná cc-démonem (`kind: "bg"` — SDK/CLI úlohy)
+    // žádný tmux target NEMÁ a mít nebude: celý lifecycle démona na něm stojí.
+    // Adopce by z ní udělala záznam, o kterém by každé zastavení, restart
+    // i compact lhaly.
+    //
+    // Naostro to narazilo téhož dne: skutečná pracovní session (88 % kontextu,
+    // klientská práce) dostala správný verdikt `peer_unmanaged` a k němu radu
+    // „adopt it, then retry", kterou příjemce NEMŮŽE provést. Rada, která
+    // nejde provést, posílá člověka hledat chybu tam, kde žádná není.
+    if (kind === "bg") {
+      return {
+        code: "peer_unmanaged",
+        message: `Peer '${ref}' IS RUNNING but it is a session hosted by the Claude Code daemon (kind=bg), not by tmux — so the control plane cannot reach it BY DESIGN, and this is not a fault to repair. Its heartbeat is ${age} ms old. Do NOT adopt it: the daemon's lifecycle is built on a tmux target, and a record without one is a record every stop, restart and compact would lie about. Its lifecycle belongs to whoever started it; for compaction the only path is the session itself.`,
+        details: {
+          peer: ref,
+          sessionId: heartbeat.peer.id,
+          name: heartbeat.peer.name,
+          lastSeenAgeMs: age,
+          kind,
+          remedy: "owner-of-the-session",
+        },
+      };
+    }
+    // `kind` může CHYBĚT (starší plugin než v0.11.39, nečitelný sessions
+    // soubor). Pak se rada nabízí, ale netvrdí se jistota — nevědomost se
+    // nesmí tvářit jako změřená interaktivní session.
+    const sure = kind === "interactive";
     return {
       code: "peer_unmanaged",
-      message: `Peer '${ref}' IS RUNNING but the control plane does not manage it, so lifecycle tools cannot reach it. Its heartbeat is ${Math.round(heartbeat.peer.lastSeenAgeMs)} ms old. This happens when a session is started or revived outside the daemon — adopt it with team_adopt, then retry.`,
+      message: `Peer '${ref}' IS RUNNING but the control plane does not manage it, so lifecycle tools cannot reach it. Its heartbeat is ${age} ms old. This happens when a session is started or revived outside the daemon — adopt it with team_adopt, then retry.${
+        sure
+          ? ""
+          : " (Its kind could not be read, so first check it HAS a tmux window: a session hosted by the Claude Code daemon must NOT be adopted.)"
+      }`,
       details: {
         peer: ref,
         sessionId: heartbeat.peer.id,
         name: heartbeat.peer.name,
-        lastSeenAgeMs: Math.round(heartbeat.peer.lastSeenAgeMs),
+        lastSeenAgeMs: age,
+        kind: kind ?? null,
         remedy: "team_adopt",
       },
     };

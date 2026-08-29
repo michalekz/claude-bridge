@@ -112,3 +112,37 @@ describe("kind rozlišuje peera od jeho agenta na pozadí", () => {
     expect(written.jobId).toBe("3cb1a054");
   });
 });
+
+describe("peer_list ukazuje, koho řídicí rovina dosáhne", () => {
+  it("bg session je v seznamu poznat, aniž by se na ni muselo sáhnout", async () => {
+    // Do 29. 8. se „tenhle peer nemá tmux hostitele" poznalo AŽ ODMÍTNUTÍM
+    // lifecycle requestu: mic-velitel poslal compact na skutečnou pracovní
+    // session (88 % kontextu) a teprve verdikt mu řekl, že tudy cesta nevede.
+    // Vlastnost, kterou se dá zjistit jen tím, že do ní narazíš, je vlastnost,
+    // kterou seznam zamlčuje.
+    const baseDir = await mkdtemp(join(tmpdir(), "cb-list-"));
+    const registry = createPeerRegistry({ baseDir, intervalMs: 60_000 });
+    const bg = await registry.startHeartbeat({
+      id: "11111111-1111-1111-1111-111111111111",
+      name: "mic-bitrix-dev",
+      pid: 4242,
+      kind: "bg",
+      jobId: "3cb1a054",
+    });
+    const tmux = await registry.startHeartbeat({
+      id: "22222222-2222-2222-2222-222222222222",
+      name: "plt-alpha",
+      pid: 4243,
+      kind: "interactive",
+    });
+
+    const active = await registry.listActivePeers();
+    await bg.stop();
+    await tmux.stop();
+
+    const byName = new Map(active.map((p) => [p.name, p]));
+    expect(byName.get("mic-bitrix-dev")?.kind).toBe("bg");
+    expect(byName.get("mic-bitrix-dev")?.jobId).toBe("3cb1a054");
+    expect(byName.get("plt-alpha")?.kind).toBe("interactive");
+  });
+});

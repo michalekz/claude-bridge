@@ -1,5 +1,7 @@
+import { readFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { mkdir } from "node:fs/promises";
+import { homedir } from "node:os";
 import { join } from "node:path";
 import { isSyntheticSender } from "@claude-bridge/shared";
 import { z } from "zod";
@@ -397,6 +399,22 @@ async function queueHealth(
   }
 }
 
+/**
+ * `kind` ze `~/.claude/sessions/<pid>.json` — záloha pro peery, jejichž
+ * heartbeat ho ještě nenese (plugin starší než v0.11.39). Soubor píše Claude
+ * Code sám. `undefined` = nevíme; NENÍ to „interactive".
+ */
+function sessionKindOf(pid: number | undefined): string | undefined {
+  if (pid === undefined) return undefined;
+  try {
+    const raw = readFileSync(join(homedir(), ".claude", "sessions", `${pid}.json`), "utf-8");
+    const parsed = JSON.parse(raw) as { kind?: unknown };
+    return typeof parsed.kind === "string" ? parsed.kind : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 export async function peerListTool(ctx: ServerContext): Promise<ToolResult> {
   try {
     const peers = await ctx.registry.listActivePeers();
@@ -440,6 +458,22 @@ export async function peerListTool(ctx: ServerContext): Promise<ToolResult> {
         ageMs: p.ageMs,
         source: p.source,
         version: p.version,
+        /**
+         * Co ta session JE — a hlavně, jestli ji řídicí rovina vůbec může
+         * dosáhnout.
+         *
+         * `bg` = session hostovaná cc-démonem (SDK/CLI úloha). NEMÁ tmux
+         * hostitele a mít ho nebude, takže lifecycle démona se jí netýká
+         * BY DESIGN. Do 29. 8. se to poznalo AŽ ODMÍTNUTÍM requestu —
+         * mic-velitel dostal `peer_unmanaged` na skutečnou pracovní session
+         * a rada v tom verdiktu byla pro tuhle třídu neproveditelná.
+         *
+         * CHYBÍ u peerů se starším pluginem než v0.11.39; chybějící hodnota
+         * NENÍ „interactive", a proto se `hostedByDaemon` dopočítává jen tam,
+         * kde se `kind` opravdu přečetl.
+         */
+        kind: p.kind ?? sessionKindOf(p.pid) ?? null,
+        ...(p.jobId ? { jobId: p.jobId } : {}),
         ...queues[i],
       })),
     });
