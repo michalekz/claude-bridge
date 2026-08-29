@@ -60,6 +60,27 @@ export type SessionJson = {
   name?: string;
   version?: string;
   entrypoint?: string;
+  /**
+   * `interactive` | `bg` — co ta session JE. Měřeno 29. 8.: flotila 25x
+   * interactive, 4x bg. Agent na pozadi dostane od Claude Code JMENO SVEHO
+   * RODICE, takze se pod jednim jmenem sejdou dva legitimni zaznamy s ruznymi
+   * pidy — a ctenar klicovany podle jmena si to precte jako „pid se zmenil"
+   * nebo „cizi proces prepsal heartbeat". Presne tak to 29. 8. precetl
+   * velitelu hlidac i ja, nez jsme ten soubor otevreli.
+   * Rozlisovac nepatri k pidu, patri ke JMENU.
+   */
+  kind?: string;
+  /** Id ulohy u `kind: "bg"`. U interaktivni session chybi. */
+  jobId?: string;
+};
+
+/** Co o session vime z jejiho souboru — spolecny tvar obou ctecich cest. */
+export type SessionFacts = {
+  sessionId: string;
+  cwd?: string;
+  name?: string;
+  kind?: string;
+  jobId?: string;
 };
 
 export async function readSessionJsonAt(path: string): Promise<SessionJson | null> {
@@ -284,6 +305,14 @@ export interface ResolvedIdentity {
   displayName: string;
   /** Where the display name came from. */
   source: IdentitySource;
+  /**
+   * Co ta session JE: `interactive` (peer u panelu) nebo `bg` (agent na
+   * pozadi, ktereho si peer spustil). Chybi, kdyz to `sessions/<pid>.json`
+   * nerekl — TRI STAVY, a chybejici hodnota NENI „interactive".
+   */
+  kind?: string;
+  /** Id ulohy u `kind: "bg"` — jedine, cim se dva stejnojmenne zaznamy lisi. */
+  jobId?: string;
 }
 
 export const ENV_PEER_NAME = "CLAUDE_BRIDGE_PEER_NAME";
@@ -353,7 +382,7 @@ export async function identityFromProc(
   ppid: number,
   procRoot: string,
   resumedOverride?: string | null,
-): Promise<{ sessionId: string; cwd?: string; name?: string } | null> {
+): Promise<SessionFacts | null> {
   const id = resumedOverride ?? (await resumedSessionIdFromParent(ppid, procRoot));
   if (!id) return null;
   let cwd: string | undefined;
@@ -374,15 +403,19 @@ export async function identityFromProc(
  * pevnou dobu. Strop je jen pojistka pro případ, že nevznikne nikdy
  * (peer, kterému nikdo nikdy nic nenapíše).
  */
-async function awaitSessionJson(
-  sjPath: string,
-  ceilingMs: number,
-): Promise<{ sessionId: string; cwd?: string; name?: string } | null> {
+async function awaitSessionJson(sjPath: string, ceilingMs: number): Promise<SessionFacts | null> {
   const deadline = Date.now() + ceilingMs;
   let logged = 0;
   while (Date.now() < deadline) {
     const sj = await readSessionJsonAt(sjPath);
-    if (sj?.sessionId) return { sessionId: sj.sessionId, cwd: sj.cwd, name: sj.name };
+    if (sj?.sessionId)
+      return {
+        sessionId: sj.sessionId,
+        cwd: sj.cwd,
+        name: sj.name,
+        kind: sj.kind,
+        jobId: sj.jobId,
+      };
     const waited = ceilingMs - (deadline - Date.now());
     if (waited > logged + 10_000) {
       logged = waited;
@@ -503,6 +536,11 @@ export async function resolvePeerIdentity(opts: IdentityOptions = {}): Promise<R
     );
   }
 
+  // Co ta session JE, cestuje s identitou. Chybi-li to v `sessions/<pid>.json`,
+  // zustane to CHYBET — dosadit „interactive" by z neznalosti udelalo vyrok
+  // a znovu by splynul peer se svym agentem na pozadi.
+  const facts = { ...(sj.kind ? { kind: sj.kind } : {}), ...(sj.jobId ? { jobId: sj.jobId } : {}) };
+
   // Display name cascade
 
   // A: JSONL title (Claude Code auto-generates after first user message)
@@ -516,7 +554,7 @@ export async function resolvePeerIdentity(opts: IdentityOptions = {}): Promise<R
     if (title) {
       const sanitized = sanitizePeerName(title);
       if (sanitized) {
-        return { id, name: sanitized, displayName: title, source: "jsonl-title" };
+        return { id, name: sanitized, displayName: title, source: "jsonl-title", ...facts };
       }
     }
   }
@@ -525,7 +563,7 @@ export async function resolvePeerIdentity(opts: IdentityOptions = {}): Promise<R
   if (sj.name) {
     const sanitized = sanitizePeerName(sj.name);
     if (sanitized) {
-      return { id, name: sanitized, displayName: sj.name, source: "session-json-name" };
+      return { id, name: sanitized, displayName: sj.name, source: "session-json-name", ...facts };
     }
   }
 
@@ -534,13 +572,13 @@ export async function resolvePeerIdentity(opts: IdentityOptions = {}): Promise<R
   if (envName) {
     const sanitized = sanitizePeerName(envName);
     if (sanitized) {
-      return { id, name: sanitized, displayName: envName, source: "env" };
+      return { id, name: sanitized, displayName: envName, source: "env", ...facts };
     }
   }
 
   // D: cwd slug — no separate raw display, displayName falls back to slug
   const slug = slugFromCwd(cwd);
-  return { id, name: slug, displayName: slug, source: "cwd-slug" };
+  return { id, name: slug, displayName: slug, source: "cwd-slug", ...facts };
 }
 
 /**

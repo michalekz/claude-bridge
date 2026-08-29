@@ -18243,7 +18243,7 @@ var StdioServerTransport = class {
 // package.json
 var package_default = {
   name: "claude-bridge",
-  version: "0.11.38",
+  version: "0.11.39",
   private: true,
   description: "MCP server for cross-Claude-Code-chat orchestration over local session JSONL files",
   type: "module",
@@ -18434,7 +18434,14 @@ async function awaitSessionJson(sjPath, ceilingMs) {
   let logged = 0;
   while (Date.now() < deadline) {
     const sj = await readSessionJsonAt(sjPath);
-    if (sj?.sessionId) return { sessionId: sj.sessionId, cwd: sj.cwd, name: sj.name };
+    if (sj?.sessionId)
+      return {
+        sessionId: sj.sessionId,
+        cwd: sj.cwd,
+        name: sj.name,
+        kind: sj.kind,
+        jobId: sj.jobId
+      };
     const waited = ceilingMs - (deadline - Date.now());
     if (waited > logged + 1e4) {
       logged = waited;
@@ -18492,6 +18499,7 @@ async function resolvePeerIdentity(opts = {}) {
 `
     );
   }
+  const facts = { ...sj.kind ? { kind: sj.kind } : {}, ...sj.jobId ? { jobId: sj.jobId } : {} };
   if (sj.cwd && !opts.skipTitleScan) {
     const encoded = encodeProjectDir(sj.cwd);
     const jsonlPath = (0, import_node_path2.join)(home, ".claude", "projects", encoded, `${id}.jsonl`);
@@ -18499,25 +18507,25 @@ async function resolvePeerIdentity(opts = {}) {
     if (title) {
       const sanitized = sanitizePeerName(title);
       if (sanitized) {
-        return { id, name: sanitized, displayName: title, source: "jsonl-title" };
+        return { id, name: sanitized, displayName: title, source: "jsonl-title", ...facts };
       }
     }
   }
   if (sj.name) {
     const sanitized = sanitizePeerName(sj.name);
     if (sanitized) {
-      return { id, name: sanitized, displayName: sj.name, source: "session-json-name" };
+      return { id, name: sanitized, displayName: sj.name, source: "session-json-name", ...facts };
     }
   }
   const envName = env[ENV_PEER_NAME];
   if (envName) {
     const sanitized = sanitizePeerName(envName);
     if (sanitized) {
-      return { id, name: sanitized, displayName: envName, source: "env" };
+      return { id, name: sanitized, displayName: envName, source: "env", ...facts };
     }
   }
   const slug = slugFromCwd(cwd);
-  return { id, name: slug, displayName: slug, source: "cwd-slug" };
+  return { id, name: slug, displayName: slug, source: "cwd-slug", ...facts };
 }
 var DEFAULT_IDENTITY_RETRY_DELAYS_MS = [100, 200, 400, 800, 1500];
 async function resolvePeerIdentityWithRetry(opts = {}) {
@@ -20585,7 +20593,22 @@ var HeartbeatSchema = external_exports.object({
   // ISO 8601
   source: external_exports.string().optional(),
   // IdentitySource for display name
-  version: external_exports.string().optional()
+  version: external_exports.string().optional(),
+  /**
+   * Co ta session JE: `interactive` | `bg`. Ctena ze `~/.claude/sessions/<pid>.json`.
+   *
+   * 🔴 Agent na pozadi dostane od Claude Code JMENO SVEHO RODICE, takze se
+   * pod jednim jmenem sejdou DVA legitimni zaznamy s ruznymi pidy. Nikdo
+   * nikoho neprepisuje — 29. 8. to tak precetl velitelu hlidac (falesny
+   * poplach „cizi proces prepsal heartbeat") i ja, dokud jsme neotevreli
+   * sessions soubor. Rozlisovac nepatri k pidu, patri ke JMENU.
+   *
+   * TRI STAVY: klic CHYBI = zapisoval to starsi plugin (NE „interactive"),
+   * `interactive` = peer u panelu, `bg` = agent na pozadi.
+   */
+  kind: external_exports.string().optional(),
+  /** Id ulohy u `kind: "bg"` — jedine, cim se dva stejnojmenne zaznamy lisi. */
+  jobId: external_exports.string().optional()
 }).passthrough();
 function statusDir(opts) {
   return (0, import_node_path7.join)(opts.baseDir ?? bridgeRoot(), "status");
@@ -20844,9 +20867,18 @@ async function buildContext(opts = {}) {
       mcpServerPid: process.pid,
       cwd: process.cwd(),
       source: self.source,
-      version: version2
+      version: version2,
+      // Co ta session JE. Bez toho se peer a jeho agent na pozadi objevi pod
+      // TYMZ jmenem s ruznymi pidy a ctenar to precte jako prepsany heartbeat.
+      ...self.kind ? { kind: self.kind } : {},
+      ...self.jobId ? { jobId: self.jobId } : {}
     });
-    log5.info("heartbeat_started", { id: self.id, name: self.name, pid: process.pid });
+    log5.info("heartbeat_started", {
+      id: self.id,
+      name: self.name,
+      pid: process.pid,
+      ...self.kind ? { kind: self.kind } : {}
+    });
     void refreshNameFromTranscript(self, heartbeat, opts.identityOptions ?? {});
   }
   const titleAllowed = opts.emitTerminalTitle ?? isTerminalTitleEnabled();
@@ -20957,7 +20989,9 @@ async function migrateIdentity(ctx, fresh) {
     mcpServerPid: process.pid,
     cwd: process.cwd(),
     source: fresh.source,
-    version: ctx.version
+    version: ctx.version,
+    ...fresh.kind ? { kind: fresh.kind } : {},
+    ...fresh.jobId ? { jobId: fresh.jobId } : {}
   });
   ctx.self = fresh;
   if (ctx.watcher) {

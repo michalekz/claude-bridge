@@ -57,6 +57,21 @@ export const HeartbeatSchema = z
     lastSeen: z.string(), // ISO 8601
     source: z.string().optional(), // IdentitySource for display name
     version: z.string().optional(),
+    /**
+     * Co ta session JE: `interactive` | `bg`. Ctena ze `~/.claude/sessions/<pid>.json`.
+     *
+     * 🔴 Agent na pozadi dostane od Claude Code JMENO SVEHO RODICE, takze se
+     * pod jednim jmenem sejdou DVA legitimni zaznamy s ruznymi pidy. Nikdo
+     * nikoho neprepisuje — 29. 8. to tak precetl velitelu hlidac (falesny
+     * poplach „cizi proces prepsal heartbeat") i ja, dokud jsme neotevreli
+     * sessions soubor. Rozlisovac nepatri k pidu, patri ke JMENU.
+     *
+     * TRI STAVY: klic CHYBI = zapisoval to starsi plugin (NE „interactive"),
+     * `interactive` = peer u panelu, `bg` = agent na pozadi.
+     */
+    kind: z.string().optional(),
+    /** Id ulohy u `kind: "bg"` — jedine, cim se dva stejnojmenne zaznamy lisi. */
+    jobId: z.string().optional(),
   })
   .passthrough();
 
@@ -75,6 +90,10 @@ export interface Heartbeat {
   lastSeen: string;
   source?: string;
   version?: string;
+  /** `interactive` | `bg`. Chybejici klic = starsi plugin, ne „interactive". */
+  kind?: string;
+  /** Id ulohy u `kind: "bg"`. */
+  jobId?: string;
 }
 
 /** Payload supplied to `startHeartbeat` — same shape sans `lastSeen` (set by the registry). */
@@ -87,6 +106,8 @@ export interface HeartbeatInput {
   cwd?: string;
   source?: string;
   version?: string;
+  kind?: string;
+  jobId?: string;
 }
 
 export interface ActivePeer extends Heartbeat {

@@ -186,8 +186,17 @@ export async function buildContext(opts: BuildContextOptions = {}): Promise<Serv
       cwd: process.cwd(),
       source: self.source,
       version,
+      // Co ta session JE. Bez toho se peer a jeho agent na pozadi objevi pod
+      // TYMZ jmenem s ruznymi pidy a ctenar to precte jako prepsany heartbeat.
+      ...(self.kind ? { kind: self.kind } : {}),
+      ...(self.jobId ? { jobId: self.jobId } : {}),
     });
-    log.info("heartbeat_started", { id: self.id, name: self.name, pid: process.pid });
+    log.info("heartbeat_started", {
+      id: self.id,
+      name: self.name,
+      pid: process.pid,
+      ...(self.kind ? { kind: self.kind } : {}),
+    });
     // Teprve TEĎ, když je peer v registru a dosažitelný, se dohledá titulek.
     // Doběhne-li, jméno se v registru přepíše; nedoběhne-li, peer zůstane pod
     // prozatímním jménem — což je pořád nekonečně lepší než nebýt v registru.
@@ -372,6 +381,8 @@ async function migrateIdentity(ctx: ServerContext, fresh: ResolvedIdentity): Pro
     cwd: process.cwd(),
     source: fresh.source,
     version: ctx.version,
+    ...(fresh.kind ? { kind: fresh.kind } : {}),
+    ...(fresh.jobId ? { jobId: fresh.jobId } : {}),
   });
 
   // 4. Update ctx.self BEFORE restarting watcher so any pump call sees the
