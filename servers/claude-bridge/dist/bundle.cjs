@@ -18243,7 +18243,7 @@ var StdioServerTransport = class {
 // package.json
 var package_default = {
   name: "claude-bridge",
-  version: "0.11.43",
+  version: "0.11.44",
   private: true,
   description: "MCP server for cross-Claude-Code-chat orchestration over local session JSONL files",
   type: "module",
@@ -18632,6 +18632,19 @@ var MessageEnvelopeSchema = external_exports.object({
   from: external_exports.string().min(1),
   /** Sender display name at send time (snapshot for piggyback rendering). */
   fromName: external_exports.string().optional(),
+  /**
+   * Co je odesílatel ZAČ: `interactive` | `bg`.
+   *
+   * 🔴 Agent na pozadí píše pod JMÉNEM SVÉHO RODIČE (tak ho pojmenuje
+   * Claude Code), takže příjemce nepozná, jestli mu píše peer, nebo úloha,
+   * kterou si peer spustil. mic-velitel musel 29. 8. ověřovat tmux panelem,
+   * kdo mu vlastně poslal žádost o compact.
+   *
+   * ⚠ SUFIX NEPATŘÍ DO `fromName`. To jméno je ADRESA — příjemce ho opisuje
+   * do `peer_ask {to}` — a „mic-bitrix-dev (bg)" by se nevyřešilo na nikoho.
+   * Rozlišovač se proto veze zvlášť a skládá se až do ZOBRAZENÍ.
+   */
+  fromKind: external_exports.string().optional(),
   /** Recipient peer id (sessionId UUID). */
   to: external_exports.string().min(1),
   /** Recipient display name at send time (snapshot, optional). */
@@ -20793,7 +20806,8 @@ function buildChannelNotification(envelope) {
     ...envelope.inReplyTo ? { inReplyTo: envelope.inReplyTo } : {},
     ...envelope.threadId ? { threadId: envelope.threadId } : {}
   };
-  const senderLabel = envelope.fromName ? `${envelope.fromName} (${envelope.from.slice(0, 8)})` : envelope.from;
+  const bg = envelope.fromKind === "bg" ? " (bg)" : "";
+  const senderLabel = envelope.fromName ? `${envelope.fromName}${bg} (${envelope.from.slice(0, 8)})` : `${envelope.from}${bg}`;
   const header = `\u{1F4EC} from ${senderLabel} (${envelope.kind}, msg ${envelope.id})`;
   const replyHint = envelope.kind === "ask" ? `
 
@@ -21071,6 +21085,19 @@ var MessageEnvelopeSchema2 = external_exports.object({
   /** Sender peer id. For an external injector, a synthetic label (see `isSyntheticSender`). */
   from: external_exports.string().min(1),
   fromName: external_exports.string().optional(),
+  /**
+   * Co je odesílatel ZAČ: `interactive` | `bg`.
+   *
+   * 🔴 Agent na pozadí píše pod JMÉNEM SVÉHO RODIČE (tak ho pojmenuje
+   * Claude Code), takže příjemce nepozná, jestli mu píše peer, nebo úloha,
+   * kterou si peer spustil. mic-velitel musel 29. 8. ověřovat tmux panelem,
+   * kdo mu vlastně poslal žádost o compact.
+   *
+   * ⚠ SUFIX NEPATŘÍ DO `fromName`. To jméno je ADRESA — příjemce ho opisuje
+   * do `peer_ask {to}` — a „mic-bitrix-dev (bg)" by se nevyřešilo na nikoho.
+   * Rozlišovač se proto veze zvlášť a skládá se až do ZOBRAZENÍ.
+   */
+  fromKind: external_exports.string().optional(),
   /** Recipient peer id — a sessionId UUID, never a display name. Names the inbox directory. */
   to: external_exports.string().min(1),
   toName: external_exports.string().optional(),
@@ -22885,6 +22912,7 @@ async function peerAskTool(ctx, args) {
     id: generateMessageId(),
     from: ctx.self.id,
     fromName: ctx.self.name,
+    ...ctx.self.kind ? { fromKind: ctx.self.kind } : {},
     to: resolved.peer.id,
     toName: resolved.peer.name,
     kind: "ask",
@@ -22971,6 +22999,7 @@ async function peerReplyTool(ctx, args) {
     id: generateMessageId(),
     from: ctx.self.id,
     fromName: ctx.self.name,
+    ...ctx.self.kind ? { fromKind: ctx.self.kind } : {},
     to: original.from,
     ...original.fromName ? { toName: original.fromName } : {},
     kind: "reply",
@@ -23662,8 +23691,9 @@ function renderSearchMarkdown(args, matches, meta) {
 }
 var PIGGYBACK_EXCLUDED = /* @__PURE__ */ new Set(["peer_inbox_read"]);
 function formatSender(m) {
-  if (m.fromName) return `${m.fromName} (${shortId(m.from)})`;
-  return shortId(m.from);
+  const bg = m.fromKind === "bg" ? " (bg)" : "";
+  if (m.fromName) return `${m.fromName}${bg} (${shortId(m.from)})`;
+  return `${shortId(m.from)}${bg}`;
 }
 function formatInboxBlock(messages, echoed = /* @__PURE__ */ new Set()) {
   if (messages.length === 0) return "";

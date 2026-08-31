@@ -31,6 +31,8 @@ export interface ChannelMeta {
   from: string;
   /** Sender display name at send time (snapshot). */
   fromName?: string;
+  /** `interactive` | `bg` — kvůli rozlišení v zobrazení, ne v adrese. */
+  fromKind?: string;
   msgId: string;
   kind: string;
   inReplyTo?: string;
@@ -55,9 +57,12 @@ export function buildChannelNotification(envelope: MessageEnvelope): ChannelNoti
     ...(envelope.inReplyTo ? { inReplyTo: envelope.inReplyTo } : {}),
     ...(envelope.threadId ? { threadId: envelope.threadId } : {}),
   };
+  // `(bg)` se skládá AŽ TADY, do zobrazení. Do `fromName` nepatří: to jméno
+  // je adresa, kterou příjemce opisuje do `peer_ask {to}`.
+  const bg = envelope.fromKind === "bg" ? " (bg)" : "";
   const senderLabel = envelope.fromName
-    ? `${envelope.fromName} (${envelope.from.slice(0, 8)})`
-    : envelope.from;
+    ? `${envelope.fromName}${bg} (${envelope.from.slice(0, 8)})`
+    : `${envelope.from}${bg}`;
   const header = `📬 from ${senderLabel} (${envelope.kind}, msg ${envelope.id})`;
   const replyHint = envelope.kind === "ask" ? `\n\n(use peer_reply inReplyTo=${envelope.id})` : "";
   const content = `${header}:\n${envelope.content}${replyHint}`;

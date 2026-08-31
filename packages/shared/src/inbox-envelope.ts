@@ -31,6 +31,19 @@ export const MessageEnvelopeSchema = z
     /** Sender peer id. For an external injector, a synthetic label (see `isSyntheticSender`). */
     from: z.string().min(1),
     fromName: z.string().optional(),
+    /**
+     * Co je odesílatel ZAČ: `interactive` | `bg`.
+     *
+     * 🔴 Agent na pozadí píše pod JMÉNEM SVÉHO RODIČE (tak ho pojmenuje
+     * Claude Code), takže příjemce nepozná, jestli mu píše peer, nebo úloha,
+     * kterou si peer spustil. mic-velitel musel 29. 8. ověřovat tmux panelem,
+     * kdo mu vlastně poslal žádost o compact.
+     *
+     * ⚠ SUFIX NEPATŘÍ DO `fromName`. To jméno je ADRESA — příjemce ho opisuje
+     * do `peer_ask {to}` — a „mic-bitrix-dev (bg)" by se nevyřešilo na nikoho.
+     * Rozlišovač se proto veze zvlášť a skládá se až do ZOBRAZENÍ.
+     */
+    fromKind: z.string().optional(),
     /** Recipient peer id — a sessionId UUID, never a display name. Names the inbox directory. */
     to: z.string().min(1),
     toName: z.string().optional(),

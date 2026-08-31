@@ -518,6 +518,7 @@ export async function peerAskTool(
     id: generateMessageId(),
     from: ctx.self.id,
     fromName: ctx.self.name,
+    ...(ctx.self.kind ? { fromKind: ctx.self.kind } : {}),
     to: resolved.peer.id,
     toName: resolved.peer.name,
     kind: "ask" as MessageKind,
@@ -695,6 +696,7 @@ export async function peerReplyTool(
     id: generateMessageId(),
     from: ctx.self.id,
     fromName: ctx.self.name,
+    ...(ctx.self.kind ? { fromKind: ctx.self.kind } : {}),
     to: original.from,
     ...(original.fromName ? { toName: original.fromName } : {}),
     kind: "reply" as MessageKind,
@@ -1683,8 +1685,13 @@ function renderSearchMarkdown(
 const PIGGYBACK_EXCLUDED = new Set(["peer_inbox_read"]);
 
 function formatSender(m: MessageEnvelope): string {
-  if (m.fromName) return `${m.fromName} (${shortId(m.from)})`;
-  return shortId(m.from);
+  // `(bg)` je součást ZOBRAZENÍ, ne jména: agent na pozadí píše pod jménem
+  // svého rodiče, takže bez rozlišovače příjemce netuší, kdo mu psal — a
+  // s rozlišovačem uvnitř `fromName` by zase nešlo odpovědět, protože to
+  // jméno se opisuje do `peer_ask {to}`.
+  const bg = m.fromKind === "bg" ? " (bg)" : "";
+  if (m.fromName) return `${m.fromName}${bg} (${shortId(m.from)})`;
+  return `${shortId(m.from)}${bg}`;
 }
 
 function formatInboxBlock(messages: MessageEnvelope[], echoed: Set<string> = new Set()): string {

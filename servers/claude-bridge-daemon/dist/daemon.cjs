@@ -4259,6 +4259,19 @@ var MessageEnvelopeSchema = external_exports.object({
   /** Sender peer id. For an external injector, a synthetic label (see `isSyntheticSender`). */
   from: external_exports.string().min(1),
   fromName: external_exports.string().optional(),
+  /**
+   * Co je odesílatel ZAČ: `interactive` | `bg`.
+   *
+   * 🔴 Agent na pozadí píše pod JMÉNEM SVÉHO RODIČE (tak ho pojmenuje
+   * Claude Code), takže příjemce nepozná, jestli mu píše peer, nebo úloha,
+   * kterou si peer spustil. mic-velitel musel 29. 8. ověřovat tmux panelem,
+   * kdo mu vlastně poslal žádost o compact.
+   *
+   * ⚠ SUFIX NEPATŘÍ DO `fromName`. To jméno je ADRESA — příjemce ho opisuje
+   * do `peer_ask {to}` — a „mic-bitrix-dev (bg)" by se nevyřešilo na nikoho.
+   * Rozlišovač se proto veze zvlášť a skládá se až do ZOBRAZENÍ.
+   */
+  fromKind: external_exports.string().optional(),
   /** Recipient peer id — a sessionId UUID, never a display name. Names the inbox directory. */
   to: external_exports.string().min(1),
   toName: external_exports.string().optional(),
@@ -4322,7 +4335,7 @@ async function resolvePeer(idOrName, root = bridgeRoot(), now = Date.now()) {
 // package.json
 var package_default = {
   name: "claude-bridge-daemon",
-  version: "0.11.43",
+  version: "0.11.44",
   private: true,
   description: "Control-plane daemon for the claude-bridge plugin: peer lifecycle, telemetry, audit. Distributed as opt-in artefact \u2014 see ADR-008.",
   type: "module",

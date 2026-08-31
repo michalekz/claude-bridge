@@ -146,3 +146,48 @@ describe("peer_list ukazuje, koho řídicí rovina dosáhne", () => {
     expect(byName.get("plt-alpha")?.kind).toBe("interactive");
   });
 });
+
+describe("(bg) je v ZOBRAZENÍ, ne ve jménu", () => {
+  it("hlavička zprávy rozliší agenta na pozadí od jeho rodiče", async () => {
+    // mic-velitel 29. 8.: přišla mu z bitrix-devovy bg session žádost
+    // o compact a musel tmux panelem ověřovat, KDO ji podal — bg session
+    // píše pod jménem svého rodiče, protože tak ji pojmenuje Claude Code.
+    const { buildChannelNotification } = await import("../../src/mcp/channel.ts");
+    const base = {
+      id: "m1",
+      from: "11111111-2222-3333-4444-555555555555",
+      fromName: "mic-bitrix-dev",
+      to: "peer-2",
+      kind: "ask" as const,
+      sentAt: new Date().toISOString(),
+      content: "prosím o compact",
+    };
+
+    const bg = buildChannelNotification({ ...base, fromKind: "bg" });
+    const human = buildChannelNotification(base);
+
+    expect(bg.params.content as string).toContain("mic-bitrix-dev (bg)");
+    expect(human.params.content as string).toContain("mic-bitrix-dev (");
+    expect(human.params.content as string).not.toContain("(bg)");
+  });
+
+  it("🔴 sufix se NEDOSTANE do `fromName` — to jméno je ADRESA", async () => {
+    // Příjemce ho opisuje do `peer_ask {to}`. „mic-bitrix-dev (bg)" by se
+    // nevyřešilo na nikoho, takže by rozlišovač koupený pro čitelnost zaplatil
+    // rozbitou odpovědí. Adresa a popisek jsou dvě různé věci — týž rozdíl
+    // jako mezi id okna a jeho indexem.
+    const { buildChannelNotification } = await import("../../src/mcp/channel.ts");
+    const note = buildChannelNotification({
+      id: "m2",
+      from: "11111111-2222-3333-4444-555555555555",
+      fromName: "mic-bitrix-dev",
+      fromKind: "bg",
+      to: "peer-2",
+      kind: "ask" as const,
+      sentAt: new Date().toISOString(),
+      content: "x",
+    });
+
+    expect((note.params.meta as { fromName?: string }).fromName).toBe("mic-bitrix-dev");
+  });
+});
