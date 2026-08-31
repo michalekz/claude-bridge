@@ -1,4 +1,4 @@
-import { requestFromPeer, stopAcks } from "./ack-protocol.ts";
+import { DEFAULT_PARK_WORK_TIMEOUT_MS, requestFromPeer, stopAcks } from "./ack-protocol.ts";
 
 /**
  * The courtesy half of stopping a peer: ask, wait, then kill.
@@ -36,7 +36,10 @@ import { requestFromPeer, stopAcks } from "./ack-protocol.ts";
  * A timeout shorter than the work does not protect anything. It just reports a
  * failure for something that was going fine.
  */
-export const DEFAULT_STOP_ACK_TIMEOUT_MS = 120_000;
+// Sdílené číslo — viz `DEFAULT_PARK_WORK_TIMEOUT_MS` v `ack-protocol.ts`.
+// Je to táž práce (zaparkovat tah, dopsat kotvu) a tři kopie se rozešly:
+// `peer_compact` měl 300 s od 28. 8., tohle zůstalo na 120 s do 31. 8.
+export const DEFAULT_STOP_ACK_TIMEOUT_MS = DEFAULT_PARK_WORK_TIMEOUT_MS;
 export const DEFAULT_STOP_ACK_POLL_MS = 500;
 
 export { stopAcks };

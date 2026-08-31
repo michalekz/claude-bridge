@@ -18243,7 +18243,7 @@ var StdioServerTransport = class {
 // package.json
 var package_default = {
   name: "claude-bridge",
-  version: "0.11.42",
+  version: "0.11.43",
   private: true,
   description: "MCP server for cross-Claude-Code-chat orchestration over local session JSONL files",
   type: "module",
@@ -24541,7 +24541,7 @@ var TOOLS = [
           type: "number",
           minimum: 1,
           maximum: 6e5,
-          description: "How long the peer gets to acknowledge before the stop is reported as failed (default 120000). Ignored when force:true."
+          description: "How long the peer gets to acknowledge before the stop is reported as failed (default 300000, raised from 120000 on 2026-08-31). The peer spends that window WORKING \u2014 parking its turn, flushing its anchor, running its commit hook \u2014 so a short window fails a peer for doing exactly what it was asked: three restarts died that way in one wave. Waiting longer costs nothing when the peer answers early; the wait ends at the ack, not at the deadline. Ignored when force:true."
         },
         wait: {
           type: "boolean",
@@ -24654,7 +24654,7 @@ var TOOLS = [
           type: "number",
           minimum: 1,
           maximum: 6e5,
-          description: "How long the peer gets to say it is ready before the restart is reported as failed (default 120000). Ignored when force:true."
+          description: "How long the peer gets to say it is ready before the restart is reported as failed (default 300000, raised from 120000 on 2026-08-31 \u2014 the old value sat two seconds BELOW the only measurement it cited). Ignored when force:true."
         },
         model: {
           type: "string",
@@ -24801,7 +24801,7 @@ var TOOLS = [
           type: "number",
           minimum: 1,
           maximum: 6e5,
-          description: "Ack window per peer. Default 120000 (4x the compact ack \u2014 a peer must write its anchor and memory)."
+          description: "Ack window per peer. Default 300000 \u2014 the same window the restart and compact paths use, because it is the same work: park the turn, write the anchor and memory. It was 120000 until 2026-08-31, when a wave showed peers burning the window on that work rather than idling."
         },
         ackPollMs: { type: "number", minimum: 1, maximum: 1e4 },
         dryRun: {

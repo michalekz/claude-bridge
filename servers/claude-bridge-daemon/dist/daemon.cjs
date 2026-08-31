@@ -4322,7 +4322,7 @@ async function resolvePeer(idOrName, root = bridgeRoot(), now = Date.now()) {
 // package.json
 var package_default = {
   name: "claude-bridge-daemon",
-  version: "0.11.42",
+  version: "0.11.43",
   private: true,
   description: "Control-plane daemon for the claude-bridge plugin: peer lifecycle, telemetry, audit. Distributed as opt-in artefact \u2014 see ADR-008.",
   type: "module",
@@ -5736,6 +5736,7 @@ async function fileExists(path) {
     return false;
   }
 }
+var DEFAULT_PARK_WORK_TIMEOUT_MS = 3e5;
 async function verifyAckFile(path, requestedAtMs, threadId, otherPendingThreadIds = [], ackDeadlineMs = null) {
   let stat5;
   try {
@@ -7254,7 +7255,7 @@ function markedProcessAlive(mark, procRoot = "/proc") {
 }
 
 // src/handlers/stop-protocol.ts
-var DEFAULT_STOP_ACK_TIMEOUT_MS = 12e4;
+var DEFAULT_STOP_ACK_TIMEOUT_MS = DEFAULT_PARK_WORK_TIMEOUT_MS;
 var DEFAULT_STOP_ACK_POLL_MS = 500;
 function stopThreadId(sessionId, now = Date.now()) {
   return `stop:${sessionId}:${now.toString(36)}`;
@@ -7766,7 +7767,7 @@ async function handlePeerStop(req, ctx) {
 }
 
 // src/handlers/restart-protocol.ts
-var DEFAULT_RESTART_READY_TIMEOUT_MS = 12e4;
+var DEFAULT_RESTART_READY_TIMEOUT_MS = DEFAULT_PARK_WORK_TIMEOUT_MS;
 var DEFAULT_RESTART_READY_POLL_MS = 500;
 function restartThreadId(sessionId, now = Date.now()) {
   return `restart:${sessionId}:${now.toString(36)}`;
@@ -10175,7 +10176,7 @@ async function handleTeamStatus(req, ctx) {
 // src/handlers/team-stop.ts
 var import_promises17 = require("node:fs/promises");
 var import_node_path18 = require("node:path");
-var DEFAULT_ANCHOR_TIMEOUT_MS2 = 12e4;
+var DEFAULT_ANCHOR_TIMEOUT_MS2 = DEFAULT_PARK_WORK_TIMEOUT_MS;
 var DEFAULT_ACK_POLL_MS2 = 500;
 var PeerOrderableSchema = external_exports.object({
   /** Registry key — renamed from `sessionId` in R3 (v0.11.21). See team_layout. */

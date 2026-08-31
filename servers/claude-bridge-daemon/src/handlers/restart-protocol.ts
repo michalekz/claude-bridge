@@ -20,19 +20,18 @@ import { requestFromPeer, restartAcks } from "./ack-protocol.ts";
 
 export { restartAcks };
 
+import { DEFAULT_PARK_WORK_TIMEOUT_MS } from "./ack-protocol.ts";
+
 /**
  * How long a peer gets between "get ready" and the stop.
  *
- * ⚠ NOT MEASURED. 120 s is taken from the stop window because the work is the
- * same class — park the turn, flush what is unwritten — and the one measurement
- * nearby says that class of work took 122 s on a live peer (anchor, 2026-08-06).
- *
- * It is an estimate wearing a label, and the acceptance runs of v0.11.18 exist
- * partly to replace it with a measurement. A number chosen and then left alone
- * is how a timer stops measuring reality; three of those have been found in this
- * campaign already.
+ * Jedno sdílené číslo pro všechny tři cesty — viz `DEFAULT_PARK_WORK_TIMEOUT_MS`
+ * v `ack-protocol.ts`, kde jsou i měření. Do 31. 8. tu stálo 120 s s vlastním
+ * komentářem „NOT MEASURED… the one measurement nearby says 122 s": číslo
+ * o dvě vteřiny MENŠÍ než jediný známý případ té práce. Sobotní vlna na něm
+ * shodila tři restarty.
  */
-export const DEFAULT_RESTART_READY_TIMEOUT_MS = 120_000;
+export const DEFAULT_RESTART_READY_TIMEOUT_MS = DEFAULT_PARK_WORK_TIMEOUT_MS;
 export const DEFAULT_RESTART_READY_POLL_MS = 500;
 
 /**

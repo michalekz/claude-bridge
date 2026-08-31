@@ -110,6 +110,34 @@ async function fileExists(path: string): Promise<boolean> {
  * flushed and I am ready." Whose request prompted it changes nothing about that
  * fact — it only matters when two runs could each claim it.
  */
+/**
+ * Kolik času dostane peer na to, aby POCTIVĚ ODLOŽIL PRÁCI.
+ *
+ * Jedno číslo pro všechny tři cesty (`peer_restart` ready, `peer_stop` ack,
+ * `team_stop` kotva), protože je to jedna a táž práce: zaparkovat tah, dopsat
+ * kotvu, uklidit rozdělané. Tři kopie by se rozešly — a taky se rozešly:
+ * `peer_compact` si svou 300 s vyladil 28. 8. podle měření, zatímco ostatní
+ * zůstaly na 120 s.
+ *
+ * 🔴 A ta 120 s BYLA POD JEDINÝM MĚŘENÍM, KTERÉ CITOVALA. Komentář u ní stál
+ * doslova: „NOT MEASURED… the one measurement nearby says that class of work
+ * took 122 s". Číslo tedy bylo od začátku o dvě vteřiny menší než jediný
+ * známý případ té práce.
+ *
+ * ZMĚŘENO 29.–31. 8., a všechno ukazuje týmž směrem:
+ *   122 s   zápis kotvy na živém peerovi (6. 8.)
+ *   ~60 s   samotný `commit.sh` (testy) — nález ai-int-deva
+ *   3×      `ready_timeout` v sobotní vlně (etl-velitel, web-dev, int-dev),
+ *           pokaždé peer, který okno propálil PRACÍ, ne nečinností
+ *
+ * ⚠ Delší okno NIC NEPRODLUŽUJE u peera, který odpoví hned — čeká se do
+ * ACKU, ne do konce. Prodlužuje jen dobu, po kterou jsme ochotni čekat na
+ * někoho, kdo dělá přesně to, oč jsme ho požádali. Cena za krátké okno je
+ * naopak tvrdá: `ready_timeout` znamená „nic se nestalo", takže se celá
+ * operace zahodí uprostřed poctivé práce.
+ */
+export const DEFAULT_PARK_WORK_TIMEOUT_MS = 300_000;
+
 export async function verifyAckFile(
   path: string,
   requestedAtMs: number,

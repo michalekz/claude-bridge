@@ -2828,7 +2828,7 @@ export const TOOLS: ToolSpec[] = [
           minimum: 1,
           maximum: 600000,
           description:
-            "How long the peer gets to acknowledge before the stop is reported as failed (default 120000). Ignored when force:true.",
+            "How long the peer gets to acknowledge before the stop is reported as failed (default 300000, raised from 120000 on 2026-08-31). The peer spends that window WORKING — parking its turn, flushing its anchor, running its commit hook — so a short window fails a peer for doing exactly what it was asked: three restarts died that way in one wave. Waiting longer costs nothing when the peer answers early; the wait ends at the ack, not at the deadline. Ignored when force:true.",
         },
         wait: {
           type: "boolean",
@@ -2953,7 +2953,7 @@ export const TOOLS: ToolSpec[] = [
           minimum: 1,
           maximum: 600000,
           description:
-            "How long the peer gets to say it is ready before the restart is reported as failed (default 120000). Ignored when force:true.",
+            "How long the peer gets to say it is ready before the restart is reported as failed (default 300000, raised from 120000 on 2026-08-31 — the old value sat two seconds BELOW the only measurement it cited). Ignored when force:true.",
         },
         model: {
           type: "string",
@@ -3135,7 +3135,7 @@ export const TOOLS: ToolSpec[] = [
           minimum: 1,
           maximum: 600000,
           description:
-            "Ack window per peer. Default 120000 (4x the compact ack — a peer must write its anchor and memory).",
+            "Ack window per peer. Default 300000 — the same window the restart and compact paths use, because it is the same work: park the turn, write the anchor and memory. It was 120000 until 2026-08-31, when a wave showed peers burning the window on that work rather than idling.",
         },
         ackPollMs: { type: "number", minimum: 1, maximum: 10000 },
         dryRun: {

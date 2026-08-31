@@ -6,6 +6,7 @@ import { publishLifecycleEvent } from "../event-subscribers.ts";
 import { writeEvent } from "../events.ts";
 import type { RequestEnvelope, ResultEnvelope } from "../rpc.ts";
 import { errResult, okResult } from "../rpc.ts";
+import { DEFAULT_PARK_WORK_TIMEOUT_MS } from "./ack-protocol.ts";
 import type { HandlerContext } from "./context.ts";
 import { type OrderResult, orderCoordinatorLast } from "./peer-order.ts";
 import { handlePeerStop } from "./peer-stop.ts";
@@ -30,7 +31,8 @@ import { handlePeerStop } from "./peer-stop.ts";
  * can resume via the same sessionId later.
  */
 
-const DEFAULT_ANCHOR_TIMEOUT_MS = 120_000;
+// Sdílené číslo — viz `DEFAULT_PARK_WORK_TIMEOUT_MS` v `ack-protocol.ts`.
+const DEFAULT_ANCHOR_TIMEOUT_MS = DEFAULT_PARK_WORK_TIMEOUT_MS;
 const DEFAULT_ACK_POLL_MS = 500;
 const STOP_ACK_FILENAME_EXTENSION = ".json";
 
