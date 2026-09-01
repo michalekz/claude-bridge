@@ -18243,7 +18243,7 @@ var StdioServerTransport = class {
 // package.json
 var package_default = {
   name: "claude-bridge",
-  version: "0.11.44",
+  version: "0.11.45",
   private: true,
   description: "MCP server for cross-Claude-Code-chat orchestration over local session JSONL files",
   type: "module",
@@ -24770,7 +24770,7 @@ var TOOLS = [
           type: "number",
           minimum: 1,
           maximum: 6e5,
-          description: "How long to watch the peer's transcript for the compact to actually run (default 180000). A parameter and not a constant because the honest measurements are 122 s and 130 s at ~760k tokens, and the fleet has peers at 846k \u2014 a number tuned to today's largest peer starts lying the day somebody grows past it."
+          description: "How long to watch the peer's transcript for the compact to actually run (default 360000). It said 180000 here until 2026-09-01, five days after the daemon moved to 360 s \u2014 the number a caller reads was HALF the number the daemon uses, and the caller who trusts it plans around a budget that is not the one in force. Measured on 24 compacts of one session: 6 ran longer than 180 s, the slowest 220 s. And the duration does NOT track the token count \u2014 706k took 206 s while 929k took 128 s \u2014 so this is not a number to tune to the largest peer. It is a generous ceiling, and an expired one is a statement about the watch, not about the compact."
         },
         reason: { type: "string", description: "Free-text reason recorded in events.jsonl." },
         wait: { type: "boolean" },
