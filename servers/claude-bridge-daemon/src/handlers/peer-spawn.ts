@@ -233,6 +233,12 @@ export async function handlePeerSpawn(
   const hit = await forkGuard(ctx.state, ctx.hostDriver, {
     handle: args.handle,
     sessionKey,
+    // 🔴 Co guard doopravdy hlídá (2026-09-05). Do teď dostal jen KLÍČE — svůj
+    // vlastní a hostitelův — a odpovídal tedy na „je zabraný tenhle handle?".
+    // Otázka, pro kterou vznikl, zní „neběží už tahle session?", a ta se pozná
+    // podle JMÉNA peera a podle přepisu, který se chystáme obnovit.
+    displayName: args.displayName,
+    resumeSessionId: args.resumeSessionId ?? null,
   });
   if (hit) {
     await writeEvent({

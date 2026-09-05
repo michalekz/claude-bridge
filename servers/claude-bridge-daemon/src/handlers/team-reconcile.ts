@@ -8,6 +8,7 @@ import type { RequestEnvelope, ResultEnvelope } from "../rpc.ts";
 import { errResult, okResult } from "../rpc.ts";
 import type { HandlerContext } from "./context.ts";
 import { measureIdentity } from "./peer-identity.ts";
+import { knownSessionIds } from "./peer-ref.ts";
 import { applyStateChange } from "./state-writer.ts";
 
 /**
@@ -368,9 +369,14 @@ export async function handleTeamReconcile(
   // Peers running on the host that the daemon knows nothing about. Reported
   // whole-host regardless of the `team` filter — an unmanaged peer belongs to
   // no team by definition, and hiding it behind a filter is how it stays hidden.
-  const knownSessionIds = new Set(Object.keys(ctx.state.peers));
+  // 🔴 Do 2026-09-05 tu stálo `new Set(Object.keys(ctx.state.peers))` — tedy
+  // KLÍČE pod proměnnou jménem `knownSessionIds`. Jméno, které lže v místě
+  // použití: u adoptovaných klíč session id JE, u spawnutých je to jméno, a ti
+  // druzí se proto hlásili `unmanaged` napořád. Odpověď přitom registr držel,
+  // jen v jiném poli (`observed.sessionId`, změřené při startu).
+  const known = knownSessionIds(ctx.state.peers);
   for (const proc of livePeers) {
-    if (proc.sessionId && knownSessionIds.has(proc.sessionId)) continue;
+    if (proc.sessionId && known.has(proc.sessionId)) continue;
     if (accountedPids.has(proc.pid)) continue;
     drift.push({
       kind: "unmanaged",

@@ -4,7 +4,12 @@ import type { RequestEnvelope, ResultEnvelope } from "../rpc.ts";
 import { errResult, okResult } from "../rpc.ts";
 import type { PeerRecord } from "../state.ts";
 import type { HandlerContext } from "./context.ts";
-import { type PeerRefCandidate, ambiguousPeerMessage, resolvePeerRef } from "./peer-ref.ts";
+import {
+  type PeerRefCandidate,
+  ambiguousPeerMessage,
+  resolvePeerRef,
+  teamOfSession,
+} from "./peer-ref.ts";
 import { applyStateChange } from "./state-writer.ts";
 
 /**
@@ -66,7 +71,7 @@ function describe(rec: PeerRecord): ReleasePlanEntry {
 
 /** The team of whoever sent this request — the search domain for short names. */
 function callerTeamOf(req: RequestEnvelope, ctx: HandlerContext): string | null {
-  return ctx.state.peers[req.requestedBy.sessionId]?.desired.team ?? null;
+  return teamOfSession(ctx.state.peers, req.requestedBy.sessionId);
 }
 
 export async function handleTeamRelease(

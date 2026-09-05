@@ -13,7 +13,12 @@ import { errResult, okResult } from "../rpc.ts";
 import type { PeerRecord } from "../state.ts";
 import type { HandlerContext } from "./context.ts";
 import { bridgeIdOf } from "./peer-identity.ts";
-import { ambiguousPeerMessage, resolvePeerRef, unresolvedPeerError } from "./peer-ref.ts";
+import {
+  ambiguousPeerMessage,
+  resolvePeerRef,
+  teamOfSession,
+  unresolvedPeerError,
+} from "./peer-ref.ts";
 import { handlePeerSpawn } from "./peer-spawn.ts";
 import { handlePeerStop } from "./peer-stop.ts";
 import {
@@ -302,7 +307,7 @@ async function markNotRunning(ctx: HandlerContext, handle: string): Promise<void
 
 /** The team of whoever sent this request — the search domain for short names. */
 function callerTeamOf(req: RequestEnvelope, ctx: HandlerContext): string | null {
-  return ctx.state.peers[req.requestedBy.sessionId]?.desired.team ?? null;
+  return teamOfSession(ctx.state.peers, req.requestedBy.sessionId);
 }
 
 type RestartPhase = "ready-ack" | "stopping" | "spawning" | "verifying";

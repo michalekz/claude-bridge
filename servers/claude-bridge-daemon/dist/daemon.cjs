@@ -4335,7 +4335,7 @@ async function resolvePeer(idOrName, root = bridgeRoot(), now = Date.now()) {
 // package.json
 var package_default = {
   name: "claude-bridge-daemon",
-  version: "0.11.45",
+  version: "0.11.46",
   private: true,
   description: "Control-plane daemon for the claude-bridge plugin: peer lifecycle, telemetry, audit. Distributed as opt-in artefact \u2014 see ADR-008.",
   type: "module",
@@ -4589,6 +4589,14 @@ function shortFormOf(record) {
 function resolvePeerRef(peers, ref, callerTeam) {
   const byId = peers[ref];
   if (byId) return { kind: "found", handle: ref, record: byId };
+  const byMeasured = Object.entries(peers).filter(
+    ([, rec]) => rec.observed.sessionId === ref && rec.observed.identity === "measured"
+  );
+  if (byMeasured.length === 1) {
+    const [handle, record] = byMeasured[0];
+    return { kind: "found", handle, record };
+  }
+  if (byMeasured.length > 1) return ambiguous(byMeasured);
   const exact = Object.entries(peers).filter(([, rec]) => rec.observed.name === ref);
   if (exact.length === 1) {
     const [handle, record] = exact[0];
@@ -4625,6 +4633,30 @@ function ambiguousPeerMessage(ref, candidates) {
   const distinctNames = new Set(candidates.map((c) => c.name));
   const list = distinctNames.size === candidates.length ? candidates.map((c) => c.name).join(", ") : candidates.map((c) => `${c.name} [${c.handle}]`).join(", ");
   return `'${ref}' matches ${candidates.length} peers \u2014 refusing to guess which one. Use the full name: ${list}`;
+}
+function knownSessionIds(peers) {
+  const out = new Set(Object.keys(peers));
+  for (const rec of Object.values(peers)) {
+    if (rec.observed.sessionId) out.add(rec.observed.sessionId);
+  }
+  return out;
+}
+function recordForSpecHandle(peers, specHandle) {
+  const direct = peers[specHandle];
+  if (direct) return { handle: specHandle, record: direct };
+  for (const [handle, rec] of Object.entries(peers)) {
+    if (rec.observed.sessionId === specHandle && rec.observed.identity === "measured") {
+      return { handle, record: rec };
+    }
+  }
+  for (const [handle, rec] of Object.entries(peers)) {
+    if (rec.observed.name === specHandle) return { handle, record: rec };
+  }
+  return null;
+}
+function teamOfSession(peers, sessionId) {
+  const hit = resolvePeerRef(peers, sessionId);
+  return hit.kind === "found" ? hit.record.desired.team ?? null : null;
 }
 
 // src/state.ts
@@ -5091,7 +5123,7 @@ function viewOf(record) {
   };
 }
 function callerTeamOf(req, ctx) {
-  return ctx.state.peers[req.requestedBy.sessionId]?.desired.team ?? null;
+  return teamOfSession(ctx.state.peers, req.requestedBy.sessionId);
 }
 async function handleControlConfig(req, ctx) {
   const parsed = ControlConfigArgsSchema.safeParse(req.args);
@@ -6234,7 +6266,7 @@ async function writeAnchorRequestMsg(peerId, threadId) {
   );
 }
 function callerTeamOf2(req, ctx) {
-  return ctx.state.peers[req.requestedBy.sessionId]?.desired.team ?? null;
+  return teamOfSession(ctx.state.peers, req.requestedBy.sessionId);
 }
 async function handlePeerCompact(req, ctx) {
   const parsed = PeerCompactArgsSchema.safeParse(req.args);
@@ -6719,9 +6751,12 @@ var import_node_fs5 = require("node:fs");
 var import_node_path13 = require("node:path");
 
 // src/handlers/fork-guard.ts
+function isRunning(status) {
+  return status === "live" || status === "starting" || status === "restarting";
+}
 async function forkGuard(state, driver, opts) {
   const record = state.peers[opts.handle];
-  if (record && (record.observed.status === "live" || record.observed.status === "starting" || record.observed.status === "restarting")) {
+  if (record && isRunning(record.observed.status)) {
     return {
       reason: "state_live",
       details: {
@@ -6730,6 +6765,39 @@ async function forkGuard(state, driver, opts) {
         tmuxTarget: record.observed.tmuxTarget
       }
     };
+  }
+  const name = opts.displayName ?? opts.sessionKey;
+  const byName = Object.values(state.peers).find(
+    (r) => r.observed.name === name && isRunning(r.observed.status)
+  );
+  if (byName) {
+    return {
+      reason: "name_live",
+      details: {
+        handle: opts.handle,
+        displayName: name,
+        liveHandle: byName.handle,
+        recordedStatus: byName.observed.status,
+        tmuxTarget: byName.observed.tmuxTarget
+      }
+    };
+  }
+  if (opts.resumeSessionId) {
+    const byIdentity = Object.values(state.peers).find(
+      (r) => r.observed.sessionId === opts.resumeSessionId && r.observed.identity === "measured" && isRunning(r.observed.status)
+    );
+    if (byIdentity) {
+      return {
+        reason: "identity_live",
+        details: {
+          handle: opts.handle,
+          resumeSessionId: opts.resumeSessionId,
+          liveHandle: byIdentity.handle,
+          recordedStatus: byIdentity.observed.status,
+          tmuxTarget: byIdentity.observed.tmuxTarget
+        }
+      };
+    }
   }
   if (await driver.hasSession(opts.sessionKey)) {
     return {
@@ -6852,7 +6920,13 @@ async function handlePeerSpawn(req, ctx) {
   const plannedTarget = canonicalHostTarget(sessionKey);
   const hit = await forkGuard(ctx.state, ctx.hostDriver, {
     handle: args.handle,
-    sessionKey
+    sessionKey,
+    // 🔴 Co guard doopravdy hlídá (2026-09-05). Do teď dostal jen KLÍČE — svůj
+    // vlastní a hostitelův — a odpovídal tedy na „je zabraný tenhle handle?".
+    // Otázka, pro kterou vznikl, zní „neběží už tahle session?", a ta se pozná
+    // podle JMÉNA peera a podle přepisu, který se chystáme obnovit.
+    displayName: args.displayName,
+    resumeSessionId: args.resumeSessionId ?? null
   });
   if (hit) {
     await writeEvent({
@@ -7368,7 +7442,7 @@ var PeerStopArgsSchema = external_exports.object({
   stoppedCleanly: external_exports.boolean().nullable().optional()
 }).strict();
 function callerTeamOf3(req, ctx) {
-  return ctx.state.peers[req.requestedBy.sessionId]?.desired.team ?? null;
+  return teamOfSession(ctx.state.peers, req.requestedBy.sessionId);
 }
 async function runCourtesyPhase(req, ctx, target, args) {
   const { handle, sessionKey, record } = target;
@@ -8035,7 +8109,7 @@ async function markNotRunning(ctx, handle) {
   });
 }
 function callerTeamOf4(req, ctx) {
-  return ctx.state.peers[req.requestedBy.sessionId]?.desired.team ?? null;
+  return teamOfSession(ctx.state.peers, req.requestedBy.sessionId);
 }
 async function markRestart(ctx, handle, phase, fields) {
   await applyStateChange(ctx.state, (draft) => {
@@ -9116,28 +9190,40 @@ async function handleTeamLayout(req, ctx) {
       }
     );
   }
-  const specIds = new Set(spec.peers.map((p) => p.handle));
+  const specMatch = new Map(
+    spec.peers.map((p) => [p.handle, recordForSpecHandle(ctx.state.peers, p.handle)])
+  );
+  const specClaimed = new Set(
+    [...specMatch.values()].flatMap((m) => m === null ? [] : [m.handle])
+  );
+  const recordOf = (p) => specMatch.get(p.handle)?.record;
   const stateIds = new Set(Object.keys(ctx.state.peers));
   const stoppedIds = new Set(
     Object.entries(ctx.state.peers).filter(([, rec]) => rec.observed.status === "stopped").map(([id]) => id)
   );
   const runningIds = new Set([...stateIds].filter((id) => !stoppedIds.has(id)));
-  const toSpawn = spec.peers.filter((p) => !stateIds.has(p.handle));
-  const toResume = spec.peers.filter((p) => stoppedIds.has(p.handle));
-  const runningExtras = [...runningIds].filter((id) => !specIds.has(id));
+  const toSpawn = spec.peers.filter((p) => recordOf(p) === void 0);
+  const toResume = spec.peers.filter((p) => recordOf(p)?.observed.status === "stopped");
+  const runningExtras = [...runningIds].filter((id) => !specClaimed.has(id));
   const toStop = args.prune ? runningExtras : [];
-  const toForget = args.prune ? [...stoppedIds].filter((id) => !specIds.has(id)) : [];
+  const toForget = args.prune ? [...stoppedIds].filter((id) => !specClaimed.has(id)) : [];
   const argsOf = (rec) => rec.desired.spawnArgs ?? [];
   const sameArgs = (a, b) => a.length === b.length && a.every((v, i) => v === b[i]);
-  const toRedeclare = spec.peers.filter((p) => runningIds.has(p.handle) && p.args.length > 0).map((p) => ({ peer: p, record: ctx.state.peers[p.handle] })).filter(
+  const toRedeclare = spec.peers.filter((p) => {
+    const rec = recordOf(p);
+    return rec !== void 0 && rec.observed.status !== "stopped" && p.args.length > 0;
+  }).map((p) => ({ peer: p, record: recordOf(p) })).filter(
     (x) => x.record !== void 0 && !sameArgs(argsOf(x.record), x.peer.args)
   ).map(({ peer, record }) => ({
     handle: peer.handle,
     was: argsOf(record),
     will: peer.args
   }));
-  const launchConflicts = spec.peers.filter((p) => runningIds.has(p.handle)).flatMap((p) => {
-    const rec = ctx.state.peers[p.handle];
+  const launchConflicts = spec.peers.filter((p) => {
+    const rec = recordOf(p);
+    return rec !== void 0 && rec.observed.status !== "stopped";
+  }).flatMap((p) => {
+    const rec = recordOf(p);
     if (!rec) return [];
     const out = [];
     if (rec.desired.command && rec.desired.command !== p.command) {
@@ -9179,7 +9265,7 @@ async function handleTeamLayout(req, ctx) {
     });
   }
   const spawnOne = async (p, forceResume, label) => {
-    const record = ctx.state.peers[p.handle];
+    const record = recordOf(p);
     const spawnReq = {
       schemaVersion: req.schemaVersion,
       id: `${req.id}:${label}:${p.handle}`,
@@ -9542,9 +9628,9 @@ async function handleTeamReconcile(req, ctx) {
     }
     healthy.push(rec.handle);
   }
-  const knownSessionIds = new Set(Object.keys(ctx.state.peers));
+  const known = knownSessionIds(ctx.state.peers);
   for (const proc of livePeers) {
-    if (proc.sessionId && knownSessionIds.has(proc.sessionId)) continue;
+    if (proc.sessionId && known.has(proc.sessionId)) continue;
     if (accountedPids.has(proc.pid)) continue;
     drift.push({
       kind: "unmanaged",
@@ -9717,7 +9803,7 @@ function describe(rec) {
   };
 }
 function callerTeamOf5(req, ctx) {
-  return ctx.state.peers[req.requestedBy.sessionId]?.desired.team ?? null;
+  return teamOfSession(ctx.state.peers, req.requestedBy.sessionId);
 }
 async function handleTeamRelease(req, ctx) {
   const parsed = TeamReleaseArgsSchema.safeParse(req.args);
@@ -9895,7 +9981,7 @@ function orderPeers(records) {
 }
 var sleep2 = (ms) => new Promise((r) => setTimeout(r, ms));
 function callerTeamOf6(req, ctx) {
-  return ctx.state.peers[req.requestedBy.sessionId]?.desired.team ?? null;
+  return teamOfSession(ctx.state.peers, req.requestedBy.sessionId);
 }
 async function handleTeamRestart(req, ctx) {
   const parsed = TeamRestartArgsSchema.safeParse(req.args);

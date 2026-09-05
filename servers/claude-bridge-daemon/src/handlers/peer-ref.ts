@@ -186,6 +186,31 @@ export function resolvePeerRef(
   const byId = peers[ref];
   if (byId) return { kind: "found", handle: ref, record: byId };
 
+  // 🔴 KROK, KTERÝ TU CHYBĚL DO 2026-09-05 — a chyběl jen půlce flotily.
+  //
+  // Do R3 (v0.11.21) byl klíč vždycky session id, takže krok výš stačil. Pak
+  // se přejmenoval na `handle` právě proto, že peer, který nenabootoval, žádné
+  // session id nemá — a od té chvíle jsou v registru dva druhy klíčů:
+  //
+  //     adoptovaní   klíč = session id      (team-adopt.ts:532)
+  //     spawnutí     klíč = jméno od volajícího
+  //
+  // Odkaz session idčkem tedy trefil adoptovaného a MINUL spawnutého, ačkoli
+  // ten svoje session id zná — má ho ZMĚŘENÉ v `observed.sessionId`. Registr
+  // odpověď držel a nikdo se ho na ni nezeptal.
+  //
+  // Před jmény schválně: session id je unikátní konstrukcí, jméno ne.
+  const byMeasured = Object.entries(peers).filter(
+    ([, rec]) => rec.observed.sessionId === ref && rec.observed.identity === "measured",
+  );
+  if (byMeasured.length === 1) {
+    const [handle, record] = byMeasured[0] as [string, PeerRecord];
+    return { kind: "found", handle, record };
+  }
+  // Dva záznamy s jedním session id znamenají rozdvojenou identitu. Hádat
+  // mezi nimi je přesně to, čemu má tenhle resolver bránit.
+  if (byMeasured.length > 1) return ambiguous(byMeasured);
+
   const exact = Object.entries(peers).filter(([, rec]) => rec.observed.name === ref);
   if (exact.length === 1) {
     const [handle, record] = exact[0] as [string, PeerRecord];
@@ -239,4 +264,76 @@ export function ambiguousPeerMessage(ref: string, candidates: PeerRefCandidate[]
       ? candidates.map((c) => c.name).join(", ")
       : candidates.map((c) => `${c.name} [${c.handle}]`).join(", ");
   return `'${ref}' matches ${candidates.length} peers — refusing to guess which one. Use the full name: ${list}`;
+}
+
+/**
+ * Session ids, kterými se registr PROKAZATELNĚ zabývá.
+ *
+ * Pro čtenáře, kteří nemají odkaz k rozlišení, ale ŽIVÝ PROCES a jeho session
+ * id, a ptají se „známe ho?". `team_reconcile` byl přesně takový a stavěl si tu
+ * množinu z `Object.keys(peers)` — tedy z KLÍČŮ, pod proměnnou jménem
+ * `knownSessionIds`. Pro adoptované to vycházelo (klíč JE session id), pro
+ * spawnuté ne, takže každý spawnutý peer hlásil `unmanaged` napořád a skutečné
+ * unmanaged se v tom šumu ztrácely.
+ *
+ * Klíče se berou taky, a schválně: u adoptovaného záznamu je klíč jeho session
+ * id, a záznam, jehož identita se nedala změřit, nemá nic jiného, čím by se
+ * prokázal. Vypustit je by vyměnilo jednu slepotu za druhou.
+ */
+export function knownSessionIds(peers: Record<string, PeerRecord>): Set<string> {
+  const out = new Set<string>(Object.keys(peers));
+  for (const rec of Object.values(peers)) {
+    if (rec.observed.sessionId) out.add(rec.observed.sessionId);
+  }
+  return out;
+}
+
+/**
+ * Záznam, na který ukazuje položka SPECIFIKACE týmu.
+ *
+ * Specifikace jsou psané JMÉNY (`teams/mic.json` nese „mic-velitel"), registr
+ * je u adoptovaných klíčovaný session idčkem — takže `peers[spec.handle]`
+ * neodpovídal ničemu a `team_layout` plánoval spawnout devět běžících peerů.
+ *
+ * Pořadí je totéž jako v `resolvePeerRef`: klíč, pak změřená identita, pak
+ * jméno. Bez krátkých tvarů — specifikace mluví plnými jmény a domýšlet jí
+ * vyhledávací doménu by znamenalo, že spec začne trefovat peery, které
+ * nepojmenovala.
+ */
+export function recordForSpecHandle(
+  peers: Record<string, PeerRecord>,
+  specHandle: string,
+): { handle: string; record: PeerRecord } | null {
+  const direct = peers[specHandle];
+  if (direct) return { handle: specHandle, record: direct };
+  for (const [handle, rec] of Object.entries(peers)) {
+    if (rec.observed.sessionId === specHandle && rec.observed.identity === "measured") {
+      return { handle, record: rec };
+    }
+  }
+  for (const [handle, rec] of Object.entries(peers)) {
+    if (rec.observed.name === specHandle) return { handle, record: rec };
+  }
+  return null;
+}
+
+/**
+ * Tým volajícího — vyhledávací doména pro krátké tvary jmen.
+ *
+ * 🔴 ŠEST KOPIÍ, ŠESTKRÁT TÁŽ VADA (2026-09-05). Každý z šesti handlerů si
+ * nesl vlastní `callerTeamOf` s tělem `state.peers[requestedBy.sessionId]`, což
+ * je syrové indexování KLÍČEM. Pro adoptovaného volajícího vyšlo (klíč JE
+ * session id), pro spawnutého vrátilo `undefined`.
+ *
+ * Následek nebyl hlášený, protože nevypadá jako vada nástroje: spawnutý peer
+ * prostě nemá vyhledávací doménu, takže `peer_restart peer:"velitel"` u něj
+ * skončí na `ambiguous_peer`, zatímco témuž volání od adoptovaného souseda
+ * projde. Uživatel to přečte jako svůj překlep.
+ *
+ * Kopie je taky to, čím se to udrželo: šest těl znamená šest míst, kde se ta
+ * oprava musí udělat, a nikdo je nedělá najednou. Proto je tady jedno.
+ */
+export function teamOfSession(peers: Record<string, PeerRecord>, sessionId: string): string | null {
+  const hit = resolvePeerRef(peers, sessionId);
+  return hit.kind === "found" ? (hit.record.desired.team ?? null) : null;
 }

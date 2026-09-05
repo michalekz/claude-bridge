@@ -23,7 +23,12 @@ import {
 } from "./ack-protocol.ts";
 import type { HandlerContext } from "./context.ts";
 import { bridgeIdOf } from "./peer-identity.ts";
-import { ambiguousPeerMessage, resolvePeerRef, unresolvedPeerError } from "./peer-ref.ts";
+import {
+  ambiguousPeerMessage,
+  resolvePeerRef,
+  teamOfSession,
+  unresolvedPeerError,
+} from "./peer-ref.ts";
 
 /**
  * peer_compact — orchestrated `/compact` inject into a live peer.
@@ -295,7 +300,7 @@ async function writeAnchorRequestMsg(peerId: string, threadId: string): Promise<
 
 /** The team of whoever sent this request — the search domain for short names. */
 function callerTeamOf(req: RequestEnvelope, ctx: HandlerContext): string | null {
-  return ctx.state.peers[req.requestedBy.sessionId]?.desired.team ?? null;
+  return teamOfSession(ctx.state.peers, req.requestedBy.sessionId);
 }
 
 export async function handlePeerCompact(

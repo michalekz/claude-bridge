@@ -8,6 +8,7 @@ import { errResult, okResult } from "../rpc.ts";
 import { saveState } from "../state.ts";
 import type { HandlerContext } from "./context.ts";
 import { bridgeIdOf } from "./peer-identity.ts";
+import { recordForSpecHandle } from "./peer-ref.ts";
 import { handlePeerSpawn } from "./peer-spawn.ts";
 import { handlePeerStop } from "./peer-stop.ts";
 import { applyStateChange } from "./state-writer.ts";
@@ -172,7 +173,36 @@ export async function handleTeamLayout(
     );
   }
 
-  const specIds = new Set(spec.peers.map((p) => p.handle));
+  /**
+   * 🔴 SPECIFIKACE MLUVÍ JMÉNY, REGISTR JE KLÍČOVANÝ SESSION IDČKEM (2026-09-05).
+   *
+   * Do dneška se položka specifikace hledala jako `state.peers[p.handle]` a
+   * porovnávala proti `Object.keys(...)`. To je pravda jen o půlce flotily:
+   *
+   *     adoptovaní   klíč = session id      (team-adopt.ts:532)
+   *     spawnutí     klíč = jméno
+   *     teams/*.json handle = JMÉNO, vždycky
+   *
+   * Adoptovaný peer se tedy specifikaci nikdy netrefil a `team_layout` ho
+   * pokaždé zařadil mezi CHYBĚJÍCÍ. Změřeno na běhu velitele 2026-09-04
+   * (team `mic`): `plannedSpawn` deset položek, z toho devět běžících peerů.
+   *
+   * Preview to zachytilo jen proto, že `apply` je od R3 default false. S
+   * `apply:true` by devět spawnů prošlo — fork-guard je do téhož dne pouštěl,
+   * protože se ptal také jen na klíče.
+   *
+   * Řeší se to jedním překladem: každá položka se JEDNOU přeloží na záznam
+   * sdílenou cestou a dál se pracuje se skutečným klíčem.
+   */
+  const specMatch = new Map(
+    spec.peers.map((p) => [p.handle, recordForSpecHandle(ctx.state.peers, p.handle)] as const),
+  );
+  /** Klíče záznamů, ke kterým se specifikace HLÁSÍ — ne jména, kterými je zve. */
+  const specClaimed = new Set(
+    [...specMatch.values()].flatMap((m) => (m === null ? [] : [m.handle])),
+  );
+  const recordOf = (p: { handle: string }) => specMatch.get(p.handle)?.record;
+
   const stateIds = new Set(Object.keys(ctx.state.peers));
   /**
    * Peers put to sleep by `team_stop` keep their record with
@@ -188,15 +218,15 @@ export async function handleTeamLayout(
   );
   const runningIds = new Set([...stateIds].filter((id) => !stoppedIds.has(id)));
 
-  const toSpawn = spec.peers.filter((p) => !stateIds.has(p.handle));
-  const toResume = spec.peers.filter((p) => stoppedIds.has(p.handle));
+  const toSpawn = spec.peers.filter((p) => recordOf(p) === undefined);
+  const toResume = spec.peers.filter((p) => recordOf(p)?.observed.status === "stopped");
   // Only RUNNING extras are stop candidates — a tombstone has nothing to kill.
-  const runningExtras = [...runningIds].filter((id) => !specIds.has(id));
+  const runningExtras = [...runningIds].filter((id) => !specClaimed.has(id));
   const toStop = args.prune ? runningExtras : [];
   // Tombstones outside the spec are pure garbage: nothing to stop, nothing to
   // resume. Without this they accumulate forever (~350 B each, re-serialized
   // on every state write, and they survive daemon restarts).
-  const toForget = args.prune ? [...stoppedIds].filter((id) => !specIds.has(id)) : [];
+  const toForget = args.prune ? [...stoppedIds].filter((id) => !specClaimed.has(id)) : [];
 
   /**
    * ARGS PRO PEERY, KTEŘÍ UŽ BĚŽÍ (v0.11.34, GO ai-velitele 27. 8.).
@@ -228,8 +258,11 @@ export async function handleTeamLayout(
     a.length === b.length && a.every((v, i) => v === b[i]);
 
   const toRedeclare = spec.peers
-    .filter((p) => runningIds.has(p.handle) && p.args.length > 0)
-    .map((p) => ({ peer: p, record: ctx.state.peers[p.handle] }))
+    .filter((p) => {
+      const rec = recordOf(p);
+      return rec !== undefined && rec.observed.status !== "stopped" && p.args.length > 0;
+    })
+    .map((p) => ({ peer: p, record: recordOf(p) }))
     .filter(
       (x): x is { peer: PeerSpec; record: NonNullable<typeof x.record> } =>
         x.record !== undefined && !sameArgs(argsOf(x.record), x.peer.args),
@@ -249,9 +282,12 @@ export async function handleTeamLayout(
    * chce člověka, ne tichý zápis.
    */
   const launchConflicts = spec.peers
-    .filter((p) => runningIds.has(p.handle))
+    .filter((p) => {
+      const rec = recordOf(p);
+      return rec !== undefined && rec.observed.status !== "stopped";
+    })
     .flatMap((p) => {
-      const rec = ctx.state.peers[p.handle];
+      const rec = recordOf(p);
       if (!rec) return [];
       const out: Array<{ handle: string; field: string; record: string; spec: string }> = [];
       if (rec.desired.command && rec.desired.command !== p.command) {
@@ -301,7 +337,7 @@ export async function handleTeamLayout(
 
   /** Shared by the spawn and resume paths — same tool, different intent. */
   const spawnOne = async (p: PeerSpec, forceResume: boolean, label: string) => {
-    const record = ctx.state.peers[p.handle];
+    const record = recordOf(p);
     const spawnReq = {
       schemaVersion: req.schemaVersion,
       id: `${req.id}:${label}:${p.handle}`,
