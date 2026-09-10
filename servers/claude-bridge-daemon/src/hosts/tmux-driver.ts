@@ -234,6 +234,28 @@ export interface TmuxDriverOptions {
   sendVerifyDelayMs?: number;
 }
 
+/**
+ * Cíl, který tmux NESMÍ dohledat prefixem.
+ *
+ * 🔴 NALEZENO NAOSTRO 2026-09-09 při přenosu mic týmu. tmux řeší cíl nejdřív
+ * přesnou shodou, pak PREFIXEM — takže `-t mic:` trefí `mic-admin`, pokud
+ * session `mic` neexistuje. Změřeno na živém serveru: `has-session -t a`
+ * MATCHNE session `ai`, `has-session -t =a` ne.
+ *
+ * Řetěz, který to způsobil: `rawHasSession("mic")` trefilo prefixem
+ * `mic-admin` ⇒ démon usoudil, že domovská session existuje ⇒ NEZALOŽIL ji
+ * ⇒ `new-window -t mic:` trefilo prefixem zase `mic-admin` ⇒ peer přistál
+ * v cizí session, a jeho záznam v ní. **Pojistka „chybějící domov si sám
+ * založím" se nespustila právě proto, že se ptala prefixem.**
+ *
+ * ⚠ JEN NA JMÉNA SESSION. Na id okna se `=` lepit NESMÍ — změřeno:
+ * `has-session -t =@7958` selže, `-t @7958` projde. Proto je to funkce a ne
+ * `"=" +` na pěti místech: šesté by se zapomnělo, a mohlo by to být okno.
+ */
+function exactSession(name: string): string {
+  return name.startsWith("=") ? name : `=${name}`;
+}
+
 export class TmuxDriver implements SessionHostDriver {
   readonly name = "tmux" as const;
   private readonly tmuxBin: string;
@@ -270,7 +292,7 @@ export class TmuxDriver implements SessionHostDriver {
       return stdout.split("\n").some((line) => line.trim() === t.paneId);
     }
     try {
-      await execFileAsync(this.tmuxBin, ["has-session", "-t", t.session], {
+      await execFileAsync(this.tmuxBin, ["has-session", "-t", exactSession(t.session)], {
         ...EXEC_DEFAULTS,
         timeout: QUERY_TIMEOUT_MS,
       });
@@ -283,7 +305,7 @@ export class TmuxDriver implements SessionHostDriver {
   /** Session-only probe. `hasSession` resolves window ids; this asks about a session. */
   private async rawHasSession(session: string): Promise<boolean> {
     try {
-      await execFileAsync(this.tmuxBin, ["has-session", "-t", `${session}:`], {
+      await execFileAsync(this.tmuxBin, ["has-session", "-t", exactSession(session)], {
         ...EXEC_DEFAULTS,
         timeout: QUERY_TIMEOUT_MS,
       });
@@ -380,39 +402,43 @@ export class TmuxDriver implements SessionHostDriver {
     // v0.10.0-rc.2 fix for the silent-rewrite bug caught by the test scenario.
     // A peer that belongs inside an existing session is created as a WINDOW
     // there, not as a session of its own (fix, 2026-08-04 pilot).
-    const asWindow = opts.inSession !== undefined;
     const parentSession = opts.inSession ? sanitizeSessionKey(opts.inSession) : null;
+    // Odvozeno z `parentSession`, ne z `opts.inSession`: tím se typ zúží pro
+    // celou větev níž a prázdný řetězec (schéma ho zakazuje, kód ho připouštěl)
+    // spadne do `new-session` místo do `new-window -t =:`.
+    const asWindow = parentSession !== null;
     // `canonicalHostTarget`, not the bare sanitizer: a caller may hand us a
     // window id, and `@42` must survive intact (R3, v0.11.21).
     const canonicalKey = canonicalHostTarget(opts.sessionKey);
-    const args = asWindow
-      ? [
-          "new-window",
-          "-d",
-          ...(opts.windowName ? ["-n", sanitizeSessionKey(opts.windowName)] : []),
-          "-P",
-          // Print the new window's id so the caller can address it. A window
-          // index would be wrong: `renumber-windows` shifts those on every kill.
-          "-F",
-          "#{window_id}",
-          "-t",
-          `${parentSession}:`,
-          "-c",
-          opts.cwd,
-          "--",
-          ...paneCommand(opts.env, opts.command, opts.args),
-        ]
-      : [
-          "new-session",
-          "-d",
-          ...(opts.windowName ? ["-n", sanitizeSessionKey(opts.windowName)] : []),
-          "-s",
-          canonicalKey,
-          "-c",
-          opts.cwd,
-          "--",
-          ...paneCommand(opts.env, opts.command, opts.args),
-        ];
+    const args =
+      parentSession !== null
+        ? [
+            "new-window",
+            "-d",
+            ...(opts.windowName ? ["-n", sanitizeSessionKey(opts.windowName)] : []),
+            "-P",
+            // Print the new window's id so the caller can address it. A window
+            // index would be wrong: `renumber-windows` shifts those on every kill.
+            "-F",
+            "#{window_id}",
+            "-t",
+            `${exactSession(parentSession)}:`,
+            "-c",
+            opts.cwd,
+            "--",
+            ...paneCommand(opts.env, opts.command, opts.args),
+          ]
+        : [
+            "new-session",
+            "-d",
+            ...(opts.windowName ? ["-n", sanitizeSessionKey(opts.windowName)] : []),
+            "-s",
+            canonicalKey,
+            "-c",
+            opts.cwd,
+            "--",
+            ...paneCommand(opts.env, opts.command, opts.args),
+          ];
     // The home session may be gone.
     //
     // A peer that was the ONLY window of its session takes the session with it
@@ -455,7 +481,13 @@ export class TmuxDriver implements SessionHostDriver {
     // That gap is documented, not hidden.
     if (asWindow && parentSession !== null && !recreatedHome) {
       await this.tmux(
-        ["set-option", "-t", parentSession, "history-limit", String(FLEET_HISTORY_LIMIT)],
+        [
+          "set-option",
+          "-t",
+          exactSession(parentSession),
+          "history-limit",
+          String(FLEET_HISTORY_LIMIT),
+        ],
         QUERY_TIMEOUT_MS,
       ).catch(() => undefined);
     }
@@ -551,7 +583,14 @@ export class TmuxDriver implements SessionHostDriver {
     // keeps reporting drift through `team_reconcile` as it did before.
     if (asWindow && opts.windowIndex !== undefined && parentSession !== null) {
       const moved = await this.tmux(
-        ["move-window", "-b", "-s", effectiveKey, "-t", `${parentSession}:${opts.windowIndex}`],
+        [
+          "move-window",
+          "-b",
+          "-s",
+          effectiveKey,
+          "-t",
+          `${exactSession(parentSession)}:${opts.windowIndex}`,
+        ],
         QUERY_TIMEOUT_MS,
       ).then(
         () => true,

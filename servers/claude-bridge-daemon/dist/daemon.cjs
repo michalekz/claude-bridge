@@ -4335,7 +4335,7 @@ async function resolvePeer(idOrName, root = bridgeRoot(), now = Date.now()) {
 // package.json
 var package_default = {
   name: "claude-bridge-daemon",
-  version: "0.11.46",
+  version: "0.11.47",
   private: true,
   description: "Control-plane daemon for the claude-bridge plugin: peer lifecycle, telemetry, audit. Distributed as opt-in artefact \u2014 see ADR-008.",
   type: "module",
@@ -10769,6 +10769,9 @@ var FLEET_HISTORY_LIMIT = 2e3;
 var MEASURED_TMUX_VERSION = "tmux 3.4";
 var DEFAULT_SEND_VERIFY_DELAY_MS = 250;
 var HUMAN_NOTICE_MS = 8e3;
+function exactSession(name) {
+  return name.startsWith("=") ? name : `=${name}`;
+}
 var TmuxDriver = class _TmuxDriver {
   name = "tmux";
   tmuxBin;
@@ -10798,7 +10801,7 @@ var TmuxDriver = class _TmuxDriver {
       return stdout.split("\n").some((line) => line.trim() === t.paneId);
     }
     try {
-      await execFileAsync2(this.tmuxBin, ["has-session", "-t", t.session], {
+      await execFileAsync2(this.tmuxBin, ["has-session", "-t", exactSession(t.session)], {
         ...EXEC_DEFAULTS,
         timeout: QUERY_TIMEOUT_MS
       });
@@ -10810,7 +10813,7 @@ var TmuxDriver = class _TmuxDriver {
   /** Session-only probe. `hasSession` resolves window ids; this asks about a session. */
   async rawHasSession(session) {
     try {
-      await execFileAsync2(this.tmuxBin, ["has-session", "-t", `${session}:`], {
+      await execFileAsync2(this.tmuxBin, ["has-session", "-t", exactSession(session)], {
         ...EXEC_DEFAULTS,
         timeout: QUERY_TIMEOUT_MS
       });
@@ -10892,10 +10895,10 @@ var TmuxDriver = class _TmuxDriver {
     }
   }
   async spawn(opts) {
-    const asWindow = opts.inSession !== void 0;
     const parentSession = opts.inSession ? sanitizeSessionKey(opts.inSession) : null;
+    const asWindow = parentSession !== null;
     const canonicalKey = canonicalHostTarget(opts.sessionKey);
-    const args = asWindow ? [
+    const args = parentSession !== null ? [
       "new-window",
       "-d",
       ...opts.windowName ? ["-n", sanitizeSessionKey(opts.windowName)] : [],
@@ -10905,7 +10908,7 @@ var TmuxDriver = class _TmuxDriver {
       "-F",
       "#{window_id}",
       "-t",
-      `${parentSession}:`,
+      `${exactSession(parentSession)}:`,
       "-c",
       opts.cwd,
       "--",
@@ -10945,7 +10948,7 @@ var TmuxDriver = class _TmuxDriver {
     }
     if (asWindow && parentSession !== null && !recreatedHome) {
       await this.tmux(
-        ["set-option", "-t", parentSession, "history-limit", String(FLEET_HISTORY_LIMIT)],
+        ["set-option", "-t", exactSession(parentSession), "history-limit", String(FLEET_HISTORY_LIMIT)],
         QUERY_TIMEOUT_MS
       ).catch(() => void 0);
     }
@@ -10987,7 +10990,7 @@ var TmuxDriver = class _TmuxDriver {
     });
     if (asWindow && opts.windowIndex !== void 0 && parentSession !== null) {
       const moved = await this.tmux(
-        ["move-window", "-b", "-s", effectiveKey, "-t", `${parentSession}:${opts.windowIndex}`],
+        ["move-window", "-b", "-s", effectiveKey, "-t", `${exactSession(parentSession)}:${opts.windowIndex}`],
         QUERY_TIMEOUT_MS
       ).then(
         () => true,
