@@ -18243,7 +18243,7 @@ var StdioServerTransport = class {
 // package.json
 var package_default = {
   name: "claude-bridge",
-  version: "0.11.54",
+  version: "0.11.55",
   private: true,
   description: "MCP server for cross-Claude-Code-chat orchestration over local session JSONL files",
   type: "module",
@@ -22108,6 +22108,9 @@ function requestPath(id) {
 function resultPath(id) {
   return (0, import_node_path11.join)(controlDir(), "results", `${id}.json`);
 }
+function requestClaimedPath(id) {
+  return (0, import_node_path11.join)(controlDir(), "requests", "done", `${id}.json`);
+}
 var HEARTBEAT_STALE_MS = 3e4;
 async function readLock() {
   try {
@@ -22228,6 +22231,18 @@ async function controlResultTool(args) {
   if (result) {
     return ok({ requestId: args.requestId, outcome: "settled", result });
   }
+  const claimedAtMs = await claimedAt(args.requestId);
+  if (claimedAtMs !== null) {
+    const elapsedMs = Date.now() - claimedAtMs;
+    return ok({
+      requestId: args.requestId,
+      outcome: "running",
+      daemonRunning: presence.running,
+      claimedAt: new Date(claimedAtMs).toISOString(),
+      elapsedMs,
+      note: presence.running ? `The daemon CLAIMED this request ${elapsedMs} ms ago and is working on it \u2014 that is why it is in neither the queue nor the results. A graceful stop or restart legitimately takes minutes (it waits for the peer's ack and then for its turn to end). Ask again; do NOT re-submit, which would perform the operation twice.` : `This request was claimed ${elapsedMs} ms ago, but THE DAEMON IS NOT RUNNING NOW \u2014 so it was interrupted mid-flight and no verdict will arrive on its own. Check \`events.jsonl\` for how far it got before deciding what to redo: the operation may be half done.`
+    });
+  }
   const stillQueued = await requestExists(args.requestId);
   if (stillQueued) {
     return ok({
@@ -22240,7 +22255,7 @@ async function controlResultTool(args) {
   return ok({
     requestId: args.requestId,
     outcome: "unknown",
-    note: "No verdict and no queued request under that id. Either the id is wrong, or this request settled long ago and its files were cleaned up. `~/.claude-bridge/control/events.jsonl` is the durable record \u2014 search it for the id before concluding anything about what happened."
+    note: "No verdict, no queued request and no claim under that id. Either the id is wrong, or this request settled long ago and its files were cleaned up. `~/.claude-bridge/control/events.jsonl` is the durable record \u2014 search it for the id before concluding anything about what happened."
   });
 }
 async function readResult(requestId) {
@@ -22249,6 +22264,13 @@ async function readResult(requestId) {
   } catch (e) {
     if (e.code === "ENOENT") return null;
     throw e;
+  }
+}
+async function claimedAt(requestId) {
+  try {
+    return (await (0, import_promises14.stat)(requestClaimedPath(requestId))).mtimeMs;
+  } catch {
+    return null;
   }
 }
 async function requestExists(requestId) {
@@ -24548,7 +24570,7 @@ var TOOLS = [
   },
   {
     name: "control_result",
-    description: "Collect the verdict of a control-plane request whose caller-side wait expired. Every submitting tool returns a `requestId`; until v0.11.10 nothing accepted one back, so a caller whose wait ran out could only read events.jsonl by hand. A caller-side timeout NEVER cancels the request \u2014 it stays queued or running \u2014 so the answer exists or will. Three outcomes: `settled` (the verdict, exactly as the daemon recorded it), `pending` (still queued; ask again, and do NOT re-submit the original call \u2014 that would perform the operation twice), `unknown` (no verdict and no queued request: wrong id, or it settled long ago and the files were cleaned up \u2014 events.jsonl is the durable record).",
+    description: "Collect the verdict of a control-plane request whose caller-side wait expired. Every submitting tool returns a `requestId`; until v0.11.10 nothing accepted one back, so a caller whose wait ran out could only read events.jsonl by hand. A caller-side timeout NEVER cancels the request \u2014 it stays queued or running \u2014 so the answer exists or will. FOUR outcomes: `settled` (the verdict, exactly as the daemon recorded it), `running` (v0.11.55 \u2014 CLAIMED and in flight, with `claimedAt`/`elapsedMs`: the daemon takes a request off the queue by renaming it BEFORE dispatching, so a long operation is in neither the queue nor the results and used to answer `unknown`), `pending` (still ON the queue, not started), `unknown` (no verdict, no queue, no claim: wrong id, or it settled long ago and the files were cleaned up \u2014 events.jsonl is the durable record). On `running` and `pending` alike: ask again, and do NOT re-submit the original call \u2014 that would perform the operation twice.",
     inputSchema: {
       type: "object",
       properties: {

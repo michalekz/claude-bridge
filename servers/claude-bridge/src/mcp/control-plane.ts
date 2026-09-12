@@ -47,6 +47,15 @@ function resultPath(id: string): string {
   return join(controlDir(), "results", `${id}.json`);
 }
 
+/**
+ * Where a request goes the moment the daemon CLAIMS it — before the handler
+ * runs, so that a crash between claim and verdict cannot make it run twice.
+ * A request sitting here with no result is IN FLIGHT, not finished.
+ */
+function requestClaimedPath(id: string): string {
+  return join(controlDir(), "requests", "done", `${id}.json`);
+}
+
 const HEARTBEAT_STALE_MS = 30_000;
 
 interface LockPayload {
@@ -235,16 +244,27 @@ export const ControlResultArgs = z
 /**
  * The missing half of the request protocol.
  *
- * Every submitting tool returns a `requestId`, and until now nothing accepted
- * one back: a caller whose wait expired could not ask what happened. The only
- * remaining route was reading `events.jsonl` by hand — which the maintainers
- * did, twice, on 2026-08-08, and which is not a procedure anyone should need.
+ * Every submitting tool returns a `requestId`, and until v0.11.10 nothing
+ * accepted one back: a caller whose wait expired could not ask what happened.
+ * The only remaining route was reading `events.jsonl` by hand — which the
+ * maintainers did, twice, on 2026-08-08, and which is not a procedure anyone
+ * should need.
  *
- * Three honest answers, and the third is the one that has to exist:
+ * FOUR honest answers. The fourth (`running`) was missing until v0.11.55, and
+ * its absence was measured on the thing this tool exists for: the daemon
+ * CLAIMS a request by renaming it into `requests/done/` BEFORE dispatching, so
+ * that a crash between claim and verdict cannot run it twice. For the whole
+ * execution — minutes, for a graceful restart — the id was therefore in
+ * neither the queue nor the results, and the tool answered `unknown`, whose
+ * note reads "either the id is wrong, or it settled long ago". Both halves of
+ * that sentence were false, and the state it actually described — WORKING RIGHT
+ * NOW — is the one a waiting caller most needs to tell from a typo.
  *
  *   settled  — the daemon wrote a verdict; here it is, exactly as recorded
- *   pending  — no verdict yet, and the request is still on the queue
- *   unknown  — no verdict AND no request. Either the id is wrong, or the
+ *   running  — claimed and in flight; no verdict yet, and no queue position
+ *              either, because the claim already took it off the queue
+ *   pending  — no verdict yet, and the request is still ON the queue, waiting
+ *   unknown  — no verdict, no queue, no claim. Either the id is wrong, or the
  *              record was cleaned up long after the fact. Not a failure of the
  *              operation: an absence of evidence about it, and saying so beats
  *              inventing either outcome.
@@ -261,6 +281,22 @@ export async function controlResultTool(
   if (result) {
     return ok({ requestId: args.requestId, outcome: "settled", result });
   }
+  // Claimed but unfinished — asked BEFORE the queue, because the claim is what
+  // removes it from the queue. Asking in the other order cannot tell them apart.
+  const claimedAtMs = await claimedAt(args.requestId);
+  if (claimedAtMs !== null) {
+    const elapsedMs = Date.now() - claimedAtMs;
+    return ok({
+      requestId: args.requestId,
+      outcome: "running",
+      daemonRunning: presence.running,
+      claimedAt: new Date(claimedAtMs).toISOString(),
+      elapsedMs,
+      note: presence.running
+        ? `The daemon CLAIMED this request ${elapsedMs} ms ago and is working on it — that is why it is in neither the queue nor the results. A graceful stop or restart legitimately takes minutes (it waits for the peer's ack and then for its turn to end). Ask again; do NOT re-submit, which would perform the operation twice.`
+        : `This request was claimed ${elapsedMs} ms ago, but THE DAEMON IS NOT RUNNING NOW — so it was interrupted mid-flight and no verdict will arrive on its own. Check \`events.jsonl\` for how far it got before deciding what to redo: the operation may be half done.`,
+    });
+  }
   const stillQueued = await requestExists(args.requestId);
   if (stillQueued) {
     return ok({
@@ -276,7 +312,7 @@ export async function controlResultTool(
     requestId: args.requestId,
     outcome: "unknown",
     note:
-      "No verdict and no queued request under that id. Either the id is wrong, or this request settled long ago and its files were cleaned up. " +
+      "No verdict, no queued request and no claim under that id. Either the id is wrong, or this request settled long ago and its files were cleaned up. " +
       "`~/.claude-bridge/control/events.jsonl` is the durable record — search it for the id before concluding anything about what happened.",
   });
 }
@@ -287,6 +323,15 @@ async function readResult(requestId: string): Promise<unknown | null> {
   } catch (e) {
     if ((e as NodeJS.ErrnoException).code === "ENOENT") return null;
     throw e;
+  }
+}
+
+/** When the daemon took this request off the queue, or `null` if it never did. */
+async function claimedAt(requestId: string): Promise<number | null> {
+  try {
+    return (await stat(requestClaimedPath(requestId))).mtimeMs;
+  } catch {
+    return null;
   }
 }
 
