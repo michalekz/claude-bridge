@@ -7,7 +7,7 @@ var __export = (target, all) => {
 };
 
 // src/index.ts
-var import_promises23 = require("node:fs/promises");
+var import_promises24 = require("node:fs/promises");
 
 // ../../packages/shared/src/atomic-write.ts
 var import_node_crypto = require("node:crypto");
@@ -4335,7 +4335,7 @@ async function resolvePeer(idOrName, root = bridgeRoot(), now = Date.now()) {
 // package.json
 var package_default = {
   name: "claude-bridge-daemon",
-  version: "0.11.52",
+  version: "0.11.53",
   private: true,
   description: "Control-plane daemon for the claude-bridge plugin: peer lifecycle, telemetry, audit. Distributed as opt-in artefact \u2014 see ADR-008.",
   type: "module",
@@ -5516,14 +5516,53 @@ async function handleControlStatus(req, ctx) {
 }
 
 // src/handlers/peer-compact.ts
-var import_promises12 = require("node:fs/promises");
+var import_promises13 = require("node:fs/promises");
 
-// src/compact-verify.ts
+// src/caller-version.ts
+var import_node_fs3 = require("node:fs");
 var import_promises8 = require("node:fs/promises");
 var import_node_path7 = require("node:path");
+async function callerBundleVersion(sessionId) {
+  const path = (0, import_node_path7.join)(bridgeRoot(), "status", `${sessionId}.json`);
+  if (!(0, import_node_fs3.existsSync)(path)) return null;
+  try {
+    const doc = JSON.parse(await (0, import_promises8.readFile)(path, "utf-8"));
+    return typeof doc.version === "string" ? doc.version : null;
+  } catch {
+    return null;
+  }
+}
+function atLeast(version, minimum) {
+  if (version === null) return null;
+  const parse = (v) => {
+    const parts = v.split(".").map((p) => Number.parseInt(p, 10));
+    return parts.length === 3 && parts.every((n) => Number.isFinite(n)) ? parts : null;
+  };
+  const a = parse(version);
+  const b = parse(minimum);
+  if (!a || !b) return null;
+  for (let i = 0; i < 3; i++) {
+    const x = a[i];
+    const y = b[i];
+    if (x !== y) return x > y;
+  }
+  return true;
+}
+function parameterAdvice(callerVersion, since, parameter) {
+  const has = atLeast(callerVersion, since);
+  if (has === true) return `repeat with ${parameter}`;
+  if (has === false) {
+    return `repeat with ${parameter} \u2014 BUT your session runs bundle ${callerVersion}, and that parameter arrived in ${since}: your MCP layer will refuse it as unknown before the daemon ever sees it. Restart this session to pick up the current bundle, or have a peer on ${since}+ make the call`;
+  }
+  return `repeat with ${parameter} (added in ${since} \u2014 if your tool rejects it as an unknown argument, your session is on an older bundle and needs a restart to use this path)`;
+}
+
+// src/compact-verify.ts
+var import_promises9 = require("node:fs/promises");
+var import_node_path8 = require("node:path");
 var log5 = makeLogger("daemon.compact-verify");
 function statuslineFile(sessionId) {
-  return (0, import_node_path7.join)(bridgeRoot(), "live", "statusline", `${sessionId}.json`);
+  return (0, import_node_path8.join)(bridgeRoot(), "live", "statusline", `${sessionId}.json`);
 }
 var DEFAULT_VERIFY_TIMEOUT_MS = 36e4;
 var DEFAULT_VERIFY_POLL_MS = 2e3;
@@ -5536,7 +5575,7 @@ async function readPeerContext(sessionId) {
     capturedAt: null
   };
   try {
-    const raw = await (0, import_promises8.readFile)(statuslineFile(sessionId), "utf-8");
+    const raw = await (0, import_promises9.readFile)(statuslineFile(sessionId), "utf-8");
     const doc = JSON.parse(raw);
     return {
       usedPercentage: doc.payload?.context_window?.used_percentage ?? null,
@@ -5549,7 +5588,7 @@ async function readPeerContext(sessionId) {
 }
 async function markTranscript(path) {
   try {
-    return (await (0, import_promises8.stat)(path)).size;
+    return (await (0, import_promises9.stat)(path)).size;
   } catch {
     return 0;
   }
@@ -5557,10 +5596,10 @@ async function markTranscript(path) {
 async function readSince(path, offset) {
   let handle = null;
   try {
-    const size = (await (0, import_promises8.stat)(path)).size;
+    const size = (await (0, import_promises9.stat)(path)).size;
     if (size < offset) return { rows: [], offset: size };
     if (size === offset) return { rows: [], offset };
-    handle = await (0, import_promises8.open)(path, "r");
+    handle = await (0, import_promises9.open)(path, "r");
     const buf = Buffer.alloc(size - offset);
     await handle.read(buf, 0, buf.length, offset);
     const text = buf.toString("utf-8");
@@ -5644,15 +5683,15 @@ async function watchForCompact(opts) {
 
 // src/event-subscribers.ts
 var import_node_crypto4 = require("node:crypto");
-var import_promises9 = require("node:fs/promises");
-var import_node_path8 = require("node:path");
+var import_promises10 = require("node:fs/promises");
+var import_node_path9 = require("node:path");
 var log6 = makeLogger("daemon.subscribers");
 function subscribersFilePath() {
-  return (0, import_node_path8.join)(controlDir(), "subscribers.json");
+  return (0, import_node_path9.join)(controlDir(), "subscribers.json");
 }
 async function readSubscribers() {
   try {
-    const raw = await (0, import_promises9.readFile)(subscribersFilePath(), "utf-8");
+    const raw = await (0, import_promises10.readFile)(subscribersFilePath(), "utf-8");
     const parsed = JSON.parse(raw);
     return parsed.subscribers ?? [];
   } catch (e) {
@@ -5779,12 +5818,12 @@ function blocksInject(busy) {
 }
 
 // src/handlers/ack-protocol.ts
-var import_promises10 = require("node:fs/promises");
-var import_node_path9 = require("node:path");
+var import_promises11 = require("node:fs/promises");
+var import_node_path10 = require("node:path");
 var ACK_FILENAME_EXTENSION = ".json";
 async function fileExists(path) {
   try {
-    await (0, import_promises10.access)(path);
+    await (0, import_promises11.access)(path);
     return true;
   } catch {
     return false;
@@ -5794,7 +5833,7 @@ var DEFAULT_PARK_WORK_TIMEOUT_MS = 3e5;
 async function verifyAckFile(path, requestedAtMs, threadId, otherPendingThreadIds = [], ackDeadlineMs = null) {
   let stat6;
   try {
-    stat6 = await (0, import_promises10.lstat)(path);
+    stat6 = await (0, import_promises11.lstat)(path);
   } catch {
     return { accepted: false, reason: "none" };
   }
@@ -5810,7 +5849,7 @@ async function verifyAckFile(path, requestedAtMs, threadId, otherPendingThreadId
   }
   let ackThreadId = null;
   try {
-    const parsed = JSON.parse(await (0, import_promises10.readFile)(path, "utf-8"));
+    const parsed = JSON.parse(await (0, import_promises11.readFile)(path, "utf-8"));
     if (typeof parsed.threadId === "string") ackThreadId = parsed.threadId;
   } catch {
   }
@@ -5837,8 +5876,8 @@ async function verifyAckFile(path, requestedAtMs, threadId, otherPendingThreadId
   };
 }
 function createAckChannel(channel) {
-  const dir = () => (0, import_node_path9.join)(controlDir(), channel);
-  const path = (sessionId) => (0, import_node_path9.join)(dir(), `${sessionId}${ACK_FILENAME_EXTENSION}`);
+  const dir = () => (0, import_node_path10.join)(controlDir(), channel);
+  const path = (sessionId) => (0, import_node_path10.join)(dir(), `${sessionId}${ACK_FILENAME_EXTENSION}`);
   const waiting = /* @__PURE__ */ new Map();
   const beginWaitingOf = (sessionId, threadId) => {
     let set = waiting.get(sessionId);
@@ -5871,32 +5910,32 @@ function createAckChannel(channel) {
     async sweepStale(sessionId, reason) {
       const src = path(sessionId);
       if (!await fileExists(src)) return null;
-      const done = (0, import_node_path9.join)(dir(), "done");
-      await (0, import_promises10.mkdir)(done, { recursive: true });
-      const dest = (0, import_node_path9.join)(done, `${sessionId}-${reason}-${Date.now()}.json`);
+      const done = (0, import_node_path10.join)(dir(), "done");
+      await (0, import_promises11.mkdir)(done, { recursive: true });
+      const dest = (0, import_node_path10.join)(done, `${sessionId}-${reason}-${Date.now()}.json`);
       try {
-        await (0, import_promises10.rename)(src, dest);
+        await (0, import_promises11.rename)(src, dest);
       } catch {
-        await (0, import_promises10.unlink)(src).catch(() => void 0);
+        await (0, import_promises11.unlink)(src).catch(() => void 0);
       }
       return dest;
     },
     async sweepAllAtStartup() {
       let names;
       try {
-        names = await (0, import_promises10.readdir)(dir());
+        names = await (0, import_promises11.readdir)(dir());
       } catch {
         return 0;
       }
-      const done = (0, import_node_path9.join)(dir(), "done");
-      await (0, import_promises10.mkdir)(done, { recursive: true });
+      const done = (0, import_node_path10.join)(dir(), "done");
+      await (0, import_promises11.mkdir)(done, { recursive: true });
       let swept = 0;
       for (const name of names) {
         if (!name.endsWith(ACK_FILENAME_EXTENSION)) continue;
         try {
-          await (0, import_promises10.rename)(
-            (0, import_node_path9.join)(dir(), name),
-            (0, import_node_path9.join)(
+          await (0, import_promises11.rename)(
+            (0, import_node_path10.join)(dir(), name),
+            (0, import_node_path10.join)(
               done,
               `${name.slice(0, -ACK_FILENAME_EXTENSION.length)}-startup-${Date.now()}.json`
             )
@@ -5929,12 +5968,12 @@ function createAckChannel(channel) {
     },
     async consume(sessionId) {
       const src = path(sessionId);
-      const done = (0, import_node_path9.join)(dir(), "done");
+      const done = (0, import_node_path10.join)(dir(), "done");
       try {
-        await (0, import_promises10.mkdir)(done, { recursive: true });
-        await (0, import_promises10.rename)(src, (0, import_node_path9.join)(done, `${sessionId}-${Date.now()}.json`));
+        await (0, import_promises11.mkdir)(done, { recursive: true });
+        await (0, import_promises11.rename)(src, (0, import_node_path10.join)(done, `${sessionId}-${Date.now()}.json`));
       } catch {
-        await (0, import_promises10.unlink)(src).catch(() => void 0);
+        await (0, import_promises11.unlink)(src).catch(() => void 0);
       }
     }
   };
@@ -5955,10 +5994,10 @@ async function requestFromPeer(peerId, threadId, content) {
 }
 async function retireRequestEnvelope(peerId, msgId) {
   if (!msgId) return;
-  const base = (0, import_node_path9.join)(bridgeRoot(), "inbox", peerId);
+  const base = (0, import_node_path10.join)(bridgeRoot(), "inbox", peerId);
   try {
-    await (0, import_promises10.mkdir)((0, import_node_path9.join)(base, "done"), { recursive: true });
-    await (0, import_promises10.rename)((0, import_node_path9.join)(base, "pending", `${msgId}.json`), (0, import_node_path9.join)(base, "done", `${msgId}.json`));
+    await (0, import_promises11.mkdir)((0, import_node_path10.join)(base, "done"), { recursive: true });
+    await (0, import_promises11.rename)((0, import_node_path10.join)(base, "pending", `${msgId}.json`), (0, import_node_path10.join)(base, "done", `${msgId}.json`));
   } catch {
   }
 }
@@ -5968,14 +6007,14 @@ var restartAcks = createAckChannel("restart-ack");
 var ALL_ACK_CHANNELS = [compactAcks, stopAcks, restartAcks];
 
 // src/handlers/peer-identity.ts
-var import_node_fs4 = require("node:fs");
-var import_node_path11 = require("node:path");
+var import_node_fs5 = require("node:fs");
+var import_node_path12 = require("node:path");
 
 // src/hosts/process-inspector.ts
-var import_node_fs3 = require("node:fs");
-var import_promises11 = require("node:fs/promises");
+var import_node_fs4 = require("node:fs");
+var import_promises12 = require("node:fs/promises");
 var import_node_os4 = require("node:os");
-var import_node_path10 = require("node:path");
+var import_node_path11 = require("node:path");
 var DEFAULT_MAX_DEPTH = 8;
 var UUID_RE = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i;
 function parsePpidFromStat(stat6) {
@@ -5990,7 +6029,7 @@ function sessionIdFromCmdline(cmdline) {
   if (idx === -1) return null;
   const rest = cmdline.slice(idx + "--resume".length).trim();
   const token = rest.split(/\s+/)[0] ?? "";
-  const match = UUID_RE.exec((0, import_node_path10.basename)(token));
+  const match = UUID_RE.exec((0, import_node_path11.basename)(token));
   return match ? match[0] : null;
 }
 var LinuxProcessInspector = class {
@@ -5998,12 +6037,12 @@ var LinuxProcessInspector = class {
   sessionsDir;
   constructor(opts = {}) {
     this.procRoot = opts.procRoot ?? "/proc";
-    this.sessionsDir = opts.sessionsDir ?? (0, import_node_path10.join)((0, import_node_os4.homedir)(), ".claude", "sessions");
+    this.sessionsDir = opts.sessionsDir ?? (0, import_node_path11.join)((0, import_node_os4.homedir)(), ".claude", "sessions");
   }
   async listRegisteredSessions() {
     let entries;
     try {
-      entries = await (0, import_promises11.readdir)(this.sessionsDir);
+      entries = await (0, import_promises12.readdir)(this.sessionsDir);
     } catch {
       return [];
     }
@@ -6013,12 +6052,12 @@ var LinuxProcessInspector = class {
       const pid = Number.parseInt(entry.slice(0, -5), 10);
       if (Number.isNaN(pid)) continue;
       try {
-        await (0, import_promises11.readFile)((0, import_node_path10.join)(this.procRoot, String(pid), "stat"), "utf-8");
+        await (0, import_promises12.readFile)((0, import_node_path11.join)(this.procRoot, String(pid), "stat"), "utf-8");
       } catch {
         continue;
       }
       try {
-        const raw = JSON.parse(await (0, import_promises11.readFile)((0, import_node_path10.join)(this.sessionsDir, entry), "utf-8"));
+        const raw = JSON.parse(await (0, import_promises12.readFile)((0, import_node_path11.join)(this.sessionsDir, entry), "utf-8"));
         const sessionId = typeof raw["sessionId"] === "string" ? raw["sessionId"] : null;
         if (!sessionId) continue;
         out.push({
@@ -6035,7 +6074,7 @@ var LinuxProcessInspector = class {
   async listClaudePeers() {
     let entries;
     try {
-      entries = await (0, import_promises11.readdir)(this.procRoot);
+      entries = await (0, import_promises12.readdir)(this.procRoot);
     } catch {
       return [];
     }
@@ -6097,9 +6136,9 @@ var LinuxProcessInspector = class {
     if (!pathVar) return null;
     for (const dir of pathVar.split(":")) {
       if (dir.length === 0) continue;
-      const candidate = (0, import_node_path10.join)(dir, command);
+      const candidate = (0, import_node_path11.join)(dir, command);
       try {
-        await (0, import_promises11.access)(candidate, import_node_fs3.constants.X_OK);
+        await (0, import_promises12.access)(candidate, import_node_fs4.constants.X_OK);
         return candidate;
       } catch {
       }
@@ -6108,7 +6147,7 @@ var LinuxProcessInspector = class {
   }
   async readProcCwd(pid) {
     try {
-      return await (0, import_promises11.readlink)((0, import_node_path10.join)(this.procRoot, String(pid), "cwd"));
+      return await (0, import_promises12.readlink)((0, import_node_path11.join)(this.procRoot, String(pid), "cwd"));
     } catch {
       return null;
     }
@@ -6134,7 +6173,7 @@ var LinuxProcessInspector = class {
    */
   async resolveSessionId(pid, cmdline) {
     try {
-      const raw = await (0, import_promises11.readFile)((0, import_node_path10.join)(this.sessionsDir, `${pid}.json`), "utf-8");
+      const raw = await (0, import_promises12.readFile)((0, import_node_path11.join)(this.sessionsDir, `${pid}.json`), "utf-8");
       const parsed = JSON.parse(raw);
       if (parsed.sessionId) return { sessionId: parsed.sessionId, source: "sessions-json" };
     } catch {
@@ -6145,7 +6184,7 @@ var LinuxProcessInspector = class {
   }
   async readProcFile(pid, name) {
     try {
-      return await (0, import_promises11.readFile)((0, import_node_path10.join)(this.procRoot, String(pid), name), "utf-8");
+      return await (0, import_promises12.readFile)((0, import_node_path11.join)(this.procRoot, String(pid), name), "utf-8");
     } catch {
       return null;
     }
@@ -6162,7 +6201,7 @@ function bridgeIdOf(record) {
 var IDENTITY_MEASURE_TIMEOUT_MS = 5e3;
 var IDENTITY_POLL_MS = 150;
 function pidExists(pid, procRoot) {
-  return (0, import_node_fs4.existsSync)((0, import_node_path11.join)(procRoot, String(pid)));
+  return (0, import_node_fs5.existsSync)((0, import_node_path12.join)(procRoot, String(pid)));
 }
 async function probeOnce(panePid, inspector, askAgents) {
   const claudes = await inspector.listClaudePeers().catch(() => []);
@@ -6388,7 +6427,7 @@ async function handlePeerCompact(req, ctx) {
       outcome: "skipped_below_threshold",
       contextPercentBefore: percentNow,
       thresholdPercent: COMPACT_MIN_PERCENT,
-      note: `Nothing was injected and the peer was not disturbed: it is at ${percentNow}% of its context window, below the ${COMPACT_MIN_PERCENT}% threshold. Compaction is always a loss, so below the threshold it costs more than it saves. If you mean it anyway \u2014 handing over a role, or an expected large input \u2014 repeat with belowThreshold:true.`
+      note: `Nothing was injected and the peer was not disturbed: it is at ${percentNow}% of its context window, below the ${COMPACT_MIN_PERCENT}% threshold. Compaction is always a loss, so below the threshold it costs more than it saves. If you mean it anyway \u2014 handing over a role, or an expected large input \u2014 ${parameterAdvice(await callerBundleVersion(req.requestedBy.sessionId), "0.11.48", "belowThreshold:true")}.`
     });
   }
   const anchorTimeoutMs = args.anchorTimeoutMs ?? DEFAULT_ANCHOR_TIMEOUT_MS;
@@ -6396,7 +6435,7 @@ async function handlePeerCompact(req, ctx) {
   const idleTimeoutMs = args.idleTimeoutMs ?? DEFAULT_IDLE_TIMEOUT_MS;
   const idlePollMs = args.idlePollMs ?? IDLE_POLL_MS;
   const threadId = `compact:${bridgeId}:${Date.now().toString(36)}`;
-  await (0, import_promises12.mkdir)(compactAcks.dir(), { recursive: true });
+  await (0, import_promises13.mkdir)(compactAcks.dir(), { recursive: true });
   const requestedAtMs = Date.now();
   let anchorMsgId = null;
   let sweptStale = null;
@@ -6740,9 +6779,9 @@ function wakeAfterCompactLine() {
 }
 
 // src/handlers/peer-restart.ts
-var import_node_fs8 = require("node:fs");
-var import_promises16 = require("node:fs/promises");
-var import_node_path15 = require("node:path");
+var import_node_fs9 = require("node:fs");
+var import_promises17 = require("node:fs/promises");
+var import_node_path16 = require("node:path");
 
 // src/base-url.ts
 function resolveBaseUrl(desired, config) {
@@ -6766,8 +6805,8 @@ function restartWouldDropProxy(decision, liveEnviron) {
 }
 
 // src/config.ts
-var import_promises13 = require("node:fs/promises");
-var import_node_path12 = require("node:path");
+var import_promises14 = require("node:fs/promises");
+var import_node_path13 = require("node:path");
 var log8 = makeLogger("daemon.config");
 var DEFAULT_CONFIG = Object.freeze({
   compactWatchdog: Object.freeze({
@@ -6778,11 +6817,11 @@ var DEFAULT_CONFIG = Object.freeze({
   spawn: Object.freeze({})
 });
 function configFilePath() {
-  return (0, import_node_path12.join)(controlDir(), "config.json");
+  return (0, import_node_path13.join)(controlDir(), "config.json");
 }
 async function readConfig() {
   try {
-    const raw = await (0, import_promises13.readFile)(configFilePath(), "utf-8");
+    const raw = await (0, import_promises14.readFile)(configFilePath(), "utf-8");
     const parsed = JSON.parse(raw);
     return {
       compactWatchdog: {
@@ -6804,8 +6843,8 @@ async function readConfig() {
 }
 
 // src/handlers/peer-spawn.ts
-var import_node_fs5 = require("node:fs");
-var import_node_path13 = require("node:path");
+var import_node_fs6 = require("node:fs");
+var import_node_path14 = require("node:path");
 
 // src/handlers/fork-guard.ts
 function isRunning(status) {
@@ -6948,11 +6987,11 @@ var PeerSpawnArgsSchema = external_exports.object({
 }).strict();
 function findTranscriptElsewhere(sessionId, cwd) {
   try {
-    const here = (0, import_node_path13.dirname)(sessionFile(cwd, sessionId));
-    for (const dir of (0, import_node_fs5.readdirSync)(projectsRoot())) {
-      const candidate = (0, import_node_path13.join)(projectsRoot(), dir, `${sessionId}.jsonl`);
-      if ((0, import_node_path13.basename)((0, import_node_path13.join)(projectsRoot(), dir)) === (0, import_node_path13.basename)(here)) continue;
-      if ((0, import_node_fs5.existsSync)(candidate)) return candidate;
+    const here = (0, import_node_path14.dirname)(sessionFile(cwd, sessionId));
+    for (const dir of (0, import_node_fs6.readdirSync)(projectsRoot())) {
+      const candidate = (0, import_node_path14.join)(projectsRoot(), dir, `${sessionId}.jsonl`);
+      if ((0, import_node_path14.basename)((0, import_node_path14.join)(projectsRoot(), dir)) === (0, import_node_path14.basename)(here)) continue;
+      if ((0, import_node_fs6.existsSync)(candidate)) return candidate;
     }
   } catch {
   }
@@ -7021,7 +7060,7 @@ async function handlePeerSpawn(req, ctx) {
   const resumeTarget = args.resumeSessionId ?? args.handle;
   if (args.resume) {
     const transcript = sessionFile(args.cwd, resumeTarget);
-    if (isClaude && isResumableSessionId(resumeTarget) && !(0, import_node_fs5.existsSync)(transcript)) {
+    if (isClaude && isResumableSessionId(resumeTarget) && !(0, import_node_fs6.existsSync)(transcript)) {
       const elsewhere = findTranscriptElsewhere(resumeTarget, args.cwd);
       await writeEvent({
         event: "peer_spawn_refused",
@@ -7363,17 +7402,17 @@ async function handlePeerSpawn(req, ctx) {
 }
 
 // src/handlers/peer-stop.ts
-var import_promises15 = require("node:fs/promises");
+var import_promises16 = require("node:fs/promises");
 
 // src/pid.ts
-var import_node_fs6 = require("node:fs");
-var import_node_path14 = require("node:path");
+var import_node_fs7 = require("node:fs");
+var import_node_path15 = require("node:path");
 function pidAlive(pid, procRoot = "/proc") {
-  return (0, import_node_fs6.existsSync)((0, import_node_path14.join)(procRoot, String(pid)));
+  return (0, import_node_fs7.existsSync)((0, import_node_path15.join)(procRoot, String(pid)));
 }
 function statFields(pid, procRoot) {
   try {
-    const raw = (0, import_node_fs6.readFileSync)((0, import_node_path14.join)(procRoot, String(pid), "stat"), "utf-8");
+    const raw = (0, import_node_fs7.readFileSync)((0, import_node_path15.join)(procRoot, String(pid), "stat"), "utf-8");
     return raw.slice(raw.lastIndexOf(")") + 1).trim().split(/\s+/);
   } catch {
     return null;
@@ -7414,8 +7453,9 @@ async function requestStop(peerId, threadId, reason) {
       "",
       `    {"threadId": "${threadId}"}`,
       "",
-      "The daemon ends your session only after that file appears. Until then nothing is",
-      "killed \u2014 so take the time you need, and do not ack before your work is durable.",
+      "The daemon ends your session only after that file appears AND your session goes",
+      "idle \u2014 both, not either (v0.11.51). Until then nothing is killed, so take the",
+      "time you need and do not ack before your work is durable.",
       "",
       "Write the ack as the LAST action of your turn, then END the turn. The daemon",
       "kills you only once your session goes idle, so the turn that writes the ack",
@@ -7433,8 +7473,8 @@ Reason given: ${reason}` : ""
 }
 
 // src/handlers/turn-end-gate.ts
-var import_node_fs7 = require("node:fs");
-var import_promises14 = require("node:fs/promises");
+var import_node_fs8 = require("node:fs");
+var import_promises15 = require("node:fs/promises");
 var QUIET_MS = 3e4;
 var DEFAULT_TURN_END_TIMEOUT_MS = 9e4;
 var DEFAULT_TURN_END_POLL_MS = 1e3;
@@ -7453,9 +7493,9 @@ function hasToolUse(row) {
 async function turnConcludedFor(transcriptPath) {
   let handle = null;
   try {
-    const size = (await (0, import_promises14.stat)(transcriptPath)).size;
+    const size = (await (0, import_promises15.stat)(transcriptPath)).size;
     const start = Math.max(0, size - TAIL_BYTES);
-    handle = await (0, import_promises14.open)(transcriptPath, "r");
+    handle = await (0, import_promises15.open)(transcriptPath, "r");
     const buf = Buffer.alloc(size - start);
     await handle.read(buf, 0, buf.length, start);
     const lines = buf.toString("utf-8").split("\n");
@@ -7485,10 +7525,10 @@ async function turnConcludedFor(transcriptPath) {
 async function transcriptPathOf(sessionId, cwd) {
   if (!sessionId) return null;
   const fromStatusline = (await readPeerContext(sessionId)).transcriptPath;
-  if (fromStatusline && (0, import_node_fs7.existsSync)(fromStatusline)) return fromStatusline;
+  if (fromStatusline && (0, import_node_fs8.existsSync)(fromStatusline)) return fromStatusline;
   if (!cwd) return null;
   const derived = sessionFile(cwd, sessionId);
-  return (0, import_node_fs7.existsSync)(derived) ? derived : null;
+  return (0, import_node_fs8.existsSync)(derived) ? derived : null;
 }
 async function waitForTurnEnd(claudeBin, sessionId, timeoutMs = DEFAULT_TURN_END_TIMEOUT_MS, pollMs = DEFAULT_TURN_END_POLL_MS, cwd) {
   const startedAt = Date.now();
@@ -7624,7 +7664,7 @@ async function runCourtesyPhase(req, ctx, target, args) {
   const bridgeId = bridgeIdOf(record);
   const timeoutMs = args.ackTimeoutMs ?? DEFAULT_STOP_ACK_TIMEOUT_MS;
   const pollMs = args.ackPollMs ?? DEFAULT_STOP_ACK_POLL_MS;
-  await (0, import_promises15.mkdir)(stopAcks.dir(), { recursive: true });
+  await (0, import_promises16.mkdir)(stopAcks.dir(), { recursive: true });
   const pending = record.observed.stopRequest ?? null;
   const resumed = pending !== null;
   let threadId;
@@ -8104,9 +8144,10 @@ async function requestRestartReady(peerId, threadId, reason) {
       "",
       `    {"threadId": "${threadId}"}`,
       "",
-      "Nothing is stopped until that file appears. If you do NOT ack, nothing is",
-      "stopped either: the restart is reported as failed and you keep running,",
-      "untouched. So take the time you need \u2014 do not ack before your work is durable.",
+      "Nothing is stopped until that file appears AND your session goes idle:",
+      "both, not either (v0.11.51). If you do NOT ack, nothing is stopped either: the",
+      "restart is reported as failed and you keep running, untouched. So take the",
+      "time you need \u2014 do not ack before your work is durable.",
       "",
       "Write the ack as the LAST action of your turn, then END the turn. The daemon",
       "stops you only once your session goes idle, so the turn that writes the ack",
@@ -8290,7 +8331,7 @@ async function confirmStillRunning(pid, identity, expectedSessionId, opts = {}) 
   if (pid === null) return { ok: false, reason: "no pid was reported by the spawn" };
   const windowMs = opts.settleMs ?? 2500;
   const procRoot = opts.procRoot ?? "/proc";
-  const alive = () => (0, import_node_fs8.existsSync)((0, import_node_path15.join)(procRoot, String(pid)));
+  const alive = () => (0, import_node_fs9.existsSync)((0, import_node_path16.join)(procRoot, String(pid)));
   const isClaude = (opts.command ?? "").split("/").pop() === "claude";
   const mustRegister = isClaude && isResumableSessionId(expectedSessionId);
   const registered = identity.actual !== null;
@@ -8378,7 +8419,7 @@ async function runReadyPhase(req, ctx, target, args, resumeSessionId) {
   const bridgeId = bridgeIdOf(record);
   const timeoutMs = args.readyTimeoutMs ?? DEFAULT_RESTART_READY_TIMEOUT_MS;
   const pollMs = args.readyPollMs ?? DEFAULT_RESTART_READY_POLL_MS;
-  await (0, import_promises16.mkdir)(restartAcks.dir(), { recursive: true });
+  await (0, import_promises17.mkdir)(restartAcks.dir(), { recursive: true });
   const pending = record.observed.restartRequest ?? null;
   const resumable = pending !== null && pending.phase === "ready-ack";
   let threadId;
@@ -9376,8 +9417,8 @@ async function handleTeamAdopt(req, ctx) {
 }
 
 // src/handlers/team-layout.ts
-var import_promises17 = require("node:fs/promises");
-var import_node_path16 = require("node:path");
+var import_promises18 = require("node:fs/promises");
+var import_node_path17 = require("node:path");
 var PeerSpecSchema = external_exports.object({
   /**
    * The registry key for this peer — renamed from `sessionId` in R3
@@ -9453,11 +9494,11 @@ var TeamLayoutArgsSchema = external_exports.object({
   wakeDelayMs: external_exports.number().int().min(0).max(12e4).optional()
 }).strict();
 function teamFilePath(team) {
-  return (0, import_node_path16.join)(teamsDir(), `${team}.json`);
+  return (0, import_node_path17.join)(teamsDir(), `${team}.json`);
 }
 async function loadTeamSpec(team) {
   try {
-    const raw = await (0, import_promises17.readFile)(teamFilePath(team), "utf-8");
+    const raw = await (0, import_promises18.readFile)(teamFilePath(team), "utf-8");
     const parsed = TeamFileSchema.safeParse(JSON.parse(raw));
     if (!parsed.success) throw new Error(`Team spec parse failed: ${parsed.error.message}`);
     return parsed.data;
@@ -9793,8 +9834,8 @@ async function handleTeamLayout(req, ctx) {
 }
 
 // src/handlers/team-reconcile.ts
-var import_node_fs9 = require("node:fs");
-var import_node_path17 = require("node:path");
+var import_node_fs10 = require("node:fs");
+var import_node_path18 = require("node:path");
 var TeamReconcileArgsSchema = external_exports.object({
   /** Restrict the report to one team. Unmanaged processes are still listed. */
   team: external_exports.string().min(1).optional(),
@@ -9805,7 +9846,7 @@ var TeamReconcileArgsSchema = external_exports.object({
   markDead: external_exports.boolean().default(false)
 }).strict();
 function pidAlive2(pid, procRoot) {
-  return (0, import_node_fs9.existsSync)((0, import_node_path17.join)(procRoot, String(pid)));
+  return (0, import_node_fs10.existsSync)((0, import_node_path18.join)(procRoot, String(pid)));
 }
 async function ownsProcess(inspector, panePid, childPid) {
   if (panePid === childPid) return true;
@@ -9963,7 +10004,7 @@ async function handleTeamReconcile(req, ctx) {
       continue;
     const claimed = sess.name !== null ? namesOnRecords.get(sess.name) : void 0;
     if (sess.kind !== null && sess.kind !== "interactive") {
-      const addressable = (0, import_node_fs9.existsSync)((0, import_node_path17.join)(bridgeRoot(), "status", `${sess.sessionId}.json`));
+      const addressable = (0, import_node_fs10.existsSync)((0, import_node_path18.join)(bridgeRoot(), "status", `${sess.sessionId}.json`));
       if (claimed === void 0 && !addressable) continue;
     }
     drift.push({
@@ -10608,8 +10649,8 @@ async function handleTeamStatus(req, ctx) {
 }
 
 // src/handlers/team-stop.ts
-var import_promises18 = require("node:fs/promises");
-var import_node_path18 = require("node:path");
+var import_promises19 = require("node:fs/promises");
+var import_node_path19 = require("node:path");
 var DEFAULT_ANCHOR_TIMEOUT_MS2 = DEFAULT_PARK_WORK_TIMEOUT_MS;
 var DEFAULT_ACK_POLL_MS2 = 500;
 var PeerOrderableSchema = external_exports.object({
@@ -10631,11 +10672,11 @@ var TeamStopArgsSchema = external_exports.object({
   inline: TeamStopFileSchema.optional()
 }).strict();
 function teamFilePath2(team) {
-  return (0, import_node_path18.join)(teamsDir(), `${team}.json`);
+  return (0, import_node_path19.join)(teamsDir(), `${team}.json`);
 }
 async function loadTeamOrder(team) {
   try {
-    const raw = await (0, import_promises18.readFile)(teamFilePath2(team), "utf-8");
+    const raw = await (0, import_promises19.readFile)(teamFilePath2(team), "utf-8");
     const json = JSON.parse(raw);
     const parsed = TeamStopFileSchema.safeParse(json);
     if (!parsed.success) throw new Error(`Team spec parse failed: ${parsed.error.message}`);
@@ -10870,17 +10911,17 @@ async function dispatch(req, ctx) {
 }
 
 // src/heartbeat.ts
-var import_promises19 = require("node:fs/promises");
+var import_promises20 = require("node:fs/promises");
 var log10 = makeLogger("daemon.heartbeat");
 var timer = null;
 async function touch() {
   const now = /* @__PURE__ */ new Date();
   try {
-    await (0, import_promises19.utimes)(heartbeatPath(), now, now);
+    await (0, import_promises20.utimes)(heartbeatPath(), now, now);
   } catch (e) {
     const code = e.code;
     if (code === "ENOENT") {
-      await (0, import_promises19.writeFile)(heartbeatPath(), "");
+      await (0, import_promises20.writeFile)(heartbeatPath(), "");
     } else {
       log10.warn("heartbeat_touch_failed", { err: String(e) });
     }
@@ -10902,9 +10943,9 @@ function stopHeartbeat() {
 
 // src/hosts/tmux-driver.ts
 var import_node_child_process2 = require("node:child_process");
-var import_node_fs10 = require("node:fs");
-var import_promises20 = require("node:fs/promises");
-var import_node_path19 = require("node:path");
+var import_node_fs11 = require("node:fs");
+var import_promises21 = require("node:fs/promises");
+var import_node_path20 = require("node:path");
 var import_node_util2 = require("node:util");
 
 // src/hosts/input-line.ts
@@ -11084,7 +11125,7 @@ function shQuote(value) {
   return `'${value.replaceAll("'", `'\\''`)}'`;
 }
 function paneCommand(env, command, args) {
-  const envBin = (0, import_node_fs10.existsSync)("/usr/bin/env") ? "/usr/bin/env" : "env";
+  const envBin = (0, import_node_fs11.existsSync)("/usr/bin/env") ? "/usr/bin/env" : "env";
   const assignments = Object.entries(env).filter(([k]) => !TMUX_OWNED_VARS.includes(k) && k !== "TERM").map(([k, v]) => `${k}=${shQuote(v)}`);
   const script = [
     "exec",
@@ -11902,11 +11943,11 @@ var TmuxDriver = class _TmuxDriver {
     const content = await this.capturePaneWithHistory(canonical);
     if (content.trim().length === 0) return null;
     try {
-      const dir = (0, import_node_path19.join)(controlDir(), "archive");
-      await (0, import_promises20.mkdir)(dir, { recursive: true });
+      const dir = (0, import_node_path20.join)(controlDir(), "archive");
+      await (0, import_promises21.mkdir)(dir, { recursive: true });
       const stamp = (/* @__PURE__ */ new Date()).toISOString().replace(/[:.]/g, "-");
-      const path = (0, import_node_path19.join)(dir, `pane-${canonical}-${stamp}.log`);
-      await (0, import_promises20.appendFile)(
+      const path = (0, import_node_path20.join)(dir, `pane-${canonical}-${stamp}.log`);
+      await (0, import_promises21.appendFile)(
         path,
         `# archived ${(/* @__PURE__ */ new Date()).toISOString()} \u2014 target ${canonical} \u2014 ${reason}
 ${content}`,
@@ -11946,14 +11987,14 @@ ${content}`,
   }
   async logSendKeys(sessionKey, entry) {
     try {
-      const dir = (0, import_node_path19.join)(controlDir(), "logs");
-      await (0, import_promises20.mkdir)(dir, { recursive: true });
+      const dir = (0, import_node_path20.join)(controlDir(), "logs");
+      await (0, import_promises21.mkdir)(dir, { recursive: true });
       const line = JSON.stringify({
         ts: (/* @__PURE__ */ new Date()).toISOString(),
         sessionKey,
         ...entry
       });
-      await (0, import_promises20.appendFile)((0, import_node_path19.join)(dir, `sendkeys-${sessionKey}.log`), `${line}
+      await (0, import_promises21.appendFile)((0, import_node_path20.join)(dir, `sendkeys-${sessionKey}.log`), `${line}
 `, "utf-8");
     } catch {
     }
@@ -12261,16 +12302,16 @@ async function runDaemon(opts) {
 
 // src/install.ts
 var import_node_child_process3 = require("node:child_process");
-var import_promises21 = require("node:fs/promises");
+var import_promises22 = require("node:fs/promises");
 var import_node_os5 = require("node:os");
-var import_node_path20 = require("node:path");
+var import_node_path21 = require("node:path");
 var log14 = makeLogger("daemon.install");
 var UNIT_NAME = "claude-bridge-daemon.service";
 function systemdUserDir() {
-  return (0, import_node_path20.join)((0, import_node_os5.homedir)(), ".config", "systemd", "user");
+  return (0, import_node_path21.join)((0, import_node_os5.homedir)(), ".config", "systemd", "user");
 }
 function unitPath() {
-  return (0, import_node_path20.join)(systemdUserDir(), UNIT_NAME);
+  return (0, import_node_path21.join)(systemdUserDir(), UNIT_NAME);
 }
 function assertLinux() {
   if (process.platform !== "linux") {
@@ -12282,19 +12323,19 @@ function assertLinux() {
 function resolveDaemonBin() {
   const argv1 = process.argv[1];
   if (!argv1) throw new Error("process.argv[1] missing \u2014 cannot determine daemon binary path");
-  if (!argv1.startsWith("/")) return (0, import_node_path20.resolve)(process.cwd(), argv1);
+  if (!argv1.startsWith("/")) return (0, import_node_path21.resolve)(process.cwd(), argv1);
   return argv1;
 }
 async function readTemplate() {
   const anchor = resolveDaemonBin();
-  const anchorDir = (0, import_node_path20.dirname)(anchor);
+  const anchorDir = (0, import_node_path21.dirname)(anchor);
   const candidates = [
-    (0, import_node_path20.resolve)(anchorDir, "..", "templates", UNIT_NAME),
-    (0, import_node_path20.resolve)(anchorDir, "templates", UNIT_NAME)
+    (0, import_node_path21.resolve)(anchorDir, "..", "templates", UNIT_NAME),
+    (0, import_node_path21.resolve)(anchorDir, "templates", UNIT_NAME)
   ];
   for (const candidate of candidates) {
     try {
-      return await (0, import_promises21.readFile)(candidate, "utf-8");
+      return await (0, import_promises22.readFile)(candidate, "utf-8");
     } catch {
     }
   }
@@ -12304,39 +12345,39 @@ function findNodeBin() {
   return process.execPath;
 }
 function deployedDaemonPath() {
-  return (0, import_node_path20.join)((0, import_node_os5.homedir)(), ".claude-bridge", "bin", "claude-bridge-daemon.cjs");
+  return (0, import_node_path21.join)((0, import_node_os5.homedir)(), ".claude-bridge", "bin", "claude-bridge-daemon.cjs");
 }
 function deployMetaPath() {
-  return (0, import_node_path20.join)((0, import_node_path20.dirname)(deployedDaemonPath()), "deployed-from.json");
+  return (0, import_node_path21.join)((0, import_node_path21.dirname)(deployedDaemonPath()), "deployed-from.json");
 }
 async function deployDaemonBinary(sourceBin) {
   const target = deployedDaemonPath();
-  if ((0, import_node_path20.resolve)(sourceBin) === (0, import_node_path20.resolve)(target)) {
+  if ((0, import_node_path21.resolve)(sourceBin) === (0, import_node_path21.resolve)(target)) {
     log14.info("deploy_skipped_same_path", { path: target });
     return target;
   }
-  await (0, import_promises21.mkdir)((0, import_node_path20.dirname)(target), { recursive: true });
-  await (0, import_promises21.copyFile)(sourceBin, target);
-  await (0, import_promises21.chmod)(target, 493);
+  await (0, import_promises22.mkdir)((0, import_node_path21.dirname)(target), { recursive: true });
+  await (0, import_promises22.copyFile)(sourceBin, target);
+  await (0, import_promises22.chmod)(target, 493);
   try {
     const templateSource = await readTemplate();
-    const templateTarget = (0, import_node_path20.join)((0, import_node_path20.dirname)(target), "templates", UNIT_NAME);
-    await (0, import_promises21.mkdir)((0, import_node_path20.dirname)(templateTarget), { recursive: true });
-    await (0, import_promises21.writeFile)(templateTarget, templateSource, "utf-8");
+    const templateTarget = (0, import_node_path21.join)((0, import_node_path21.dirname)(target), "templates", UNIT_NAME);
+    await (0, import_promises22.mkdir)((0, import_node_path21.dirname)(templateTarget), { recursive: true });
+    await (0, import_promises22.writeFile)(templateTarget, templateSource, "utf-8");
   } catch (e) {
     log14.warn("template_deploy_failed", { err: String(e) });
   }
   let version = "unknown";
   try {
     const pkg = JSON.parse(
-      await (0, import_promises21.readFile)((0, import_node_path20.resolve)((0, import_node_path20.dirname)(sourceBin), "..", "package.json"), "utf-8")
+      await (0, import_promises22.readFile)((0, import_node_path21.resolve)((0, import_node_path21.dirname)(sourceBin), "..", "package.json"), "utf-8")
     );
     version = pkg.version ?? "unknown";
   } catch {
   }
-  await (0, import_promises21.writeFile)(
+  await (0, import_promises22.writeFile)(
     deployMetaPath(),
-    `${JSON.stringify({ source: (0, import_node_path20.resolve)(sourceBin), version, deployedAt: (/* @__PURE__ */ new Date()).toISOString() }, null, 2)}
+    `${JSON.stringify({ source: (0, import_node_path21.resolve)(sourceBin), version, deployedAt: (/* @__PURE__ */ new Date()).toISOString() }, null, 2)}
 `,
     "utf-8"
   );
@@ -12350,10 +12391,10 @@ async function installSystemd() {
   await ensureBinariesExist(sourceBin, nodeBin);
   const daemonBin = await deployDaemonBinary(sourceBin);
   const template = await readTemplate();
-  const nodeDir = (0, import_node_path20.dirname)(nodeBin);
+  const nodeDir = (0, import_node_path21.dirname)(nodeBin);
   const rendered = template.replace(/__NODE_BIN__/g, nodeBin).replace(/__DAEMON_BIN__/g, daemonBin).replace(/__NODE_DIR__/g, nodeDir);
-  await (0, import_promises21.mkdir)(systemdUserDir(), { recursive: true });
-  await (0, import_promises21.writeFile)(unitPath(), rendered, "utf-8");
+  await (0, import_promises22.mkdir)(systemdUserDir(), { recursive: true });
+  await (0, import_promises22.writeFile)(unitPath(), rendered, "utf-8");
   log14.info("unit_written", { path: unitPath(), execStart: daemonBin });
   runSystemctl("daemon-reload");
   runSystemctl("enable", UNIT_NAME);
@@ -12373,14 +12414,14 @@ async function uninstallSystemd() {
     log14.warn("systemd_disable_failed", { err: String(e) });
   }
   try {
-    await (0, import_promises21.unlink)(unitPath());
+    await (0, import_promises22.unlink)(unitPath());
   } catch (e) {
     const code = e.code;
     if (code !== "ENOENT") log14.warn("unit_unlink_failed", { err: String(e) });
   }
   for (const path of [deployedDaemonPath(), deployMetaPath()]) {
     try {
-      await (0, import_promises21.unlink)(path);
+      await (0, import_promises22.unlink)(path);
     } catch (e) {
       const code = e.code;
       if (code !== "ENOENT") log14.warn("deployed_binary_unlink_failed", { path, err: String(e) });
@@ -12398,7 +12439,7 @@ async function ensureBinariesExist(daemonBin, nodeBin) {
     ["node", nodeBin]
   ]) {
     try {
-      await (0, import_promises21.stat)(path);
+      await (0, import_promises22.stat)(path);
     } catch {
       throw new Error(`${label} binary not found at ${path} \u2014 build daemon first (npm run build)`);
     }
@@ -12406,7 +12447,7 @@ async function ensureBinariesExist(daemonBin, nodeBin) {
 }
 
 // src/send.ts
-var import_promises22 = require("node:fs/promises");
+var import_promises23 = require("node:fs/promises");
 var EXIT_OK = 0;
 var EXIT_PEER = 2;
 var EXIT_USAGE = 3;
@@ -12493,7 +12534,7 @@ ${SEND_HELP}` };
   let content;
   if (parsed.textFile !== void 0) {
     try {
-      content = parsed.textFile === "-" ? await readStdin() : await (0, import_promises22.readFile)(parsed.textFile, "utf-8");
+      content = parsed.textFile === "-" ? await readStdin() : await (0, import_promises23.readFile)(parsed.textFile, "utf-8");
     } catch (e) {
       return { code: EXIT_USAGE, stderr: `send: cannot read --text-file: ${String(e)}
 ` };
@@ -12601,7 +12642,7 @@ async function statusCommand() {
   const lock = await readLock();
   let heartbeatAgeMs = null;
   try {
-    const s = await (0, import_promises23.stat)(heartbeatPath());
+    const s = await (0, import_promises24.stat)(heartbeatPath());
     heartbeatAgeMs = Date.now() - s.mtimeMs;
   } catch {
     heartbeatAgeMs = null;

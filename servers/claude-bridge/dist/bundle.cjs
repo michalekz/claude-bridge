@@ -18243,7 +18243,7 @@ var StdioServerTransport = class {
 // package.json
 var package_default = {
   name: "claude-bridge",
-  version: "0.11.52",
+  version: "0.11.53",
   private: true,
   description: "MCP server for cross-Claude-Code-chat orchestration over local session JSONL files",
   type: "module",
@@ -23038,7 +23038,10 @@ async function peerInboxReadTool(ctx) {
       const c = await ctx.inbox.consume(ctx.self.id, p.id);
       if (c) consumed.push(c);
     }
-    return ok2({ count: consumed.length, messages: consumed });
+    const result = ok2({ count: consumed.length, messages: consumed });
+    const block = formatInboxBlock(consumed);
+    if (!block) return result;
+    return { ...result, content: [...result.content, { type: "text", text: block }] };
   } catch (e) {
     log7.error("peer_inbox_read_failed", { err: e instanceof Error ? e.message : String(e) });
     return err2("peer_inbox_read_failed", e instanceof Error ? e.message : "unknown");
@@ -23798,12 +23801,20 @@ async function buildContextStatusEntry(ctx, peerId, peerName, nameSource) {
     ...guard ? { guard } : {}
   };
 }
+async function selfTarget(ctx) {
+  try {
+    const row = (await ctx.registry.listActivePeers()).find((p) => p.id === ctx.self.id);
+    if (row) return { id: row.id, name: row.name, source: row.source };
+  } catch {
+  }
+  return { id: ctx.self.id, name: ctx.self.name, source: ctx.self.source };
+}
 async function peerContextStatusTool(ctx, args) {
   try {
     const targets = [];
     const toArg = args.to;
     if (toArg === void 0) {
-      targets.push({ id: ctx.self.id, name: ctx.self.name, source: ctx.self.source });
+      targets.push(await selfTarget(ctx));
     } else if (typeof toArg === "string" && toArg === "all") {
       const peers2 = await ctx.registry.listActivePeers();
       const seen = /* @__PURE__ */ new Set();
@@ -23813,7 +23824,7 @@ async function peerContextStatusTool(ctx, args) {
         targets.push({ id: p.id, name: p.name, source: p.source });
       }
       if (!seen.has(ctx.self.id)) {
-        targets.push({ id: ctx.self.id, name: ctx.self.name, source: ctx.self.source });
+        targets.push(await selfTarget(ctx));
       }
     } else {
       const list = Array.isArray(toArg) ? toArg : [toArg];

@@ -1,5 +1,6 @@
 import { mkdir } from "node:fs/promises";
 import { z } from "zod";
+import { callerBundleVersion, parameterAdvice } from "../caller-version.ts";
 import {
   COMPACT_MIN_PERCENT,
   COMPACT_RACE_PERCENT,
@@ -422,7 +423,7 @@ export async function handlePeerCompact(
       outcome: "skipped_below_threshold",
       contextPercentBefore: percentNow,
       thresholdPercent: COMPACT_MIN_PERCENT,
-      note: `Nothing was injected and the peer was not disturbed: it is at ${percentNow}% of its context window, below the ${COMPACT_MIN_PERCENT}% threshold. Compaction is always a loss, so below the threshold it costs more than it saves. If you mean it anyway — handing over a role, or an expected large input — repeat with belowThreshold:true.`,
+      note: `Nothing was injected and the peer was not disturbed: it is at ${percentNow}% of its context window, below the ${COMPACT_MIN_PERCENT}% threshold. Compaction is always a loss, so below the threshold it costs more than it saves. If you mean it anyway — handing over a role, or an expected large input — ${parameterAdvice(await callerBundleVersion(req.requestedBy.sessionId), "0.11.48", "belowThreshold:true")}.`,
     });
   }
 

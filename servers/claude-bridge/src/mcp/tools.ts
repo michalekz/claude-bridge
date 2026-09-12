@@ -737,7 +737,15 @@ export async function peerInboxReadTool(ctx: ServerContext): Promise<ToolResult>
       const c = await ctx.inbox.consume(ctx.self.id, p.id);
       if (c) consumed.push(c);
     }
-    return ok({ count: consumed.length, messages: consumed });
+    const result = ok({ count: consumed.length, messages: consumed });
+    // The same footer the push channel carries (v0.11.49). It was missing here,
+    // so a message read by DRAINING said nothing about how to answer it, while
+    // the identical message read by PUSH did — and the asymmetry fell exactly on
+    // external senders, the case where the obvious answer (peer_reply) is the
+    // wrong one. Reported by etl-velitel, 2026-09-12.
+    const block = formatInboxBlock(consumed);
+    if (!block) return result;
+    return { ...result, content: [...result.content, { type: "text" as const, text: block }] };
   } catch (e) {
     log.error("peer_inbox_read_failed", { err: e instanceof Error ? e.message : String(e) });
     return err("peer_inbox_read_failed", e instanceof Error ? e.message : "unknown");
@@ -1905,6 +1913,35 @@ async function buildContextStatusEntry(
   };
 }
 
+/**
+ * Own row for the status tools — the ROSTER's answer, not the startup guess.
+ *
+ * `ctx.self` is decided ONCE, when the MCP server boots: the moment with the
+ * least information there will ever be, before the session has a title. The
+ * heartbeat is rewritten continuously, so minutes later the two disagree —
+ * `peer_list` fixed this for itself in v0.11.50, and etl-velitel measured the
+ * same split here on 2026-09-12: `peer_list` said `etl-dev`/`jsonl-title`
+ * while `peer_context_status`, 29 SECONDS LATER, still said the cwd slug.
+ * That ruled out a timing window by measurement: it was two paths to one name,
+ * and only one of them woke up.
+ *
+ * The `to: "self"` path was never affected — it normalizes to the id and finds
+ * the roster row like any other peer. Only the two paths that never looked the
+ * peer up were stale, which is why the defect survived the tool that named it.
+ */
+async function selfTarget(
+  ctx: ServerContext,
+): Promise<{ id: string; name: string | null; source?: string | undefined }> {
+  try {
+    const row = (await ctx.registry.listActivePeers()).find((p) => p.id === ctx.self.id);
+    if (row) return { id: row.id, name: row.name, source: row.source };
+  } catch {
+    // A registry we cannot read is not a reason to answer nothing — fall back
+    // to what we were born with, which is what this tool used to always use.
+  }
+  return { id: ctx.self.id, name: ctx.self.name, source: ctx.self.source };
+}
+
 export async function peerContextStatusTool(
   ctx: ServerContext,
   args: z.infer<typeof PeerContextStatusArgs>,
@@ -1914,7 +1951,7 @@ export async function peerContextStatusTool(
 
     const toArg = args.to;
     if (toArg === undefined) {
-      targets.push({ id: ctx.self.id, name: ctx.self.name, source: ctx.self.source });
+      targets.push(await selfTarget(ctx));
     } else if (typeof toArg === "string" && toArg === "all") {
       const peers = await ctx.registry.listActivePeers();
       const seen = new Set<string>();
@@ -1924,7 +1961,7 @@ export async function peerContextStatusTool(
         targets.push({ id: p.id, name: p.name, source: p.source });
       }
       if (!seen.has(ctx.self.id)) {
-        targets.push({ id: ctx.self.id, name: ctx.self.name, source: ctx.self.source });
+        targets.push(await selfTarget(ctx));
       }
     } else {
       const list = Array.isArray(toArg) ? toArg : [toArg];
