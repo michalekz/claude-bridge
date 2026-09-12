@@ -12,6 +12,7 @@ import {
   teamOfSession,
 } from "./peer-ref.ts";
 import { handlePeerRestart } from "./peer-restart.ts";
+import { describeShadow, findShadowedRecords } from "./shadowed-records.ts";
 
 /**
  * team_restart — restart a team one peer at a time, stopping at the first
@@ -204,6 +205,35 @@ export async function handleTeamRestart(
       {
         peers: unrestartable.map((r) => ({ handle: r.handle, name: r.observed.name })),
         hint: "Records written before v0.10.3 lack launch parameters. Re-spawn those peers, or adopt them again with a daemon that reads /proc.",
+      },
+    );
+  }
+
+  // 🔴 IS EACH RECORD THE SESSION THAT IS ACTUALLY WORKING? (v0.11.54)
+  //
+  // The mic fleet, 2026-09-12: `marketing` ran in two sessions, the record
+  // named the idle one, and a rolling restart reported the team complete
+  // having never touched the session doing the work. Refusing the whole run
+  // follows the rule the missing-command check already sets — a roll whose
+  // report would be about different peers than the operator means is worse
+  // than no roll. See `shadowed-records.ts`.
+  const shadowed = await findShadowedRecords(ordered);
+  if (shadowed.length > 0) {
+    await writeEvent({
+      event: "team_restart_refused",
+      level: "warn",
+      by: { sessionId: req.requestedBy.sessionId, name: req.requestedBy.name },
+      requestId: req.id,
+      details: { shadowed },
+    });
+    return errResult(
+      req.id,
+      req.tool,
+      "record_shadowed_by_live_session",
+      `${shadowed.length} of ${ordered.length} peers have ANOTHER live session answering to the same name, so restarting the record may miss the session that is working — and report success. Nothing was restarted. ${shadowed.map(describeShadow).join(" | ")}`,
+      {
+        shadowed,
+        hint: "Run team_reconcile to see both sessions, then decide which one the record should name: adopt the working session (team_adopt), or release the stale record (team_release). Restarting before that decision restarts the wrong process.",
       },
     );
   }

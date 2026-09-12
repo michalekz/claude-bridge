@@ -4335,7 +4335,7 @@ async function resolvePeer(idOrName, root = bridgeRoot(), now = Date.now()) {
 // package.json
 var package_default = {
   name: "claude-bridge-daemon",
-  version: "0.11.53",
+  version: "0.11.54",
   private: true,
   description: "Control-plane daemon for the claude-bridge plugin: peer lifecycle, telemetry, audit. Distributed as opt-in artefact \u2014 see ADR-008.",
   type: "module",
@@ -10317,6 +10317,40 @@ function orderCoordinatorLast(peers, read) {
   };
 }
 
+// src/handlers/shadowed-records.ts
+async function findShadowedRecords(records, inspector = defaultProcessInspector()) {
+  if (!inspector.listRegisteredSessions) return [];
+  let registered;
+  try {
+    registered = await inspector.listRegisteredSessions();
+  } catch {
+    return [];
+  }
+  const out = [];
+  for (const rec of records) {
+    const name = rec.observed.name;
+    if (!name) continue;
+    const recorded = rec.observed.sessionId ?? null;
+    for (const sess of registered) {
+      if (sess.name !== name) continue;
+      if (recorded !== null && sess.sessionId === recorded) continue;
+      if (recorded === null) continue;
+      out.push({
+        handle: rec.handle,
+        name,
+        recordedSessionId: recorded,
+        shadowSessionId: sess.sessionId,
+        shadowPid: sess.pid,
+        shadowKind: sess.kind
+      });
+    }
+  }
+  return out;
+}
+function describeShadow(s) {
+  return `'${s.handle}': the record names session ${s.recordedSessionId}, but pid ${s.shadowPid} is ALSO live under the name '${s.name}' as session ${s.shadowSessionId}${s.shadowKind !== null ? ` (kind ${s.shadowKind})` : ""} \u2014 restarting the record would leave that one untouched and report success`;
+}
+
 // src/handlers/team-restart.ts
 var DEFAULT_SETTLE_MS = 3e3;
 var TeamRestartArgsSchema = external_exports.object({
@@ -10430,6 +10464,26 @@ async function handleTeamRestart(req, ctx) {
       {
         peers: unrestartable.map((r) => ({ handle: r.handle, name: r.observed.name })),
         hint: "Records written before v0.10.3 lack launch parameters. Re-spawn those peers, or adopt them again with a daemon that reads /proc."
+      }
+    );
+  }
+  const shadowed = await findShadowedRecords(ordered);
+  if (shadowed.length > 0) {
+    await writeEvent({
+      event: "team_restart_refused",
+      level: "warn",
+      by: { sessionId: req.requestedBy.sessionId, name: req.requestedBy.name },
+      requestId: req.id,
+      details: { shadowed }
+    });
+    return errResult(
+      req.id,
+      req.tool,
+      "record_shadowed_by_live_session",
+      `${shadowed.length} of ${ordered.length} peers have ANOTHER live session answering to the same name, so restarting the record may miss the session that is working \u2014 and report success. Nothing was restarted. ${shadowed.map(describeShadow).join(" | ")}`,
+      {
+        shadowed,
+        hint: "Run team_reconcile to see both sessions, then decide which one the record should name: adopt the working session (team_adopt), or release the stale record (team_release). Restarting before that decision restarts the wrong process."
       }
     );
   }

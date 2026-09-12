@@ -18243,7 +18243,7 @@ var StdioServerTransport = class {
 // package.json
 var package_default = {
   name: "claude-bridge",
-  version: "0.11.53",
+  version: "0.11.54",
   private: true,
   description: "MCP server for cross-Claude-Code-chat orchestration over local session JSONL files",
   type: "module",
