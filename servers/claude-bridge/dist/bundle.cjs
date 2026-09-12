@@ -18243,7 +18243,7 @@ var StdioServerTransport = class {
 // package.json
 var package_default = {
   name: "claude-bridge",
-  version: "0.11.56",
+  version: "0.11.57",
   private: true,
   description: "MCP server for cross-Claude-Code-chat orchestration over local session JSONL files",
   type: "module",
@@ -21676,6 +21676,8 @@ async function readFromStatusLine(sessionId) {
   const contextLimit = cw?.context_window_size ?? 0;
   if (contextLimit === 0) return null;
   const usage = cw?.current_usage;
+  const saysAnything = typeof cw?.used_percentage === "number" || typeof cw?.total_input_tokens === "number" && typeof cw?.total_output_tokens === "number" || typeof usage?.input_tokens === "number" || typeof usage?.output_tokens === "number" || typeof usage?.cache_read_input_tokens === "number" || typeof usage?.cache_creation_input_tokens === "number";
+  if (!saysAnything) return null;
   const sumOfCurrent = (usage?.input_tokens ?? 0) + (usage?.output_tokens ?? 0) + (usage?.cache_read_input_tokens ?? 0) + (usage?.cache_creation_input_tokens ?? 0);
   const totalFromPayload = typeof cw?.total_input_tokens === "number" && typeof cw?.total_output_tokens === "number" ? cw.total_input_tokens + cw.total_output_tokens : null;
   const tokensUsed = totalFromPayload ?? sumOfCurrent;

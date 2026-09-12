@@ -5,6 +5,7 @@ import { sweepAllAcksAtStartup } from "./handlers/peer-compact.ts";
 import { startHeartbeat, stopHeartbeat } from "./heartbeat.ts";
 import { type SessionHostDriver, defaultHostDriver } from "./hosts/index.ts";
 import { LockAcquireError, acquireLock, releaseLock } from "./lock.ts";
+import { notifyRequesterIfDeclined } from "./notify-requester.ts";
 import {
   ensureRpcDirs,
   listPendingRequests,
@@ -134,11 +135,19 @@ export async function runDaemon(opts: RunOptions): Promise<void> {
         daemonVersion: opts.daemonVersion,
       });
       await writeResult(result);
+      // A declined operation is the one case where silence reads as success —
+      // see `notify-requester.ts` (plt-velitel, 2026-09-12).
+      const notifiedMsgId = await notifyRequesterIfDeclined(req, result).catch(() => null);
       await writeEvent({
         event: "request_completed",
         by: { sessionId: req.requestedBy.sessionId, name: req.requestedBy.name },
         requestId: req.id,
-        details: { tool: req.tool, outcome: result.outcome, durationMs: Date.now() - startedAt },
+        details: {
+          tool: req.tool,
+          outcome: result.outcome,
+          durationMs: Date.now() - startedAt,
+          ...(notifiedMsgId !== null ? { requesterNotified: notifiedMsgId } : {}),
+        },
       });
     }
   };

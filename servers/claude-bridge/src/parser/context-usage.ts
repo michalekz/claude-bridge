@@ -119,6 +119,37 @@ async function readFromStatusLine(sessionId: string): Promise<ContextUsage | nul
   if (contextLimit === 0) return null; // capture exists but no context_window yet
 
   const usage = cw?.current_usage;
+
+  /**
+   * 🔴 NO USAGE INFORMATION IS NOT ZERO USAGE (v0.11.57).
+   *
+   * `contextLimit === 0` above already catches a capture with no
+   * `context_window` at all. This catches the narrower shape: a block that
+   * declares the WINDOW SIZE and says nothing about what is in it. Without
+   * this, every summand below defaults to zero, the percent falls out as zero,
+   * and `riskBucket` calls that `low` — so a guard reading a peer the source
+   * knows nothing about is told everything is fine. `hasLiveData: true` makes
+   * it worse by vouching for the answer.
+   *
+   * Falling through to the JSONL scan is the whole point of the v0.9.4 dual
+   * source: a second measurement, not a fabricated first one.
+   *
+   * Found while checking a fleet report that turned out to be something else
+   * (2026-09-12: `etl-dev` read 0% right after a compact, and the capture was
+   * genuinely full of zeros CC had written 0.4 s after emptying the window —
+   * an accurate measurement of an empty context, not an invented one). The
+   * reported instance did not reproduce; the mechanism it described was real
+   * one layer in.
+   */
+  const saysAnything =
+    typeof cw?.used_percentage === "number" ||
+    (typeof cw?.total_input_tokens === "number" && typeof cw?.total_output_tokens === "number") ||
+    typeof usage?.input_tokens === "number" ||
+    typeof usage?.output_tokens === "number" ||
+    typeof usage?.cache_read_input_tokens === "number" ||
+    typeof usage?.cache_creation_input_tokens === "number";
+  if (!saysAnything) return null;
+
   const sumOfCurrent =
     (usage?.input_tokens ?? 0) +
     (usage?.output_tokens ?? 0) +

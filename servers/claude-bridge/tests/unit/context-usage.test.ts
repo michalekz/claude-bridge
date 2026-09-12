@@ -252,6 +252,81 @@ describe("readContextUsage — live-data-only (v0.9.0)", () => {
     const usage = await readContextUsage(makeSessionRef());
     expect(usage).toBeNull(); // both sources dry — no context_window in statusLine, no JSONL
   });
+
+  describe("v0.11.57 — no usage information is not zero usage", () => {
+    /**
+     * A capture that declares the WINDOW SIZE and says nothing about what is in
+     * it used to read as `0% · low · hasLiveData: true` — every summand defaults
+     * to zero, so a guard asking about a peer the source knows nothing about was
+     * told everything is fine, with the answer vouched for.
+     *
+     * Found while checking a fleet report that turned out to be a different
+     * thing: `etl-dev` read 0% right after a compact, and its capture was
+     * genuinely full of zeros that Claude Code had written 0.4 s after emptying
+     * the window — an accurate measurement, not an invented one. The instance
+     * did not reproduce; the mechanism it described was real one layer in.
+     */
+    test("🔴 window size but NO usage fields → fall through, never 0/low", async () => {
+      const envelope: StatusLineLiveEnvelope = {
+        capturedAt: "2026-09-12T08:51:30.810Z",
+        sessionId: TEST_SESSION_ID,
+        payload: {
+          model: { display_name: "Opus 5" },
+          context_window: { context_window_size: 1_000_000 },
+        },
+      };
+      await writeStatusLineLive(envelope);
+      // No JSONL either, so the whole chain must end in "I cannot say".
+      const usage = await readContextUsage(makeSessionRef());
+      expect(usage).toBeNull();
+    });
+
+    test("🟢 a MEASURED zero is still reported — the point is absence, not zero", async () => {
+      // The etl-dev shape: CC wrote real zeros 0.4 s after the compact emptied
+      // the window. Refusing this would throw away a true measurement.
+      const envelope: StatusLineLiveEnvelope = {
+        capturedAt: "2026-09-12T08:51:30.810Z",
+        sessionId: TEST_SESSION_ID,
+        payload: {
+          model: { display_name: "Opus 5" },
+          context_window: {
+            context_window_size: 1_000_000,
+            total_input_tokens: 0,
+            total_output_tokens: 0,
+            used_percentage: 0,
+            current_usage: {
+              input_tokens: 0,
+              output_tokens: 0,
+              cache_read_input_tokens: 0,
+              cache_creation_input_tokens: 0,
+            },
+          },
+        },
+      };
+      await writeStatusLineLive(envelope);
+      const usage = await readContextUsage(makeSessionRef());
+      expect(usage?.tokensUsed).toBe(0);
+      expect(usage?.percentUsed).toBe(0);
+      expect(usage?.contextLimitSource).toBe("statusline-stdin");
+    });
+
+    test("a single usage field is enough to count as an answer", async () => {
+      const envelope: StatusLineLiveEnvelope = {
+        capturedAt: "2026-09-12T09:00:00.000Z",
+        sessionId: TEST_SESSION_ID,
+        payload: {
+          model: { display_name: "Opus 5" },
+          context_window: {
+            context_window_size: 1_000_000,
+            current_usage: { input_tokens: 250_000 },
+          },
+        },
+      };
+      await writeStatusLineLive(envelope);
+      const usage = await readContextUsage(makeSessionRef());
+      expect(usage?.tokensUsed).toBe(250_000);
+    });
+  });
 });
 
 describe("readContextUsage — JSONL fallback (v0.9.4)", () => {

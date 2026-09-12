@@ -4335,7 +4335,7 @@ async function resolvePeer(idOrName, root = bridgeRoot(), now = Date.now()) {
 // package.json
 var package_default = {
   name: "claude-bridge-daemon",
-  version: "0.11.56",
+  version: "0.11.57",
   private: true,
   description: "Control-plane daemon for the claude-bridge plugin: peer lifecycle, telemetry, audit. Distributed as opt-in artefact \u2014 see ADR-008.",
   type: "module",
@@ -12232,6 +12232,52 @@ function defaultHostDriver() {
   return new TmuxDriver();
 }
 
+// src/notify-requester.ts
+var import_node_fs12 = require("node:fs");
+var import_node_path21 = require("node:path");
+var DECLINED_OUTCOMES = /* @__PURE__ */ new Set([
+  "skipped_busy",
+  "skipped_below_threshold",
+  "preempted-unresolved",
+  "queued-unresolved",
+  "silent"
+]);
+function declinedOutcomeOf(result) {
+  if (result.outcome === "error") return result.error?.code ?? "error";
+  const data = result.data;
+  const outcome = typeof data?.outcome === "string" ? data.outcome : null;
+  return outcome !== null && DECLINED_OUTCOMES.has(outcome) ? outcome : null;
+}
+function noteOf(result) {
+  if (result.outcome === "error") return result.error?.message ?? null;
+  const data = result.data;
+  return typeof data?.note === "string" ? data.note : null;
+}
+function hasInbox(sessionId) {
+  return (0, import_node_fs12.existsSync)((0, import_node_path21.join)(bridgeRoot(), "status", `${sessionId}.json`));
+}
+async function notifyRequesterIfDeclined(req, result) {
+  const declined = declinedOutcomeOf(result);
+  if (declined === null) return null;
+  const caller = req.requestedBy.sessionId;
+  if (!caller || !hasInbox(caller)) return null;
+  const note = noteOf(result);
+  const peer = typeof req.args?.peer === "string" ? req.args.peer : null;
+  return requestFromPeer(
+    caller,
+    `result:${req.id}`,
+    [
+      `Your \`${req.tool}\`${peer !== null ? ` on '${peer}'` : ""} finished, and it did NOT do what you asked: ${declined}.`,
+      "",
+      note ?? "(the handler gave no further note)",
+      "",
+      `Request id ${req.id} \u2014 \`control_result\` has the full verdict, and \`events.jsonl\` has the chain.`,
+      "You are told because a declined operation is the case where silence reads as success.",
+      "Successful ones are not announced: a restarted peer says hello by itself."
+    ].join("\n")
+  );
+}
+
 // src/daemon.ts
 var log13 = makeLogger("daemon");
 var POLL_INTERVAL_MS = 250;
@@ -12322,11 +12368,17 @@ async function runDaemon(opts) {
         daemonVersion: opts.daemonVersion
       });
       await writeResult(result);
+      const notifiedMsgId = await notifyRequesterIfDeclined(req, result).catch(() => null);
       await writeEvent({
         event: "request_completed",
         by: { sessionId: req.requestedBy.sessionId, name: req.requestedBy.name },
         requestId: req.id,
-        details: { tool: req.tool, outcome: result.outcome, durationMs: Date.now() - startedAt }
+        details: {
+          tool: req.tool,
+          outcome: result.outcome,
+          durationMs: Date.now() - startedAt,
+          ...notifiedMsgId !== null ? { requesterNotified: notifiedMsgId } : {}
+        }
       });
     }
   };
@@ -12358,14 +12410,14 @@ async function runDaemon(opts) {
 var import_node_child_process3 = require("node:child_process");
 var import_promises22 = require("node:fs/promises");
 var import_node_os5 = require("node:os");
-var import_node_path21 = require("node:path");
+var import_node_path22 = require("node:path");
 var log14 = makeLogger("daemon.install");
 var UNIT_NAME = "claude-bridge-daemon.service";
 function systemdUserDir() {
-  return (0, import_node_path21.join)((0, import_node_os5.homedir)(), ".config", "systemd", "user");
+  return (0, import_node_path22.join)((0, import_node_os5.homedir)(), ".config", "systemd", "user");
 }
 function unitPath() {
-  return (0, import_node_path21.join)(systemdUserDir(), UNIT_NAME);
+  return (0, import_node_path22.join)(systemdUserDir(), UNIT_NAME);
 }
 function assertLinux() {
   if (process.platform !== "linux") {
@@ -12377,15 +12429,15 @@ function assertLinux() {
 function resolveDaemonBin() {
   const argv1 = process.argv[1];
   if (!argv1) throw new Error("process.argv[1] missing \u2014 cannot determine daemon binary path");
-  if (!argv1.startsWith("/")) return (0, import_node_path21.resolve)(process.cwd(), argv1);
+  if (!argv1.startsWith("/")) return (0, import_node_path22.resolve)(process.cwd(), argv1);
   return argv1;
 }
 async function readTemplate() {
   const anchor = resolveDaemonBin();
-  const anchorDir = (0, import_node_path21.dirname)(anchor);
+  const anchorDir = (0, import_node_path22.dirname)(anchor);
   const candidates = [
-    (0, import_node_path21.resolve)(anchorDir, "..", "templates", UNIT_NAME),
-    (0, import_node_path21.resolve)(anchorDir, "templates", UNIT_NAME)
+    (0, import_node_path22.resolve)(anchorDir, "..", "templates", UNIT_NAME),
+    (0, import_node_path22.resolve)(anchorDir, "templates", UNIT_NAME)
   ];
   for (const candidate of candidates) {
     try {
@@ -12399,24 +12451,24 @@ function findNodeBin() {
   return process.execPath;
 }
 function deployedDaemonPath() {
-  return (0, import_node_path21.join)((0, import_node_os5.homedir)(), ".claude-bridge", "bin", "claude-bridge-daemon.cjs");
+  return (0, import_node_path22.join)((0, import_node_os5.homedir)(), ".claude-bridge", "bin", "claude-bridge-daemon.cjs");
 }
 function deployMetaPath() {
-  return (0, import_node_path21.join)((0, import_node_path21.dirname)(deployedDaemonPath()), "deployed-from.json");
+  return (0, import_node_path22.join)((0, import_node_path22.dirname)(deployedDaemonPath()), "deployed-from.json");
 }
 async function deployDaemonBinary(sourceBin) {
   const target = deployedDaemonPath();
-  if ((0, import_node_path21.resolve)(sourceBin) === (0, import_node_path21.resolve)(target)) {
+  if ((0, import_node_path22.resolve)(sourceBin) === (0, import_node_path22.resolve)(target)) {
     log14.info("deploy_skipped_same_path", { path: target });
     return target;
   }
-  await (0, import_promises22.mkdir)((0, import_node_path21.dirname)(target), { recursive: true });
+  await (0, import_promises22.mkdir)((0, import_node_path22.dirname)(target), { recursive: true });
   await (0, import_promises22.copyFile)(sourceBin, target);
   await (0, import_promises22.chmod)(target, 493);
   try {
     const templateSource = await readTemplate();
-    const templateTarget = (0, import_node_path21.join)((0, import_node_path21.dirname)(target), "templates", UNIT_NAME);
-    await (0, import_promises22.mkdir)((0, import_node_path21.dirname)(templateTarget), { recursive: true });
+    const templateTarget = (0, import_node_path22.join)((0, import_node_path22.dirname)(target), "templates", UNIT_NAME);
+    await (0, import_promises22.mkdir)((0, import_node_path22.dirname)(templateTarget), { recursive: true });
     await (0, import_promises22.writeFile)(templateTarget, templateSource, "utf-8");
   } catch (e) {
     log14.warn("template_deploy_failed", { err: String(e) });
@@ -12424,14 +12476,14 @@ async function deployDaemonBinary(sourceBin) {
   let version = "unknown";
   try {
     const pkg = JSON.parse(
-      await (0, import_promises22.readFile)((0, import_node_path21.resolve)((0, import_node_path21.dirname)(sourceBin), "..", "package.json"), "utf-8")
+      await (0, import_promises22.readFile)((0, import_node_path22.resolve)((0, import_node_path22.dirname)(sourceBin), "..", "package.json"), "utf-8")
     );
     version = pkg.version ?? "unknown";
   } catch {
   }
   await (0, import_promises22.writeFile)(
     deployMetaPath(),
-    `${JSON.stringify({ source: (0, import_node_path21.resolve)(sourceBin), version, deployedAt: (/* @__PURE__ */ new Date()).toISOString() }, null, 2)}
+    `${JSON.stringify({ source: (0, import_node_path22.resolve)(sourceBin), version, deployedAt: (/* @__PURE__ */ new Date()).toISOString() }, null, 2)}
 `,
     "utf-8"
   );
@@ -12445,7 +12497,7 @@ async function installSystemd() {
   await ensureBinariesExist(sourceBin, nodeBin);
   const daemonBin = await deployDaemonBinary(sourceBin);
   const template = await readTemplate();
-  const nodeDir = (0, import_node_path21.dirname)(nodeBin);
+  const nodeDir = (0, import_node_path22.dirname)(nodeBin);
   const rendered = template.replace(/__NODE_BIN__/g, nodeBin).replace(/__DAEMON_BIN__/g, daemonBin).replace(/__NODE_DIR__/g, nodeDir);
   await (0, import_promises22.mkdir)(systemdUserDir(), { recursive: true });
   await (0, import_promises22.writeFile)(unitPath(), rendered, "utf-8");
