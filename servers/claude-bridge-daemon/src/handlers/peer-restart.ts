@@ -11,6 +11,7 @@ import { pollUntil } from "../poll.ts";
 import type { RequestEnvelope, ResultEnvelope } from "../rpc.ts";
 import { errResult, okResult } from "../rpc.ts";
 import type { PeerRecord } from "../state.ts";
+import { retireRequestEnvelope } from "./ack-protocol.ts";
 import type { HandlerContext } from "./context.ts";
 import { bridgeIdOf } from "./peer-identity.ts";
 import {
@@ -522,6 +523,9 @@ async function runReadyPhase(
   const waitedMs = Date.now() - started;
   if (verdict.accepted) {
     await restartAcks.consume(bridgeId);
+    // Ack = důkaz zpracování; pending kopie žádosti je od téhle chvíle past
+    // (po restartu by se naservírovala jako nová žádost — oxy-obchod, 2×).
+    await retireRequestEnvelope(bridgeId, msgId);
     return { kind: "acked", threadId, msgId, waitedMs, resumed: resumable };
   }
   return {

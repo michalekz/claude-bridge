@@ -18243,7 +18243,7 @@ var StdioServerTransport = class {
 // package.json
 var package_default = {
   name: "claude-bridge",
-  version: "0.11.49",
+  version: "0.11.50",
   private: true,
   description: "MCP server for cross-Claude-Code-chat orchestration over local session JSONL files",
   type: "module",
@@ -22822,30 +22822,33 @@ async function peerListTool(ctx) {
   try {
     const peers = await ctx.registry.listActivePeers();
     const queues = await Promise.all(peers.map((p) => queueHealth(ctx, p.id)));
+    const selfRow = peers.find((p) => p.id === ctx.self.id);
     return ok2({
       self: {
         id: ctx.self.id,
-        name: ctx.self.name,
-        displayName: ctx.self.displayName,
         /**
-         * ODKUD to jméno je. Zrcadlí `servedBy_odvozen` ai-kb-opse: dopočet,
-         * který o sobě nic neřekne, nelze vyšetřit.
+         * JEDNA ODPOVĚĎ, JEDNA PRAVDA (0.11.50; našel ai-process-dev 28. 8.,
+         * ZNOVU etl-velitel 12. 9. — nameSource z 0.11.49 to poprvé ukázal
+         * černobíle: self "oxy-kb"/cwd-slug vedle peers[já] "etl-velitel"/
+         * jsonl-title V TÉŽE odpovědi, 24 s po restartu).
          *
-         * Našel ai-process-dev 28. 8. po respawnu — jedna odpověď o něm
-         * tvrdila dvě jména: `self.name: "oxy-kb"` (poslední článek řetězce,
-         * `basename(cwd)`) proti `peers[].name: "ai-process-dev"` z heartbeatu.
-         * `self` se rozhoduje JEDNOU při startu MCP serveru, tedy v okamžiku,
-         * kdy je informací nejmíň, a už se nepřepočítá; heartbeat se přepisuje
-         * průběžně, proto je správný.
+         * `ctx.self` se rozhoduje JEDNOU při startu MCP serveru — v okamžiku,
+         * kdy je informací nejmíň — a nepřepočítává se; heartbeat se přepisuje
+         * průběžně. Self blok proto od teď PREFERUJE vlastní řádek z právě
+         * načteného rosteru: tentýž zdroj, který odpověď dává o všech
+         * ostatních. Fallback na ctx.self zůstává pro okno, kdy vlastní
+         * heartbeat ještě neexistuje.
          */
-        nameSource: ctx.self.source,
+        name: selfRow?.name ?? ctx.self.name,
+        displayName: selfRow?.displayName ?? ctx.self.displayName,
+        nameSource: selfRow?.source ?? ctx.self.source,
         /**
          * Je to POSLEDNÍ ZÁCHRANA, ne identita? `cwd-slug` je sdílené jméno —
          * v `/opt/oxy-kb` sedí pět sessions, takže nikoho neurčuje.
          * Jmenovka, ne poznámka pod čarou: kdo bere `self.name` jako identitu,
          * musí mít šanci poznat, že drží název adresáře.
          */
-        ...ctx.self.source === "cwd-slug" ? { nameIsFallback: true } : {}
+        ...(selfRow?.source ?? ctx.self.source) === "cwd-slug" ? { nameIsFallback: true } : {}
       },
       count: peers.length,
       peers: peers.map((p, i) => ({

@@ -9,6 +9,7 @@ import { type ProcessMark, markProcess, markedProcessAlive } from "../pid.ts";
 import type { RequestEnvelope, ResultEnvelope } from "../rpc.ts";
 import { errResult, okResult } from "../rpc.ts";
 import type { PeerRecord } from "../state.ts";
+import { retireRequestEnvelope } from "./ack-protocol.ts";
 import type { HandlerContext } from "./context.ts";
 import { bridgeIdOf } from "./peer-identity.ts";
 import {
@@ -200,6 +201,7 @@ async function runCourtesyPhase(
   const pending = record.observed.stopRequest ?? null;
   const resumed = pending !== null;
   let threadId: string;
+  let requestMsgId: string | null = null;
   let requestedAtMs: number;
 
   if (pending) {
@@ -238,7 +240,8 @@ async function runCourtesyPhase(
     // instant it reads the message still counts.
     requestedAtMs = Date.now();
     threadId = stopThreadId(handle, requestedAtMs);
-    const msgId = await requestStop(bridgeId, threadId, args.reason ?? null);
+    requestMsgId = await requestStop(bridgeId, threadId, args.reason ?? null);
+    const msgId = requestMsgId;
     await applyStateChange(ctx.state, (draft) => {
       const rec = draft.peers[handle];
       if (rec) {
@@ -281,6 +284,7 @@ async function runCourtesyPhase(
     };
   }
   await stopAcks.consume(bridgeId);
+  await retireRequestEnvelope(bridgeId, requestMsgId);
   return { kind: "acked", threadId, waitedMs, resumed };
 }
 

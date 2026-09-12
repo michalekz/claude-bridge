@@ -1,6 +1,7 @@
 import { access, lstat, mkdir, readFile, readdir, rename, unlink } from "node:fs/promises";
 import { join } from "node:path";
 import {
+  bridgeRoot,
   controlDir,
   generateMessageId,
   syntheticSenderId,
@@ -421,6 +422,26 @@ export async function requestFromPeer(
     content,
   });
   return msgId;
+}
+
+/**
+ * VLASTNÍK ŽÁDOSTI UKLÍZÍ SVOU OBÁLKU (0.11.50; oxy-obchod, reprodukováno
+ * 2× na dvou bundlech): peer žádost čte pushem a ackuje SOUBOREM — žádný
+ * bridge nástroj, žádný drén. Obálka tak zůstane v pending/ a po restartu
+ * se naservíruje jako nová; idempotentní ack to přežije, neidempotentní
+ * žádost by se vykonala podruhé. Ack je důkaz zpracování — od té chvíle je
+ * pending kopie jen past. Přesun do done/ zrcadlí, co by udělal drén;
+ * ne-existence souboru není chyba (peer ho mohl mezitím vydrénovat sám).
+ */
+export async function retireRequestEnvelope(peerId: string, msgId: string | null): Promise<void> {
+  if (!msgId) return;
+  const base = join(bridgeRoot(), "inbox", peerId);
+  try {
+    await mkdir(join(base, "done"), { recursive: true });
+    await rename(join(base, "pending", `${msgId}.json`), join(base, "done", `${msgId}.json`));
+  } catch {
+    // already drained, or never written — both are fine states
+  }
 }
 
 /** The daemon's ack conversations. Add the next one here, not a copy elsewhere. */

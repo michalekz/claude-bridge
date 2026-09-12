@@ -4335,7 +4335,7 @@ async function resolvePeer(idOrName, root = bridgeRoot(), now = Date.now()) {
 // package.json
 var package_default = {
   name: "claude-bridge-daemon",
-  version: "0.11.49",
+  version: "0.11.50",
   private: true,
   description: "Control-plane daemon for the claude-bridge plugin: peer lifecycle, telemetry, audit. Distributed as opt-in artefact \u2014 see ADR-008.",
   type: "module",
@@ -5953,6 +5953,15 @@ async function requestFromPeer(peerId, threadId, content) {
   });
   return msgId;
 }
+async function retireRequestEnvelope(peerId, msgId) {
+  if (!msgId) return;
+  const base = (0, import_node_path9.join)(bridgeRoot(), "inbox", peerId);
+  try {
+    await (0, import_promises10.mkdir)((0, import_node_path9.join)(base, "done"), { recursive: true });
+    await (0, import_promises10.rename)((0, import_node_path9.join)(base, "pending", `${msgId}.json`), (0, import_node_path9.join)(base, "done", `${msgId}.json`));
+  } catch {
+  }
+}
 var compactAcks = createAckChannel("compact-ack");
 var stopAcks = createAckChannel("stop-ack");
 var restartAcks = createAckChannel("restart-ack");
@@ -6458,6 +6467,7 @@ async function handlePeerCompact(req, ctx) {
       }
     );
   }
+  await retireRequestEnvelope(bridgeId, anchorMsgId);
   const snapshot = await readPeerContext(bridgeId);
   const contextPercentBefore = snapshot.usedPercentage;
   const raceRisk = contextPercentBefore !== null && contextPercentBefore >= COMPACT_RACE_PERCENT ? {
@@ -7496,6 +7506,7 @@ async function runCourtesyPhase(req, ctx, target, args) {
   const pending = record.observed.stopRequest ?? null;
   const resumed = pending !== null;
   let threadId;
+  let requestMsgId = null;
   let requestedAtMs;
   if (pending) {
     threadId = pending.threadId;
@@ -7529,7 +7540,8 @@ async function runCourtesyPhase(req, ctx, target, args) {
     }
     requestedAtMs = Date.now();
     threadId = stopThreadId(handle, requestedAtMs);
-    const msgId = await requestStop(bridgeId, threadId, args.reason ?? null);
+    requestMsgId = await requestStop(bridgeId, threadId, args.reason ?? null);
+    const msgId = requestMsgId;
     await applyStateChange(ctx.state, (draft) => {
       const rec = draft.peers[handle];
       if (rec) {
@@ -7571,6 +7583,7 @@ async function runCourtesyPhase(req, ctx, target, args) {
     };
   }
   await stopAcks.consume(bridgeId);
+  await retireRequestEnvelope(bridgeId, requestMsgId);
   return { kind: "acked", threadId, waitedMs, resumed };
 }
 var PROCESS_GONE_BUDGET_MS = 3e3;
@@ -8257,6 +8270,7 @@ async function runReadyPhase(req, ctx, target, args, resumeSessionId) {
   const waitedMs = Date.now() - started;
   if (verdict.accepted) {
     await restartAcks.consume(bridgeId);
+    await retireRequestEnvelope(bridgeId, msgId);
     return { kind: "acked", threadId, msgId, waitedMs, resumed: resumable };
   }
   return {

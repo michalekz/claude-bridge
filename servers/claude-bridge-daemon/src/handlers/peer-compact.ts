@@ -19,6 +19,7 @@ import {
   type AckVerdict,
   compactAcks,
   requestFromPeer,
+  retireRequestEnvelope,
   verifyAckFile,
 } from "./ack-protocol.ts";
 import type { HandlerContext } from "./context.ts";
@@ -520,6 +521,10 @@ export async function handlePeerCompact(
       },
     );
   }
+  // Ack = důkaz zpracování; pending kopie žádosti o kotvu je od téhle chvíle
+  // past (po restartu/kompaktu se naservíruje jako nová — a přesně tyhle
+  // control obálky dávaly recipientPending trvalé dno).
+  await retireRequestEnvelope(bridgeId, anchorMsgId);
 
   /**
    * How full is the peer, and is this a race? (v0.11.25, ⑤)
