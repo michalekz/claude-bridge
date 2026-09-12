@@ -1,0 +1,79 @@
+#!/bin/sh
+# Launcher for the claude-bridge MCP server.
+#
+# Ⓞ-B (second occurrence in the fleet, 2026-09-09): `.mcp.json` said
+# `"command": "node"` while templating the bundle path. The PATH is the
+# launcher's, not the peer's, and a launcher started outside nvm has no `node`
+# — so the bundle path was careful and the interpreter was a guess.
+#
+# Ⓞ-C (the same report, and the more expensive half): Claude Code reports a
+# missing token and a missing binary identically as ENOENT, and the bridge left
+# NO trace when it failed to start, while `identity` — a Go binary, which needs
+# no interpreter — started and logged. Three hypotheses were disproved before
+# anyone looked at the interpreter. A component must leave a mark exactly when
+# diagnosis is most expensive: when it never ran.
+#
+# stdout belongs to the MCP protocol. Everything this script says goes to
+# stderr and to the log; a single stray byte on stdout breaks the handshake.
+
+set -e
+
+# 🔴 THE SCRIPT MUST SURVIVE THE ENVIRONMENT IT EXISTS TO DIAGNOSE.
+#
+# Found by this release's own test: with a PATH that has no `/usr/bin`, the
+# launcher died on its own `dirname` before it could log anything — the one
+# situation Ⓞ-C is about. So it uses shell expansion instead of `dirname`, and
+# appends the standard directories for the handful of utilities it still needs
+# (`date`, `mkdir`, `ls`, `sort`). Appended, never prepended: whatever the peer
+# inherited keeps priority for finding `node`.
+PATH="${PATH:-}:/usr/bin:/bin"
+export PATH
+
+BUNDLE="${0%/*}/../servers/claude-bridge/dist/bundle.cjs"
+LOG_DIR="${CLAUDE_BRIDGE_DIR:-$HOME/.claude-bridge}/logs"
+LOG="$LOG_DIR/mcp-launch.log"
+
+note() {
+  mkdir -p "$LOG_DIR" 2>/dev/null || true
+  printf '%s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$1" >>"$LOG" 2>/dev/null || true
+  printf '%s\n' "$1" >&2
+}
+
+# The peer's own `node` first — whatever the launcher inherited is the answer
+# when it has one.
+NODE="$(command -v node 2>/dev/null || true)"
+
+# Then the places a fleet keeps one. Newest nvm version wins; `ls` sorts
+# lexically, which puts v9 above v10, so `sort -V` does the ordering.
+#
+# `CLAUDE_BRIDGE_NODE_PATHS` REPLACES that list (colon-separated, absolute
+# paths). It is for a host whose layout we did not guess — and it is what the
+# tests use to reach the "nothing found" branch on a machine that does have a
+# node, which is every machine we could run them on.
+if [ -z "$NODE" ]; then
+  if [ -n "${CLAUDE_BRIDGE_NODE_PATHS:-}" ]; then
+    candidates="$(printf '%s' "$CLAUDE_BRIDGE_NODE_PATHS" | tr ':' ' ')"
+  else
+    candidates="$(ls -d "$HOME"/.nvm/versions/node/*/bin/node 2>/dev/null | sort -V | tail -1) /usr/local/bin/node /usr/bin/node /opt/homebrew/bin/node"
+  fi
+  for candidate in $candidates
+  do
+    if [ -n "$candidate" ] && [ -x "$candidate" ]; then
+      NODE="$candidate"
+      note "claude-bridge: no node on PATH; using $NODE (PATH=$PATH)"
+      break
+    fi
+  done
+fi
+
+if [ -z "$NODE" ]; then
+  note "claude-bridge: FAILED TO START — no node interpreter found. Looked on PATH ($PATH) and in: $candidates. The bridge is not running in this session; Claude Code will report this as a connection failure, which looks identical to a missing binary or a bad token."
+  exit 127
+fi
+
+if [ ! -f "$BUNDLE" ]; then
+  note "claude-bridge: FAILED TO START — bundle not found at $BUNDLE (node was found at $NODE). The plugin directory is incomplete; reinstall or update the plugin."
+  exit 127
+fi
+
+exec "$NODE" "$BUNDLE" "$@"

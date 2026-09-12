@@ -1,8 +1,7 @@
 {
   "mcpServers": {
     "claude-bridge": {
-      "command": "node",
-      "args": ["${CLAUDE_PLUGIN_ROOT}/servers/claude-bridge/dist/bundle.cjs"]
+      "command": "${CLAUDE_PLUGIN_ROOT}/bin/claude-bridge-mcp"
     }
   }
 }
