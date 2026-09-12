@@ -1,5 +1,6 @@
 import { existsSync } from "node:fs";
 import { join } from "node:path";
+import { bridgeRoot } from "@claude-bridge/shared";
 import { z } from "zod";
 import { writeEvent } from "../events.ts";
 import { type CanonicalTarget, trustCanonicalTarget } from "../hosts/driver.ts";
@@ -390,6 +391,56 @@ export async function handleTeamReconcile(
     });
   }
 
+  // DRUHÝ ENUMERAČNÍ ZDROJ (nález Ⓥ, mic-admin 10. 9., měřeno živě):
+  // bg-spare session pod systemd — druhá živá relace se jménem mic-marketing —
+  // prošla VŠEMI smyčkami výše, protože `listClaudePeers` jde po
+  // `comm == "claude"` a ten proces tím filtrem neprošel. Výsledek: reconcile
+  // viděl 11 cílů, klasifikoval 10 a řekl driftCount 0. „Rozsah detektoru je
+  // dán jeho CESTOU, ne jménem; ticho není nepřítomnost."
+  //
+  // CC vlastní registr (`sessions/<pid>.json`) píše KAŽDÁ session bez ohledu
+  // na comm — proto je to druhý zdroj, ne náhrada prvního: první umí procesy,
+  // které registr ještě nezapsaly, druhý umí procesy, které první nevidí.
+  // Celohostitelsky bez ohledu na `team`, ze stejného důvodu jako `unmanaged`.
+  const flaggedPids = new Set(drift.filter((d) => d.kind === "unmanaged").map((d) => d.actualPid));
+  const namesOnRecords = new Map(
+    Object.values(ctx.state.peers).map((r) => [r.observed.name, r.handle]),
+  );
+  const registered = inspector.listRegisteredSessions
+    ? await inspector.listRegisteredSessions()
+    : [];
+  for (const sess of registered) {
+    if (accountedPids.has(sess.pid) || flaggedPids.has(sess.pid)) continue;
+    if (known.has(sess.sessionId)) continue;
+    if (livePeers.some((p) => p.pid === sess.pid && p.sessionId && known.has(p.sessionId)))
+      continue;
+    const claimed = sess.name !== null ? namesOnRecords.get(sess.name) : undefined;
+    // Subagent/bg session je nástroj svého rodiče, ne unmanaged peer — POKUD
+    // nedělá jednu ze dvou věcí, které dělal bg-spare z nálezu Ⓥ: nenárokuje
+    // jméno drženého záznamu, nebo není sám ADRESOVATELNÝ mostem (vlastní
+    // status soubor = vlastní schránka = přesně ta asymetrie „nejde najít,
+    // jde doručit"). Čistý kind-filtr by Ⓥ umlčel podruhé; žádný filtr by
+    // zaplavil drift anonymními subagenty.
+    if (sess.kind !== null && sess.kind !== "interactive") {
+      const addressable = existsSync(join(bridgeRoot(), "status", `${sess.sessionId}.json`));
+      if (claimed === undefined && !addressable) continue;
+    }
+    drift.push({
+      kind: "unmanaged",
+      handle: sess.sessionId,
+      name: sess.name,
+      team: null,
+      recordedPid: null,
+      actualPid: sess.pid,
+      tmuxTarget: null,
+      detail: `pid ${sess.pid} is a LIVE session per CC's own registry (a source the comm-based walk cannot see — Ⓥ)${
+        claimed !== undefined
+          ? `; it CLAIMS the name '${sess.name}' held by record '${claimed}' — messages sent to the known id will never reach it`
+          : ""
+      }`,
+    });
+  }
+
   // Held-open windows that belong to no record — the graveyard nobody would
   // otherwise notice. Reported whole-host regardless of the `team` filter, for
   // the same reason as `unmanaged`: a corpse belongs to no team, and hiding it
@@ -554,6 +605,7 @@ export async function handleTeamReconcile(
     recordsChecked: records.length,
     hostTargetsSeen: hostTargets.size,
     livePeersSeen: livePeers.length,
+    registeredSessionsSeen: registered.length,
     inSync: healthy.length,
     driftCount: drift.length,
     byKind,

@@ -47,9 +47,22 @@ export const SEND_HELP = `Usage: claude-bridge-daemon send --to <peer> --from-la
   --kind <kind>         ask | reply | broadcast   (default: ask)
   --thread <id>         correlation id for a multi-turn exchange
   --in-reply-to <id>    msgId this answers
+  --stale-ok            deliver even to a peer whose heartbeat is stale
+                        (default: refused — a peer invisible to peer_list must
+                        not be silently deliverable; nález Ⓥ)
 
-Exit: 0 delivered · 2 recipient not found/ambiguous · 3 bad invocation · 4 write failed
+Exit: 0 delivered · 2 recipient not found/ambiguous/stale · 3 bad invocation · 4 write failed
 `;
+
+/**
+ * „Doručitelný" se musí rovnat „najditelný" (Ⓥ): peer_list ukazuje peery
+ * s heartbeatem do ONLINE_THRESHOLD_MS (30 s, registry/peers.ts) — a tahle
+ * cesta do 10. 9. doručovala KOMUKOLIV se status souborem, klidně hodinu
+ * starým. Odesílatel dostal `ok: true` a frontu, kterou nikdo nedrénuje;
+ * `peerHeartbeatAgeMs` to sice neslo, ale číslo vedle `ok` nikdo nečte.
+ * Hodnota je opsaná, ne importovaná: daemon na server balík záměrně nesahá.
+ */
+const RECIPIENT_ACTIVE_WINDOW_MS = 30_000;
 
 export interface SendOutcome {
   code: number;
@@ -67,9 +80,14 @@ interface ParsedFlags {
   kind?: string;
   thread?: string;
   inReplyTo?: string;
+  staleOk?: boolean;
 }
 
-const FLAG_MAP: Record<string, keyof ParsedFlags> = {
+const BOOL_FLAGS: Record<string, "staleOk"> = {
+  "--stale-ok": "staleOk",
+};
+
+const FLAG_MAP: Record<string, Exclude<keyof ParsedFlags, "staleOk">> = {
   "--to": "to",
   "--from-label": "fromLabel",
   "--text": "text",
@@ -84,6 +102,10 @@ export function parseSendFlags(argv: string[]): ParsedFlags | { error: string } 
   for (let i = 0; i < argv.length; i++) {
     const flag = argv[i];
     if (flag === undefined) continue;
+    if (BOOL_FLAGS[flag] === "staleOk") {
+      out.staleOk = true;
+      continue;
+    }
     const key = FLAG_MAP[flag];
     if (!key) return { error: `unknown flag '${flag}'` };
     const value = argv[i + 1];
@@ -158,6 +180,15 @@ export async function runSend(argv: string[], now: number = Date.now()): Promise
   }
 
   const peer = lookup.peer;
+  if (peer.lastSeenAgeMs > RECIPIENT_ACTIVE_WINDOW_MS && !parsed.staleOk) {
+    const age = Number.isFinite(peer.lastSeenAgeMs)
+      ? `${Math.round(peer.lastSeenAgeMs / 1000)} s`
+      : "unknown age";
+    return {
+      code: EXIT_PEER,
+      stderr: `send: peer '${parsed.to}' (${peer.id}) has a stale heartbeat (${age} > 30 s) — it is INVISIBLE to peer_list yet its mailbox would accept this write, and nobody may be draining it (Ⓥ). Pass --stale-ok to deliver anyway; the write then says so in its result.\n`,
+    };
+  }
   const envelope: MessageEnvelope = {
     id: generateMessageId(now),
     from: syntheticSenderId(parsed.fromLabel),
@@ -204,6 +235,12 @@ export async function runSend(argv: string[], now: number = Date.now()): Promise
       kind: envelope.kind,
       path,
       peerHeartbeatAgeMs: peer.lastSeenAgeMs,
+      ...(peer.lastSeenAgeMs > RECIPIENT_ACTIVE_WINDOW_MS
+        ? {
+            staleRecipient: true,
+            note: "delivered with --stale-ok to a peer invisible to peer_list",
+          }
+        : {}),
     })}\n`,
   };
 }

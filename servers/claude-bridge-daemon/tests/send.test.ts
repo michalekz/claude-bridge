@@ -176,3 +176,73 @@ describe("send: delivering a message from outside the fleet", () => {
     expect(raw).not.toContain(SECRET);
   });
 });
+
+describe("v0.11.48 — deliverable must equal findable (Ⓥ)", () => {
+  let home: string;
+
+  beforeEach(async () => {
+    home = await mkdtemp(join(tmpdir(), "cb-send48-"));
+    homeHolder.current = home;
+    vi.resetModules();
+  });
+
+  afterEach(async () => {
+    await rm(home, { recursive: true, force: true });
+  });
+
+  it("refuses a peer with a stale heartbeat and names the asymmetry", async () => {
+    const { runSend } = await importSend();
+    // 10 minut starý heartbeat: peer_list ho neukáže — a přesně proto sem
+    // do 10. 9. šlo doručit (bg-spare mic-marketing, pending nikdo nedrénoval).
+    await heartbeat(
+      home,
+      { id: "0099013a-1111-2222-3333-444444444444", name: "mic-marketing" },
+      new Date(Date.now() - 10 * 60 * 1000).toISOString(),
+    );
+    const out = await runSend([
+      "--to",
+      "0099013a-1111-2222-3333-444444444444",
+      "--from-label",
+      "test:v48",
+      "--text",
+      "hello",
+    ]);
+    expect(out.code).toBe(2);
+    expect(out.stderr).toContain("stale heartbeat");
+    expect(out.stderr).toContain("INVISIBLE to peer_list");
+    expect(out.stderr).toContain("--stale-ok");
+  });
+
+  it("--stale-ok delivers AND the result says so", async () => {
+    const { runSend } = await importSend();
+    await heartbeat(
+      home,
+      { id: "0099013a-1111-2222-3333-444444444444", name: "mic-marketing" },
+      new Date(Date.now() - 10 * 60 * 1000).toISOString(),
+    );
+    const out = await runSend([
+      "--to",
+      "0099013a-1111-2222-3333-444444444444",
+      "--from-label",
+      "test:v48",
+      "--text",
+      "hello",
+      "--stale-ok",
+    ]);
+    expect(out.code).toBe(0);
+    const parsed = JSON.parse(out.stdout ?? "{}") as { staleRecipient?: boolean; note?: string };
+    expect(parsed.staleRecipient).toBe(true);
+    expect(parsed.note).toContain("stale-ok");
+    const queued = await pendingFor(home, "0099013a-1111-2222-3333-444444444444");
+    expect(queued).toHaveLength(1);
+  });
+
+  it("a fresh peer is untouched by the gate and carries no stale fields", async () => {
+    const { runSend } = await importSend();
+    await heartbeat(home, { id: "aaaa0000-1111-2222-3333-444444444444", name: "etl-dev" });
+    const out = await runSend(["--to", "etl-dev", "--from-label", "test:v48", "--text", "hello"]);
+    expect(out.code).toBe(0);
+    const parsed = JSON.parse(out.stdout ?? "{}") as { staleRecipient?: boolean };
+    expect(parsed.staleRecipient).toBeUndefined();
+  });
+});

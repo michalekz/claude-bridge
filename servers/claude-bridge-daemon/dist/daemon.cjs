@@ -4335,7 +4335,7 @@ async function resolvePeer(idOrName, root = bridgeRoot(), now = Date.now()) {
 // package.json
 var package_default = {
   name: "claude-bridge-daemon",
-  version: "0.11.47",
+  version: "0.11.48",
   private: true,
   description: "Control-plane daemon for the claude-bridge plugin: peer lifecycle, telemetry, audit. Distributed as opt-in artefact \u2014 see ADR-008.",
   type: "module",
@@ -5981,6 +5981,38 @@ var LinuxProcessInspector = class {
   constructor(opts = {}) {
     this.procRoot = opts.procRoot ?? "/proc";
     this.sessionsDir = opts.sessionsDir ?? (0, import_node_path10.join)((0, import_node_os4.homedir)(), ".claude", "sessions");
+  }
+  async listRegisteredSessions() {
+    let entries;
+    try {
+      entries = await (0, import_promises11.readdir)(this.sessionsDir);
+    } catch {
+      return [];
+    }
+    const out = [];
+    for (const entry of entries) {
+      if (!entry.endsWith(".json")) continue;
+      const pid = Number.parseInt(entry.slice(0, -5), 10);
+      if (Number.isNaN(pid)) continue;
+      try {
+        await (0, import_promises11.readFile)((0, import_node_path10.join)(this.procRoot, String(pid), "stat"), "utf-8");
+      } catch {
+        continue;
+      }
+      try {
+        const raw = JSON.parse(await (0, import_promises11.readFile)((0, import_node_path10.join)(this.sessionsDir, entry), "utf-8"));
+        const sessionId = typeof raw["sessionId"] === "string" ? raw["sessionId"] : null;
+        if (!sessionId) continue;
+        out.push({
+          pid,
+          sessionId,
+          name: typeof raw["name"] === "string" ? raw["name"] : null,
+          kind: typeof raw["kind"] === "string" ? raw["kind"] : null
+        });
+      } catch {
+      }
+    }
+    return out;
   }
   async listClaudePeers() {
     let entries;
@@ -9643,6 +9675,32 @@ async function handleTeamReconcile(req, ctx) {
       detail: `pid ${proc.pid} is a Claude peer with no record${proc.sessionId ? "" : " and no resolvable session id"}`
     });
   }
+  const flaggedPids = new Set(drift.filter((d) => d.kind === "unmanaged").map((d) => d.actualPid));
+  const namesOnRecords = new Map(
+    Object.values(ctx.state.peers).map((r) => [r.observed.name, r.handle])
+  );
+  const registered = inspector.listRegisteredSessions ? await inspector.listRegisteredSessions() : [];
+  for (const sess of registered) {
+    if (accountedPids.has(sess.pid) || flaggedPids.has(sess.pid)) continue;
+    if (known.has(sess.sessionId)) continue;
+    if (livePeers.some((p) => p.pid === sess.pid && p.sessionId && known.has(p.sessionId)))
+      continue;
+    const claimed = sess.name !== null ? namesOnRecords.get(sess.name) : void 0;
+    if (sess.kind !== null && sess.kind !== "interactive") {
+      const addressable = (0, import_node_fs8.existsSync)((0, import_node_path17.join)(bridgeRoot(), "status", `${sess.sessionId}.json`));
+      if (claimed === void 0 && !addressable) continue;
+    }
+    drift.push({
+      kind: "unmanaged",
+      handle: sess.sessionId,
+      name: sess.name,
+      team: null,
+      recordedPid: null,
+      actualPid: sess.pid,
+      tmuxTarget: null,
+      detail: `pid ${sess.pid} is a LIVE session per CC's own registry (a source the comm-based walk cannot see \u2014 \u24CB)${claimed !== void 0 ? `; it CLAIMS the name '${sess.name}' held by record '${claimed}' \u2014 messages sent to the known id will never reach it` : ""}`
+    });
+  }
   const recordedTargets = new Set(
     Object.values(ctx.state.peers).map((r) => r.observed.tmuxTarget).filter((t) => t !== null)
   );
@@ -9748,6 +9806,7 @@ async function handleTeamReconcile(req, ctx) {
     recordsChecked: records.length,
     hostTargetsSeen: hostTargets.size,
     livePeersSeen: livePeers.length,
+    registeredSessionsSeen: registered.length,
     inSync: healthy.length,
     driftCount: drift.length,
     byKind,
@@ -10948,7 +11007,13 @@ var TmuxDriver = class _TmuxDriver {
     }
     if (asWindow && parentSession !== null && !recreatedHome) {
       await this.tmux(
-        ["set-option", "-t", exactSession(parentSession), "history-limit", String(FLEET_HISTORY_LIMIT)],
+        [
+          "set-option",
+          "-t",
+          exactSession(parentSession),
+          "history-limit",
+          String(FLEET_HISTORY_LIMIT)
+        ],
         QUERY_TIMEOUT_MS
       ).catch(() => void 0);
     }
@@ -10990,7 +11055,14 @@ var TmuxDriver = class _TmuxDriver {
     });
     if (asWindow && opts.windowIndex !== void 0 && parentSession !== null) {
       const moved = await this.tmux(
-        ["move-window", "-b", "-s", effectiveKey, "-t", `${exactSession(parentSession)}:${opts.windowIndex}`],
+        [
+          "move-window",
+          "-b",
+          "-s",
+          effectiveKey,
+          "-t",
+          `${exactSession(parentSession)}:${opts.windowIndex}`
+        ],
         QUERY_TIMEOUT_MS
       ).then(
         () => true,
@@ -12072,9 +12144,16 @@ var SEND_HELP = `Usage: claude-bridge-daemon send --to <peer> --from-label <labe
   --kind <kind>         ask | reply | broadcast   (default: ask)
   --thread <id>         correlation id for a multi-turn exchange
   --in-reply-to <id>    msgId this answers
+  --stale-ok            deliver even to a peer whose heartbeat is stale
+                        (default: refused \u2014 a peer invisible to peer_list must
+                        not be silently deliverable; n\xE1lez \u24CB)
 
-Exit: 0 delivered \xB7 2 recipient not found/ambiguous \xB7 3 bad invocation \xB7 4 write failed
+Exit: 0 delivered \xB7 2 recipient not found/ambiguous/stale \xB7 3 bad invocation \xB7 4 write failed
 `;
+var RECIPIENT_ACTIVE_WINDOW_MS = 3e4;
+var BOOL_FLAGS = {
+  "--stale-ok": "staleOk"
+};
 var FLAG_MAP = {
   "--to": "to",
   "--from-label": "fromLabel",
@@ -12089,6 +12168,10 @@ function parseSendFlags(argv) {
   for (let i = 0; i < argv.length; i++) {
     const flag = argv[i];
     if (flag === void 0) continue;
+    if (BOOL_FLAGS[flag] === "staleOk") {
+      out.staleOk = true;
+      continue;
+    }
     const key = FLAG_MAP[flag];
     if (!key) return { error: `unknown flag '${flag}'` };
     const value = argv[i + 1];
@@ -12162,6 +12245,14 @@ ${SEND_HELP}` };
     };
   }
   const peer = lookup.peer;
+  if (peer.lastSeenAgeMs > RECIPIENT_ACTIVE_WINDOW_MS && !parsed.staleOk) {
+    const age = Number.isFinite(peer.lastSeenAgeMs) ? `${Math.round(peer.lastSeenAgeMs / 1e3)} s` : "unknown age";
+    return {
+      code: EXIT_PEER,
+      stderr: `send: peer '${parsed.to}' (${peer.id}) has a stale heartbeat (${age} > 30 s) \u2014 it is INVISIBLE to peer_list yet its mailbox would accept this write, and nobody may be draining it (\u24CB). Pass --stale-ok to deliver anyway; the write then says so in its result.
+`
+    };
+  }
   const envelope = {
     id: generateMessageId(now),
     from: syntheticSenderId(parsed.fromLabel),
@@ -12203,7 +12294,11 @@ ${SEND_HELP}` };
       from: envelope.from,
       kind: envelope.kind,
       path,
-      peerHeartbeatAgeMs: peer.lastSeenAgeMs
+      peerHeartbeatAgeMs: peer.lastSeenAgeMs,
+      ...peer.lastSeenAgeMs > RECIPIENT_ACTIVE_WINDOW_MS ? {
+        staleRecipient: true,
+        note: "delivered with --stale-ok to a peer invisible to peer_list"
+      } : {}
     })}
 `
   };

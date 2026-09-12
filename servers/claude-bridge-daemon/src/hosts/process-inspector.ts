@@ -89,6 +89,20 @@ export interface ProcessInspector {
    * řídí, jestli brána restartu odmítne, nebo mlčí.
    */
   readProcEnviron?(pid: number): Promise<Record<string, string>>;
+  /**
+   * Živé session z CC VLASTNÍHO registru (`~/.claude/sessions/<pid>.json`) —
+   * druhý enumerační zdroj (nález Ⓥ, 10. 9.): `listClaudePeers` jde po
+   * `comm == "claude"`, a bg-spare proces pod systemd tím filtrem neprošel,
+   * takže reconcile MLČEL nad stavem, kvůli kterému existuje. „Rozsah
+   * detektoru je dán jeho CESTOU, ne jménem; ticho není nepřítomnost"
+   * (mic-admin). Registr píše každá CC session bez ohledu na comm.
+   *
+   * VOLITELNÁ ze stejného důvodu jako `readProcEnviron`: kdo ji nemá, vyjde
+   * volajícímu jako „NEVÍM", ne jako „nic tam není".
+   */
+  listRegisteredSessions?(): Promise<
+    Array<{ pid: number; sessionId: string; name: string | null; kind: string | null }>
+  >;
 }
 
 const DEFAULT_MAX_DEPTH = 8;
@@ -147,6 +161,51 @@ export class LinuxProcessInspector implements ProcessInspector {
   constructor(opts: LinuxProcessInspectorOptions = {}) {
     this.procRoot = opts.procRoot ?? "/proc";
     this.sessionsDir = opts.sessionsDir ?? join(homedir(), ".claude", "sessions");
+  }
+
+  async listRegisteredSessions(): Promise<
+    Array<{ pid: number; sessionId: string; name: string | null; kind: string | null }>
+  > {
+    let entries: string[];
+    try {
+      entries = await readdir(this.sessionsDir);
+    } catch {
+      return [];
+    }
+    const out: Array<{
+      pid: number;
+      sessionId: string;
+      name: string | null;
+      kind: string | null;
+    }> = [];
+    for (const entry of entries) {
+      if (!entry.endsWith(".json")) continue;
+      const pid = Number.parseInt(entry.slice(0, -5), 10);
+      if (Number.isNaN(pid)) continue;
+      // Soubor mrtvého pidu je smetí CC, ne živá session.
+      try {
+        await readFile(join(this.procRoot, String(pid), "stat"), "utf-8");
+      } catch {
+        continue;
+      }
+      try {
+        const raw = JSON.parse(await readFile(join(this.sessionsDir, entry), "utf-8")) as Record<
+          string,
+          unknown
+        >;
+        const sessionId = typeof raw["sessionId"] === "string" ? raw["sessionId"] : null;
+        if (!sessionId) continue;
+        out.push({
+          pid,
+          sessionId,
+          name: typeof raw["name"] === "string" ? raw["name"] : null,
+          kind: typeof raw["kind"] === "string" ? raw["kind"] : null,
+        });
+      } catch {
+        // půl-zapsaný soubor počká na příští průchod
+      }
+    }
+    return out;
   }
 
   async listClaudePeers(): Promise<ProcessRecord[]> {
