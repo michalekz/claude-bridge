@@ -15,6 +15,18 @@
 #
 # stdout belongs to the MCP protocol. Everything this script says goes to
 # stderr and to the log; a single stray byte on stdout breaks the handshake.
+#
+# THE SUCCESS PATH LOGS NOTHING, deliberately: this runs at every session
+# start, and a line per start would bury the one line that matters. To tell
+# whether the launcher ran, read the process arguments rather than the log —
+# it resolves the bundle relative to ITSELF, so a server it started always
+# shows `…/bin/../servers/claude-bridge/dist/bundle.cjs`, while the pre-0.11.56
+# direct invocation shows that path without the `bin/..` segment:
+#
+#     ps -o args= -p <mcpServerPid from peer_list>
+#
+# (Asked by ai-velitel while piloting this release: an empty log must not be
+# read, a month later, as "the launcher was not used".)
 
 set -e
 
