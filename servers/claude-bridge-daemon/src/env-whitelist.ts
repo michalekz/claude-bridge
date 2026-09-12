@@ -159,6 +159,16 @@ const SPAWN_ESSENTIAL_CLAUDE_VARS = new Set<string>([
   // subscription-based auth uses.
   "CLAUDE_CONFIG_DIR",
 
+  // Ⓞ-A (nasazeno ve v0.11.49; incident 9. 9.): peerova PŘIHLÁŠKA. Harvest
+  // ji z principu stripuje, takže uložené prostředí ji nikdy nenese — a
+  // restart token-autentizovaného peera ho do 0.11.48 vracel BEZ tokenu,
+  // což se projevilo jako „náhodná porucha MCP". Restart ji od teď PŘENÁŠÍ
+  // z živého /proc environ zastavovaného procesu přímo do relaunche —
+  // hodnota jde pamětí, nikdy do stavu, logů ani eventů (ty nesou jen
+  // PŘÍTOMNOST). Táž lekce jako ANTHROPIC_BASE_URL níž: otevřít bránu
+  // nestačí, musí jí někdo projít — volací místo je v peer-restart.
+  "CLAUDE_CODE_OAUTH_TOKEN",
+
   // Points CC at the identity proxy. Same class as CLAUDE_CONFIG_DIR: a
   // mechanism the daemon must be able to SET, not a leak it must block.
   //

@@ -601,15 +601,23 @@ export async function handlePeerRestart(
    * a most se rozdává ven.
    */
   const baseUrlDecision = resolveBaseUrl(record.desired, await readConfig());
+  // Živé prostředí se čte JEDNOU, pro obě pojistky: proxy bránu níž a přenos
+  // tokenu (Ⓞ-A). `null` = NEVÍME (starý pid, jiná platforma, nepřečtený
+  // /proc) — obě pojistky pak mlčí: hlídají doloženou ztrátu, ne domněnku.
+  const liveEnvironInspector = defaultProcessInspector();
+  const liveEnviron =
+    record.observed.pid && liveEnvironInspector.readProcEnviron
+      ? await liveEnvironInspector.readProcEnviron(record.observed.pid).catch(() => null)
+      : null;
+  /**
+   * Ⓞ-A (incident 9. 9.): token-autentizovaný peer se z restartu vracel BEZ
+   * `CLAUDE_CODE_OAUTH_TOKEN` — harvest tu proměnnou z principu stripuje,
+   * takže uložené prostředí ji nemá jak nést. Jediný pramen je živý proces
+   * sám, a čte se PŘED zastavením. Hodnota putuje výhradně pamětí do
+   * relaunch overrides; stav, event i výsledek nesou jen PŘÍTOMNOST.
+   */
+  const carriedToken = liveEnviron?.["CLAUDE_CODE_OAUTH_TOKEN"] || undefined;
   if (!baseUrlDecision.decided) {
-    const pid = record.observed.pid;
-    const inspector = defaultProcessInspector();
-    // `null` = NEVÍME (starý pid, jiná platforma, nepřečtený /proc). Brána
-    // pak mlčí: hlídá doloženou ztrátu, ne domněnku.
-    const liveEnviron =
-      pid && inspector.readProcEnviron
-        ? await inspector.readProcEnviron(pid).catch(() => null)
-        : null;
     if (restartWouldDropProxy(baseUrlDecision, liveEnviron)) {
       const had = liveEnviron?.["ANTHROPIC_BASE_URL"] ?? "";
       await writeEvent({
@@ -944,6 +952,15 @@ export async function handlePeerRestart(
   const stoppedCleanly =
     (stopResult.data as { stoppedCleanly?: boolean | null } | undefined)?.stoppedCleanly ?? null;
 
+  if (carriedToken !== undefined) {
+    await writeEvent({
+      event: "peer_restart_token_carried",
+      by: { sessionId: req.requestedBy.sessionId, name: req.requestedBy.name },
+      requestId: req.id,
+      // PŘÍTOMNOST A ZDROJ, NIKDY HODNOTA (pravidlo ADM ② z revize CB2).
+      details: { handle: record.handle, source: "live-environ", present: true },
+    });
+  }
   const spawnArgs = {
     schemaVersion: req.schemaVersion,
     id: `${req.id}:spawn`,
@@ -1009,7 +1026,13 @@ export async function handlePeerRestart(
       model: args.model ?? record.desired.model ?? record.observed.model ?? null,
       accountProfile: args.accountProfile ?? record.desired.accountProfile ?? null,
       extraAllowEnv: [],
-      extraEnv: {},
+      // Ⓞ-A: jediné, co restart do prostředí DOSAZUJE, je peerova vlastní
+      // přihláška přenesená z jeho živého /proc environ (hodnota jde pamětí,
+      // nikam se nezapisuje). Pozor na tvar: tahle vlastnost je POSLEDNÍ
+      // v objektu — dřívější pokus dát token do spreadu výš přežil přesně
+      // do téhle řádky, která ho přepsala prázdnem, a chytil to až e2e test
+      // ptající se procesu.
+      extraEnv: carriedToken !== undefined ? { CLAUDE_CODE_OAUTH_TOKEN: carriedToken } : {},
     },
     requestedBy: req.requestedBy,
   };

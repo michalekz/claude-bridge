@@ -4335,7 +4335,7 @@ async function resolvePeer(idOrName, root = bridgeRoot(), now = Date.now()) {
 // package.json
 var package_default = {
   name: "claude-bridge-daemon",
-  version: "0.11.48",
+  version: "0.11.49",
   private: true,
   description: "Control-plane daemon for the claude-bridge plugin: peer lifecycle, telemetry, audit. Distributed as opt-in artefact \u2014 see ADR-008.",
   type: "module",
@@ -4729,6 +4729,15 @@ var SPAWN_ESSENTIAL_CLAUDE_VARS = /* @__PURE__ */ new Set([
   // Points CC at a specific config/credentials profile — the mechanism
   // subscription-based auth uses.
   "CLAUDE_CONFIG_DIR",
+  // Ⓞ-A (nasazeno ve v0.11.49; incident 9. 9.): peerova PŘIHLÁŠKA. Harvest
+  // ji z principu stripuje, takže uložené prostředí ji nikdy nenese — a
+  // restart token-autentizovaného peera ho do 0.11.48 vracel BEZ tokenu,
+  // což se projevilo jako „náhodná porucha MCP". Restart ji od teď PŘENÁŠÍ
+  // z živého /proc environ zastavovaného procesu přímo do relaunche —
+  // hodnota jde pamětí, nikdy do stavu, logů ani eventů (ty nesou jen
+  // PŘÍTOMNOST). Táž lekce jako ANTHROPIC_BASE_URL níž: otevřít bránu
+  // nestačí, musí jí někdo projít — volací místo je v peer-restart.
+  "CLAUDE_CODE_OAUTH_TOKEN",
   // Points CC at the identity proxy. Same class as CLAUDE_CONFIG_DIR: a
   // mechanism the daemon must be able to SET, not a leak it must block.
   //
@@ -8295,10 +8304,10 @@ async function handlePeerRestart(req, ctx) {
     );
   }
   const baseUrlDecision = resolveBaseUrl(record.desired, await readConfig());
+  const liveEnvironInspector = defaultProcessInspector();
+  const liveEnviron = record.observed.pid && liveEnvironInspector.readProcEnviron ? await liveEnvironInspector.readProcEnviron(record.observed.pid).catch(() => null) : null;
+  const carriedToken = liveEnviron?.["CLAUDE_CODE_OAUTH_TOKEN"] || void 0;
   if (!baseUrlDecision.decided) {
-    const pid = record.observed.pid;
-    const inspector = defaultProcessInspector();
-    const liveEnviron = pid && inspector.readProcEnviron ? await inspector.readProcEnviron(pid).catch(() => null) : null;
     if (restartWouldDropProxy(baseUrlDecision, liveEnviron)) {
       const had = liveEnviron?.["ANTHROPIC_BASE_URL"] ?? "";
       await writeEvent({
@@ -8536,6 +8545,15 @@ async function handlePeerRestart(req, ctx) {
     );
   }
   const stoppedCleanly = stopResult.data?.stoppedCleanly ?? null;
+  if (carriedToken !== void 0) {
+    await writeEvent({
+      event: "peer_restart_token_carried",
+      by: { sessionId: req.requestedBy.sessionId, name: req.requestedBy.name },
+      requestId: req.id,
+      // PŘÍTOMNOST A ZDROJ, NIKDY HODNOTA (pravidlo ADM ② z revize CB2).
+      details: { handle: record.handle, source: "live-environ", present: true }
+    });
+  }
   const spawnArgs = {
     schemaVersion: req.schemaVersion,
     id: `${req.id}:spawn`,
@@ -8599,7 +8617,13 @@ async function handlePeerRestart(req, ctx) {
       model: args.model ?? record.desired.model ?? record.observed.model ?? null,
       accountProfile: args.accountProfile ?? record.desired.accountProfile ?? null,
       extraAllowEnv: [],
-      extraEnv: {}
+      // Ⓞ-A: jediné, co restart do prostředí DOSAZUJE, je peerova vlastní
+      // přihláška přenesená z jeho živého /proc environ (hodnota jde pamětí,
+      // nikam se nezapisuje). Pozor na tvar: tahle vlastnost je POSLEDNÍ
+      // v objektu — dřívější pokus dát token do spreadu výš přežil přesně
+      // do téhle řádky, která ho přepsala prázdnem, a chytil to až e2e test
+      // ptající se procesu.
+      extraEnv: carriedToken !== void 0 ? { CLAUDE_CODE_OAUTH_TOKEN: carriedToken } : {}
     },
     requestedBy: req.requestedBy
   };

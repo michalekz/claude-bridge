@@ -64,7 +64,17 @@ export function buildChannelNotification(envelope: MessageEnvelope): ChannelNoti
     ? `${envelope.fromName}${bg} (${envelope.from.slice(0, 8)})`
     : `${envelope.from}${bg}`;
   const header = `📬 from ${senderLabel} (${envelope.kind}, msg ${envelope.id})`;
-  const replyHint = envelope.kind === "ask" ? `\n\n(use peer_reply inReplyTo=${envelope.id})` : "";
+  // Ⓧ (dva nezávislé reporty oxy dvojice, 12. 9.): patička u external:*
+  // odesílatele radila peer_reply, který pak správně odmítl
+  // sender_is_external — pozvánka a zákaz si protiřečily a stály volání
+  // navíc při KAŽDÉM restartu. External nemá schránku; rada říká, co dělat
+  // místo toho.
+  const replyHint =
+    envelope.kind !== "ask"
+      ? ""
+      : envelope.from.startsWith("external:")
+        ? "\n\n(external sender — peer_reply nelze; odpověz kanálem, kterým to přišlo: ack soubor, terminál, nebo report svému člověku)"
+        : `\n\n(use peer_reply inReplyTo=${envelope.id})`;
   const content = `${header}:\n${envelope.content}${replyHint}`;
   return { method: CHANNEL_METHOD, params: { content, meta } };
 }

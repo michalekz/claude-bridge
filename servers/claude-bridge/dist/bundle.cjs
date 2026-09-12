@@ -18243,7 +18243,7 @@ var StdioServerTransport = class {
 // package.json
 var package_default = {
   name: "claude-bridge",
-  version: "0.11.48",
+  version: "0.11.49",
   private: true,
   description: "MCP server for cross-Claude-Code-chat orchestration over local session JSONL files",
   type: "module",
@@ -20809,9 +20809,9 @@ function buildChannelNotification(envelope) {
   const bg = envelope.fromKind === "bg" ? " (bg)" : "";
   const senderLabel = envelope.fromName ? `${envelope.fromName}${bg} (${envelope.from.slice(0, 8)})` : `${envelope.from}${bg}`;
   const header = `\u{1F4EC} from ${senderLabel} (${envelope.kind}, msg ${envelope.id})`;
-  const replyHint = envelope.kind === "ask" ? `
+  const replyHint = envelope.kind !== "ask" ? "" : envelope.from.startsWith("external:") ? "\n\n(external sender \u2014 peer_reply nelze; odpov\u011Bz kan\xE1lem, kter\xFDm to p\u0159i\u0161lo: ack soubor, termin\xE1l, nebo report sv\xE9mu \u010Dlov\u011Bku)" : `
 
-(use peer_reply inReplyTo=${envelope.id})` : "";
+(use peer_reply inReplyTo=${envelope.id})`;
   const content = `${header}:
 ${envelope.content}${replyHint}`;
   return { method: CHANNEL_METHOD, params: { content, meta } };
@@ -23703,13 +23703,16 @@ function formatInboxBlock(messages, echoed = /* @__PURE__ */ new Set()) {
     const ts = m.sentAt.slice(11, 19);
     lines.push("");
     const echo = echoed.has(m.id) ? " [already pushed to channel]" : "";
-    lines.push(`[${m.id}] from ${formatSender(m)} (${m.kind}) at ${ts}${echo}:`);
+    const ext = m.from.startsWith("external:") ? " [external \u2014 peer_reply nelze]" : "";
+    lines.push(`[${m.id}] from ${formatSender(m)} (${m.kind}) at ${ts}${echo}${ext}:`);
     lines.push(`  ${m.content.split("\n").join("\n  ")}`);
     if (m.inReplyTo) lines.push(`  in_reply_to: ${m.inReplyTo}`);
     if (m.threadId) lines.push(`  thread: ${m.threadId}`);
   }
   lines.push("");
-  lines.push("(use peer_reply with inReplyTo=<msg-id> to respond)");
+  lines.push(
+    messages.every((m) => m.from.startsWith("external:")) ? "(external senders \u2014 peer_reply nelze; odpov\u011Bz kan\xE1lem, kter\xFDm zpr\xE1va p\u0159i\u0161la)" : "(use peer_reply with inReplyTo=<msg-id> to respond; external:* senders have no inbox)"
+  );
   lines.push("\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500");
   return lines.join("\n");
 }
@@ -23736,7 +23739,7 @@ async function piggybackInbox(ctx, toolName, result) {
 var PeerContextStatusArgs = external_exports.object({
   to: external_exports.union([external_exports.string(), external_exports.array(external_exports.string())]).optional()
 }).strict();
-async function buildContextStatusEntry(ctx, peerId, peerName) {
+async function buildContextStatusEntry(ctx, peerId, peerName, nameSource) {
   const isSelf = peerId === ctx.self.id;
   const guard = await readContextGuard(peerId);
   const sessions = await findSessions(peerId);
@@ -23750,6 +23753,8 @@ async function buildContextStatusEntry(ctx, peerId, peerName) {
     return {
       id: peerId,
       name: peerName,
+      nameSource,
+      ...nameSource === "cwd-slug" ? { nameIsFallback: true } : {},
       isSelf,
       hasLiveData: false,
       model: null,
@@ -23770,6 +23775,8 @@ async function buildContextStatusEntry(ctx, peerId, peerName) {
   return {
     id: peerId,
     name: peerName,
+    nameSource,
+    ...nameSource === "cwd-slug" ? { nameIsFallback: true } : {},
     isSelf,
     hasLiveData: usage.hasLiveData,
     model: usage.model,
@@ -23793,17 +23800,17 @@ async function peerContextStatusTool(ctx, args) {
     const targets = [];
     const toArg = args.to;
     if (toArg === void 0) {
-      targets.push({ id: ctx.self.id, name: ctx.self.name });
+      targets.push({ id: ctx.self.id, name: ctx.self.name, source: ctx.self.source });
     } else if (typeof toArg === "string" && toArg === "all") {
       const peers2 = await ctx.registry.listActivePeers();
       const seen = /* @__PURE__ */ new Set();
       for (const p of peers2) {
         if (seen.has(p.id)) continue;
         seen.add(p.id);
-        targets.push({ id: p.id, name: p.name });
+        targets.push({ id: p.id, name: p.name, source: p.source });
       }
       if (!seen.has(ctx.self.id)) {
-        targets.push({ id: ctx.self.id, name: ctx.self.name });
+        targets.push({ id: ctx.self.id, name: ctx.self.name, source: ctx.self.source });
       }
     } else {
       const list = Array.isArray(toArg) ? toArg : [toArg];
@@ -23813,12 +23820,16 @@ async function peerContextStatusTool(ctx, args) {
         const normalized = item === "self" ? ctx.self.id : item;
         const byId = activePeers.find((p) => p.id === normalized);
         if (byId) {
-          targets.push({ id: byId.id, name: byId.name });
+          targets.push({ id: byId.id, name: byId.name, source: byId.source });
           continue;
         }
         const resolved = await resolveTargetPeer(ctx, normalized);
         if (resolved.ok) {
-          targets.push({ id: resolved.peer.id, name: resolved.peer.name });
+          targets.push({
+            id: resolved.peer.id,
+            name: resolved.peer.name,
+            source: resolved.peer.source
+          });
           continue;
         }
         if (resolved.code === "ambiguous_peer") {
@@ -23829,7 +23840,7 @@ async function peerContextStatusTool(ctx, args) {
           );
         }
         if (UUID_RE.test(normalized)) {
-          targets.push({ id: normalized, name: null });
+          targets.push({ id: normalized, name: null, source: void 0 });
           continue;
         }
         return err2("peer_not_found", `No active peer "${normalized}" and not a UUID`, {
@@ -23840,7 +23851,7 @@ async function peerContextStatusTool(ctx, args) {
     }
     const peers = [];
     for (const t of targets) {
-      peers.push(await buildContextStatusEntry(ctx, t.id, t.name));
+      peers.push(await buildContextStatusEntry(ctx, t.id, t.name, t.source ?? null));
     }
     return ok2({ count: peers.length, peers });
   } catch (e) {

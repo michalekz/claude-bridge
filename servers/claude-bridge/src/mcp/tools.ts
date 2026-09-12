@@ -1702,13 +1702,18 @@ function formatInboxBlock(messages: MessageEnvelope[], echoed: Set<string> = new
     const ts = m.sentAt.slice(11, 19); // HH:MM:SS
     lines.push("");
     const echo = echoed.has(m.id) ? " [already pushed to channel]" : "";
-    lines.push(`[${m.id}] from ${formatSender(m)} (${m.kind}) at ${ts}${echo}:`);
+    const ext = m.from.startsWith("external:") ? " [external — peer_reply nelze]" : "";
+    lines.push(`[${m.id}] from ${formatSender(m)} (${m.kind}) at ${ts}${echo}${ext}:`);
     lines.push(`  ${m.content.split("\n").join("\n  ")}`);
     if (m.inReplyTo) lines.push(`  in_reply_to: ${m.inReplyTo}`);
     if (m.threadId) lines.push(`  thread: ${m.threadId}`);
   }
   lines.push("");
-  lines.push("(use peer_reply with inReplyTo=<msg-id> to respond)");
+  lines.push(
+    messages.every((m) => m.from.startsWith("external:"))
+      ? "(external senders — peer_reply nelze; odpověz kanálem, kterým zpráva přišla)"
+      : "(use peer_reply with inReplyTo=<msg-id> to respond; external:* senders have no inbox)",
+  );
   lines.push("─────────────────────────");
   return lines.join("\n");
 }
@@ -1781,6 +1786,15 @@ export const PeerContextStatusArgs = z
 interface ContextStatusEntry {
   id: string;
   name: string | null;
+  /** Odkud jméno přišlo (jako v peer_list): "jsonl-title" × "cwd-slug" ×
+   * další zdroje registru. Čerstvě restartovaná session titul ještě nemá a
+   * fallback sáhne po slugu cwd — BEZ tohohle pole to vypadá jako regrese
+   * a stálo to celé jedno pilotní kolo (etl, 12. 9.). `null` = cíl nebyl
+   * v rosteru (UUID fallback na mrtvou session). */
+  nameSource: string | null;
+  /** true, když je jméno fallback (cwd-slug) — v tom okně NENÍ adresovatelné
+   * jako jméno; adresuj id. */
+  nameIsFallback?: boolean;
   isSelf: boolean;
   /** True when any live source (statusLine capture OR JSONL scan) produced
    * data (v0.9.4+). When false, contextLimit/tokensUsed/percentUsed are
@@ -1821,6 +1835,7 @@ async function buildContextStatusEntry(
   ctx: ServerContext,
   peerId: string,
   peerName: string | null,
+  nameSource: string | null,
 ): Promise<ContextStatusEntry> {
   const isSelf = peerId === ctx.self.id;
   const guard = await readContextGuard(peerId);
@@ -1843,6 +1858,8 @@ async function buildContextStatusEntry(
     return {
       id: peerId,
       name: peerName,
+      nameSource,
+      ...(nameSource === "cwd-slug" ? { nameIsFallback: true as const } : {}),
       isSelf,
       hasLiveData: false,
       model: null,
@@ -1864,6 +1881,8 @@ async function buildContextStatusEntry(
   return {
     id: peerId,
     name: peerName,
+    nameSource,
+    ...(nameSource === "cwd-slug" ? { nameIsFallback: true as const } : {}),
     isSelf,
     hasLiveData: usage.hasLiveData,
     model: usage.model,
@@ -1888,21 +1907,21 @@ export async function peerContextStatusTool(
   args: z.infer<typeof PeerContextStatusArgs>,
 ): Promise<ToolResult> {
   try {
-    const targets: { id: string; name: string | null }[] = [];
+    const targets: { id: string; name: string | null; source?: string | undefined }[] = [];
 
     const toArg = args.to;
     if (toArg === undefined) {
-      targets.push({ id: ctx.self.id, name: ctx.self.name });
+      targets.push({ id: ctx.self.id, name: ctx.self.name, source: ctx.self.source });
     } else if (typeof toArg === "string" && toArg === "all") {
       const peers = await ctx.registry.listActivePeers();
       const seen = new Set<string>();
       for (const p of peers) {
         if (seen.has(p.id)) continue;
         seen.add(p.id);
-        targets.push({ id: p.id, name: p.name });
+        targets.push({ id: p.id, name: p.name, source: p.source });
       }
       if (!seen.has(ctx.self.id)) {
-        targets.push({ id: ctx.self.id, name: ctx.self.name });
+        targets.push({ id: ctx.self.id, name: ctx.self.name, source: ctx.self.source });
       }
     } else {
       const list = Array.isArray(toArg) ? toArg : [toArg];
@@ -1912,7 +1931,7 @@ export async function peerContextStatusTool(
         const normalized = item === "self" ? ctx.self.id : item;
         const byId = activePeers.find((p) => p.id === normalized);
         if (byId) {
-          targets.push({ id: byId.id, name: byId.name });
+          targets.push({ id: byId.id, name: byId.name, source: byId.source });
           continue;
         }
         // Same resolution as every other tool — full name, then short form in
@@ -1922,7 +1941,11 @@ export async function peerContextStatusTool(
         // candidates. One convention has to mean one thing whichever tool asks.
         const resolved = await resolveTargetPeer(ctx, normalized);
         if (resolved.ok) {
-          targets.push({ id: resolved.peer.id, name: resolved.peer.name });
+          targets.push({
+            id: resolved.peer.id,
+            name: resolved.peer.name,
+            source: resolved.peer.source,
+          });
           continue;
         }
         if (resolved.code === "ambiguous_peer") {
@@ -1934,7 +1957,7 @@ export async function peerContextStatusTool(
         }
         // Allow UUID fallback even if not active (= dead session, JSONL may still exist)
         if (UUID_RE.test(normalized)) {
-          targets.push({ id: normalized, name: null });
+          targets.push({ id: normalized, name: null, source: undefined });
           continue;
         }
         return err("peer_not_found", `No active peer "${normalized}" and not a UUID`, {
@@ -1946,7 +1969,7 @@ export async function peerContextStatusTool(
 
     const peers: ContextStatusEntry[] = [];
     for (const t of targets) {
-      peers.push(await buildContextStatusEntry(ctx, t.id, t.name));
+      peers.push(await buildContextStatusEntry(ctx, t.id, t.name, t.source ?? null));
     }
 
     return ok({ count: peers.length, peers });
