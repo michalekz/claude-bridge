@@ -27,83 +27,85 @@ const log = makeLogger("channel");
 export const CHANNEL_METHOD = "notifications/claude/channel";
 
 export interface ChannelMeta {
-  /** Sender peer id (sessionId UUID). */
-  from: string;
-  /** Sender display name at send time (snapshot). */
-  fromName?: string;
-  /** `interactive` | `bg` — kvůli rozlišení v zobrazení, ne v adrese. */
-  fromKind?: string;
-  msgId: string;
-  kind: string;
-  inReplyTo?: string;
-  threadId?: string;
-  [key: string]: unknown;
+	/** Sender peer id (sessionId UUID). */
+	from: string;
+	/** Sender display name at send time (snapshot). */
+	fromName?: string;
+	/** `interactive` | `bg` — kvůli rozlišení v zobrazení, ne v adrese. */
+	fromKind?: string;
+	msgId: string;
+	kind: string;
+	inReplyTo?: string;
+	threadId?: string;
+	[key: string]: unknown;
 }
 
 export interface ChannelNotification {
-  method: typeof CHANNEL_METHOD;
-  params: {
-    content: string;
-    meta: ChannelMeta;
-  };
+	method: typeof CHANNEL_METHOD;
+	params: {
+		content: string;
+		meta: ChannelMeta;
+	};
 }
 
-export function buildChannelNotification(envelope: MessageEnvelope): ChannelNotification {
-  const meta: ChannelMeta = {
-    from: envelope.from,
-    msgId: envelope.id,
-    kind: envelope.kind,
-    ...(envelope.fromName ? { fromName: envelope.fromName } : {}),
-    ...(envelope.inReplyTo ? { inReplyTo: envelope.inReplyTo } : {}),
-    ...(envelope.threadId ? { threadId: envelope.threadId } : {}),
-  };
-  // `(bg)` se skládá AŽ TADY, do zobrazení. Do `fromName` nepatří: to jméno
-  // je adresa, kterou příjemce opisuje do `peer_ask {to}`.
-  const bg = envelope.fromKind === "bg" ? " (bg)" : "";
-  const senderLabel = envelope.fromName
-    ? `${envelope.fromName}${bg} (${envelope.from.slice(0, 8)})`
-    : `${envelope.from}${bg}`;
-  const header = `📬 from ${senderLabel} (${envelope.kind}, msg ${envelope.id})`;
-  // Ⓧ (dva nezávislé reporty oxy dvojice, 12. 9.): patička u external:*
-  // odesílatele radila peer_reply, který pak správně odmítl
-  // sender_is_external — pozvánka a zákaz si protiřečily a stály volání
-  // navíc při KAŽDÉM restartu. External nemá schránku; rada říká, co dělat
-  // místo toho.
-  const replyHint =
-    envelope.kind !== "ask"
-      ? ""
-      : envelope.from.startsWith("external:")
-        ? "\n\n(external sender — peer_reply nelze; odpověz kanálem, kterým to přišlo: ack soubor, terminál, nebo report svému člověku)"
-        : `\n\n(use peer_reply inReplyTo=${envelope.id})`;
-  const content = `${header}:\n${envelope.content}${replyHint}`;
-  return { method: CHANNEL_METHOD, params: { content, meta } };
+export function buildChannelNotification(
+	envelope: MessageEnvelope,
+): ChannelNotification {
+	const meta: ChannelMeta = {
+		from: envelope.from,
+		msgId: envelope.id,
+		kind: envelope.kind,
+		...(envelope.fromName ? { fromName: envelope.fromName } : {}),
+		...(envelope.inReplyTo ? { inReplyTo: envelope.inReplyTo } : {}),
+		...(envelope.threadId ? { threadId: envelope.threadId } : {}),
+	};
+	// `(bg)` se skládá AŽ TADY, do zobrazení. Do `fromName` nepatří: to jméno
+	// je adresa, kterou příjemce opisuje do `peer_ask {to}`.
+	const bg = envelope.fromKind === "bg" ? " (bg)" : "";
+	const senderLabel = envelope.fromName
+		? `${envelope.fromName}${bg} (${envelope.from.slice(0, 8)})`
+		: `${envelope.from}${bg}`;
+	const header = `📬 from ${senderLabel} (${envelope.kind}, msg ${envelope.id})`;
+	// Ⓧ (dva nezávislé reporty oxy dvojice, 12. 9.): patička u external:*
+	// odesílatele radila peer_reply, který pak správně odmítl
+	// sender_is_external — pozvánka a zákaz si protiřečily a stály volání
+	// navíc při KAŽDÉM restartu. External nemá schránku; rada říká, co dělat
+	// místo toho.
+	const replyHint =
+		envelope.kind !== "ask"
+			? ""
+			: envelope.from.startsWith("external:")
+				? "\n\n(external sender — peer_reply nelze; odpověz kanálem, kterým to přišlo: ack soubor, terminál, nebo report svému člověku)"
+				: `\n\n(use peer_reply inReplyTo=${envelope.id})`;
+	const content = `${header}:\n${envelope.content}${replyHint}`;
+	return { method: CHANNEL_METHOD, params: { content, meta } };
 }
 
 export interface ChannelSender {
-  /**
-   * Push a single envelope through the channel.
-   * Returns {delivered: true} on success, {delivered: false} on transport failure.
-   * Caller can decide whether to consume the inbox file or leave it for piggyback.
-   */
-  push(envelope: MessageEnvelope): Promise<{ delivered: boolean }>;
+	/**
+	 * Push a single envelope through the channel.
+	 * Returns {delivered: true} on success, {delivered: false} on transport failure.
+	 * Caller can decide whether to consume the inbox file or leave it for piggyback.
+	 */
+	push(envelope: MessageEnvelope): Promise<{ delivered: boolean }>;
 }
 
 export function createChannelSender(server: Server): ChannelSender {
-  return {
-    async push(envelope) {
-      const notif = buildChannelNotification(envelope);
-      try {
-        // biome-ignore lint/suspicious/noExplicitAny: SDK notification signature is loose
-        await (server as any).notification(notif);
-        log.debug("pushed", { msgId: envelope.id, from: envelope.from });
-        return { delivered: true };
-      } catch (e) {
-        log.warn("push_failed", {
-          msgId: envelope.id,
-          err: e instanceof Error ? e.message : String(e),
-        });
-        return { delivered: false };
-      }
-    },
-  };
+	return {
+		async push(envelope) {
+			const notif = buildChannelNotification(envelope);
+			try {
+				// biome-ignore lint/suspicious/noExplicitAny: SDK notification signature is loose
+				await (server as any).notification(notif);
+				log.debug("pushed", { msgId: envelope.id, from: envelope.from });
+				return { delivered: true };
+			} catch (e) {
+				log.warn("push_failed", {
+					msgId: envelope.id,
+					err: e instanceof Error ? e.message : String(e),
+				});
+				return { delivered: false };
+			}
+		},
+	};
 }

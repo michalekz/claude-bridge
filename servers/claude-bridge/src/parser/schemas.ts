@@ -29,58 +29,58 @@ const Iso8601 = z.string().regex(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/);
 // ============================================================================
 
 export const TextBlockSchema = z
-  .object({
-    type: z.literal("text"),
-    text: z.string(),
-  })
-  .passthrough();
+	.object({
+		type: z.literal("text"),
+		text: z.string(),
+	})
+	.passthrough();
 
 export const ThinkingBlockSchema = z
-  .object({
-    type: z.literal("thinking"),
-    thinking: z.string(),
-  })
-  .passthrough();
+	.object({
+		type: z.literal("thinking"),
+		thinking: z.string(),
+	})
+	.passthrough();
 
 export const ToolUseBlockSchema = z
-  .object({
-    type: z.literal("tool_use"),
-    id: z.string(),
-    name: z.string(),
-    input: z.unknown(),
-  })
-  .passthrough();
+	.object({
+		type: z.literal("tool_use"),
+		id: z.string(),
+		name: z.string(),
+		input: z.unknown(),
+	})
+	.passthrough();
 
 export const ToolResultBlockSchema = z
-  .object({
-    type: z.literal("tool_result"),
-    tool_use_id: z.string(),
-    content: z.unknown(), // can be string or array of blocks
-    is_error: z.boolean().optional(),
-  })
-  .passthrough();
+	.object({
+		type: z.literal("tool_result"),
+		tool_use_id: z.string(),
+		content: z.unknown(), // can be string or array of blocks
+		is_error: z.boolean().optional(),
+	})
+	.passthrough();
 
 export const ImageBlockSchema = z
-  .object({
-    type: z.literal("image"),
-    source: z.unknown(),
-  })
-  .passthrough();
+	.object({
+		type: z.literal("image"),
+		source: z.unknown(),
+	})
+	.passthrough();
 
 export const DocumentBlockSchema = z
-  .object({
-    type: z.literal("document"),
-    source: z.unknown(),
-  })
-  .passthrough();
+	.object({
+		type: z.literal("document"),
+		source: z.unknown(),
+	})
+	.passthrough();
 
 export const ContentBlockSchema = z.discriminatedUnion("type", [
-  TextBlockSchema,
-  ThinkingBlockSchema,
-  ToolUseBlockSchema,
-  ToolResultBlockSchema,
-  ImageBlockSchema,
-  DocumentBlockSchema,
+	TextBlockSchema,
+	ThinkingBlockSchema,
+	ToolUseBlockSchema,
+	ToolResultBlockSchema,
+	ImageBlockSchema,
+	DocumentBlockSchema,
 ]);
 
 // ============================================================================
@@ -88,146 +88,146 @@ export const ContentBlockSchema = z.discriminatedUnion("type", [
 // ============================================================================
 
 export const AssistantMessageSchema = z
-  .object({
-    id: z.string(),
-    role: z.literal("assistant"),
-    model: z.string(), // "claude-opus-4-7", "<synthetic>", ...
-    content: z.array(ContentBlockSchema),
-    stop_reason: z.string().nullable(),
-    stop_sequence: z.string().nullable(),
-    usage: z.unknown(),
-  })
-  .passthrough();
+	.object({
+		id: z.string(),
+		role: z.literal("assistant"),
+		model: z.string(), // "claude-opus-4-7", "<synthetic>", ...
+		content: z.array(ContentBlockSchema),
+		stop_reason: z.string().nullable(),
+		stop_sequence: z.string().nullable(),
+		usage: z.unknown(),
+	})
+	.passthrough();
 
 export const UserMessageSchema = z
-  .object({
-    role: z.literal("user"),
-    content: z.union([z.string(), z.array(ContentBlockSchema)]),
-  })
-  .passthrough();
+	.object({
+		role: z.literal("user"),
+		content: z.union([z.string(), z.array(ContentBlockSchema)]),
+	})
+	.passthrough();
 
 // ============================================================================
 // Top-level event base — fields present on most message-level events
 // ============================================================================
 
 const MessageEventBase = z
-  .object({
-    uuid: UuidSchema,
-    parentUuid: UuidSchema.nullable(),
-    sessionId: UuidSchema,
-    timestamp: Iso8601,
-    cwd: z.string(),
-    gitBranch: z.string(),
-    version: z.string(),
-    userType: z.string(),
-    entrypoint: z.string(),
-    isSidechain: z.boolean(),
-  })
-  .passthrough();
+	.object({
+		uuid: UuidSchema,
+		parentUuid: UuidSchema.nullable(),
+		sessionId: UuidSchema,
+		timestamp: Iso8601,
+		cwd: z.string(),
+		gitBranch: z.string(),
+		version: z.string(),
+		userType: z.string(),
+		entrypoint: z.string(),
+		isSidechain: z.boolean(),
+	})
+	.passthrough();
 
 // ============================================================================
 // 9 root event types (discriminated union on `type`)
 // ============================================================================
 
 export const AssistantEventSchema = MessageEventBase.extend({
-  type: z.literal("assistant"),
-  message: AssistantMessageSchema,
-  requestId: z.string().optional(),
+	type: z.literal("assistant"),
+	message: AssistantMessageSchema,
+	requestId: z.string().optional(),
 });
 
 export const UserEventSchema = MessageEventBase.extend({
-  type: z.literal("user"),
-  message: UserMessageSchema,
-  promptId: z.string().optional(),
-  toolUseResult: z.unknown().optional(),
-  sourceToolAssistantUUID: UuidSchema.optional(),
-  permissionMode: z.string().optional(),
-  origin: z
-    .object({
-      kind: z.string(),
-    })
-    .passthrough()
-    .optional(),
-  isMeta: z.boolean().optional(),
-  isCompactSummary: z.boolean().optional(),
-  isVisibleInTranscriptOnly: z.boolean().optional(),
+	type: z.literal("user"),
+	message: UserMessageSchema,
+	promptId: z.string().optional(),
+	toolUseResult: z.unknown().optional(),
+	sourceToolAssistantUUID: UuidSchema.optional(),
+	permissionMode: z.string().optional(),
+	origin: z
+		.object({
+			kind: z.string(),
+		})
+		.passthrough()
+		.optional(),
+	isMeta: z.boolean().optional(),
+	isCompactSummary: z.boolean().optional(),
+	isVisibleInTranscriptOnly: z.boolean().optional(),
 });
 
 export const AttachmentEventSchema = MessageEventBase.extend({
-  type: z.literal("attachment"),
-  attachment: z.record(z.unknown()),
+	type: z.literal("attachment"),
+	attachment: z.record(z.unknown()),
 });
 
 export const SystemEventSchema = MessageEventBase.extend({
-  type: z.literal("system"),
-  subtype: z.string(),
-  parentUuid: UuidSchema.nullable(),
-  logicalParentUuid: UuidSchema.optional(),
-  compactMetadata: z.record(z.unknown()).optional(),
-  level: z.string().optional(),
-  isMeta: z.boolean().optional(),
+	type: z.literal("system"),
+	subtype: z.string(),
+	parentUuid: UuidSchema.nullable(),
+	logicalParentUuid: UuidSchema.optional(),
+	compactMetadata: z.record(z.unknown()).optional(),
+	level: z.string().optional(),
+	isMeta: z.boolean().optional(),
 });
 
 // Metadata-only events (no uuid/cwd, much lighter shape)
 
 export const QueueOperationEventSchema = z
-  .object({
-    type: z.literal("queue-operation"),
-    operation: z.enum(["enqueue", "dequeue", "remove"]),
-    timestamp: Iso8601,
-    sessionId: UuidSchema,
-    content: z.string().optional(),
-  })
-  .passthrough();
+	.object({
+		type: z.literal("queue-operation"),
+		operation: z.enum(["enqueue", "dequeue", "remove"]),
+		timestamp: Iso8601,
+		sessionId: UuidSchema,
+		content: z.string().optional(),
+	})
+	.passthrough();
 
 export const LastPromptEventSchema = z
-  .object({
-    type: z.literal("last-prompt"),
-    sessionId: UuidSchema,
-    lastPrompt: z.string(),
-    leafUuid: UuidSchema.optional(),
-  })
-  .passthrough();
+	.object({
+		type: z.literal("last-prompt"),
+		sessionId: UuidSchema,
+		lastPrompt: z.string(),
+		leafUuid: UuidSchema.optional(),
+	})
+	.passthrough();
 
 export const CustomTitleEventSchema = z
-  .object({
-    type: z.literal("custom-title"),
-    sessionId: UuidSchema,
-    customTitle: z.string(),
-  })
-  .passthrough();
+	.object({
+		type: z.literal("custom-title"),
+		sessionId: UuidSchema,
+		customTitle: z.string(),
+	})
+	.passthrough();
 
 export const AiTitleEventSchema = z
-  .object({
-    type: z.literal("ai-title"),
-    sessionId: UuidSchema,
-    aiTitle: z.string(),
-  })
-  .passthrough();
+	.object({
+		type: z.literal("ai-title"),
+		sessionId: UuidSchema,
+		aiTitle: z.string(),
+	})
+	.passthrough();
 
 export const FileHistorySnapshotEventSchema = z
-  .object({
-    type: z.literal("file-history-snapshot"),
-    messageId: UuidSchema,
-    isSnapshotUpdate: z.boolean(),
-    snapshot: z.record(z.unknown()),
-  })
-  .passthrough();
+	.object({
+		type: z.literal("file-history-snapshot"),
+		messageId: UuidSchema,
+		isSnapshotUpdate: z.boolean(),
+		snapshot: z.record(z.unknown()),
+	})
+	.passthrough();
 
 // ============================================================================
 // Discriminated union of all event types
 // ============================================================================
 
 export const SessionEventSchema = z.discriminatedUnion("type", [
-  AssistantEventSchema,
-  UserEventSchema,
-  AttachmentEventSchema,
-  SystemEventSchema,
-  QueueOperationEventSchema,
-  LastPromptEventSchema,
-  CustomTitleEventSchema,
-  AiTitleEventSchema,
-  FileHistorySnapshotEventSchema,
+	AssistantEventSchema,
+	UserEventSchema,
+	AttachmentEventSchema,
+	SystemEventSchema,
+	QueueOperationEventSchema,
+	LastPromptEventSchema,
+	CustomTitleEventSchema,
+	AiTitleEventSchema,
+	FileHistorySnapshotEventSchema,
 ]);
 
 // ============================================================================
@@ -246,7 +246,9 @@ export type QueueOperationEvent = z.infer<typeof QueueOperationEventSchema>;
 export type LastPromptEvent = z.infer<typeof LastPromptEventSchema>;
 export type CustomTitleEvent = z.infer<typeof CustomTitleEventSchema>;
 export type AiTitleEvent = z.infer<typeof AiTitleEventSchema>;
-export type FileHistorySnapshotEvent = z.infer<typeof FileHistorySnapshotEventSchema>;
+export type FileHistorySnapshotEvent = z.infer<
+	typeof FileHistorySnapshotEventSchema
+>;
 
 export type SessionEvent = z.infer<typeof SessionEventSchema>;
 
@@ -262,22 +264,25 @@ export type SessionEvent = z.infer<typeof SessionEventSchema>;
  * subtracting it.
  */
 export const KNOWN_EVENT_TYPES: ReadonlySet<string> = new Set(
-  SessionEventSchema.options.map((o) => o.shape.type.value),
+	SessionEventSchema.options.map((o) => o.shape.type.value),
 );
 
 /**
  * Type guard helpers — terser than z.discriminatedUnion narrowing in TS.
  */
 export const isMessageEvent = (
-  e: SessionEvent,
+	e: SessionEvent,
 ): e is AssistantEvent | UserEvent | AttachmentEvent | SystemEvent =>
-  e.type === "assistant" || e.type === "user" || e.type === "attachment" || e.type === "system";
+	e.type === "assistant" ||
+	e.type === "user" ||
+	e.type === "attachment" ||
+	e.type === "system";
 
 export const isMetadataEvent = (
-  e: SessionEvent,
+	e: SessionEvent,
 ): e is
-  | QueueOperationEvent
-  | LastPromptEvent
-  | CustomTitleEvent
-  | AiTitleEvent
-  | FileHistorySnapshotEvent => !isMessageEvent(e);
+	| QueueOperationEvent
+	| LastPromptEvent
+	| CustomTitleEvent
+	| AiTitleEvent
+	| FileHistorySnapshotEvent => !isMessageEvent(e);

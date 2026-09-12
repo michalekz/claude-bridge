@@ -1,318 +1,356 @@
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test } from "vitest";
+import {
+	afterAll,
+	afterEach,
+	beforeAll,
+	beforeEach,
+	describe,
+	expect,
+	test,
+} from "vitest";
 import { createChannelSender } from "../../src/mcp/channel.ts";
-import { type ServerContext, buildContext, pumpInboxToChannel } from "../../src/mcp/context.ts";
+import {
+	type ServerContext,
+	buildContext,
+	pumpInboxToChannel,
+} from "../../src/mcp/context.ts";
 import { peerAskTool, piggybackInbox } from "../../src/mcp/tools.ts";
 
 interface PushLog {
-  id: string;
-  from: string;
-  content: string;
+	id: string;
+	from: string;
+	content: string;
 }
 
 function fakeServerCapturing(log: PushLog[], shouldFail = false) {
-  return {
-    // biome-ignore lint/suspicious/noExplicitAny: stub
-    async notification(n: any) {
-      if (shouldFail) throw new Error("channel unavailable");
-      log.push({
-        id: n.params.meta.msgId,
-        from: n.params.meta.from,
-        content: n.params.content,
-      });
-    },
-  };
+	return {
+		// biome-ignore lint/suspicious/noExplicitAny: stub
+		async notification(n: any) {
+			if (shouldFail) throw new Error("channel unavailable");
+			log.push({
+				id: n.params.meta.msgId,
+				from: n.params.meta.from,
+				content: n.params.content,
+			});
+		},
+	};
 }
 
 let counter = 0;
 function makeId(label: string): string {
-  counter++;
-  return `${label.slice(0, 7).padEnd(7, "0")}${counter}-0000-0000-0000-000000000000`.slice(0, 36);
+	counter++;
+	return `${label.slice(0, 7).padEnd(7, "0")}${counter}-0000-0000-0000-000000000000`.slice(
+		0,
+		36,
+	);
 }
 
-async function mkCtx(baseDir: string, name: string, id?: string): Promise<ServerContext> {
-  return buildContext({
-    identity: { id: id ?? makeId(name), name, displayName: name, source: "env" },
-    baseDir,
-    withHeartbeat: false,
-    emitTerminalTitle: false,
-    version: "test",
-    nameRefreshIntervalMs: 0,
-  });
+async function mkCtx(
+	baseDir: string,
+	name: string,
+	id?: string,
+): Promise<ServerContext> {
+	return buildContext({
+		identity: {
+			id: id ?? makeId(name),
+			name,
+			displayName: name,
+			source: "env",
+		},
+		baseDir,
+		withHeartbeat: false,
+		emitTerminalTitle: false,
+		version: "test",
+		nameRefreshIntervalMs: 0,
+	});
 }
 
 async function register(ctx: ServerContext): Promise<void> {
-  await ctx.registry.startHeartbeat({
-    id: ctx.self.id,
-    name: ctx.self.name,
-    pid: 1,
-    source: ctx.self.source,
-  });
+	await ctx.registry.startHeartbeat({
+		id: ctx.self.id,
+		name: ctx.self.name,
+		pid: 1,
+		source: ctx.self.source,
+	});
 }
 
 describe("pumpInboxToChannel", () => {
-  let baseDir: string;
+	let baseDir: string;
 
-  beforeAll(async () => {
-    baseDir = await mkdtemp(join(tmpdir(), "claude-bridge-pump-"));
-  });
+	beforeAll(async () => {
+		baseDir = await mkdtemp(join(tmpdir(), "claude-bridge-pump-"));
+	});
 
-  afterAll(async () => {
-    await rm(baseDir, { recursive: true, force: true });
-  });
+	afterAll(async () => {
+		await rm(baseDir, { recursive: true, force: true });
+	});
 
-  beforeEach(async () => {
-    await rm(join(baseDir, "inbox"), { recursive: true, force: true });
-    await rm(join(baseDir, "status"), { recursive: true, force: true });
-  });
+	beforeEach(async () => {
+		await rm(join(baseDir, "inbox"), { recursive: true, force: true });
+		await rm(join(baseDir, "status"), { recursive: true, force: true });
+	});
 
-  test("no-op when channel is null", async () => {
-    const ctx = await mkCtx(baseDir, "alice");
-    const { pushed } = await pumpInboxToChannel(ctx);
-    expect(pushed).toBe(0);
-  });
+	test("no-op when channel is null", async () => {
+		const ctx = await mkCtx(baseDir, "alice");
+		const { pushed } = await pumpInboxToChannel(ctx);
+		expect(pushed).toBe(0);
+	});
 
-  test("pushes all pending and KEEPS them in pending (piggyback drains later)", async () => {
-    const coord = await mkCtx(baseDir, "coordinator");
-    const mantis = await mkCtx(baseDir, "mantis");
-    await register(coord);
-    await register(mantis);
+	test("pushes all pending and KEEPS them in pending (piggyback drains later)", async () => {
+		const coord = await mkCtx(baseDir, "coordinator");
+		const mantis = await mkCtx(baseDir, "mantis");
+		await register(coord);
+		await register(mantis);
 
-    await peerAskTool(coord, { to: "mantis", content: "ping 1" });
-    await peerAskTool(coord, { to: "mantis", content: "ping 2" });
+		await peerAskTool(coord, { to: "mantis", content: "ping 1" });
+		await peerAskTool(coord, { to: "mantis", content: "ping 2" });
 
-    const log: PushLog[] = [];
-    // biome-ignore lint/suspicious/noExplicitAny: stub
-    mantis.channel = createChannelSender(fakeServerCapturing(log) as any);
+		const log: PushLog[] = [];
+		// biome-ignore lint/suspicious/noExplicitAny: stub
+		mantis.channel = createChannelSender(fakeServerCapturing(log) as any);
 
-    const { pushed } = await pumpInboxToChannel(mantis);
-    expect(pushed).toBe(2);
-    expect(log.length).toBe(2);
-    // v0.2.5: push doesn't consume — pending stays so piggyback can drain.
-    // Claude Code may have dropped the channel notification silently; piggyback
-    // is the only mechanism that's guaranteed to inject into agent context.
-    expect(await mantis.inbox.countPending(mantis.self.id)).toBe(2);
-    expect((await mantis.inbox.listDone(mantis.self.id)).length).toBe(0);
-  });
+		const { pushed } = await pumpInboxToChannel(mantis);
+		expect(pushed).toBe(2);
+		expect(log.length).toBe(2);
+		// v0.2.5: push doesn't consume — pending stays so piggyback can drain.
+		// Claude Code may have dropped the channel notification silently; piggyback
+		// is the only mechanism that's guaranteed to inject into agent context.
+		expect(await mantis.inbox.countPending(mantis.self.id)).toBe(2);
+		expect((await mantis.inbox.listDone(mantis.self.id)).length).toBe(0);
+	});
 
-  test("dedup: pumping twice on same pending only pushes each msg once", async () => {
-    const coord = await mkCtx(baseDir, "coordinator");
-    const mantis = await mkCtx(baseDir, "mantis");
-    await register(coord);
-    await register(mantis);
+	test("dedup: pumping twice on same pending only pushes each msg once", async () => {
+		const coord = await mkCtx(baseDir, "coordinator");
+		const mantis = await mkCtx(baseDir, "mantis");
+		await register(coord);
+		await register(mantis);
 
-    await peerAskTool(coord, { to: "mantis", content: "ping" });
+		await peerAskTool(coord, { to: "mantis", content: "ping" });
 
-    const log: PushLog[] = [];
-    // biome-ignore lint/suspicious/noExplicitAny: stub
-    mantis.channel = createChannelSender(fakeServerCapturing(log) as any);
+		const log: PushLog[] = [];
+		// biome-ignore lint/suspicious/noExplicitAny: stub
+		mantis.channel = createChannelSender(fakeServerCapturing(log) as any);
 
-    const first = await pumpInboxToChannel(mantis);
-    const second = await pumpInboxToChannel(mantis);
+		const first = await pumpInboxToChannel(mantis);
+		const second = await pumpInboxToChannel(mantis);
 
-    expect(first.pushed).toBe(1);
-    expect(second.pushed).toBe(0); // dedup via pushedMsgIds
-    expect(log.length).toBe(1);
-  });
+		expect(first.pushed).toBe(1);
+		expect(second.pushed).toBe(0); // dedup via pushedMsgIds
+		expect(log.length).toBe(1);
+	});
 
-  test("leaves messages in pending on channel failure (graceful)", async () => {
-    const coord = await mkCtx(baseDir, "coordinator");
-    const mantis = await mkCtx(baseDir, "mantis");
-    await register(coord);
-    await register(mantis);
+	test("leaves messages in pending on channel failure (graceful)", async () => {
+		const coord = await mkCtx(baseDir, "coordinator");
+		const mantis = await mkCtx(baseDir, "mantis");
+		await register(coord);
+		await register(mantis);
 
-    await peerAskTool(coord, { to: "mantis", content: "ping" });
+		await peerAskTool(coord, { to: "mantis", content: "ping" });
 
-    // biome-ignore lint/suspicious/noExplicitAny: stub
-    mantis.channel = createChannelSender(fakeServerCapturing([], true) as any);
+		// biome-ignore lint/suspicious/noExplicitAny: stub
+		mantis.channel = createChannelSender(fakeServerCapturing([], true) as any);
 
-    const { pushed } = await pumpInboxToChannel(mantis);
-    expect(pushed).toBe(0);
-    expect(await mantis.inbox.countPending(mantis.self.id)).toBe(1);
-  });
+		const { pushed } = await pumpInboxToChannel(mantis);
+		expect(pushed).toBe(0);
+		expect(await mantis.inbox.countPending(mantis.self.id)).toBe(1);
+	});
 
-  test("pushes only own peer's pending (isolation by id)", async () => {
-    const coord = await mkCtx(baseDir, "coordinator");
-    const alice = await mkCtx(baseDir, "alice");
-    const bob = await mkCtx(baseDir, "bob");
-    await register(coord);
-    await register(alice);
-    await register(bob);
+	test("pushes only own peer's pending (isolation by id)", async () => {
+		const coord = await mkCtx(baseDir, "coordinator");
+		const alice = await mkCtx(baseDir, "alice");
+		const bob = await mkCtx(baseDir, "bob");
+		await register(coord);
+		await register(alice);
+		await register(bob);
 
-    await peerAskTool(coord, { to: "alice", content: "for alice" });
-    await peerAskTool(coord, { to: "bob", content: "for bob" });
+		await peerAskTool(coord, { to: "alice", content: "for alice" });
+		await peerAskTool(coord, { to: "bob", content: "for bob" });
 
-    const log: PushLog[] = [];
-    // biome-ignore lint/suspicious/noExplicitAny: stub
-    alice.channel = createChannelSender(fakeServerCapturing(log) as any);
+		const log: PushLog[] = [];
+		// biome-ignore lint/suspicious/noExplicitAny: stub
+		alice.channel = createChannelSender(fakeServerCapturing(log) as any);
 
-    const { pushed } = await pumpInboxToChannel(alice);
-    expect(pushed).toBe(1);
-    expect(log[0]?.content).toContain("for alice");
-    expect(await alice.inbox.countPending(bob.self.id)).toBe(1);
-  });
+		const { pushed } = await pumpInboxToChannel(alice);
+		expect(pushed).toBe(1);
+		expect(log[0]?.content).toContain("for alice");
+		expect(await alice.inbox.countPending(bob.self.id)).toBe(1);
+	});
 
-  test("preserves order (chronological) when pushing batch", async () => {
-    const coord = await mkCtx(baseDir, "coordinator");
-    const mantis = await mkCtx(baseDir, "mantis");
-    await register(coord);
-    await register(mantis);
+	test("preserves order (chronological) when pushing batch", async () => {
+		const coord = await mkCtx(baseDir, "coordinator");
+		const mantis = await mkCtx(baseDir, "mantis");
+		await register(coord);
+		await register(mantis);
 
-    await peerAskTool(coord, { to: "mantis", content: "first" });
-    await new Promise((r) => setTimeout(r, 5));
-    await peerAskTool(coord, { to: "mantis", content: "second" });
-    await new Promise((r) => setTimeout(r, 5));
-    await peerAskTool(coord, { to: "mantis", content: "third" });
+		await peerAskTool(coord, { to: "mantis", content: "first" });
+		await new Promise((r) => setTimeout(r, 5));
+		await peerAskTool(coord, { to: "mantis", content: "second" });
+		await new Promise((r) => setTimeout(r, 5));
+		await peerAskTool(coord, { to: "mantis", content: "third" });
 
-    const log: PushLog[] = [];
-    // biome-ignore lint/suspicious/noExplicitAny: stub
-    mantis.channel = createChannelSender(fakeServerCapturing(log) as any);
+		const log: PushLog[] = [];
+		// biome-ignore lint/suspicious/noExplicitAny: stub
+		mantis.channel = createChannelSender(fakeServerCapturing(log) as any);
 
-    await pumpInboxToChannel(mantis);
+		await pumpInboxToChannel(mantis);
 
-    expect(log.map((l) => l.content.match(/first|second|third/)?.[0])).toEqual([
-      "first",
-      "second",
-      "third",
-    ]);
-  });
+		expect(log.map((l) => l.content.match(/first|second|third/)?.[0])).toEqual([
+			"first",
+			"second",
+			"third",
+		]);
+	});
 });
 
 // 🔴 `ok:true` se 22. 8. 2026 četlo jako „příjemce to dostal" — dvěma lidmi,
 // sedm minut, a vedlo k hlášení o dvou příčinách, které byla jedna.
 // Návratová hodnota musí říkat, co systém VÍ: obálka leží ve frontě.
 const textOf = (r: { content: Array<{ type: string; text?: string }> }) =>
-  r.content.map((c) => c.text ?? "").join("");
+	r.content.map((c) => c.text ?? "").join("");
 
 /** Obálka zapsaná na disk mimo `send` — tak, jak řídicí zprávy vznikají. */
 async function putRawEnvelope(
-  baseDir: string,
-  peerId: string,
-  id: string,
-  kind: string,
+	baseDir: string,
+	peerId: string,
+	id: string,
+	kind: string,
 ): Promise<void> {
-  const dir = join(baseDir, "inbox", peerId, "pending");
-  await mkdir(dir, { recursive: true });
-  await writeFile(
-    join(dir, `${id}.json`),
-    JSON.stringify({
-      id,
-      from: "daemon",
-      fromName: "daemon",
-      to: peerId,
-      toName: "peer",
-      kind,
-      sentAt: new Date().toISOString(),
-      content: "x",
-    }),
-  );
+	const dir = join(baseDir, "inbox", peerId, "pending");
+	await mkdir(dir, { recursive: true });
+	await writeFile(
+		join(dir, `${id}.json`),
+		JSON.stringify({
+			id,
+			from: "daemon",
+			fromName: "daemon",
+			to: peerId,
+			toName: "peer",
+			kind,
+			sentAt: new Date().toISOString(),
+			content: "x",
+		}),
+	);
 }
 
 describe("peer_ask vrací queued, ne delivered", () => {
-  let baseDir: string;
-  beforeEach(async () => {
-    baseDir = await mkdtemp(join(tmpdir(), "bridge-queued-"));
-  });
-  afterEach(async () => {
-    await rm(baseDir, { recursive: true, force: true });
-  });
+	let baseDir: string;
+	beforeEach(async () => {
+		baseDir = await mkdtemp(join(tmpdir(), "bridge-queued-"));
+	});
+	afterEach(async () => {
+		await rm(baseDir, { recursive: true, force: true });
+	});
 
-  test("delivery je 'queued' a recipientPending roste, dokud příjemce netahá", async () => {
-    const coord = await mkCtx(baseDir, "coordinator");
-    const mantis = await mkCtx(baseDir, "mantis");
-    await register(coord);
-    await register(mantis);
+	test("delivery je 'queued' a recipientPending roste, dokud příjemce netahá", async () => {
+		const coord = await mkCtx(baseDir, "coordinator");
+		const mantis = await mkCtx(baseDir, "mantis");
+		await register(coord);
+		await register(mantis);
 
-    const first = await peerAskTool(coord, { to: "mantis", content: "první" });
-    const p1 = JSON.parse(textOf(first));
-    expect(p1.delivery).toBe("queued");
-    expect(p1.delivery).not.toBe("delivered");
-    expect(p1.recipientPending).toBe(1);
+		const first = await peerAskTool(coord, { to: "mantis", content: "první" });
+		const p1 = JSON.parse(textOf(first));
+		expect(p1.delivery).toBe("queued");
+		expect(p1.delivery).not.toBe("delivered");
+		expect(p1.recipientPending).toBe(1);
 
-    // Druhá zpráva témuž nečinnému peerovi: počet MUSÍ vzrůst. Pole, které
-    // by hlásilo pořád totéž, by neřeklo nic — to je táž vada jako `ok:true`.
-    const second = await peerAskTool(coord, { to: "mantis", content: "druhá" });
-    const p2 = JSON.parse(textOf(second));
-    expect(p2.recipientPending).toBe(2);
+		// Druhá zpráva témuž nečinnému peerovi: počet MUSÍ vzrůst. Pole, které
+		// by hlásilo pořád totéž, by neřeklo nic — to je táž vada jako `ok:true`.
+		const second = await peerAskTool(coord, { to: "mantis", content: "druhá" });
+		const p2 = JSON.parse(textOf(second));
+		expect(p2.recipientPending).toBe(2);
 
-    // Příjemce si frontu vytáhne (piggyback) ⇒ další odeslání vidí prázdno.
-    await piggybackInbox(mantis, "peer_list", { content: [] });
-    const third = await peerAskTool(coord, { to: "mantis", content: "třetí" });
-    expect(JSON.parse(textOf(third)).recipientPending).toBe(1);
-  });
+		// Příjemce si frontu vytáhne (piggyback) ⇒ další odeslání vidí prázdno.
+		await piggybackInbox(mantis, "peer_list", { content: [] });
+		const third = await peerAskTool(coord, { to: "mantis", content: "třetí" });
+		expect(JSON.parse(textOf(third)).recipientPending).toBe(1);
+	});
 
-  // 🔴 Soubor v `pending/` je DVOJÍ situace a samotný počet je nerozliší:
-  // doručeno pushem a neuklizeno × nedoručeno vůbec. 5. 8. to stálo
-  // plt-designera i mě hodiny (17 z 19 rozhodnutelných souborů bylo
-  // doručeno i zodpovězeno) a 23. 8. jsem si `13` přečetl z vlastního
-  // výstupu a prohlásil frontu za nevybranou — dorazilo všech třináct.
-  test("recipientNeverPushed odliší doručené od nedoručeného", async () => {
-    const coord = await mkCtx(baseDir, "coordinator");
-    const mantis = await mkCtx(baseDir, "mantis");
-    await register(coord);
-    await register(mantis);
+	// 🔴 Soubor v `pending/` je DVOJÍ situace a samotný počet je nerozliší:
+	// doručeno pushem a neuklizeno × nedoručeno vůbec. 5. 8. to stálo
+	// plt-designera i mě hodiny (17 z 19 rozhodnutelných souborů bylo
+	// doručeno i zodpovězeno) a 23. 8. jsem si `13` přečetl z vlastního
+	// výstupu a prohlásil frontu za nevybranou — dorazilo všech třináct.
+	test("recipientNeverPushed odliší doručené od nedoručeného", async () => {
+		const coord = await mkCtx(baseDir, "coordinator");
+		const mantis = await mkCtx(baseDir, "mantis");
+		await register(coord);
+		await register(mantis);
 
-    // 🔴 Nalezeno pilotem 0.11.30: PRÁVĚ ODESLANÁ zpráva se nesmí počítat.
-    // `markPushed` běží v příjemcově pumpě, tenhle počet synchronně
-    // u odesílatele — vlastní zpráva tedy NIKDY nemůže být pushnutá a pole
-    // by se nedostalo na nulu. Pole, které říká pořád totéž, neříká nic.
-    const first = await peerAskTool(coord, { to: "mantis", content: "první" });
-    const p1 = JSON.parse(textOf(first));
-    expect(p1.recipientPending).toBe(1); // leží tam (ta moje)
-    expect(p1.recipientNeverPushed).toBe(0); // ale nic STARŠÍHO nechybí
+		// 🔴 Nalezeno pilotem 0.11.30: PRÁVĚ ODESLANÁ zpráva se nesmí počítat.
+		// `markPushed` běží v příjemcově pumpě, tenhle počet synchronně
+		// u odesílatele — vlastní zpráva tedy NIKDY nemůže být pushnutá a pole
+		// by se nedostalo na nulu. Pole, které říká pořád totéž, neříká nic.
+		const first = await peerAskTool(coord, { to: "mantis", content: "první" });
+		const p1 = JSON.parse(textOf(first));
+		expect(p1.recipientPending).toBe(1); // leží tam (ta moje)
+		expect(p1.recipientNeverPushed).toBe(0); // ale nic STARŠÍHO nechybí
 
-    // Druhá zpráva, zatímco první se nikam nepředala ⇒ starší nedoručená JE.
-    const second = await peerAskTool(coord, { to: "mantis", content: "druhá" });
-    const p2 = JSON.parse(textOf(second));
-    expect(p2.recipientPending).toBe(2);
-    expect(p2.recipientNeverPushed).toBe(1); // ta první
+		// Druhá zpráva, zatímco první se nikam nepředala ⇒ starší nedoručená JE.
+		const second = await peerAskTool(coord, { to: "mantis", content: "druhá" });
+		const p2 = JSON.parse(textOf(second));
+		expect(p2.recipientPending).toBe(2);
+		expect(p2.recipientNeverPushed).toBe(1); // ta první
 
-    // Push proběhl: soubor v pending/ ZŮSTÁVÁ (konzumuje jen piggyback),
-    // ale obsah u příjemce JE. Tohle je ta situace, která se dvakrát
-    // přečetla jako hluchý peer — a teď je odlišitelná.
-    await mantis.inbox.markPushed(mantis.self.id, p1.msgId);
-    await mantis.inbox.markPushed(mantis.self.id, p2.msgId);
+		// Push proběhl: soubor v pending/ ZŮSTÁVÁ (konzumuje jen piggyback),
+		// ale obsah u příjemce JE. Tohle je ta situace, která se dvakrát
+		// přečetla jako hluchý peer — a teď je odlišitelná.
+		await mantis.inbox.markPushed(mantis.self.id, p1.msgId);
+		await mantis.inbox.markPushed(mantis.self.id, p2.msgId);
 
-    const third = await peerAskTool(coord, { to: "mantis", content: "třetí" });
-    const p3 = JSON.parse(textOf(third));
-    expect(p3.recipientPending).toBe(3); // tři soubory leží
-    expect(p3.recipientNeverPushed).toBe(0); // ale všechno starší dorazilo
-  });
+		const third = await peerAskTool(coord, { to: "mantis", content: "třetí" });
+		const p3 = JSON.parse(textOf(third));
+		expect(p3.recipientPending).toBe(3); // tři soubory leží
+		expect(p3.recipientNeverPushed).toBe(0); // ale všechno starší dorazilo
+	});
 
-  // 🔴 `compact-anchor-request` je řídicí požadavek démona, který agent
-  // nekonzumuje NIKDY — u kb-deva ležel 17 dní, zatímco všechno ostatní
-  // tahal během vteřin. Kdyby se počítal, měl by `recipientPending` trvalou
-  // nenulovou podlahu z nesouvisejícího důvodu a četl by se jako „netahá".
-  test("řídicí druh nedělá podlahu, ale ani se neschovává", async () => {
-    const coord = await mkCtx(baseDir, "coordinator");
-    const mantis = await mkCtx(baseDir, "mantis");
-    await register(coord);
-    await register(mantis);
+	// 🔴 `compact-anchor-request` je řídicí požadavek démona, který agent
+	// nekonzumuje NIKDY — u kb-deva ležel 17 dní, zatímco všechno ostatní
+	// tahal během vteřin. Kdyby se počítal, měl by `recipientPending` trvalou
+	// nenulovou podlahu z nesouvisejícího důvodu a četl by se jako „netahá".
+	test("řídicí druh nedělá podlahu, ale ani se neschovává", async () => {
+		const coord = await mkCtx(baseDir, "coordinator");
+		const mantis = await mkCtx(baseDir, "mantis");
+		await register(coord);
+		await register(mantis);
 
-    // Píšeme SOUBOR, ne přes `send` — přesně jak to dělá démon. `send`
-    // by řídicí druh odmítl schématem, takže testem přes něj bychom
-    // ověřovali jiný svět, než ve kterém ta zpráva vzniká.
-    await putRawEnvelope(baseDir, mantis.self.id, "ctl-1", "compact-anchor-request");
+		// Píšeme SOUBOR, ne přes `send` — přesně jak to dělá démon. `send`
+		// by řídicí druh odmítl schématem, takže testem přes něj bychom
+		// ověřovali jiný svět, než ve kterém ta zpráva vzniká.
+		await putRawEnvelope(
+			baseDir,
+			mantis.self.id,
+			"ctl-1",
+			"compact-anchor-request",
+		);
 
-    const r = JSON.parse(textOf(await peerAskTool(coord, { to: "mantis", content: "ahoj" })));
-    expect(r.recipientPending).toBe(1); // jen moje zpráva, ne ta řídicí
-    expect(r.recipientControlPending).toBe(1); // ale je VIDĚT, ne zahozená
-  });
+		const r = JSON.parse(
+			textOf(await peerAskTool(coord, { to: "mantis", content: "ahoj" })),
+		);
+		expect(r.recipientPending).toBe(1); // jen moje zpráva, ne ta řídicí
+		expect(r.recipientControlPending).toBe(1); // ale je VIDĚT, ne zahozená
+	});
 
-  // Vyloučení je JMENOVITÉ, ne vzorem: nový, neznámý druh se MUSÍ počítat.
-  // Vzor by tiše polkl další řídicí druh a číslo by lhalo zas, jen naopak.
-  test("neznámý druh se počítá, protože ho nikdo nevyloučil jménem", async () => {
-    const coord = await mkCtx(baseDir, "coordinator");
-    const mantis = await mkCtx(baseDir, "mantis");
-    await register(coord);
-    await register(mantis);
+	// Vyloučení je JMENOVITÉ, ne vzorem: nový, neznámý druh se MUSÍ počítat.
+	// Vzor by tiše polkl další řídicí druh a číslo by lhalo zas, jen naopak.
+	test("neznámý druh se počítá, protože ho nikdo nevyloučil jménem", async () => {
+		const coord = await mkCtx(baseDir, "coordinator");
+		const mantis = await mkCtx(baseDir, "mantis");
+		await register(coord);
+		await register(mantis);
 
-    await putRawEnvelope(baseDir, mantis.self.id, "novy-1", "compact-something-new");
+		await putRawEnvelope(
+			baseDir,
+			mantis.self.id,
+			"novy-1",
+			"compact-something-new",
+		);
 
-    const r = JSON.parse(textOf(await peerAskTool(coord, { to: "mantis", content: "ahoj" })));
-    expect(r.recipientPending).toBe(2); // neznámý druh počítá — hlasitě
-    expect(r.recipientControlPending).toBeUndefined();
-  });
+		const r = JSON.parse(
+			textOf(await peerAskTool(coord, { to: "mantis", content: "ahoj" })),
+		);
+		expect(r.recipientPending).toBe(2); // neznámý druh počítá — hlasitě
+		expect(r.recipientControlPending).toBeUndefined();
+	});
 });

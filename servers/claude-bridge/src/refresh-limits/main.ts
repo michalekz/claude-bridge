@@ -1,7 +1,11 @@
 import { spawn } from "node:child_process";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
-import { type OAuthApiLiveEnvelope, liveDir, writeOAuthApiLive } from "../parser/live-data.ts";
+import {
+	type OAuthApiLiveEnvelope,
+	liveDir,
+	writeOAuthApiLive,
+} from "../parser/live-data.ts";
 import { isTokenSafeForHeader, readOAuthToken } from "../parser/oauth-token.ts";
 import { makeLogger } from "../util/logger.ts";
 
@@ -58,7 +62,7 @@ const BETA_HEADER = "anthropic-beta: oauth-2025-04-20";
 const CURL_TIMEOUT_SECONDS = 5;
 
 function throttleMarkerPath(): string {
-  return join(liveDir(), "last-oauth-refresh");
+	return join(liveDir(), "last-oauth-refresh");
 }
 
 /**
@@ -66,20 +70,20 @@ function throttleMarkerPath(): string {
  * should skip this call.
  */
 async function shouldThrottle(now: Date = new Date()): Promise<boolean> {
-  try {
-    const { stat } = await import("node:fs/promises");
-    const s = await stat(throttleMarkerPath());
-    const ageSeconds = (now.getTime() - s.mtimeMs) / 1000;
-    return ageSeconds < THROTTLE_SECONDS;
-  } catch {
-    return false;
-  }
+	try {
+		const { stat } = await import("node:fs/promises");
+		const s = await stat(throttleMarkerPath());
+		const ageSeconds = (now.getTime() - s.mtimeMs) / 1000;
+		return ageSeconds < THROTTLE_SECONDS;
+	} catch {
+		return false;
+	}
 }
 
 async function touchThrottleMarker(): Promise<void> {
-  const path = throttleMarkerPath();
-  await mkdir(dirname(path), { recursive: true });
-  await writeFile(path, `${new Date().toISOString()}\n`);
+	const path = throttleMarkerPath();
+	await mkdir(dirname(path), { recursive: true });
+	await writeFile(path, `${new Date().toISOString()}\n`);
 }
 
 /**
@@ -91,91 +95,91 @@ async function touchThrottleMarker(): Promise<void> {
  * malformed response).
  */
 async function fetchUsageViaCurl(token: string): Promise<unknown | null> {
-  return new Promise((resolve) => {
-    let stdoutBuf = "";
-    let stderrBuf = "";
-    let child: ReturnType<typeof spawn>;
-    try {
-      child = spawn(
-        "curl",
-        [
-          "-s",
-          "-f",
-          "--config",
-          "-",
-          "-H",
-          "Accept: application/json",
-          "-H",
-          "Content-Type: application/json",
-          "-H",
-          `User-Agent: ${USER_AGENT}`,
-          "-H",
-          BETA_HEADER,
-          "--max-time",
-          String(CURL_TIMEOUT_SECONDS),
-          OAUTH_ENDPOINT,
-        ],
-        { stdio: ["pipe", "pipe", "pipe"] },
-      );
-    } catch (e) {
-      log.warn("refresh_limits_curl_spawn_failed", {
-        err: e instanceof Error ? e.message : String(e),
-      });
-      resolve(null);
-      return;
-    }
+	return new Promise((resolve) => {
+		let stdoutBuf = "";
+		let stderrBuf = "";
+		let child: ReturnType<typeof spawn>;
+		try {
+			child = spawn(
+				"curl",
+				[
+					"-s",
+					"-f",
+					"--config",
+					"-",
+					"-H",
+					"Accept: application/json",
+					"-H",
+					"Content-Type: application/json",
+					"-H",
+					`User-Agent: ${USER_AGENT}`,
+					"-H",
+					BETA_HEADER,
+					"--max-time",
+					String(CURL_TIMEOUT_SECONDS),
+					OAUTH_ENDPOINT,
+				],
+				{ stdio: ["pipe", "pipe", "pipe"] },
+			);
+		} catch (e) {
+			log.warn("refresh_limits_curl_spawn_failed", {
+				err: e instanceof Error ? e.message : String(e),
+			});
+			resolve(null);
+			return;
+		}
 
-    child.stdout?.on("data", (chunk) => {
-      stdoutBuf += chunk.toString();
-    });
-    child.stderr?.on("data", (chunk) => {
-      stderrBuf += chunk.toString();
-    });
-    child.on("error", () => resolve(null));
-    child.on("exit", (code) => {
-      if (code !== 0) {
-        log.warn("refresh_limits_curl_nonzero", {
-          exitCode: code,
-          stderr: stderrBuf.slice(0, 200),
-        });
-        resolve(null);
-        return;
-      }
-      try {
-        const parsed = JSON.parse(stdoutBuf);
-        resolve(parsed);
-      } catch (e) {
-        log.warn("refresh_limits_response_parse_failed", {
-          err: e instanceof Error ? e.message : String(e),
-        });
-        resolve(null);
-      }
-    });
+		child.stdout?.on("data", (chunk) => {
+			stdoutBuf += chunk.toString();
+		});
+		child.stderr?.on("data", (chunk) => {
+			stderrBuf += chunk.toString();
+		});
+		child.on("error", () => resolve(null));
+		child.on("exit", (code) => {
+			if (code !== 0) {
+				log.warn("refresh_limits_curl_nonzero", {
+					exitCode: code,
+					stderr: stderrBuf.slice(0, 200),
+				});
+				resolve(null);
+				return;
+			}
+			try {
+				const parsed = JSON.parse(stdoutBuf);
+				resolve(parsed);
+			} catch (e) {
+				log.warn("refresh_limits_response_parse_failed", {
+					err: e instanceof Error ? e.message : String(e),
+				});
+				resolve(null);
+			}
+		});
 
-    // v0.10.2: EPIPE guard. If curl dies before reading its --config (missing
-    // binary, instant failure), `write()` emits 'error' on the stream instead
-    // of throwing. Unhandled, that is a process-level crash — inside a
-    // PostToolUse hook, meaning a failed tool call for the user. The try/catch
-    // below cannot catch it; only a listener can. Never log the body here: it
-    // holds the OAuth bearer token.
-    child.stdin?.on("error", (e: NodeJS.ErrnoException) => {
-      if (e.code !== "EPIPE") {
-        log.warn("refresh_limits_stdin_error", { code: e.code });
-      }
-    });
+		// v0.10.2: EPIPE guard. If curl dies before reading its --config (missing
+		// binary, instant failure), `write()` emits 'error' on the stream instead
+		// of throwing. Unhandled, that is a process-level crash — inside a
+		// PostToolUse hook, meaning a failed tool call for the user. The try/catch
+		// below cannot catch it; only a listener can. Never log the body here: it
+		// holds the OAuth bearer token.
+		child.stdin?.on("error", (e: NodeJS.ErrnoException) => {
+			if (e.code !== "EPIPE") {
+				log.warn("refresh_limits_stdin_error", { code: e.code });
+			}
+		});
 
-    // Write curl --config file to stdin, containing only the Authorization
-    // header. This keeps the token out of the command line (visible to `ps`)
-    // and out of environment variables (visible via /proc/<pid>/environ).
-    try {
-      child.stdin?.write(`header = "Authorization: Bearer ${token}"\n`);
-      child.stdin?.end();
-    } catch (e) {
-      log.warn("refresh_limits_stdin_write_failed", {
-        err: e instanceof Error ? e.message : String(e),
-      });
-    }
-  });
+		// Write curl --config file to stdin, containing only the Authorization
+		// header. This keeps the token out of the command line (visible to `ps`)
+		// and out of environment variables (visible via /proc/<pid>/environ).
+		try {
+			child.stdin?.write(`header = "Authorization: Bearer ${token}"\n`);
+			child.stdin?.end();
+		} catch (e) {
+			log.warn("refresh_limits_stdin_write_failed", {
+				err: e instanceof Error ? e.message : String(e),
+			});
+		}
+	});
 }
 
 /**
@@ -184,76 +188,76 @@ async function fetchUsageViaCurl(token: string): Promise<unknown | null> {
  * Reading and discarding stdin prevents EPIPE if CC pipes payload in.
  */
 async function drainStdin(): Promise<void> {
-  return new Promise((resolve) => {
-    process.stdin.on("data", () => undefined);
-    process.stdin.on("end", () => resolve());
-    process.stdin.on("error", () => resolve());
-    // If stdin has nothing to read (e.g. manual invocation), 'end' fires
-    // immediately once we start listening.
-  });
+	return new Promise((resolve) => {
+		process.stdin.on("data", () => undefined);
+		process.stdin.on("end", () => resolve());
+		process.stdin.on("error", () => resolve());
+		// If stdin has nothing to read (e.g. manual invocation), 'end' fires
+		// immediately once we start listening.
+	});
 }
 
 export async function main(): Promise<number> {
-  // Fire-and-forget stdin drain (best-effort).
-  const stdinDrained = drainStdin();
+	// Fire-and-forget stdin drain (best-effort).
+	const stdinDrained = drainStdin();
 
-  if (await shouldThrottle()) {
-    await stdinDrained;
-    return 0;
-  }
+	if (await shouldThrottle()) {
+		await stdinDrained;
+		return 0;
+	}
 
-  const token = await readOAuthToken();
-  if (!token) {
-    log.warn("refresh_limits_no_token");
-    await stdinDrained;
-    return 0;
-  }
-  if (!isTokenSafeForHeader(token)) {
-    log.warn("refresh_limits_token_unsafe_chars");
-    await stdinDrained;
-    return 0;
-  }
+	const token = await readOAuthToken();
+	if (!token) {
+		log.warn("refresh_limits_no_token");
+		await stdinDrained;
+		return 0;
+	}
+	if (!isTokenSafeForHeader(token)) {
+		log.warn("refresh_limits_token_unsafe_chars");
+		await stdinDrained;
+		return 0;
+	}
 
-  const data = await fetchUsageViaCurl(token);
-  if (data === null) {
-    // v0.11.27: throttle marker se dotýká I PŘI SELHÁNÍ. Původní "retry
-    // sooner next PostToolUse" znamenalo: trvalé selhání endpointu (429)
-    // → každý PostToolUse KAŽDÉHO peera = 1 curl → flotila buší do
-    // endpointu bez omezení (doloženo 18. 8.: 13 h nepřetržitě od 09:28,
-    // možná příčina samotného 429). Jednotná kadence 1/THROTTLE_SECONDS
-    // platí pro úspěch i neúspěch; oživení endpointu se pozná do minuty.
-    await touchThrottleMarker();
-    await stdinDrained;
-    return 0;
-  }
+	const data = await fetchUsageViaCurl(token);
+	if (data === null) {
+		// v0.11.27: throttle marker se dotýká I PŘI SELHÁNÍ. Původní "retry
+		// sooner next PostToolUse" znamenalo: trvalé selhání endpointu (429)
+		// → každý PostToolUse KAŽDÉHO peera = 1 curl → flotila buší do
+		// endpointu bez omezení (doloženo 18. 8.: 13 h nepřetržitě od 09:28,
+		// možná příčina samotného 429). Jednotná kadence 1/THROTTLE_SECONDS
+		// platí pro úspěch i neúspěch; oživení endpointu se pozná do minuty.
+		await touchThrottleMarker();
+		await stdinDrained;
+		return 0;
+	}
 
-  const envelope: OAuthApiLiveEnvelope = {
-    capturedAt: new Date().toISOString(),
-    data,
-  };
-  try {
-    await writeOAuthApiLive(envelope);
-    await touchThrottleMarker();
-  } catch (e) {
-    log.warn("refresh_limits_write_failed", {
-      err: e instanceof Error ? e.message : String(e),
-    });
-  }
+	const envelope: OAuthApiLiveEnvelope = {
+		capturedAt: new Date().toISOString(),
+		data,
+	};
+	try {
+		await writeOAuthApiLive(envelope);
+		await touchThrottleMarker();
+	} catch (e) {
+		log.warn("refresh_limits_write_failed", {
+			err: e instanceof Error ? e.message : String(e),
+		});
+	}
 
-  await stdinDrained;
-  return 0;
+	await stdinDrained;
+	return 0;
 }
 
 if (require.main === module) {
-  main().then(
-    (code) => process.exit(code),
-    (e) => {
-      log.error("refresh_limits_fatal", {
-        err: e instanceof Error ? e.message : String(e),
-      });
-      process.exit(0); // hook must never break CC tool call
-    },
-  );
+	main().then(
+		(code) => process.exit(code),
+		(e) => {
+			log.error("refresh_limits_fatal", {
+				err: e instanceof Error ? e.message : String(e),
+			});
+			process.exit(0); // hook must never break CC tool call
+		},
+	);
 }
 
 // Static import guard: keep readFile referenced so bundlers don't drop

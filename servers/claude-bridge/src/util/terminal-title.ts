@@ -49,20 +49,22 @@ const log = makeLogger("terminal-title");
  * Returns `{ major, minor }` or null when stat is malformed or tty_nr is 0.
  * tty_nr === 0 means the process has no controlling terminal.
  */
-export function parseTtyNrFromProcStat(stat: string): { major: number; minor: number } | null {
-  const lastParen = stat.lastIndexOf(")");
-  if (lastParen === -1) return null;
-  const after = stat.slice(lastParen + 2);
-  const fields = after.split(" ");
-  const ttyNrStr = fields[4];
-  if (!ttyNrStr) return null;
-  const ttyNr = Number.parseInt(ttyNrStr, 10);
-  if (Number.isNaN(ttyNr) || ttyNr === 0) return null;
-  const major = (ttyNr >> 8) & 0xff;
-  const minorLow = ttyNr & 0xff;
-  const minorHigh = (ttyNr >> 12) & 0xfff00;
-  const minor = minorLow | minorHigh;
-  return { major, minor };
+export function parseTtyNrFromProcStat(
+	stat: string,
+): { major: number; minor: number } | null {
+	const lastParen = stat.lastIndexOf(")");
+	if (lastParen === -1) return null;
+	const after = stat.slice(lastParen + 2);
+	const fields = after.split(" ");
+	const ttyNrStr = fields[4];
+	if (!ttyNrStr) return null;
+	const ttyNr = Number.parseInt(ttyNrStr, 10);
+	if (Number.isNaN(ttyNr) || ttyNr === 0) return null;
+	const major = (ttyNr >> 8) & 0xff;
+	const minorLow = ttyNr & 0xff;
+	const minorHigh = (ttyNr >> 12) & 0xfff00;
+	const minor = minorLow | minorHigh;
+	return { major, minor };
 }
 
 /**
@@ -71,17 +73,17 @@ export function parseTtyNrFromProcStat(stat: string): { major: number; minor: nu
  * unsupported here and return null.
  */
 function findLinuxParentTty(ppid: number): string | null {
-  try {
-    const stat = readFileSync(`/proc/${ppid}/stat`, "utf-8");
-    const parsed = parseTtyNrFromProcStat(stat);
-    if (!parsed) return null;
-    if (parsed.major === 136) {
-      return `/dev/pts/${parsed.minor}`;
-    }
-    return null;
-  } catch {
-    return null;
-  }
+	try {
+		const stat = readFileSync(`/proc/${ppid}/stat`, "utf-8");
+		const parsed = parseTtyNrFromProcStat(stat);
+		if (!parsed) return null;
+		if (parsed.major === 136) {
+			return `/dev/pts/${parsed.minor}`;
+		}
+		return null;
+	} catch {
+		return null;
+	}
 }
 
 /**
@@ -89,16 +91,16 @@ function findLinuxParentTty(ppid: number): string | null {
  * controlling terminal; any other value gets prefixed with /dev/.
  */
 function findMacOSParentTty(ppid: number): string | null {
-  try {
-    const tty = execFileSync("ps", ["-p", String(ppid), "-o", "tty="], {
-      encoding: "utf-8",
-      timeout: 1000,
-    }).trim();
-    if (!tty || tty === "?" || tty === "??") return null;
-    return `/dev/${tty}`;
-  } catch {
-    return null;
-  }
+	try {
+		const tty = execFileSync("ps", ["-p", String(ppid), "-o", "tty="], {
+			encoding: "utf-8",
+			timeout: 1000,
+		}).trim();
+		if (!tty || tty === "?" || tty === "??") return null;
+		return `/dev/${tty}`;
+	} catch {
+		return null;
+	}
 }
 
 /**
@@ -106,12 +108,12 @@ function findMacOSParentTty(ppid: number): string | null {
  * available (Extension-launched CC has no tty; Windows isn't supported yet).
  */
 export function findParentTty(
-  ppid: number,
-  plat: NodeJS.Platform = process.platform,
+	ppid: number,
+	plat: NodeJS.Platform = process.platform,
 ): string | null {
-  if (plat === "linux") return findLinuxParentTty(ppid);
-  if (plat === "darwin") return findMacOSParentTty(ppid);
-  return null;
+	if (plat === "linux") return findLinuxParentTty(ppid);
+	if (plat === "darwin") return findMacOSParentTty(ppid);
+	return null;
 }
 
 /**
@@ -120,30 +122,35 @@ export function findParentTty(
  * plugin doesn't crash on cosmetic UX.
  */
 export function emitTerminalTitle(tty: string, title: string): void {
-  let fd: number | null = null;
-  try {
-    fd = openSync(tty, "w");
-    writeSync(fd, `\x1b]2;${title}\x07`);
-  } catch (e) {
-    log.debug("emit_failed", { tty, err: e instanceof Error ? e.message : String(e) });
-  } finally {
-    if (fd !== null) {
-      try {
-        closeSync(fd);
-      } catch {
-        // ignore
-      }
-    }
-  }
+	let fd: number | null = null;
+	try {
+		fd = openSync(tty, "w");
+		writeSync(fd, `\x1b]2;${title}\x07`);
+	} catch (e) {
+		log.debug("emit_failed", {
+			tty,
+			err: e instanceof Error ? e.message : String(e),
+		});
+	} finally {
+		if (fd !== null) {
+			try {
+				closeSync(fd);
+			} catch {
+				// ignore
+			}
+		}
+	}
 }
 
 /**
  * Opt-out via env var `CLAUDE_BRIDGE_EMIT_TERMINAL_TITLE=0` (or `false`).
  * Default: enabled.
  */
-export function isTerminalTitleEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
-  const v = env["CLAUDE_BRIDGE_EMIT_TERMINAL_TITLE"];
-  if (v === undefined || v === "") return true;
-  const norm = v.toLowerCase();
-  return norm !== "0" && norm !== "false";
+export function isTerminalTitleEnabled(
+	env: NodeJS.ProcessEnv = process.env,
+): boolean {
+	const v = env["CLAUDE_BRIDGE_EMIT_TERMINAL_TITLE"];
+	if (v === undefined || v === "") return true;
+	const norm = v.toLowerCase();
+	return norm !== "0" && norm !== "false";
 }

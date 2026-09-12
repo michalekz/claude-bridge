@@ -171,7 +171,12 @@ function isTokenSafeForHeader(token) {
 }
 
 // src/util/logger.ts
-var LEVELS = { debug: 10, info: 20, warn: 30, error: 40 };
+var LEVELS = {
+  debug: 10,
+  info: 20,
+  warn: 30,
+  error: 40
+};
 var envLevel = process.env["LOG_LEVEL"] || "info";
 var minLevel = LEVELS[envLevel] ?? LEVELS.info;
 var pretty = process.env["LOG_FORMAT"] === "pretty";

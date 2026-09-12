@@ -1,9 +1,20 @@
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterAll, beforeAll, beforeEach, describe, expect, test } from "vitest";
+import {
+	afterAll,
+	beforeAll,
+	beforeEach,
+	describe,
+	expect,
+	test,
+} from "vitest";
 import { createChannelSender } from "../../src/mcp/channel.ts";
-import { type ServerContext, buildContext, pumpInboxToChannel } from "../../src/mcp/context.ts";
+import {
+	type ServerContext,
+	buildContext,
+	pumpInboxToChannel,
+} from "../../src/mcp/context.ts";
 import { peerAskTool, piggybackInbox } from "../../src/mcp/tools.ts";
 
 /**
@@ -26,117 +37,136 @@ import { peerAskTool, piggybackInbox } from "../../src/mcp/tools.ts";
  */
 
 function fakeServer(sink: unknown[], drop = false) {
-  return {
-    // biome-ignore lint/suspicious/noExplicitAny: stub
-    async notification(n: any) {
-      // `drop` models the real failure: Claude Code accepts the notification
-      // and renders nothing. No throw — so the sender cannot tell.
-      if (!drop) sink.push(n);
-    },
-  };
+	return {
+		// biome-ignore lint/suspicious/noExplicitAny: stub
+		async notification(n: any) {
+			// `drop` models the real failure: Claude Code accepts the notification
+			// and renders nothing. No throw — so the sender cannot tell.
+			if (!drop) sink.push(n);
+		},
+	};
 }
 
 let counter = 0;
 const makeId = (label: string) =>
-  `${label.slice(0, 7).padEnd(7, "0")}${++counter}-0000-0000-0000-000000000000`.slice(0, 36);
+	`${label.slice(0, 7).padEnd(7, "0")}${++counter}-0000-0000-0000-000000000000`.slice(
+		0,
+		36,
+	);
 
 async function mkCtx(baseDir: string, name: string): Promise<ServerContext> {
-  return buildContext({
-    identity: { id: makeId(name), name, displayName: name, source: "env" },
-    baseDir,
-    withHeartbeat: false,
-    emitTerminalTitle: false,
-    version: "test",
-    nameRefreshIntervalMs: 0,
-  });
+	return buildContext({
+		identity: { id: makeId(name), name, displayName: name, source: "env" },
+		baseDir,
+		withHeartbeat: false,
+		emitTerminalTitle: false,
+		version: "test",
+		nameRefreshIntervalMs: 0,
+	});
 }
 
 const textOf = (r: { content: Array<{ type: string; text?: string }> }) =>
-  r.content.map((c) => c.text ?? "").join("\n");
+	r.content.map((c) => c.text ?? "").join("\n");
 
 describe("push that renders nothing must not swallow the message", () => {
-  let baseDir: string;
-  let sender: ServerContext;
-  let receiver: ServerContext;
+	let baseDir: string;
+	let sender: ServerContext;
+	let receiver: ServerContext;
 
-  beforeAll(async () => {
-    baseDir = await mkdtemp(join(tmpdir(), "cb-pushloss-"));
-  });
-  afterAll(async () => {
-    await rm(baseDir, { recursive: true, force: true });
-  });
+	beforeAll(async () => {
+		baseDir = await mkdtemp(join(tmpdir(), "cb-pushloss-"));
+	});
+	afterAll(async () => {
+		await rm(baseDir, { recursive: true, force: true });
+	});
 
-  beforeEach(async () => {
-    sender = await mkCtx(baseDir, "designer");
-    receiver = await mkCtx(baseDir, "bridgedev");
-    for (const c of [sender, receiver]) {
-      await c.registry.startHeartbeat({ id: c.self.id, name: c.self.name, pid: 1, source: "env" });
-    }
-  });
+	beforeEach(async () => {
+		sender = await mkCtx(baseDir, "designer");
+		receiver = await mkCtx(baseDir, "bridgedev");
+		for (const c of [sender, receiver]) {
+			await c.registry.startHeartbeat({
+				id: c.self.id,
+				name: c.self.name,
+				pid: 1,
+				source: "env",
+			});
+		}
+	});
 
-  test("THE REGRESSION: dropped notification still reaches the agent via the inbox block", async () => {
-    const rendered: unknown[] = [];
-    // drop = true: the exact live failure. Push resolves, nothing is rendered.
-    receiver.channel = createChannelSender(fakeServer(rendered, true) as never);
+	test("THE REGRESSION: dropped notification still reaches the agent via the inbox block", async () => {
+		const rendered: unknown[] = [];
+		// drop = true: the exact live failure. Push resolves, nothing is rendered.
+		receiver.channel = createChannelSender(fakeServer(rendered, true) as never);
 
-    await peerAskTool(sender, { to: receiver.self.id, content: "ROZHODUJÍCÍ TEST" });
+		await peerAskTool(sender, {
+			to: receiver.self.id,
+			content: "ROZHODUJÍCÍ TEST",
+		});
 
-    const { pushed } = await pumpInboxToChannel(receiver);
-    // The sender genuinely believes it delivered — this is the lying instrument.
-    expect(pushed).toBe(1);
-    expect(rendered.length).toBe(0);
-    expect(receiver.pushedMsgIds.size).toBe(1);
+		const { pushed } = await pumpInboxToChannel(receiver);
+		// The sender genuinely believes it delivered — this is the lying instrument.
+		expect(pushed).toBe(1);
+		expect(rendered.length).toBe(0);
+		expect(receiver.pushedMsgIds.size).toBe(1);
 
-    // Any later tool call triggers the piggyback drain.
-    const out = await piggybackInbox(receiver, "peer_list", {
-      content: [{ type: "text", text: "{}" }],
-    });
+		// Any later tool call triggers the piggyback drain.
+		const out = await piggybackInbox(receiver, "peer_list", {
+			content: [{ type: "text", text: "{}" }],
+		});
 
-    // Before the fix this block was empty and the message was gone.
-    expect(textOf(out)).toContain("ROZHODUJÍCÍ TEST");
-    expect(textOf(out)).toContain("📬 INBOX");
+		// Before the fix this block was empty and the message was gone.
+		expect(textOf(out)).toContain("ROZHODUJÍCÍ TEST");
+		expect(textOf(out)).toContain("📬 INBOX");
 
-    // Archived exactly once, and reply correlation still works.
-    expect((await receiver.inbox.listPending(receiver.self.id)).length).toBe(0);
-    expect((await receiver.inbox.listDone(receiver.self.id)).length).toBe(1);
-  });
+		// Archived exactly once, and reply correlation still works.
+		expect((await receiver.inbox.listPending(receiver.self.id)).length).toBe(0);
+		expect((await receiver.inbox.listDone(receiver.self.id)).length).toBe(1);
+	});
 
-  test("a push that DID render is still shown, but marked as an echo", async () => {
-    const rendered: unknown[] = [];
-    receiver.channel = createChannelSender(fakeServer(rendered, false) as never);
+	test("a push that DID render is still shown, but marked as an echo", async () => {
+		const rendered: unknown[] = [];
+		receiver.channel = createChannelSender(
+			fakeServer(rendered, false) as never,
+		);
 
-    await peerAskTool(sender, { to: receiver.self.id, content: "normální provoz" });
-    await pumpInboxToChannel(receiver);
-    expect(rendered.length).toBe(1);
+		await peerAskTool(sender, {
+			to: receiver.self.id,
+			content: "normální provoz",
+		});
+		await pumpInboxToChannel(receiver);
+		expect(rendered.length).toBe(1);
 
-    const out = await piggybackInbox(receiver, "peer_list", {
-      content: [{ type: "text", text: "{}" }],
-    });
+		const out = await piggybackInbox(receiver, "peer_list", {
+			content: [{ type: "text", text: "{}" }],
+		});
 
-    // Duplicate content is the accepted cost — the marker keeps it honest so
-    // the agent can tell a second copy from a second message.
-    expect(textOf(out)).toContain("normální provoz");
-    expect(textOf(out)).toContain("already pushed to channel");
-  });
+		// Duplicate content is the accepted cost — the marker keeps it honest so
+		// the agent can tell a second copy from a second message.
+		expect(textOf(out)).toContain("normální provoz");
+		expect(textOf(out)).toContain("already pushed to channel");
+	});
 
-  test("a message never pushed at all carries no echo marker", async () => {
-    // No channel configured — piggyback is the only delivery path.
-    await peerAskTool(sender, { to: receiver.self.id, content: "jen piggyback" });
+	test("a message never pushed at all carries no echo marker", async () => {
+		// No channel configured — piggyback is the only delivery path.
+		await peerAskTool(sender, {
+			to: receiver.self.id,
+			content: "jen piggyback",
+		});
 
-    const out = await piggybackInbox(receiver, "peer_list", {
-      content: [{ type: "text", text: "{}" }],
-    });
+		const out = await piggybackInbox(receiver, "peer_list", {
+			content: [{ type: "text", text: "{}" }],
+		});
 
-    expect(textOf(out)).toContain("jen piggyback");
-    expect(textOf(out)).not.toContain("already pushed to channel");
-  });
+		expect(textOf(out)).toContain("jen piggyback");
+		expect(textOf(out)).not.toContain("already pushed to channel");
+	});
 
-  test("nothing pending means no block — count 0 now genuinely means empty", async () => {
-    // Once messages can no longer be swallowed, an empty answer is
-    // trustworthy. It was not before: count 0 also meant "eaten".
-    const out = await piggybackInbox(receiver, "peer_list", {
-      content: [{ type: "text", text: "{}" }],
-    });
-    expect(textOf(out)).not.toContain("📬 INBOX");
-  });
+	test("nothing pending means no block — count 0 now genuinely means empty", async () => {
+		// Once messages can no longer be swallowed, an empty answer is
+		// trustworthy. It was not before: count 0 also meant "eaten".
+		const out = await piggybackInbox(receiver, "peer_list", {
+			content: [{ type: "text", text: "{}" }],
+		});
+		expect(textOf(out)).not.toContain("📬 INBOX");
+	});
 });

@@ -19,43 +19,44 @@ import { TOOLS } from "../../src/mcp/tools.ts";
  */
 
 const PAIRS: Array<[string, ZodObject<ZodRawShape>]> = [
-  ["control_status", cp.ControlStatusArgs],
-  ["peer_stop", cp.PeerStopArgs],
-  ["peer_spawn", cp.PeerSpawnArgs],
-  ["peer_restart", cp.PeerRestartArgs],
-  ["peer_compact", cp.PeerCompactArgs],
-  ["team_layout", cp.TeamLayoutArgs],
-  ["team_status", cp.TeamStatusArgs],
-  ["team_stop", cp.TeamStopArgs],
-  ["team_adopt", cp.TeamAdoptArgs],
-  ["team_release", cp.TeamReleaseArgs],
-  ["team_reconcile", cp.TeamReconcileArgs],
-  ["team_restart", cp.TeamRestartArgs],
+	["control_status", cp.ControlStatusArgs],
+	["peer_stop", cp.PeerStopArgs],
+	["peer_spawn", cp.PeerSpawnArgs],
+	["peer_restart", cp.PeerRestartArgs],
+	["peer_compact", cp.PeerCompactArgs],
+	["team_layout", cp.TeamLayoutArgs],
+	["team_status", cp.TeamStatusArgs],
+	["team_stop", cp.TeamStopArgs],
+	["team_adopt", cp.TeamAdoptArgs],
+	["team_release", cp.TeamReleaseArgs],
+	["team_reconcile", cp.TeamReconcileArgs],
+	["team_restart", cp.TeamRestartArgs],
 ];
 
 describe("advertised arguments are accepted arguments", () => {
-  for (const [name, schema] of PAIRS) {
-    test(`${name}`, () => {
-      const tool = TOOLS.find((t) => t.name === name);
-      expect(tool, `tool ${name} is missing from TOOLS`).toBeDefined();
-      const advertised = Object.keys(
-        (tool?.inputSchema as { properties?: Record<string, unknown> }).properties ?? {},
-      );
-      const accepted = new Set(Object.keys(schema.shape));
-      // Printing the offending names, not a boolean — a membership assertion
-      // that only reports true/false is how the last one survived review.
-      const refused = advertised.filter((p) => !accepted.has(p));
-      expect(refused).toEqual([]);
-    });
-  }
+	for (const [name, schema] of PAIRS) {
+		test(`${name}`, () => {
+			const tool = TOOLS.find((t) => t.name === name);
+			expect(tool, `tool ${name} is missing from TOOLS`).toBeDefined();
+			const advertised = Object.keys(
+				(tool?.inputSchema as { properties?: Record<string, unknown> })
+					.properties ?? {},
+			);
+			const accepted = new Set(Object.keys(schema.shape));
+			// Printing the offending names, not a boolean — a membership assertion
+			// that only reports true/false is how the last one survived review.
+			const refused = advertised.filter((p) => !accepted.has(p));
+			expect(refused).toEqual([]);
+		});
+	}
 
-  test("THE REGRESSION: team_adopt accepts hostSession", () => {
-    const res = cp.TeamAdoptArgs.safeParse({ team: "hmh", hostSession: "hmh" });
-    expect(res.success).toBe(true);
-  });
+	test("THE REGRESSION: team_adopt accepts hostSession", () => {
+		const res = cp.TeamAdoptArgs.safeParse({ team: "hmh", hostSession: "hmh" });
+		expect(res.success).toBe(true);
+	});
 
-  test("and still refuses a key nobody documented", () => {
-    const res = cp.TeamAdoptArgs.safeParse({ team: "hmh", nonsense: 1 });
-    expect(res.success).toBe(false);
-  });
+	test("and still refuses a key nobody documented", () => {
+		const res = cp.TeamAdoptArgs.safeParse({ team: "hmh", nonsense: 1 });
+		expect(res.success).toBe(false);
+	});
 });

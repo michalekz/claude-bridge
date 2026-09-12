@@ -1,6 +1,10 @@
 import { createReadStream } from "node:fs";
 import { createInterface } from "node:readline";
-import { KNOWN_EVENT_TYPES, type SessionEvent, SessionEventSchema } from "./schemas.ts";
+import {
+	KNOWN_EVENT_TYPES,
+	type SessionEvent,
+	SessionEventSchema,
+} from "./schemas.ts";
 
 /**
  * Streaming JSONL parser for Claude Code session files.
@@ -18,40 +22,47 @@ import { KNOWN_EVENT_TYPES, type SessionEvent, SessionEventSchema } from "./sche
  */
 
 export interface ParseOptions {
-  /** Called for each line that fails to parse as JSON. */
-  onJsonError?: (line: string, error: Error, lineNumber: number) => void;
-  /** Called for each line that parses but fails schema validation. */
-  onValidationError?: (raw: unknown, error: unknown, lineNumber: number) => void;
+	/** Called for each line that fails to parse as JSON. */
+	onJsonError?: (line: string, error: Error, lineNumber: number) => void;
+	/** Called for each line that parses but fails schema validation. */
+	onValidationError?: (
+		raw: unknown,
+		error: unknown,
+		lineNumber: number,
+	) => void;
 }
 
 export async function* parseSessionFile(
-  filePath: string,
-  options: ParseOptions = {},
+	filePath: string,
+	options: ParseOptions = {},
 ): AsyncGenerator<SessionEvent> {
-  const stream = createReadStream(filePath, { encoding: "utf-8" });
-  const lines = createInterface({ input: stream, crlfDelay: Number.POSITIVE_INFINITY });
+	const stream = createReadStream(filePath, { encoding: "utf-8" });
+	const lines = createInterface({
+		input: stream,
+		crlfDelay: Number.POSITIVE_INFINITY,
+	});
 
-  let lineNumber = 0;
-  for await (const line of lines) {
-    lineNumber++;
-    if (line.trim().length === 0) continue;
+	let lineNumber = 0;
+	for await (const line of lines) {
+		lineNumber++;
+		if (line.trim().length === 0) continue;
 
-    let raw: unknown;
-    try {
-      raw = JSON.parse(line);
-    } catch (e) {
-      options.onJsonError?.(line, e as Error, lineNumber);
-      continue;
-    }
+		let raw: unknown;
+		try {
+			raw = JSON.parse(line);
+		} catch (e) {
+			options.onJsonError?.(line, e as Error, lineNumber);
+			continue;
+		}
 
-    const result = SessionEventSchema.safeParse(raw);
-    if (!result.success) {
-      options.onValidationError?.(raw, result.error, lineNumber);
-      continue;
-    }
+		const result = SessionEventSchema.safeParse(raw);
+		if (!result.success) {
+			options.onValidationError?.(raw, result.error, lineNumber);
+			continue;
+		}
 
-    yield result.data;
-  }
+		yield result.data;
+	}
 }
 
 /**
@@ -60,25 +71,25 @@ export async function* parseSessionFile(
  * streaming generator.
  */
 export async function readSessionFile(
-  filePath: string,
-  options: ParseOptions = {},
+	filePath: string,
+	options: ParseOptions = {},
 ): Promise<SessionEvent[]> {
-  const events: SessionEvent[] = [];
-  for await (const event of parseSessionFile(filePath, options)) {
-    events.push(event);
-  }
-  return events;
+	const events: SessionEvent[] = [];
+	for await (const event of parseSessionFile(filePath, options)) {
+		events.push(event);
+	}
+	return events;
 }
 
 export interface EventTypeCounts {
-  /** Count per `type`, exactly as the field appears in the file. */
-  byType: Record<string, number>;
-  /** Sum of `byType` — every non-blank line that parsed as JSON. */
-  total: number;
-  /** Observed types that `SessionEventSchema` does not model, with counts. */
-  unmodelledTypes: Record<string, number>;
-  /** Lines that are not valid JSON at all. */
-  malformedLines: number;
+	/** Count per `type`, exactly as the field appears in the file. */
+	byType: Record<string, number>;
+	/** Sum of `byType` — every non-blank line that parsed as JSON. */
+	total: number;
+	/** Observed types that `SessionEventSchema` does not model, with counts. */
+	unmodelledTypes: Record<string, number>;
+	/** Lines that are not valid JSON at all. */
+	malformedLines: number;
 }
 
 /**
@@ -100,35 +111,41 @@ export interface EventTypeCounts {
  * Raw counts fix both. `unmodelledTypes` keeps the gap visible rather than
  * letting it quietly reappear as a smaller total.
  */
-export async function countEventsByType(filePath: string): Promise<EventTypeCounts> {
-  const byType: Record<string, number> = {};
-  const unmodelledTypes: Record<string, number> = {};
-  let total = 0;
-  let malformedLines = 0;
+export async function countEventsByType(
+	filePath: string,
+): Promise<EventTypeCounts> {
+	const byType: Record<string, number> = {};
+	const unmodelledTypes: Record<string, number> = {};
+	let total = 0;
+	let malformedLines = 0;
 
-  const stream = createReadStream(filePath, { encoding: "utf-8" });
-  const lines = createInterface({ input: stream, crlfDelay: Number.POSITIVE_INFINITY });
+	const stream = createReadStream(filePath, { encoding: "utf-8" });
+	const lines = createInterface({
+		input: stream,
+		crlfDelay: Number.POSITIVE_INFINITY,
+	});
 
-  for await (const line of lines) {
-    if (line.trim().length === 0) continue;
-    let raw: unknown;
-    try {
-      raw = JSON.parse(line);
-    } catch {
-      malformedLines++;
-      continue;
-    }
-    const type = (raw as { type?: unknown })?.type;
-    // A line with no `type` is still a line — name it rather than drop it.
-    const key = typeof type === "string" && type.length > 0 ? type : "(no type field)";
-    byType[key] = (byType[key] ?? 0) + 1;
-    total++;
-    if (!KNOWN_EVENT_TYPES.has(key)) {
-      unmodelledTypes[key] = (unmodelledTypes[key] ?? 0) + 1;
-    }
-  }
+	for await (const line of lines) {
+		if (line.trim().length === 0) continue;
+		let raw: unknown;
+		try {
+			raw = JSON.parse(line);
+		} catch {
+			malformedLines++;
+			continue;
+		}
+		const type = (raw as { type?: unknown })?.type;
+		// A line with no `type` is still a line — name it rather than drop it.
+		const key =
+			typeof type === "string" && type.length > 0 ? type : "(no type field)";
+		byType[key] = (byType[key] ?? 0) + 1;
+		total++;
+		if (!KNOWN_EVENT_TYPES.has(key)) {
+			unmodelledTypes[key] = (unmodelledTypes[key] ?? 0) + 1;
+		}
+	}
 
-  return { byType, total, unmodelledTypes, malformedLines };
+	return { byType, total, unmodelledTypes, malformedLines };
 }
 
 /**
@@ -137,16 +154,16 @@ export async function countEventsByType(filePath: string): Promise<EventTypeCoun
  * we skip Zod validation here.
  */
 export interface RawSessionEvent {
-  type: string;
-  uuid?: string;
-  sessionId?: string;
-  timestamp?: string;
-  message?: { role?: string; content?: unknown };
-  // ai-title / custom-title meta events
-  aiTitle?: string;
-  customTitle?: string;
-  // passthrough for forward compat / extra keys
-  [key: string]: unknown;
+	type: string;
+	uuid?: string;
+	sessionId?: string;
+	timestamp?: string;
+	message?: { role?: string; content?: unknown };
+	// ai-title / custom-title meta events
+	aiTitle?: string;
+	customTitle?: string;
+	// passthrough for forward compat / extra keys
+	[key: string]: unknown;
 }
 
 /**
@@ -160,21 +177,24 @@ export interface RawSessionEvent {
  * validation cost is acceptable and catches schema drift early.
  */
 export async function* parseSessionFileRaw(
-  filePath: string,
-  options: ParseOptions = {},
+	filePath: string,
+	options: ParseOptions = {},
 ): AsyncGenerator<RawSessionEvent> {
-  const stream = createReadStream(filePath, { encoding: "utf-8" });
-  const lines = createInterface({ input: stream, crlfDelay: Number.POSITIVE_INFINITY });
+	const stream = createReadStream(filePath, { encoding: "utf-8" });
+	const lines = createInterface({
+		input: stream,
+		crlfDelay: Number.POSITIVE_INFINITY,
+	});
 
-  let lineNumber = 0;
-  for await (const line of lines) {
-    lineNumber++;
-    if (line.trim().length === 0) continue;
+	let lineNumber = 0;
+	for await (const line of lines) {
+		lineNumber++;
+		if (line.trim().length === 0) continue;
 
-    try {
-      yield JSON.parse(line) as RawSessionEvent;
-    } catch (e) {
-      options.onJsonError?.(line, e as Error, lineNumber);
-    }
-  }
+		try {
+			yield JSON.parse(line) as RawSessionEvent;
+		} catch (e) {
+			options.onJsonError?.(line, e as Error, lineNumber);
+		}
+	}
 }

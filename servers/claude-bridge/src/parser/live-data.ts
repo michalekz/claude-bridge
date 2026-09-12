@@ -44,13 +44,13 @@ import { bridgeRoot } from "../util/paths.ts";
 // paths honor mocked homedir in tests. Static constants would freeze the
 // path at import time and defeat the mock.
 export function liveDir(): string {
-  return join(bridgeRoot(), "live");
+	return join(bridgeRoot(), "live");
 }
 export function statusLineDir(): string {
-  return join(liveDir(), "statusline");
+	return join(liveDir(), "statusline");
 }
 export function statusLineSessionPath(sessionId: string): string {
-  return join(statusLineDir(), `${sessionId}.json`);
+	return join(statusLineDir(), `${sessionId}.json`);
 }
 /**
  * Legacy v0.9.0 path — kept for one-release backward-compat fallback so
@@ -58,10 +58,10 @@ export function statusLineSessionPath(sessionId: string): string {
  * yet still see data from the pre-v0.9.1 shared file.
  */
 export function legacyStatusLinePath(): string {
-  return join(liveDir(), "statusline.json");
+	return join(liveDir(), "statusline.json");
 }
 export function oauthLivePath(): string {
-  return join(liveDir(), "oauth-api.json");
+	return join(liveDir(), "oauth-api.json");
 }
 
 /**
@@ -73,41 +73,41 @@ export function oauthLivePath(): string {
  * during edge cases (session start before first assistant turn, etc.).
  */
 export interface StatusLineStdinPayload {
-  /** Session id from CC. v0.9.1+ writers use this to partition per-session
-   * captures. Authoritative — CC sends it in the stdin payload. */
-  session_id?: string;
-  cwd?: string;
-  model?: { display_name?: string };
-  version?: string;
-  worktree?: string;
-  workspace?: unknown;
-  effort?: { level?: "low" | "medium" | "high" | "xhigh" | "max" };
-  rate_limits?: {
-    five_hour?: { used_percentage?: number; resets_at?: number };
-    seven_day?: { used_percentage?: number; resets_at?: number };
-  };
-  context_window?: {
-    /** Total context window size (denominator). Authoritative — matches
-     * canonical model window without any lookup table. */
-    context_window_size?: number;
-    /** Percentage 0-100 of context used. Direct signal from Anthropic API
-     * response — no need to compute from tokens. */
-    used_percentage?: number;
-    /** Total tokens sent this turn (input side, including cache). CC 2.1.80+
-     * exposes this at the same level as `current_usage`. Authoritative if
-     * present — matches `/context` header. */
-    total_input_tokens?: number;
-    /** Total tokens received this turn (output side). */
-    total_output_tokens?: number;
-    /** Nested per-category token counts. Sum of input + output + both
-     * cache fields ≈ total tokens (= /context Total). */
-    current_usage?: {
-      input_tokens?: number;
-      output_tokens?: number;
-      cache_read_input_tokens?: number;
-      cache_creation_input_tokens?: number;
-    };
-  };
+	/** Session id from CC. v0.9.1+ writers use this to partition per-session
+	 * captures. Authoritative — CC sends it in the stdin payload. */
+	session_id?: string;
+	cwd?: string;
+	model?: { display_name?: string };
+	version?: string;
+	worktree?: string;
+	workspace?: unknown;
+	effort?: { level?: "low" | "medium" | "high" | "xhigh" | "max" };
+	rate_limits?: {
+		five_hour?: { used_percentage?: number; resets_at?: number };
+		seven_day?: { used_percentage?: number; resets_at?: number };
+	};
+	context_window?: {
+		/** Total context window size (denominator). Authoritative — matches
+		 * canonical model window without any lookup table. */
+		context_window_size?: number;
+		/** Percentage 0-100 of context used. Direct signal from Anthropic API
+		 * response — no need to compute from tokens. */
+		used_percentage?: number;
+		/** Total tokens sent this turn (input side, including cache). CC 2.1.80+
+		 * exposes this at the same level as `current_usage`. Authoritative if
+		 * present — matches `/context` header. */
+		total_input_tokens?: number;
+		/** Total tokens received this turn (output side). */
+		total_output_tokens?: number;
+		/** Nested per-category token counts. Sum of input + output + both
+		 * cache fields ≈ total tokens (= /context Total). */
+		current_usage?: {
+			input_tokens?: number;
+			output_tokens?: number;
+			cache_read_input_tokens?: number;
+			cache_creation_input_tokens?: number;
+		};
+	};
 }
 
 /**
@@ -115,13 +115,13 @@ export interface StatusLineStdinPayload {
  * stdin payload with metadata for staleness reasoning and per-peer tracking.
  */
 export interface StatusLineLiveEnvelope {
-  /** ISO timestamp when the wrapper wrote this file. */
-  capturedAt: string;
-  /** Session id — matches payload.session_id when CC provides it, otherwise
-   * falls back to CLAUDE_CODE_SESSION_ID env var or cwd-derived hash. */
-  sessionId: string;
-  /** Raw stdin payload from Claude Code. */
-  payload: StatusLineStdinPayload;
+	/** ISO timestamp when the wrapper wrote this file. */
+	capturedAt: string;
+	/** Session id — matches payload.session_id when CC provides it, otherwise
+	 * falls back to CLAUDE_CODE_SESSION_ID env var or cwd-derived hash. */
+	sessionId: string;
+	/** Raw stdin payload from Claude Code. */
+	payload: StatusLineStdinPayload;
 }
 
 /**
@@ -129,21 +129,21 @@ export interface StatusLineLiveEnvelope {
  * Structure follows the response of `/api/oauth/usage`.
  */
 export interface OAuthApiLiveEnvelope {
-  /** ISO timestamp when the hook wrote this file. */
-  capturedAt: string;
-  /** Raw response body from the OAuth API. */
-  data: unknown;
+	/** ISO timestamp when the hook wrote this file. */
+	capturedAt: string;
+	/** Raw response body from the OAuth API. */
+	data: unknown;
 }
 
 async function readEnvelope<T>(path: string): Promise<T | null> {
-  try {
-    const raw = await readFile(path, "utf-8");
-    const parsed = JSON.parse(raw) as T;
-    if (typeof parsed !== "object" || parsed === null) return null;
-    return parsed;
-  } catch {
-    return null;
-  }
+	try {
+		const raw = await readFile(path, "utf-8");
+		const parsed = JSON.parse(raw) as T;
+		if (typeof parsed !== "object" || parsed === null) return null;
+		return parsed;
+	} catch {
+		return null;
+	}
 }
 
 /**
@@ -157,23 +157,27 @@ async function readEnvelope<T>(path: string): Promise<T | null> {
  * statusLine wrapper writes its first per-session capture.
  */
 export async function readStatusLineLive(
-  sessionId?: string,
+	sessionId?: string,
 ): Promise<StatusLineLiveEnvelope | null> {
-  if (sessionId) {
-    const perSession = await readEnvelope<StatusLineLiveEnvelope>(statusLineSessionPath(sessionId));
-    // v0.9.4 (§6/1): verify sessionId INSIDE the envelope matches the requested
-    // one. Do not trust the path alone — a renamed/corrupted file could serve
-    // foreign data. Same-value check for legacy fallback below.
-    if (perSession && perSession.sessionId === sessionId) return perSession;
-    // Legacy compat: if the shared file matches this session, use it.
-    const legacy = await readEnvelope<StatusLineLiveEnvelope>(legacyStatusLinePath());
-    if (legacy && legacy.sessionId === sessionId) return legacy;
-    return null;
-  }
-  // No sessionId → callers want "whatever's newest" (used for rate_limits
-  // aggregation, which is user-scoped). Prefer per-session dir, fall back
-  // to legacy file.
-  return findNewestStatusLine();
+	if (sessionId) {
+		const perSession = await readEnvelope<StatusLineLiveEnvelope>(
+			statusLineSessionPath(sessionId),
+		);
+		// v0.9.4 (§6/1): verify sessionId INSIDE the envelope matches the requested
+		// one. Do not trust the path alone — a renamed/corrupted file could serve
+		// foreign data. Same-value check for legacy fallback below.
+		if (perSession && perSession.sessionId === sessionId) return perSession;
+		// Legacy compat: if the shared file matches this session, use it.
+		const legacy = await readEnvelope<StatusLineLiveEnvelope>(
+			legacyStatusLinePath(),
+		);
+		if (legacy && legacy.sessionId === sessionId) return legacy;
+		return null;
+	}
+	// No sessionId → callers want "whatever's newest" (used for rate_limits
+	// aggregation, which is user-scoped). Prefer per-session dir, fall back
+	// to legacy file.
+	return findNewestStatusLine();
 }
 
 /**
@@ -183,51 +187,51 @@ export async function readStatusLineLive(
  * the account's current state.
  */
 export async function findNewestStatusLine(): Promise<StatusLineLiveEnvelope | null> {
-  let newest: StatusLineLiveEnvelope | null = null;
-  try {
-    const dir = statusLineDir();
-    const entries = (await readdir(dir)).filter((e) => e.endsWith(".json"));
+	let newest: StatusLineLiveEnvelope | null = null;
+	try {
+		const dir = statusLineDir();
+		const entries = (await readdir(dir)).filter((e) => e.endsWith(".json"));
 
-    // Order by mtime, newest first, and read only as far as the first usable
-    // envelope (fix, 2026-08-03).
-    //
-    // This used to readFile + JSON.parse EVERY file in the directory on every
-    // call. Nothing ever deletes those files — one per session id, and session
-    // ids are UUIDs, so the directory only grows: 49 files after eleven days,
-    // ~22 000 projected over a year with the current fleet. That turned an O(1)
-    // lookup into O(every session that ever ran). A stat is far cheaper than a
-    // read-and-parse, and `capturedAt` tracks mtime closely enough that the
-    // first readable file is the answer.
-    const stats: Array<{ path: string; mtimeMs: number }> = [];
-    for (const entry of entries) {
-      const path = join(dir, entry);
-      try {
-        stats.push({ path, mtimeMs: (await stat(path)).mtimeMs });
-      } catch {
-        // vanished between readdir and stat — skip
-      }
-    }
-    stats.sort((a, b) => b.mtimeMs - a.mtimeMs);
+		// Order by mtime, newest first, and read only as far as the first usable
+		// envelope (fix, 2026-08-03).
+		//
+		// This used to readFile + JSON.parse EVERY file in the directory on every
+		// call. Nothing ever deletes those files — one per session id, and session
+		// ids are UUIDs, so the directory only grows: 49 files after eleven days,
+		// ~22 000 projected over a year with the current fleet. That turned an O(1)
+		// lookup into O(every session that ever ran). A stat is far cheaper than a
+		// read-and-parse, and `capturedAt` tracks mtime closely enough that the
+		// first readable file is the answer.
+		const stats: Array<{ path: string; mtimeMs: number }> = [];
+		for (const entry of entries) {
+			const path = join(dir, entry);
+			try {
+				stats.push({ path, mtimeMs: (await stat(path)).mtimeMs });
+			} catch {
+				// vanished between readdir and stat — skip
+			}
+		}
+		stats.sort((a, b) => b.mtimeMs - a.mtimeMs);
 
-    for (const { path } of stats) {
-      const envelope = await readEnvelope<StatusLineLiveEnvelope>(path);
-      if (!envelope) continue;
-      if (Number.isNaN(Date.parse(envelope.capturedAt))) continue;
-      newest = envelope;
-      break;
-    }
-  } catch {
-    // dir doesn't exist yet — fall through to legacy check
-  }
-  if (newest) return newest;
-  return readEnvelope<StatusLineLiveEnvelope>(legacyStatusLinePath());
+		for (const { path } of stats) {
+			const envelope = await readEnvelope<StatusLineLiveEnvelope>(path);
+			if (!envelope) continue;
+			if (Number.isNaN(Date.parse(envelope.capturedAt))) continue;
+			newest = envelope;
+			break;
+		}
+	} catch {
+		// dir doesn't exist yet — fall through to legacy check
+	}
+	if (newest) return newest;
+	return readEnvelope<StatusLineLiveEnvelope>(legacyStatusLinePath());
 }
 
 /**
  * Read the most recent OAuth API live capture, or null.
  */
 export async function readOAuthApiLive(): Promise<OAuthApiLiveEnvelope | null> {
-  return readEnvelope<OAuthApiLiveEnvelope>(oauthLivePath());
+	return readEnvelope<OAuthApiLiveEnvelope>(oauthLivePath());
 }
 
 /**
@@ -235,19 +239,23 @@ export async function readOAuthApiLive(): Promise<OAuthApiLiveEnvelope | null> {
  * Creates `~/.claude-bridge/live/statusline/` if it doesn't exist. Called
  * by the `claude-bridge-statusline` wrapper on every CC render.
  */
-export async function writeStatusLineLive(envelope: StatusLineLiveEnvelope): Promise<void> {
-  // No mkdir here — atomicWriteJson creates the parent itself (ensureDir
-  // defaults to true). The explicit call was a second syscall on the hot
-  // statusLine path, once per render, for nothing.
-  await atomicWriteJson(statusLineSessionPath(envelope.sessionId), envelope);
+export async function writeStatusLineLive(
+	envelope: StatusLineLiveEnvelope,
+): Promise<void> {
+	// No mkdir here — atomicWriteJson creates the parent itself (ensureDir
+	// defaults to true). The explicit call was a second syscall on the hot
+	// statusLine path, once per render, for nothing.
+	await atomicWriteJson(statusLineSessionPath(envelope.sessionId), envelope);
 }
 
 /**
  * Atomically write an OAuth API capture. Called by the PostToolUse hook.
  */
-export async function writeOAuthApiLive(envelope: OAuthApiLiveEnvelope): Promise<void> {
-  // Parent dir handled by atomicWriteJson — see writeStatusLineLive.
-  await atomicWriteJson(oauthLivePath(), envelope);
+export async function writeOAuthApiLive(
+	envelope: OAuthApiLiveEnvelope,
+): Promise<void> {
+	// Parent dir handled by atomicWriteJson — see writeStatusLineLive.
+	await atomicWriteJson(oauthLivePath(), envelope);
 }
 
 /**
@@ -255,10 +263,10 @@ export async function writeOAuthApiLive(envelope: OAuthApiLiveEnvelope): Promise
  * Returns Infinity if the timestamp is malformed.
  */
 export function envelopeAgeSeconds(
-  envelope: { capturedAt: string },
-  now: Date = new Date(),
+	envelope: { capturedAt: string },
+	now: Date = new Date(),
 ): number {
-  const captured = Date.parse(envelope.capturedAt);
-  if (Number.isNaN(captured)) return Number.POSITIVE_INFINITY;
-  return Math.max(0, Math.floor((now.getTime() - captured) / 1000));
+	const captured = Date.parse(envelope.capturedAt);
+	if (Number.isNaN(captured)) return Number.POSITIVE_INFINITY;
+	return Math.max(0, Math.floor((now.getTime() - captured) / 1000));
 }

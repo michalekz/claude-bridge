@@ -15,13 +15,13 @@ import { join, resolve, sep } from "node:path";
 export type Platform = "linux" | "darwin" | "win32";
 
 export function currentPlatform(): Platform {
-  const p = platform();
-  if (p === "linux" || p === "darwin" || p === "win32") return p;
-  throw new Error(`Unsupported platform: ${p}`);
+	const p = platform();
+	if (p === "linux" || p === "darwin" || p === "win32") return p;
+	throw new Error(`Unsupported platform: ${p}`);
 }
 
 export function isWindows(): boolean {
-  return currentPlatform() === "win32";
+	return currentPlatform() === "win32";
 }
 
 /**
@@ -29,15 +29,15 @@ export function isWindows(): boolean {
  * Both Linux and Windows resolve `~/.claude` via `homedir()`.
  */
 export function claudeHome(): string {
-  return join(homedir(), ".claude");
+	return join(homedir(), ".claude");
 }
 
 export function projectsRoot(): string {
-  return join(claudeHome(), "projects");
+	return join(claudeHome(), "projects");
 }
 
 export function ideLockDir(): string {
-  return join(claudeHome(), "ide");
+	return join(claudeHome(), "ide");
 }
 
 /**
@@ -60,11 +60,17 @@ export function ideLockDir(): string {
  * actually wrote, the JSONL isn't found, and ai-title can't be read — the
  * peer falls back to `cwd-slug` and all chats in the same folder collide.
  */
-export function encodeProjectDir(absoluteCwd: string, plat: Platform = currentPlatform()): string {
-  const dropColon = plat === "win32" ? absoluteCwd.replace(/:/g, "-") : absoluteCwd;
-  const collapseSeparators =
-    plat === "win32" ? dropColon.replace(/[\\/]+/g, "-") : dropColon.replace(/\/+/g, "-");
-  return collapseSeparators.replace(/[^a-zA-Z0-9-]/g, "-");
+export function encodeProjectDir(
+	absoluteCwd: string,
+	plat: Platform = currentPlatform(),
+): string {
+	const dropColon =
+		plat === "win32" ? absoluteCwd.replace(/:/g, "-") : absoluteCwd;
+	const collapseSeparators =
+		plat === "win32"
+			? dropColon.replace(/[\\/]+/g, "-")
+			: dropColon.replace(/\/+/g, "-");
+	return collapseSeparators.replace(/[^a-zA-Z0-9-]/g, "-");
 }
 
 /**
@@ -73,14 +79,14 @@ export function encodeProjectDir(absoluteCwd: string, plat: Platform = currentPl
  * Example: cwd `/opt/my-project` → `~/.claude/projects/-opt-my-project/`
  */
 export function projectDir(absoluteCwd: string): string {
-  return join(projectsRoot(), encodeProjectDir(resolve(absoluteCwd)));
+	return join(projectsRoot(), encodeProjectDir(resolve(absoluteCwd)));
 }
 
 /**
  * Path to a session JSONL file, given a cwd and session UUID.
  */
 export function sessionFile(absoluteCwd: string, sessionId: string): string {
-  return join(projectDir(absoluteCwd), `${sessionId}.jsonl`);
+	return join(projectDir(absoluteCwd), `${sessionId}.jsonl`);
 }
 
 /**
@@ -91,19 +97,19 @@ export function sessionFile(absoluteCwd: string, sessionId: string): string {
  * session files.
  */
 export function bridgeRoot(): string {
-  return join(homedir(), ".claude-bridge");
+	return join(homedir(), ".claude-bridge");
 }
 
 export function inboxDir(peer: string): string {
-  return join(bridgeRoot(), "inbox", peer);
+	return join(bridgeRoot(), "inbox", peer);
 }
 
 export function peerRegistryFile(peer: string): string {
-  return join(bridgeRoot(), "peers", `${peer}.json`);
+	return join(bridgeRoot(), "peers", `${peer}.json`);
 }
 
 export function sessionIndexFile(): string {
-  return join(bridgeRoot(), "index", "sessions.sqlite");
+	return join(bridgeRoot(), "index", "sessions.sqlite");
 }
 
 /**

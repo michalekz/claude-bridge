@@ -30,48 +30,48 @@ import { claudeHome } from "../util/paths.ts";
  */
 
 interface Credentials {
-  claudeAiOauth?: {
-    accessToken?: string;
-    refreshToken?: string;
-    expiresAt?: number;
-  };
+	claudeAiOauth?: {
+		accessToken?: string;
+		refreshToken?: string;
+		expiresAt?: number;
+	};
 }
 
 export function credentialsPath(): string {
-  return join(claudeHome(), ".credentials.json");
+	return join(claudeHome(), ".credentials.json");
 }
 
 async function readTokenFromFile(): Promise<string | null> {
-  try {
-    const raw = await readFile(credentialsPath(), "utf-8");
-    const parsed = JSON.parse(raw) as Credentials;
-    const token = parsed.claudeAiOauth?.accessToken;
-    if (typeof token !== "string" || token.length === 0) return null;
-    return token;
-  } catch {
-    return null;
-  }
+	try {
+		const raw = await readFile(credentialsPath(), "utf-8");
+		const parsed = JSON.parse(raw) as Credentials;
+		const token = parsed.claudeAiOauth?.accessToken;
+		if (typeof token !== "string" || token.length === 0) return null;
+		return token;
+	} catch {
+		return null;
+	}
 }
 
 const execFileAsync = promisify(execFile);
 
 async function readTokenFromKeychain(): Promise<string | null> {
-  try {
-    // 5s timeout — Keychain can hang on a locked keychain (rare but real).
-    const { stdout } = await execFileAsync(
-      "security",
-      ["find-generic-password", "-s", "Claude Code-credentials", "-w"],
-      { timeout: 5_000, encoding: "utf-8" },
-    );
-    const trimmed = stdout.trim();
-    if (!trimmed) return null;
-    const parsed = JSON.parse(trimmed) as Credentials;
-    const token = parsed.claudeAiOauth?.accessToken;
-    if (typeof token !== "string" || token.length === 0) return null;
-    return token;
-  } catch {
-    return null;
-  }
+	try {
+		// 5s timeout — Keychain can hang on a locked keychain (rare but real).
+		const { stdout } = await execFileAsync(
+			"security",
+			["find-generic-password", "-s", "Claude Code-credentials", "-w"],
+			{ timeout: 5_000, encoding: "utf-8" },
+		);
+		const trimmed = stdout.trim();
+		if (!trimmed) return null;
+		const parsed = JSON.parse(trimmed) as Credentials;
+		const token = parsed.claudeAiOauth?.accessToken;
+		if (typeof token !== "string" || token.length === 0) return null;
+		return token;
+	} catch {
+		return null;
+	}
 }
 
 /**
@@ -79,11 +79,11 @@ async function readTokenFromKeychain(): Promise<string | null> {
  * null if none succeed. Never throws — best-effort read.
  */
 export async function readOAuthToken(): Promise<string | null> {
-  if (platform() === "darwin") {
-    const fromKeychain = await readTokenFromKeychain();
-    if (fromKeychain) return fromKeychain;
-  }
-  return readTokenFromFile();
+	if (platform() === "darwin") {
+		const fromKeychain = await readTokenFromKeychain();
+		if (fromKeychain) return fromKeychain;
+	}
+	return readTokenFromFile();
 }
 
 /**
@@ -93,5 +93,5 @@ export async function readOAuthToken(): Promise<string | null> {
  * (`c.isalnum() or c in "-._~+/="`, line 696 of their source).
  */
 export function isTokenSafeForHeader(token: string): boolean {
-  return /^[a-zA-Z0-9\-._~+/=]+$/.test(token);
+	return /^[a-zA-Z0-9\-._~+/=]+$/.test(token);
 }

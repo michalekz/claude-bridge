@@ -1,5 +1,14 @@
 import { existsSync } from "node:fs";
-import { chmod, mkdir, readFile, rename, stat, symlink, unlink, writeFile } from "node:fs/promises";
+import {
+	chmod,
+	mkdir,
+	readFile,
+	rename,
+	stat,
+	symlink,
+	unlink,
+	writeFile,
+} from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { makeLogger } from "../util/logger.ts";
@@ -55,28 +64,40 @@ import { bridgeRoot, claudeHome } from "../util/paths.ts";
 const log = makeLogger("setup-check");
 
 interface SetupState {
-  pluginVersion?: string;
-  lastBannerShownForVersion?: string;
-  originalStatusLine?: string;
-  statusLineConfigured?: boolean;
-  hookConfigured?: boolean;
-  lastCheckedAt?: string;
+	pluginVersion?: string;
+	lastBannerShownForVersion?: string;
+	originalStatusLine?: string;
+	statusLineConfigured?: boolean;
+	hookConfigured?: boolean;
+	lastCheckedAt?: string;
 }
 
 interface ClaudeSettings {
-  statusLine?: { type?: string; command?: string };
-  hooks?: {
-    PostToolUse?: Array<{
-      matcher?: string;
-      hooks?: Array<{ type?: string; command?: string }>;
-    }>;
-  };
+	statusLine?: { type?: string; command?: string };
+	hooks?: {
+		PostToolUse?: Array<{
+			matcher?: string;
+			hooks?: Array<{ type?: string; command?: string }>;
+		}>;
+	};
 }
 
-const CACHE_DIR = join(claudeHome(), "plugins", "cache", "claude-bridge", "claude-bridge");
+const CACHE_DIR = join(
+	claudeHome(),
+	"plugins",
+	"cache",
+	"claude-bridge",
+	"claude-bridge",
+);
 const STATUSLINE_SYMLINK = join(claudeHome(), "claude-bridge-statusline.cjs");
-const REFRESH_LIMITS_SYMLINK = join(claudeHome(), "claude-bridge-refresh-limits.cjs");
-const WRAPPER_SCRIPT = join(claudeHome(), "claude-bridge-statusline-wrapper.sh");
+const REFRESH_LIMITS_SYMLINK = join(
+	claudeHome(),
+	"claude-bridge-refresh-limits.cjs",
+);
+const WRAPPER_SCRIPT = join(
+	claudeHome(),
+	"claude-bridge-statusline-wrapper.sh",
+);
 const STATE_FILE = join(bridgeRoot(), "setup-state.json");
 const SETTINGS_FILE = join(claudeHome(), "settings.json");
 
@@ -85,54 +106,58 @@ const SETTINGS_FILE = join(claudeHome(), "settings.json");
  * Handles pre-release suffixes ("0.9.0-alpha.2" < "0.9.0") the way npm does.
  */
 function compareVersions(a: string, b: string): number {
-  const [aBase, aPre] = a.split("-", 2);
-  const [bBase, bPre] = b.split("-", 2);
-  const aParts = (aBase ?? "").split(".").map((n) => Number.parseInt(n, 10) || 0);
-  const bParts = (bBase ?? "").split(".").map((n) => Number.parseInt(n, 10) || 0);
-  const len = Math.max(aParts.length, bParts.length);
-  for (let i = 0; i < len; i++) {
-    const diff = (aParts[i] ?? 0) - (bParts[i] ?? 0);
-    if (diff !== 0) return diff;
-  }
-  // Base equal. Pre-release lower than release. Otherwise string compare.
-  if (aPre && !bPre) return -1;
-  if (!aPre && bPre) return 1;
-  if (aPre && bPre) return aPre.localeCompare(bPre);
-  return 0;
+	const [aBase, aPre] = a.split("-", 2);
+	const [bBase, bPre] = b.split("-", 2);
+	const aParts = (aBase ?? "")
+		.split(".")
+		.map((n) => Number.parseInt(n, 10) || 0);
+	const bParts = (bBase ?? "")
+		.split(".")
+		.map((n) => Number.parseInt(n, 10) || 0);
+	const len = Math.max(aParts.length, bParts.length);
+	for (let i = 0; i < len; i++) {
+		const diff = (aParts[i] ?? 0) - (bParts[i] ?? 0);
+		if (diff !== 0) return diff;
+	}
+	// Base equal. Pre-release lower than release. Otherwise string compare.
+	if (aPre && !bPre) return -1;
+	if (!aPre && bPre) return 1;
+	if (aPre && bPre) return aPre.localeCompare(bPre);
+	return 0;
 }
 
 async function findLatestCacheVersion(): Promise<string | null> {
-  try {
-    const { readdir } = await import("node:fs/promises");
-    const entries = await readdir(CACHE_DIR);
-    if (entries.length === 0) return null;
-    return entries.sort(compareVersions).pop() ?? null;
-  } catch {
-    return null;
-  }
+	try {
+		const { readdir } = await import("node:fs/promises");
+		const entries = await readdir(CACHE_DIR);
+		if (entries.length === 0) return null;
+		return entries.sort(compareVersions).pop() ?? null;
+	} catch {
+		return null;
+	}
 }
 
 async function readState(): Promise<SetupState> {
-  try {
-    const raw = await readFile(STATE_FILE, "utf-8");
-    return JSON.parse(raw) as SetupState;
-  } catch {
-    return {};
-  }
+	try {
+		const raw = await readFile(STATE_FILE, "utf-8");
+		return JSON.parse(raw) as SetupState;
+	} catch {
+		return {};
+	}
 }
 
 async function writeState(state: SetupState): Promise<void> {
-  await mkdir(dirname(STATE_FILE), { recursive: true });
-  await writeFile(STATE_FILE, `${JSON.stringify(state, null, 2)}\n`);
+	await mkdir(dirname(STATE_FILE), { recursive: true });
+	await writeFile(STATE_FILE, `${JSON.stringify(state, null, 2)}\n`);
 }
 
 async function readSettings(): Promise<ClaudeSettings | null> {
-  try {
-    const raw = await readFile(SETTINGS_FILE, "utf-8");
-    return JSON.parse(raw) as ClaudeSettings;
-  } catch {
-    return null;
-  }
+	try {
+		const raw = await readFile(SETTINGS_FILE, "utf-8");
+		return JSON.parse(raw) as ClaudeSettings;
+	} catch {
+		return null;
+	}
 }
 
 /**
@@ -140,59 +165,59 @@ async function readSettings(): Promise<ClaudeSettings | null> {
  * Uses unlink+symlink instead of `ln -sfn` to work without shell.
  */
 async function refreshSymlinks(cacheVersion: string): Promise<void> {
-  const statusLineTarget = join(
-    CACHE_DIR,
-    cacheVersion,
-    "servers",
-    "claude-bridge",
-    "dist",
-    "statusline.cjs",
-  );
-  const refreshLimitsTarget = join(
-    CACHE_DIR,
-    cacheVersion,
-    "servers",
-    "claude-bridge",
-    "dist",
-    "refresh-limits.cjs",
-  );
+	const statusLineTarget = join(
+		CACHE_DIR,
+		cacheVersion,
+		"servers",
+		"claude-bridge",
+		"dist",
+		"statusline.cjs",
+	);
+	const refreshLimitsTarget = join(
+		CACHE_DIR,
+		cacheVersion,
+		"servers",
+		"claude-bridge",
+		"dist",
+		"refresh-limits.cjs",
+	);
 
-  for (const [linkPath, target] of [
-    [STATUSLINE_SYMLINK, statusLineTarget],
-    [REFRESH_LIMITS_SYMLINK, refreshLimitsTarget],
-  ] as const) {
-    if (!existsSync(target)) {
-      log.warn("setup_check_symlink_target_missing", { linkPath, target });
-      continue;
-    }
-    try {
-      // v0.10.2: create-then-rename instead of unlink-then-symlink.
-      //
-      // The old order left a window in which the symlink did not exist at
-      // all. This machine starts 23 MCP servers, each of which runs
-      // setup-check, so the windows overlap — and anything CC renders in
-      // one (a statusLine tick reaching a path that is briefly missing)
-      // fails for no reason the user could ever diagnose. rename(2) over an
-      // existing symlink replaces it atomically: readers see the old link or
-      // the new one, never nothing. The temp name is pid-unique so two
-      // concurrent sweeps cannot fight over the same staging path.
-      const staging = `${linkPath}.${process.pid}.tmp`;
-      await unlink(staging).catch(() => undefined);
-      await symlink(target, staging);
-      try {
-        await rename(staging, linkPath);
-      } catch (renameErr) {
-        await unlink(staging).catch(() => undefined);
-        throw renameErr;
-      }
-    } catch (e) {
-      log.warn("setup_check_symlink_failed", {
-        linkPath,
-        target,
-        err: e instanceof Error ? e.message : String(e),
-      });
-    }
-  }
+	for (const [linkPath, target] of [
+		[STATUSLINE_SYMLINK, statusLineTarget],
+		[REFRESH_LIMITS_SYMLINK, refreshLimitsTarget],
+	] as const) {
+		if (!existsSync(target)) {
+			log.warn("setup_check_symlink_target_missing", { linkPath, target });
+			continue;
+		}
+		try {
+			// v0.10.2: create-then-rename instead of unlink-then-symlink.
+			//
+			// The old order left a window in which the symlink did not exist at
+			// all. This machine starts 23 MCP servers, each of which runs
+			// setup-check, so the windows overlap — and anything CC renders in
+			// one (a statusLine tick reaching a path that is briefly missing)
+			// fails for no reason the user could ever diagnose. rename(2) over an
+			// existing symlink replaces it atomically: readers see the old link or
+			// the new one, never nothing. The temp name is pid-unique so two
+			// concurrent sweeps cannot fight over the same staging path.
+			const staging = `${linkPath}.${process.pid}.tmp`;
+			await unlink(staging).catch(() => undefined);
+			await symlink(target, staging);
+			try {
+				await rename(staging, linkPath);
+			} catch (renameErr) {
+				await unlink(staging).catch(() => undefined);
+				throw renameErr;
+			}
+		} catch (e) {
+			log.warn("setup_check_symlink_failed", {
+				linkPath,
+				target,
+				err: e instanceof Error ? e.message : String(e),
+			});
+		}
+	}
 }
 
 /**
@@ -203,16 +228,17 @@ async function refreshSymlinks(cacheVersion: string): Promise<void> {
  *     wrapper.sh, we don't have the original captured yet, return null.
  */
 async function detectOriginalStatusLine(
-  currentCommand: string | undefined,
-  savedOriginal: string | undefined,
+	currentCommand: string | undefined,
+	savedOriginal: string | undefined,
 ): Promise<string | null> {
-  const looksLikeUs = (cmd: string | undefined): boolean =>
-    !!cmd &&
-    (cmd.includes("claude-bridge-statusline") || cmd.includes("claude-bridge-statusline-wrapper"));
+	const looksLikeUs = (cmd: string | undefined): boolean =>
+		!!cmd &&
+		(cmd.includes("claude-bridge-statusline") ||
+			cmd.includes("claude-bridge-statusline-wrapper"));
 
-  if (savedOriginal && !looksLikeUs(savedOriginal)) return savedOriginal;
-  if (currentCommand && !looksLikeUs(currentCommand)) return currentCommand;
-  return null;
+	if (savedOriginal && !looksLikeUs(savedOriginal)) return savedOriginal;
+	if (currentCommand && !looksLikeUs(currentCommand)) return currentCommand;
+	return null;
 }
 
 /**
@@ -225,15 +251,17 @@ async function detectOriginalStatusLine(
  * file was cleared or when settings.json was already switched to our
  * wrapper before setup-check ever ran (chicken-and-egg on first install).
  */
-async function writeWrapperScript(originalStatusLine: string | null): Promise<void> {
-  if (originalStatusLine === null && existsSync(WRAPPER_SCRIPT)) {
-    return;
-  }
-  const originalExport = originalStatusLine
-    ? `export CLAUDE_BRIDGE_UNDERLYING_STATUSLINE="${originalStatusLine.replace(/"/g, '\\"')}"`
-    : "# no underlying statusLine detected (setup-check found only plugin commands)\n" +
-      "# to add one, set CLAUDE_BRIDGE_UNDERLYING_STATUSLINE below or edit settings.json";
-  const body = `#!/bin/sh
+async function writeWrapperScript(
+	originalStatusLine: string | null,
+): Promise<void> {
+	if (originalStatusLine === null && existsSync(WRAPPER_SCRIPT)) {
+		return;
+	}
+	const originalExport = originalStatusLine
+		? `export CLAUDE_BRIDGE_UNDERLYING_STATUSLINE="${originalStatusLine.replace(/"/g, '\\"')}"`
+		: "# no underlying statusLine detected (setup-check found only plugin commands)\n" +
+			"# to add one, set CLAUDE_BRIDGE_UNDERLYING_STATUSLINE below or edit settings.json";
+	const body = `#!/bin/sh
 # claude-bridge statusLine wrapper — auto-generated by setup-check hook.
 # DO NOT EDIT MANUALLY — the SessionStart hook overwrites this file on
 # every plugin update. To customize, edit ~/.claude/settings.json
@@ -242,152 +270,161 @@ ${originalExport}
 
 exec node "${STATUSLINE_SYMLINK}"
 `;
-  await writeFile(WRAPPER_SCRIPT, body);
-  await chmod(WRAPPER_SCRIPT, 0o755);
+	await writeFile(WRAPPER_SCRIPT, body);
+	await chmod(WRAPPER_SCRIPT, 0o755);
 }
 
 /**
  * Inspect settings.json to decide whether setup is complete.
  */
 function isStatusLineConfigured(settings: ClaudeSettings | null): boolean {
-  const cmd = settings?.statusLine?.command;
-  if (!cmd) return false;
-  return (
-    cmd.includes("claude-bridge-statusline") || cmd.includes("claude-bridge-statusline-wrapper")
-  );
+	const cmd = settings?.statusLine?.command;
+	if (!cmd) return false;
+	return (
+		cmd.includes("claude-bridge-statusline") ||
+		cmd.includes("claude-bridge-statusline-wrapper")
+	);
 }
 
 function isHookConfigured(settings: ClaudeSettings | null): boolean {
-  const groups = settings?.hooks?.PostToolUse ?? [];
-  for (const group of groups) {
-    for (const h of group.hooks ?? []) {
-      if (h.command?.includes("claude-bridge-refresh-limits")) return true;
-    }
-  }
-  return false;
+	const groups = settings?.hooks?.PostToolUse ?? [];
+	for (const group of groups) {
+		for (const h of group.hooks ?? []) {
+			if (h.command?.includes("claude-bridge-refresh-limits")) return true;
+		}
+	}
+	return false;
 }
 
 function banner(state: {
-  cacheVersion: string;
-  statusLineConfigured: boolean;
-  hookConfigured: boolean;
-  isVersionChange: boolean;
+	cacheVersion: string;
+	statusLineConfigured: boolean;
+	hookConfigured: boolean;
+	isVersionChange: boolean;
 }): string | null {
-  const missing: string[] = [];
-  if (!state.statusLineConfigured) missing.push("statusLine wrapper");
-  if (!state.hookConfigured) missing.push("PostToolUse hook");
+	const missing: string[] = [];
+	if (!state.statusLineConfigured) missing.push("statusLine wrapper");
+	if (!state.hookConfigured) missing.push("PostToolUse hook");
 
-  if (missing.length === 0 && !state.isVersionChange) return null;
+	if (missing.length === 0 && !state.isVersionChange) return null;
 
-  const header = `━━━━━━━ claude-bridge v${state.cacheVersion} setup ━━━━━━━`;
-  const footer = "━".repeat(header.length);
-  const lines: string[] = [header];
+	const header = `━━━━━━━ claude-bridge v${state.cacheVersion} setup ━━━━━━━`;
+	const footer = "━".repeat(header.length);
+	const lines: string[] = [header];
 
-  if (state.isVersionChange && missing.length === 0) {
-    lines.push(`✓ Live-data hooks active. Symlinks refreshed for v${state.cacheVersion}.`);
-    lines.push("");
-    lines.push("What's new — see CHANGELOG.md in the plugin repo.");
-    lines.push(footer);
-    return lines.join("\n");
-  }
+	if (state.isVersionChange && missing.length === 0) {
+		lines.push(
+			`✓ Live-data hooks active. Symlinks refreshed for v${state.cacheVersion}.`,
+		);
+		lines.push("");
+		lines.push("What's new — see CHANGELOG.md in the plugin repo.");
+		lines.push(footer);
+		return lines.join("\n");
+	}
 
-  lines.push("⚠ Live-data setup incomplete. peer_context_status / rate_limit_status");
-  lines.push("  will return `hasLiveData: false` until you finish setup.");
-  lines.push("");
-  lines.push(`Missing: ${missing.join(" + ")}`);
-  lines.push("");
-  lines.push("Add to ~/.claude/settings.json:");
-  lines.push("");
-  if (!state.statusLineConfigured) {
-    lines.push('  "statusLine": {');
-    lines.push('    "type": "command",');
-    lines.push(`    "command": "${WRAPPER_SCRIPT.replace(homedir(), "~")}"`);
-    lines.push("  },");
-    lines.push("");
-  }
-  if (!state.hookConfigured) {
-    lines.push('  "hooks": {');
-    lines.push('    "PostToolUse": [{');
-    lines.push('      "matcher": ".*",');
-    lines.push('      "hooks": [{');
-    lines.push('        "type": "command",');
-    lines.push(`        "command": "node ${REFRESH_LIMITS_SYMLINK.replace(homedir(), "~")}",`);
-    lines.push('        "timeout": 6');
-    lines.push("      }]");
-    lines.push("    }]");
-    lines.push("  }");
-    lines.push("");
-  }
-  lines.push("Full guide: docs/SETUP-LIVE-DATA.md in the claude-bridge repo.");
-  lines.push(footer);
-  return lines.join("\n");
+	lines.push(
+		"⚠ Live-data setup incomplete. peer_context_status / rate_limit_status",
+	);
+	lines.push("  will return `hasLiveData: false` until you finish setup.");
+	lines.push("");
+	lines.push(`Missing: ${missing.join(" + ")}`);
+	lines.push("");
+	lines.push("Add to ~/.claude/settings.json:");
+	lines.push("");
+	if (!state.statusLineConfigured) {
+		lines.push('  "statusLine": {');
+		lines.push('    "type": "command",');
+		lines.push(`    "command": "${WRAPPER_SCRIPT.replace(homedir(), "~")}"`);
+		lines.push("  },");
+		lines.push("");
+	}
+	if (!state.hookConfigured) {
+		lines.push('  "hooks": {');
+		lines.push('    "PostToolUse": [{');
+		lines.push('      "matcher": ".*",');
+		lines.push('      "hooks": [{');
+		lines.push('        "type": "command",');
+		lines.push(
+			`        "command": "node ${REFRESH_LIMITS_SYMLINK.replace(homedir(), "~")}",`,
+		);
+		lines.push('        "timeout": 6');
+		lines.push("      }]");
+		lines.push("    }]");
+		lines.push("  }");
+		lines.push("");
+	}
+	lines.push("Full guide: docs/SETUP-LIVE-DATA.md in the claude-bridge repo.");
+	lines.push(footer);
+	return lines.join("\n");
 }
 
 export async function main(): Promise<number> {
-  const cacheVersion = await findLatestCacheVersion();
-  if (!cacheVersion) {
-    log.warn("setup_check_no_cache_version");
-    return 0;
-  }
+	const cacheVersion = await findLatestCacheVersion();
+	if (!cacheVersion) {
+		log.warn("setup_check_no_cache_version");
+		return 0;
+	}
 
-  await refreshSymlinks(cacheVersion);
+	await refreshSymlinks(cacheVersion);
 
-  const [state, settings] = await Promise.all([readState(), readSettings()]);
+	const [state, settings] = await Promise.all([readState(), readSettings()]);
 
-  const statusLineConfigured = isStatusLineConfigured(settings);
-  const hookConfigured = isHookConfigured(settings);
+	const statusLineConfigured = isStatusLineConfigured(settings);
+	const hookConfigured = isHookConfigured(settings);
 
-  const originalStatusLine = await detectOriginalStatusLine(
-    settings?.statusLine?.command,
-    state.originalStatusLine,
-  );
-  await writeWrapperScript(originalStatusLine);
+	const originalStatusLine = await detectOriginalStatusLine(
+		settings?.statusLine?.command,
+		state.originalStatusLine,
+	);
+	await writeWrapperScript(originalStatusLine);
 
-  const isVersionChange =
-    !state.lastBannerShownForVersion ||
-    compareVersions(cacheVersion, state.lastBannerShownForVersion) > 0;
+	const isVersionChange =
+		!state.lastBannerShownForVersion ||
+		compareVersions(cacheVersion, state.lastBannerShownForVersion) > 0;
 
-  const bannerText = banner({
-    cacheVersion,
-    statusLineConfigured,
-    hookConfigured,
-    isVersionChange: isVersionChange && statusLineConfigured && hookConfigured,
-  });
+	const bannerText = banner({
+		cacheVersion,
+		statusLineConfigured,
+		hookConfigured,
+		isVersionChange: isVersionChange && statusLineConfigured && hookConfigured,
+	});
 
-  if (bannerText) {
-    process.stderr.write(`\n${bannerText}\n\n`);
-  }
+	if (bannerText) {
+		process.stderr.write(`\n${bannerText}\n\n`);
+	}
 
-  // Persist state.
-  const nextState: SetupState = {
-    pluginVersion: cacheVersion,
-    lastBannerShownForVersion: bannerText ? cacheVersion : state.lastBannerShownForVersion,
-    ...(originalStatusLine ? { originalStatusLine } : {}),
-    statusLineConfigured,
-    hookConfigured,
-    lastCheckedAt: new Date().toISOString(),
-  };
-  try {
-    await writeState(nextState);
-  } catch (e) {
-    log.warn("setup_check_state_write_failed", {
-      err: e instanceof Error ? e.message : String(e),
-    });
-  }
+	// Persist state.
+	const nextState: SetupState = {
+		pluginVersion: cacheVersion,
+		lastBannerShownForVersion: bannerText
+			? cacheVersion
+			: state.lastBannerShownForVersion,
+		...(originalStatusLine ? { originalStatusLine } : {}),
+		statusLineConfigured,
+		hookConfigured,
+		lastCheckedAt: new Date().toISOString(),
+	};
+	try {
+		await writeState(nextState);
+	} catch (e) {
+		log.warn("setup_check_state_write_failed", {
+			err: e instanceof Error ? e.message : String(e),
+		});
+	}
 
-  return 0;
+	return 0;
 }
 
 if (require.main === module) {
-  main().then(
-    (code) => process.exit(code),
-    (e) => {
-      log.error("setup_check_fatal", {
-        err: e instanceof Error ? e.message : String(e),
-      });
-      process.exit(0); // must never block session start
-    },
-  );
+	main().then(
+		(code) => process.exit(code),
+		(e) => {
+			log.error("setup_check_fatal", {
+				err: e instanceof Error ? e.message : String(e),
+			});
+			process.exit(0); // must never block session start
+		},
+	);
 }
 
 // keep resolve, stat imported for future path validation

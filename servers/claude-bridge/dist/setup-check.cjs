@@ -39,7 +39,12 @@ var import_node_os2 = require("node:os");
 var import_node_path2 = require("node:path");
 
 // src/util/logger.ts
-var LEVELS = { debug: 10, info: 20, warn: 30, error: 40 };
+var LEVELS = {
+  debug: 10,
+  info: 20,
+  warn: 30,
+  error: 40
+};
 var envLevel = process.env["LOG_LEVEL"] || "info";
 var minLevel = LEVELS[envLevel] ?? LEVELS.info;
 var pretty = process.env["LOG_FORMAT"] === "pretty";
@@ -78,10 +83,22 @@ function bridgeRoot() {
 
 // src/setup-check/main.ts
 var log = makeLogger("setup-check");
-var CACHE_DIR = (0, import_node_path2.join)(claudeHome(), "plugins", "cache", "claude-bridge", "claude-bridge");
+var CACHE_DIR = (0, import_node_path2.join)(
+  claudeHome(),
+  "plugins",
+  "cache",
+  "claude-bridge",
+  "claude-bridge"
+);
 var STATUSLINE_SYMLINK = (0, import_node_path2.join)(claudeHome(), "claude-bridge-statusline.cjs");
-var REFRESH_LIMITS_SYMLINK = (0, import_node_path2.join)(claudeHome(), "claude-bridge-refresh-limits.cjs");
-var WRAPPER_SCRIPT = (0, import_node_path2.join)(claudeHome(), "claude-bridge-statusline-wrapper.sh");
+var REFRESH_LIMITS_SYMLINK = (0, import_node_path2.join)(
+  claudeHome(),
+  "claude-bridge-refresh-limits.cjs"
+);
+var WRAPPER_SCRIPT = (0, import_node_path2.join)(
+  claudeHome(),
+  "claude-bridge-statusline-wrapper.sh"
+);
 var STATE_FILE = (0, import_node_path2.join)(bridgeRoot(), "setup-state.json");
 var SETTINGS_FILE = (0, import_node_path2.join)(claudeHome(), "settings.json");
 function compareVersions(a, b) {
@@ -220,13 +237,17 @@ function banner(state) {
   const footer = "\u2501".repeat(header.length);
   const lines = [header];
   if (state.isVersionChange && missing.length === 0) {
-    lines.push(`\u2713 Live-data hooks active. Symlinks refreshed for v${state.cacheVersion}.`);
+    lines.push(
+      `\u2713 Live-data hooks active. Symlinks refreshed for v${state.cacheVersion}.`
+    );
     lines.push("");
     lines.push("What's new \u2014 see CHANGELOG.md in the plugin repo.");
     lines.push(footer);
     return lines.join("\n");
   }
-  lines.push("\u26A0 Live-data setup incomplete. peer_context_status / rate_limit_status");
+  lines.push(
+    "\u26A0 Live-data setup incomplete. peer_context_status / rate_limit_status"
+  );
   lines.push("  will return `hasLiveData: false` until you finish setup.");
   lines.push("");
   lines.push(`Missing: ${missing.join(" + ")}`);
@@ -246,7 +267,9 @@ function banner(state) {
     lines.push('      "matcher": ".*",');
     lines.push('      "hooks": [{');
     lines.push('        "type": "command",');
-    lines.push(`        "command": "node ${REFRESH_LIMITS_SYMLINK.replace((0, import_node_os2.homedir)(), "~")}",`);
+    lines.push(
+      `        "command": "node ${REFRESH_LIMITS_SYMLINK.replace((0, import_node_os2.homedir)(), "~")}",`
+    );
     lines.push('        "timeout": 6');
     lines.push("      }]");
     lines.push("    }]");

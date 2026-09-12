@@ -1,15 +1,18 @@
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
-import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
+import {
+	CallToolRequestSchema,
+	ListToolsRequestSchema,
+} from "@modelcontextprotocol/sdk/types.js";
 import pkg from "../../package.json";
 import { IdentityError } from "../identity.ts";
 import { makeLogger } from "../util/logger.ts";
 import {
-  type ServerContext,
-  attachServer,
-  buildContext,
-  pumpInboxToChannel,
-  shutdownContext,
+	type ServerContext,
+	attachServer,
+	buildContext,
+	pumpInboxToChannel,
+	shutdownContext,
 } from "./context.ts";
 import { TOOLS, type ToolResult, piggybackInbox } from "./tools.ts";
 
@@ -67,211 +70,213 @@ Layout:
 `.trim();
 
 export function createServer(): Server {
-  return new Server(
-    { name: SERVER_NAME, version: SERVER_VERSION },
-    {
-      capabilities: {
-        experimental: { "claude/channel": {} },
-        tools: {},
-      },
-      instructions: INSTRUCTIONS,
-    },
-  );
+	return new Server(
+		{ name: SERVER_NAME, version: SERVER_VERSION },
+		{
+			capabilities: {
+				experimental: { "claude/channel": {} },
+				tools: {},
+			},
+			instructions: INSTRUCTIONS,
+		},
+	);
 }
 
 export function wireTools(server: Server, ctx: ServerContext): void {
-  server.setRequestHandler(ListToolsRequestSchema, async () => ({
-    tools: TOOLS.map((t) => ({
-      name: t.name,
-      description: t.description,
-      inputSchema: t.inputSchema,
-    })),
-  }));
+	server.setRequestHandler(ListToolsRequestSchema, async () => ({
+		tools: TOOLS.map((t) => ({
+			name: t.name,
+			description: t.description,
+			inputSchema: t.inputSchema,
+		})),
+	}));
 
-  // SDK 1.29+ has a stricter ServerResult union with an async-tool variant
-  // that requires a `task` field; our synchronous tools return the legacy
-  // shape. Cast through `any` to silence the false-positive narrowing.
-  server.setRequestHandler(CallToolRequestSchema, async (request) => {
-    const toolName = request.params.name;
-    const args = (request.params.arguments ?? {}) as Record<string, unknown>;
-    const started = Date.now();
-    log.debug("tool_call", { tool: toolName });
+	// SDK 1.29+ has a stricter ServerResult union with an async-tool variant
+	// that requires a `task` field; our synchronous tools return the legacy
+	// shape. Cast through `any` to silence the false-positive narrowing.
+	server.setRequestHandler(CallToolRequestSchema, async (request) => {
+		const toolName = request.params.name;
+		const args = (request.params.arguments ?? {}) as Record<string, unknown>;
+		const started = Date.now();
+		log.debug("tool_call", { tool: toolName });
 
-    const spec = TOOLS.find((t) => t.name === toolName);
-    if (!spec) {
-      log.warn("tool_not_found", { tool: toolName });
-      const result: ToolResult = {
-        isError: true,
-        content: [
-          {
-            type: "text",
-            text: JSON.stringify({
-              ok: false,
-              code: "unknown_tool",
-              tool: toolName,
-            }),
-          },
-        ],
-      };
-      // biome-ignore lint/suspicious/noExplicitAny: SDK 1.29 union narrowing
-      return result as any;
-    }
+		const spec = TOOLS.find((t) => t.name === toolName);
+		if (!spec) {
+			log.warn("tool_not_found", { tool: toolName });
+			const result: ToolResult = {
+				isError: true,
+				content: [
+					{
+						type: "text",
+						text: JSON.stringify({
+							ok: false,
+							code: "unknown_tool",
+							tool: toolName,
+						}),
+					},
+				],
+			};
+			// biome-ignore lint/suspicious/noExplicitAny: SDK 1.29 union narrowing
+			return result as any;
+		}
 
-    try {
-      let result = await spec.handler(args, ctx);
-      result = await piggybackInbox(ctx, toolName, result);
-      log.debug("tool_result", {
-        tool: toolName,
-        ok: !result.isError,
-        duration_ms: Date.now() - started,
-      });
-      // biome-ignore lint/suspicious/noExplicitAny: SDK 1.29 union narrowing
-      return result as any;
-    } catch (e) {
-      log.error("tool_call_err", {
-        tool: toolName,
-        err: e instanceof Error ? e.message : String(e),
-        duration_ms: Date.now() - started,
-      });
-      const result: ToolResult = {
-        isError: true,
-        content: [
-          {
-            type: "text",
-            text: JSON.stringify({
-              ok: false,
-              code: "tool_exception",
-              message: e instanceof Error ? e.message : "unknown",
-            }),
-          },
-        ],
-      };
-      // biome-ignore lint/suspicious/noExplicitAny: SDK 1.29 union narrowing
-      return result as any;
-    }
-  });
+		try {
+			let result = await spec.handler(args, ctx);
+			result = await piggybackInbox(ctx, toolName, result);
+			log.debug("tool_result", {
+				tool: toolName,
+				ok: !result.isError,
+				duration_ms: Date.now() - started,
+			});
+			// biome-ignore lint/suspicious/noExplicitAny: SDK 1.29 union narrowing
+			return result as any;
+		} catch (e) {
+			log.error("tool_call_err", {
+				tool: toolName,
+				err: e instanceof Error ? e.message : String(e),
+				duration_ms: Date.now() - started,
+			});
+			const result: ToolResult = {
+				isError: true,
+				content: [
+					{
+						type: "text",
+						text: JSON.stringify({
+							ok: false,
+							code: "tool_exception",
+							message: e instanceof Error ? e.message : "unknown",
+						}),
+					},
+				],
+			};
+			// biome-ignore lint/suspicious/noExplicitAny: SDK 1.29 union narrowing
+			return result as any;
+		}
+	});
 }
 
 export async function startStdioServer(): Promise<void> {
-  let ctx: ServerContext;
-  try {
-    ctx = await buildContext({ version: SERVER_VERSION });
-  } catch (e) {
-    if (e instanceof IdentityError) {
-      log.error("identity_unresolvable", { message: e.message, hint: e.hint });
-      process.stderr.write(`\nclaude-bridge fatal: ${e.message}\nHint: ${e.hint}\n\n`);
-    } else {
-      log.error("boot_failed", {
-        err: e instanceof Error ? e.message : String(e),
-      });
-    }
-    process.exit(1);
-  }
+	let ctx: ServerContext;
+	try {
+		ctx = await buildContext({ version: SERVER_VERSION });
+	} catch (e) {
+		if (e instanceof IdentityError) {
+			log.error("identity_unresolvable", { message: e.message, hint: e.hint });
+			process.stderr.write(
+				`\nclaude-bridge fatal: ${e.message}\nHint: ${e.hint}\n\n`,
+			);
+		} else {
+			log.error("boot_failed", {
+				err: e instanceof Error ? e.message : String(e),
+			});
+		}
+		process.exit(1);
+	}
 
-  const server = createServer();
-  await attachServer(ctx, server);
+	const server = createServer();
+	await attachServer(ctx, server);
 
-  wireTools(server, ctx);
+	wireTools(server, ctx);
 
-  const transport = new StdioServerTransport();
-  await server.connect(transport);
+	const transport = new StdioServerTransport();
+	await server.connect(transport);
 
-  // v0.9.3 — Windows stdio survival.
-  //
-  // Empirical bug reported 2026-07-10 (Zdeněk on Windows): CC harness
-  // spawns the MCP server, completes initialize + tools/list handshake,
-  // then closes the stdio pipe. Node.js sees stdin EOF, event loop
-  // drains, process exits. CC harness reads that as "server crashed" and
-  // re-spawns — infinite short-connection loop, tools never register.
-  //
-  // Pattern in the CC MCP log:
-  //   started, tools:15 → Successfully connected in 110ms → hasTools:true
-  //   → UNKNOWN connection closed after Xms → (respawn)
-  //
-  // Linux doesn't do this (probe-and-close is Windows-specific). We keep
-  // the event loop alive so the transport survives the probe close,
-  // and shutdown only on explicit SIGINT/SIGTERM (CC's real shutdown path).
-  const keepAlive = setInterval(() => undefined, 60_000);
-  process.on("beforeExit", () => clearInterval(keepAlive));
-  process.stdin.on("end", () => {
-    log.warn("stdin_eof_ignored", {
-      reason: "windows-stdio-probe-close-survival",
-    });
-  });
-  process.stdin.on("close", () => {
-    log.warn("stdin_close_ignored", {
-      reason: "windows-stdio-probe-close-survival",
-    });
-  });
+	// v0.9.3 — Windows stdio survival.
+	//
+	// Empirical bug reported 2026-07-10 (Zdeněk on Windows): CC harness
+	// spawns the MCP server, completes initialize + tools/list handshake,
+	// then closes the stdio pipe. Node.js sees stdin EOF, event loop
+	// drains, process exits. CC harness reads that as "server crashed" and
+	// re-spawns — infinite short-connection loop, tools never register.
+	//
+	// Pattern in the CC MCP log:
+	//   started, tools:15 → Successfully connected in 110ms → hasTools:true
+	//   → UNKNOWN connection closed after Xms → (respawn)
+	//
+	// Linux doesn't do this (probe-and-close is Windows-specific). We keep
+	// the event loop alive so the transport survives the probe close,
+	// and shutdown only on explicit SIGINT/SIGTERM (CC's real shutdown path).
+	const keepAlive = setInterval(() => undefined, 60_000);
+	process.on("beforeExit", () => clearInterval(keepAlive));
+	process.stdin.on("end", () => {
+		log.warn("stdin_eof_ignored", {
+			reason: "windows-stdio-probe-close-survival",
+		});
+	});
+	process.stdin.on("close", () => {
+		log.warn("stdin_close_ignored", {
+			reason: "windows-stdio-probe-close-survival",
+		});
+	});
 
-  log.info("started", {
-    name: SERVER_NAME,
-    version: SERVER_VERSION,
-    tools: TOOLS.length,
-    selfId: ctx.self.id,
-    selfName: ctx.self.name,
-  });
+	log.info("started", {
+		name: SERVER_NAME,
+		version: SERVER_VERSION,
+		tools: TOOLS.length,
+		selfId: ctx.self.id,
+		selfName: ctx.self.name,
+	});
 
-  // Drain backlog: messages that arrived while we were offline
-  const { pushed } = await pumpInboxToChannel(ctx);
-  if (pushed > 0) log.info("backlog_drained", { pushed });
+	// Drain backlog: messages that arrived while we were offline
+	const { pushed } = await pumpInboxToChannel(ctx);
+	if (pushed > 0) log.info("backlog_drained", { pushed });
 
-  // v0.9.2: run setup-check inline on MCP startup so /mcp reconnect
-  // (which does NOT trigger SessionStart hooks) still refreshes symlinks
-  // after a plugin update. Non-blocking, best-effort — a failure here
-  // must not break the server.
-  //
-  // v0.9.3 (2026-07-10): spawn as detached subprocess instead of
-  // in-process dynamic import. Reason — the in-process form caused a
-  // 22-second crash-loop on Windows (empirically reported by Zdeněk):
-  // server would boot, connect, then something inside the setup-check
-  // path terminated the MCP server process. Not reproducible on Linux,
-  // but the subprocess isolation makes the whole thing bulletproof:
-  // whatever setup-check does (or dies from) cannot kill the MCP server.
-  //
-  // Subprocess is fully detached (stdio: 'ignore', detached: true,
-  // child.unref()) so it doesn't hold the parent alive and no output
-  // pipe can back-pressure the MCP stdio channel.
-  try {
-    const { spawn } = await import("node:child_process");
-    const { join, dirname } = await import("node:path");
-    // setup-check.cjs sits next to bundle.cjs. process.argv[1] on the
-    // MCP server is the bundle path, so setup-check.cjs is right there.
-    const bundlePath = process.argv[1] ?? "";
-    if (bundlePath) {
-      const setupCheckPath = join(dirname(bundlePath), "setup-check.cjs");
-      const child = spawn(process.execPath, [setupCheckPath], {
-        stdio: "ignore",
-        detached: true,
-      });
-      child.unref();
-      child.on("error", () => undefined); // never propagate
-    }
-  } catch (e) {
-    log.warn("setup_check_spawn_failed", {
-      err: e instanceof Error ? e.message : String(e),
-    });
-  }
+	// v0.9.2: run setup-check inline on MCP startup so /mcp reconnect
+	// (which does NOT trigger SessionStart hooks) still refreshes symlinks
+	// after a plugin update. Non-blocking, best-effort — a failure here
+	// must not break the server.
+	//
+	// v0.9.3 (2026-07-10): spawn as detached subprocess instead of
+	// in-process dynamic import. Reason — the in-process form caused a
+	// 22-second crash-loop on Windows (empirically reported by Zdeněk):
+	// server would boot, connect, then something inside the setup-check
+	// path terminated the MCP server process. Not reproducible on Linux,
+	// but the subprocess isolation makes the whole thing bulletproof:
+	// whatever setup-check does (or dies from) cannot kill the MCP server.
+	//
+	// Subprocess is fully detached (stdio: 'ignore', detached: true,
+	// child.unref()) so it doesn't hold the parent alive and no output
+	// pipe can back-pressure the MCP stdio channel.
+	try {
+		const { spawn } = await import("node:child_process");
+		const { join, dirname } = await import("node:path");
+		// setup-check.cjs sits next to bundle.cjs. process.argv[1] on the
+		// MCP server is the bundle path, so setup-check.cjs is right there.
+		const bundlePath = process.argv[1] ?? "";
+		if (bundlePath) {
+			const setupCheckPath = join(dirname(bundlePath), "setup-check.cjs");
+			const child = spawn(process.execPath, [setupCheckPath], {
+				stdio: "ignore",
+				detached: true,
+			});
+			child.unref();
+			child.on("error", () => undefined); // never propagate
+		}
+	} catch (e) {
+		log.warn("setup_check_spawn_failed", {
+			err: e instanceof Error ? e.message : String(e),
+		});
+	}
 
-  // v0.10.2: expire what the workspace never expired — orphaned atomic-write
-  // temps, dead per-session statusline captures, archived inbox messages past
-  // their retention. Fire-and-forget: it is throttled to once every 6 hours
-  // across all peers on the machine (see util/hygiene.ts), and startup must
-  // not wait on a directory walk.
-  void import("../util/hygiene.ts")
-    .then(({ runHygieneSweep }) => runHygieneSweep())
-    .catch((e: unknown) => {
-      log.warn("hygiene_sweep_failed", {
-        err: e instanceof Error ? e.message : String(e),
-      });
-    });
+	// v0.10.2: expire what the workspace never expired — orphaned atomic-write
+	// temps, dead per-session statusline captures, archived inbox messages past
+	// their retention. Fire-and-forget: it is throttled to once every 6 hours
+	// across all peers on the machine (see util/hygiene.ts), and startup must
+	// not wait on a directory walk.
+	void import("../util/hygiene.ts")
+		.then(({ runHygieneSweep }) => runHygieneSweep())
+		.catch((e: unknown) => {
+			log.warn("hygiene_sweep_failed", {
+				err: e instanceof Error ? e.message : String(e),
+			});
+		});
 
-  const shutdown = async (signal: string) => {
-    log.info("shutdown", { signal });
-    await shutdownContext(ctx).catch(() => undefined);
-    await server.close().catch(() => undefined);
-    process.exit(0);
-  };
-  process.on("SIGINT", () => void shutdown("SIGINT"));
-  process.on("SIGTERM", () => void shutdown("SIGTERM"));
+	const shutdown = async (signal: string) => {
+		log.info("shutdown", { signal });
+		await shutdownContext(ctx).catch(() => undefined);
+		await server.close().catch(() => undefined);
+		process.exit(0);
+	};
+	process.on("SIGINT", () => void shutdown("SIGINT"));
+	process.on("SIGTERM", () => void shutdown("SIGTERM"));
 }

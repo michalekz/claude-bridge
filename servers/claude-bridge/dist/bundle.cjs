@@ -6945,7 +6945,12 @@ var LEVELS, envLevel, minLevel, pretty;
 var init_logger = __esm({
   "src/util/logger.ts"() {
     "use strict";
-    LEVELS = { debug: 10, info: 20, warn: 30, error: 40 };
+    LEVELS = {
+      debug: 10,
+      info: 20,
+      warn: 30,
+      error: 40
+    };
     envLevel = process.env["LOG_LEVEL"] || "info";
     minLevel = LEVELS[envLevel] ?? LEVELS.info;
     pretty = process.env["LOG_FORMAT"] === "pretty";
@@ -7005,8 +7010,10 @@ function classify(relativeParts, name) {
     return "done";
   }
   if (relativeParts[0] === "control") {
-    if (relativeParts.length === 3 && relativeParts[2] === "done") return "control";
-    if (relativeParts.length === 2 && relativeParts[1] === "results") return "control";
+    if (relativeParts.length === 3 && relativeParts[2] === "done")
+      return "control";
+    if (relativeParts.length === 2 && relativeParts[1] === "results")
+      return "control";
   }
   return null;
 }
@@ -7037,7 +7044,10 @@ async function runHygieneSweep(opts = {}) {
   }
   const maxAge = {
     tmp: opts.tmpMaxAgeMs ?? DEFAULT_TMP_MAX_AGE_MS,
-    statusline: opts.statusLineMaxAgeMs ?? envDays("CLAUDE_BRIDGE_RETAIN_STATUSLINE_DAYS", DEFAULT_STATUSLINE_MAX_AGE_MS),
+    statusline: opts.statusLineMaxAgeMs ?? envDays(
+      "CLAUDE_BRIDGE_RETAIN_STATUSLINE_DAYS",
+      DEFAULT_STATUSLINE_MAX_AGE_MS
+    ),
     done: opts.doneMaxAgeMs ?? envDays("CLAUDE_BRIDGE_RETAIN_DONE_DAYS", DEFAULT_DONE_MAX_AGE_MS),
     control: opts.controlMaxAgeMs ?? DEFAULT_CONTROL_MAX_AGE_MS
   };
@@ -18243,7 +18253,7 @@ var StdioServerTransport = class {
 // package.json
 var package_default = {
   name: "claude-bridge",
-  version: "0.11.57",
+  version: "0.11.58",
   private: true,
   description: "MCP server for cross-Claude-Code-chat orchestration over local session JSONL files",
   type: "module",
@@ -18406,7 +18416,10 @@ var IdentityError = class extends Error {
 var UUID_IN_PATH_RE = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i;
 async function resumedSessionIdFromParent(ppid, procRoot = "/proc") {
   try {
-    const raw = await (0, import_promises.readFile)((0, import_node_path2.join)(procRoot, String(ppid), "cmdline"), "utf-8");
+    const raw = await (0, import_promises.readFile)(
+      (0, import_node_path2.join)(procRoot, String(ppid), "cmdline"),
+      "utf-8"
+    );
     const cmdline = raw.replace(/\0/g, " ");
     const idx = cmdline.indexOf("--resume");
     if (idx === -1) return null;
@@ -18458,7 +18471,9 @@ async function awaitSessionJson(sjPath, ceilingMs) {
 `
       );
     }
-    await new Promise((r) => setTimeout(r, Math.min(250, Math.max(0, deadline - Date.now()))));
+    await new Promise(
+      (r) => setTimeout(r, Math.min(250, Math.max(0, deadline - Date.now())))
+    );
   }
   return null;
 }
@@ -18470,11 +18485,18 @@ async function resolvePeerIdentity(opts = {}) {
   const sjPath = (0, import_node_path2.join)(home, ".claude", "sessions", `${ppid}.json`);
   let sj = await readSessionJsonAt(sjPath);
   if (!sj?.sessionId) {
-    const fromProc = await identityFromProc(ppid, opts.procRoot ?? "/proc", opts.resumedSessionId);
+    const fromProc = await identityFromProc(
+      ppid,
+      opts.procRoot ?? "/proc",
+      opts.resumedSessionId
+    );
     if (fromProc) {
       sj = fromProc;
     } else {
-      sj = await awaitSessionJson(sjPath, opts.sessionJsonWaitMs ?? DEFAULT_SESSION_JSON_WAIT_MS);
+      sj = await awaitSessionJson(
+        sjPath,
+        opts.sessionJsonWaitMs ?? DEFAULT_SESSION_JSON_WAIT_MS
+      );
     }
   }
   if (!sj?.sessionId) {
@@ -18499,7 +18521,10 @@ async function resolvePeerIdentity(opts = {}) {
 `
     );
   }
-  const facts = { ...sj.kind ? { kind: sj.kind } : {}, ...sj.jobId ? { jobId: sj.jobId } : {} };
+  const facts = {
+    ...sj.kind ? { kind: sj.kind } : {},
+    ...sj.jobId ? { jobId: sj.jobId } : {}
+  };
   if (sj.cwd && !opts.skipTitleScan) {
     const encoded = encodeProjectDir(sj.cwd);
     const jsonlPath = (0, import_node_path2.join)(home, ".claude", "projects", encoded, `${id}.jsonl`);
@@ -18507,21 +18532,39 @@ async function resolvePeerIdentity(opts = {}) {
     if (title) {
       const sanitized = sanitizePeerName(title);
       if (sanitized) {
-        return { id, name: sanitized, displayName: title, source: "jsonl-title", ...facts };
+        return {
+          id,
+          name: sanitized,
+          displayName: title,
+          source: "jsonl-title",
+          ...facts
+        };
       }
     }
   }
   if (sj.name) {
     const sanitized = sanitizePeerName(sj.name);
     if (sanitized) {
-      return { id, name: sanitized, displayName: sj.name, source: "session-json-name", ...facts };
+      return {
+        id,
+        name: sanitized,
+        displayName: sj.name,
+        source: "session-json-name",
+        ...facts
+      };
     }
   }
   const envName = env[ENV_PEER_NAME];
   if (envName) {
     const sanitized = sanitizePeerName(envName);
     if (sanitized) {
-      return { id, name: sanitized, displayName: envName, source: "env", ...facts };
+      return {
+        id,
+        name: sanitized,
+        displayName: envName,
+        source: "env",
+        ...facts
+      };
     }
   }
   const slug = slugFromCwd(cwd);
@@ -18714,7 +18757,11 @@ function createInboxStore(opts = {}) {
   return {
     async send(envelope) {
       MessageEnvelopeSchema.parse(envelope);
-      const path = (0, import_node_path4.join)(peerBase(opts, envelope.to), "pending", `${envelope.id}.json`);
+      const path = (0, import_node_path4.join)(
+        peerBase(opts, envelope.to),
+        "pending",
+        `${envelope.id}.json`
+      );
       await atomicWriteJson(path, envelope);
     },
     async listPending(peerId) {
@@ -18736,7 +18783,9 @@ function createInboxStore(opts = {}) {
           await (0, import_promises3.unlink)(src).catch(() => void 0);
         }
       }
-      await (0, import_promises3.unlink)((0, import_node_path4.join)(peerBase(opts, peerId), "pushed", `${msgId}.json`)).catch(() => void 0);
+      await (0, import_promises3.unlink)(
+        (0, import_node_path4.join)(peerBase(opts, peerId), "pushed", `${msgId}.json`)
+      ).catch(() => void 0);
       return env;
     },
     async markPushed(peerId, msgId) {
@@ -18750,14 +18799,20 @@ function createInboxStore(opts = {}) {
       }
       try {
         await (0, import_promises3.mkdir)((0, import_node_path4.dirname)(path), { recursive: true });
-        await atomicWriteJson(path, { pushedAt: (/* @__PURE__ */ new Date()).toISOString(), pushCount });
+        await atomicWriteJson(path, {
+          pushedAt: (/* @__PURE__ */ new Date()).toISOString(),
+          pushCount
+        });
       } catch {
       }
     },
     async pushRecord(peerId, msgId) {
       try {
         const raw = JSON.parse(
-          await (0, import_promises3.readFile)((0, import_node_path4.join)(peerBase(opts, peerId), "pushed", `${msgId}.json`), "utf-8")
+          await (0, import_promises3.readFile)(
+            (0, import_node_path4.join)(peerBase(opts, peerId), "pushed", `${msgId}.json`),
+            "utf-8"
+          )
         );
         const rec = raw;
         if (!rec || typeof rec.pushedAt !== "string") return null;
@@ -18776,7 +18831,9 @@ function createInboxStore(opts = {}) {
       for (const entry of await listDir(dir)) {
         let kind = "?";
         try {
-          const raw = JSON.parse(await (0, import_promises3.readFile)((0, import_node_path4.join)(dir, entry), "utf-8"));
+          const raw = JSON.parse(
+            await (0, import_promises3.readFile)((0, import_node_path4.join)(dir, entry), "utf-8")
+          );
           const k = raw?.kind;
           if (typeof k === "string" && k.length > 0) kind = k;
         } catch {
@@ -18791,7 +18848,9 @@ function createInboxStore(opts = {}) {
       for (const entry of await listDir(dir)) {
         let kind = "?";
         try {
-          const raw = JSON.parse(await (0, import_promises3.readFile)((0, import_node_path4.join)(dir, entry), "utf-8"));
+          const raw = JSON.parse(
+            await (0, import_promises3.readFile)((0, import_node_path4.join)(dir, entry), "utf-8")
+          );
           const k = raw?.kind;
           if (typeof k === "string" && k.length > 0) kind = k;
         } catch {
@@ -18814,7 +18873,11 @@ function createInboxStore(opts = {}) {
       const donePath = (0, import_node_path4.join)(peerBase(opts, peerId), "done", `${msgId}.json`);
       const doneEnv = await readEnvelope(donePath);
       if (doneEnv) return { envelope: doneEnv, location: "done" };
-      const pendingPath = (0, import_node_path4.join)(peerBase(opts, peerId), "pending", `${msgId}.json`);
+      const pendingPath = (0, import_node_path4.join)(
+        peerBase(opts, peerId),
+        "pending",
+        `${msgId}.json`
+      );
       const pendingEnv = await readEnvelope(pendingPath);
       if (pendingEnv) return { envelope: pendingEnv, location: "pending" };
       return null;
@@ -20521,9 +20584,17 @@ var esm_default = { watch, FSWatcher };
 init_logger();
 var log2 = makeLogger("inbox-watcher");
 function startInboxWatcher(peerId, onArrived, opts = {}) {
-  const dir = (0, import_node_path6.join)(opts.baseDir ?? defaultBridgeRoot(), "inbox", peerId, "pending");
+  const dir = (0, import_node_path6.join)(
+    opts.baseDir ?? defaultBridgeRoot(),
+    "inbox",
+    peerId,
+    "pending"
+  );
   const dirReady = (0, import_promises7.mkdir)(dir, { recursive: true }).catch((e) => {
-    log2.warn("mkdir_failed", { dir, err: e instanceof Error ? e.message : String(e) });
+    log2.warn("mkdir_failed", {
+      dir,
+      err: e instanceof Error ? e.message : String(e)
+    });
   });
   let resolveReady;
   const ready = new Promise((res) => {
@@ -20550,12 +20621,16 @@ function startInboxWatcher(peerId, onArrived, opts = {}) {
         try {
           await onArrived();
         } catch (e) {
-          log2.error("onArrived_failed", { err: e instanceof Error ? e.message : String(e) });
+          log2.error("onArrived_failed", {
+            err: e instanceof Error ? e.message : String(e)
+          });
         }
       })();
     });
     watcher.on("error", (e) => {
-      log2.warn("watcher_error", { err: e instanceof Error ? e.message : String(e) });
+      log2.warn("watcher_error", {
+        err: e instanceof Error ? e.message : String(e)
+      });
     });
     watcher.on("ready", () => {
       log2.info("started", { dir });
@@ -20712,7 +20787,9 @@ function createPeerRegistry(opts = {}) {
         if (Number.isNaN(ageMs) || ageMs > ONLINE_THRESHOLD_MS) continue;
         result.push({ ...hb, ageMs });
       }
-      return result.sort((a, b) => a.name.localeCompare(b.name) || a.id.localeCompare(b.id));
+      return result.sort(
+        (a, b) => a.name.localeCompare(b.name) || a.id.localeCompare(b.id)
+      );
     }
   };
 }
@@ -20776,7 +20853,10 @@ function emitTerminalTitle(tty, title) {
     fd = (0, import_node_fs.openSync)(tty, "w");
     (0, import_node_fs.writeSync)(fd, `\x1B]2;${title}\x07`);
   } catch (e) {
-    log3.debug("emit_failed", { tty, err: e instanceof Error ? e.message : String(e) });
+    log3.debug("emit_failed", {
+      tty,
+      err: e instanceof Error ? e.message : String(e)
+    });
   } finally {
     if (fd !== null) {
       try {
@@ -20846,9 +20926,16 @@ function peerPid() {
 }
 async function refreshNameFromTranscript(self, heartbeat, identityOptions) {
   try {
-    const full = await resolvePeerIdentity({ ...identityOptions, resumedSessionId: self.id });
+    const full = await resolvePeerIdentity({
+      ...identityOptions,
+      resumedSessionId: self.id
+    });
     if (full.source !== "jsonl-title" || full.name === self.name) return;
-    heartbeat.update({ name: full.name, displayName: full.displayName, source: full.source });
+    heartbeat.update({
+      name: full.name,
+      displayName: full.displayName,
+      source: full.source
+    });
     await heartbeat.flush();
     log5.info("name_refreshed_from_transcript", {
       id: self.id,
@@ -20863,8 +20950,15 @@ async function refreshNameFromTranscript(self, heartbeat, identityOptions) {
   }
 }
 async function buildContext(opts = {}) {
-  const self = opts.identity ?? await resolvePeerIdentityWithRetry({ ...opts.identityOptions ?? {}, skipTitleScan: true });
-  log5.info("identity_resolved", { id: self.id, name: self.name, source: self.source });
+  const self = opts.identity ?? await resolvePeerIdentityWithRetry({
+    ...opts.identityOptions ?? {},
+    skipTitleScan: true
+  });
+  log5.info("identity_resolved", {
+    id: self.id,
+    name: self.name,
+    source: self.source
+  });
   const inbox = createInboxStore({ baseDir: opts.baseDir });
   const registry2 = createPeerRegistry({ baseDir: opts.baseDir });
   const version2 = opts.version ?? "0.0.1";
@@ -20929,7 +21023,9 @@ async function buildContext(opts = {}) {
       try {
         await refreshDisplayName(context, opts.identityOptions ?? {});
       } catch (e) {
-        log5.warn("name_refresh_failed", { err: e instanceof Error ? e.message : String(e) });
+        log5.warn("name_refresh_failed", {
+          err: e instanceof Error ? e.message : String(e)
+        });
       } finally {
         refreshInFlight = false;
         refreshSkipped = 0;
@@ -20989,7 +21085,9 @@ async function migrateIdentity(ctx, fresh) {
   } catch (e) {
     const code = e.code;
     if (code !== "ENOENT") {
-      log5.warn("inbox_dir_migrate_failed", { err: e instanceof Error ? e.message : String(e) });
+      log5.warn("inbox_dir_migrate_failed", {
+        err: e instanceof Error ? e.message : String(e)
+      });
     }
   }
   if (ctx.heartbeat) {
@@ -21265,7 +21363,10 @@ var KNOWN_EVENT_TYPES = new Set(
 // src/parser/jsonl.ts
 async function* parseSessionFile(filePath, options = {}) {
   const stream = (0, import_node_fs2.createReadStream)(filePath, { encoding: "utf-8" });
-  const lines = (0, import_node_readline.createInterface)({ input: stream, crlfDelay: Number.POSITIVE_INFINITY });
+  const lines = (0, import_node_readline.createInterface)({
+    input: stream,
+    crlfDelay: Number.POSITIVE_INFINITY
+  });
   let lineNumber = 0;
   for await (const line of lines) {
     lineNumber++;
@@ -21291,7 +21392,10 @@ async function countEventsByType(filePath) {
   let total = 0;
   let malformedLines = 0;
   const stream = (0, import_node_fs2.createReadStream)(filePath, { encoding: "utf-8" });
-  const lines = (0, import_node_readline.createInterface)({ input: stream, crlfDelay: Number.POSITIVE_INFINITY });
+  const lines = (0, import_node_readline.createInterface)({
+    input: stream,
+    crlfDelay: Number.POSITIVE_INFINITY
+  });
   for await (const line of lines) {
     if (line.trim().length === 0) continue;
     let raw;
@@ -21313,7 +21417,10 @@ async function countEventsByType(filePath) {
 }
 async function* parseSessionFileRaw(filePath, options = {}) {
   const stream = (0, import_node_fs2.createReadStream)(filePath, { encoding: "utf-8" });
-  const lines = (0, import_node_readline.createInterface)({ input: stream, crlfDelay: Number.POSITIVE_INFINITY });
+  const lines = (0, import_node_readline.createInterface)({
+    input: stream,
+    crlfDelay: Number.POSITIVE_INFINITY
+  });
   let lineNumber = 0;
   for await (const line of lines) {
     lineNumber++;
@@ -21339,7 +21446,11 @@ var MODELS = [
     contextWindow: ONE_M_LIMIT,
     maxOutputTokens: 128e3,
     pricing: { inputPerMTok: 5, outputPerMTok: 25 },
-    capabilities: { vision: true, extendedThinking: false, adaptiveThinking: true },
+    capabilities: {
+      vision: true,
+      extendedThinking: false,
+      adaptiveThinking: true
+    },
     knowledgeCutoff: "2026-05",
     trainingDataCutoff: "2026-05",
     notes: "Missing from this table until 2026-08-04 \u2014 see CHANGELOG v0.10.2."
@@ -21352,7 +21463,11 @@ var MODELS = [
     contextWindow: ONE_M_LIMIT,
     maxOutputTokens: 128e3,
     pricing: { inputPerMTok: 10, outputPerMTok: 50 },
-    capabilities: { vision: true, extendedThinking: false, adaptiveThinking: true },
+    capabilities: {
+      vision: true,
+      extendedThinking: false,
+      adaptiveThinking: true
+    },
     knowledgeCutoff: "2026-01",
     trainingDataCutoff: "2026-01",
     notes: "Most capable widely released model; adaptive thinking always-on."
@@ -21365,7 +21480,11 @@ var MODELS = [
     contextWindow: ONE_M_LIMIT,
     maxOutputTokens: 128e3,
     pricing: { inputPerMTok: 10, outputPerMTok: 50 },
-    capabilities: { vision: true, extendedThinking: false, adaptiveThinking: true },
+    capabilities: {
+      vision: true,
+      extendedThinking: false,
+      adaptiveThinking: true
+    },
     knowledgeCutoff: "2026-01",
     trainingDataCutoff: "2026-01",
     notes: "Project Glasswing exclusive (invitation only)."
@@ -21378,7 +21497,11 @@ var MODELS = [
     contextWindow: ONE_M_LIMIT,
     maxOutputTokens: 128e3,
     pricing: { inputPerMTok: 5, outputPerMTok: 25 },
-    capabilities: { vision: true, extendedThinking: false, adaptiveThinking: true },
+    capabilities: {
+      vision: true,
+      extendedThinking: false,
+      adaptiveThinking: true
+    },
     knowledgeCutoff: "2026-01",
     trainingDataCutoff: "2026-01",
     notes: "On Microsoft Foundry context is 200k. Default effort=high on Claude Code and API."
@@ -21396,7 +21519,11 @@ var MODELS = [
       until: "2026-08-31",
       after: { inputPerMTok: 3, outputPerMTok: 15 }
     },
-    capabilities: { vision: true, extendedThinking: false, adaptiveThinking: true },
+    capabilities: {
+      vision: true,
+      extendedThinking: false,
+      adaptiveThinking: true
+    },
     knowledgeCutoff: "2026-01",
     trainingDataCutoff: "2026-01",
     notes: "Default effort=high on Claude API and Claude Code."
@@ -21409,7 +21536,11 @@ var MODELS = [
     contextWindow: STANDARD_LIMIT,
     maxOutputTokens: 64e3,
     pricing: { inputPerMTok: 1, outputPerMTok: 5 },
-    capabilities: { vision: true, extendedThinking: true, adaptiveThinking: false },
+    capabilities: {
+      vision: true,
+      extendedThinking: true,
+      adaptiveThinking: false
+    },
     knowledgeCutoff: "2025-02",
     trainingDataCutoff: "2025-07",
     notes: "The only current-generation 200k-context model."
@@ -21423,7 +21554,11 @@ var MODELS = [
     contextWindow: ONE_M_LIMIT,
     maxOutputTokens: 128e3,
     pricing: { inputPerMTok: 5, outputPerMTok: 25 },
-    capabilities: { vision: true, extendedThinking: false, adaptiveThinking: true },
+    capabilities: {
+      vision: true,
+      extendedThinking: false,
+      adaptiveThinking: true
+    },
     knowledgeCutoff: "2026-01",
     trainingDataCutoff: "2026-01",
     notes: "Tokenizer introduced here; ~30% more tokens per text vs. older models."
@@ -21436,7 +21571,11 @@ var MODELS = [
     contextWindow: ONE_M_LIMIT,
     maxOutputTokens: 128e3,
     pricing: { inputPerMTok: 5, outputPerMTok: 25 },
-    capabilities: { vision: true, extendedThinking: true, adaptiveThinking: true },
+    capabilities: {
+      vision: true,
+      extendedThinking: true,
+      adaptiveThinking: true
+    },
     knowledgeCutoff: "2025-05",
     trainingDataCutoff: "2025-08"
   },
@@ -21448,7 +21587,11 @@ var MODELS = [
     contextWindow: ONE_M_LIMIT,
     maxOutputTokens: 128e3,
     pricing: { inputPerMTok: 3, outputPerMTok: 15 },
-    capabilities: { vision: true, extendedThinking: true, adaptiveThinking: true },
+    capabilities: {
+      vision: true,
+      extendedThinking: true,
+      adaptiveThinking: true
+    },
     knowledgeCutoff: "2025-08",
     trainingDataCutoff: "2026-01",
     notes: "Superseded by Claude Sonnet 5 (2026-07 GA)."
@@ -21464,7 +21607,11 @@ var MODELS = [
     contextWindow: ONE_M_LIMIT,
     maxOutputTokens: 64e3,
     pricing: { inputPerMTok: 3, outputPerMTok: 15 },
-    capabilities: { vision: true, extendedThinking: true, adaptiveThinking: false },
+    capabilities: {
+      vision: true,
+      extendedThinking: true,
+      adaptiveThinking: false
+    },
     knowledgeCutoff: "2025-01",
     trainingDataCutoff: "2025-07"
   },
@@ -21476,7 +21623,11 @@ var MODELS = [
     contextWindow: STANDARD_LIMIT,
     maxOutputTokens: 64e3,
     pricing: { inputPerMTok: 5, outputPerMTok: 25 },
-    capabilities: { vision: true, extendedThinking: true, adaptiveThinking: false },
+    capabilities: {
+      vision: true,
+      extendedThinking: true,
+      adaptiveThinking: false
+    },
     knowledgeCutoff: "2025-05",
     trainingDataCutoff: "2025-08"
   },
@@ -21489,13 +21640,19 @@ var MODELS = [
     contextWindow: STANDARD_LIMIT,
     maxOutputTokens: 32e3,
     pricing: { inputPerMTok: 15, outputPerMTok: 75 },
-    capabilities: { vision: true, extendedThinking: true, adaptiveThinking: false },
+    capabilities: {
+      vision: true,
+      extendedThinking: true,
+      adaptiveThinking: false
+    },
     knowledgeCutoff: "2025-01",
     trainingDataCutoff: "2025-03",
     notes: "Retires 2026-08-05. Migrate to Claude Opus 4.8."
   }
 ];
-var MODEL_BY_ID = Object.fromEntries(MODELS.map((m) => [m.id, m]));
+var MODEL_BY_ID = Object.fromEntries(
+  MODELS.map((m) => [m.id, m])
+);
 function normalizeModelId(model) {
   return model.replace(/\[1m\]/gi, "").replace(/-\d{8}$/, "");
 }
@@ -21509,7 +21666,8 @@ function isDated(p) {
 }
 function effectivePricing(model, now = /* @__PURE__ */ new Date()) {
   const p = model.pricing;
-  if (!isDated(p)) return { inputPerMTok: p.inputPerMTok, outputPerMTok: p.outputPerMTok };
+  if (!isDated(p))
+    return { inputPerMTok: p.inputPerMTok, outputPerMTok: p.outputPerMTok };
   const expiresAt = /* @__PURE__ */ new Date(`${p.until}T23:59:59.999Z`);
   if (now > expiresAt) return { ...p.after };
   return {
@@ -21611,9 +21769,13 @@ async function readEnvelope2(path) {
 }
 async function readStatusLineLive(sessionId) {
   if (sessionId) {
-    const perSession = await readEnvelope2(statusLineSessionPath(sessionId));
+    const perSession = await readEnvelope2(
+      statusLineSessionPath(sessionId)
+    );
     if (perSession && perSession.sessionId === sessionId) return perSession;
-    const legacy = await readEnvelope2(legacyStatusLinePath());
+    const legacy = await readEnvelope2(
+      legacyStatusLinePath()
+    );
     if (legacy && legacy.sessionId === sessionId) return legacy;
     return null;
   }
@@ -21703,7 +21865,10 @@ async function readFromStatusLine(sessionId) {
 async function readFromJSONL(filePath) {
   const jsonl = await readContextFromJSONL(filePath);
   if (!jsonl) return null;
-  const { limit, caveat } = canonicalContextLimit(jsonl.model, jsonl.tokensUsed);
+  const { limit, caveat } = canonicalContextLimit(
+    jsonl.model,
+    jsonl.tokensUsed
+  );
   const percentUsed = limit > 0 ? jsonl.tokensUsed / limit : 0;
   const tokensRemaining = Math.max(0, limit - jsonl.tokensUsed);
   return {
@@ -21806,7 +21971,9 @@ function normalizeFromOAuth(envelope, now = /* @__PURE__ */ new Date()) {
   const weeklyAllLimit = limits.find((l) => l.kind === "weekly_all");
   const session = toBucket(data.five_hour, sessionLimit, now);
   const week = toBucket(data.seven_day, weeklyAllLimit, now);
-  const scopedLimits = limits.filter((l) => l.scope != null && l.kind !== "session" && l.kind !== "weekly_all").map((l) => {
+  const scopedLimits = limits.filter(
+    (l) => l.scope != null && l.kind !== "session" && l.kind !== "weekly_all"
+  ).map((l) => {
     const resetsAt = l.resets_at ?? "";
     const entry = {
       kind: l.kind,
@@ -21886,7 +22053,8 @@ function normalizeFromStatusLine(envelope, now = /* @__PURE__ */ new Date()) {
     };
   }
   function bucketFromStatusLine(w, now2) {
-    if (!w || w.used_percentage == null || w.resets_at == null) return void 0;
+    if (!w || w.used_percentage == null || w.resets_at == null)
+      return void 0;
     const resetsAtIso = new Date(w.resets_at * 1e3).toISOString();
     return {
       utilization: w.used_percentage / 100,
@@ -21916,7 +22084,10 @@ function normalizeFromStatusLine(envelope, now = /* @__PURE__ */ new Date()) {
   return status;
 }
 async function readLiveRateLimits(now = /* @__PURE__ */ new Date()) {
-  const [statusEnv, oauthEnv] = await Promise.all([findNewestStatusLine(), readOAuthApiLive()]);
+  const [statusEnv, oauthEnv] = await Promise.all([
+    findNewestStatusLine(),
+    readOAuthApiLive()
+  ]);
   const statusResult = statusEnv ? normalizeFromStatusLine(statusEnv, now) : null;
   const oauthResult = oauthEnv ? normalizeFromOAuth(oauthEnv, now) : null;
   const statusOk = statusResult?.hasLiveData ?? false;
@@ -22059,7 +22230,9 @@ async function listSessionsInProject(project) {
       modifiedAt: s.mtime
     });
   }
-  return sessions.sort((a, b) => b.modifiedAt.getTime() - a.modifiedAt.getTime());
+  return sessions.sort(
+    (a, b) => b.modifiedAt.getTime() - a.modifiedAt.getTime()
+  );
 }
 async function listAllSessions() {
   const projects = await listProjects();
@@ -22172,7 +22345,9 @@ async function probeDaemon() {
 }
 function ok(data) {
   return {
-    content: [{ type: "text", text: JSON.stringify({ ok: true, ...data }) }]
+    content: [
+      { type: "text", text: JSON.stringify({ ok: true, ...data }) }
+    ]
   };
 }
 function err(code, message, details) {
@@ -22200,7 +22375,14 @@ var ControlConfigArgs = external_exports.object({
     anthropicBaseUrl: external_exports.string().min(1).nullable().optional()
   }).strict().optional(),
   unset: external_exports.array(
-    external_exports.enum(["label", "role", "windowIndex", "model", "accountProfile", "anthropicBaseUrl"])
+    external_exports.enum([
+      "label",
+      "role",
+      "windowIndex",
+      "model",
+      "accountProfile",
+      "anthropicBaseUrl"
+    ])
   ).optional(),
   dryRun: external_exports.boolean().optional(),
   reason: external_exports.string().optional(),
@@ -22360,7 +22542,10 @@ async function submitDaemonRequest(ctx, tool, args, opts) {
   try {
     await atomicWriteJson(requestPath(requestId), envelope);
   } catch (e) {
-    return err("request_write_failed", e instanceof Error ? e.message : String(e));
+    return err(
+      "request_write_failed",
+      e instanceof Error ? e.message : String(e)
+    );
   }
   if (opts.wait) {
     const timeoutMs = opts.timeoutMs ?? 1e4;
@@ -22377,7 +22562,13 @@ async function submitDaemonRequest(ctx, tool, args, opts) {
         note: `No verdict yet: the daemon has not written a result for ${requestId} within ${timeoutMs} ms. The request was NOT cancelled \u2014 it is queued or still running, and a long operation ahead of it in the queue delays everything behind it. Collect the real outcome with \`control_result\` (requestId: "${requestId}"). DO NOT re-submit the same call: it would perform the operation a second time.`
       });
     }
-    return ok({ requestId, queuedAt: envelope.ts, waited: true, outcome: "settled", result });
+    return ok({
+      requestId,
+      queuedAt: envelope.ts,
+      waited: true,
+      outcome: "settled",
+      result
+    });
   }
   return ok({ requestId, queuedAt: envelope.ts, outcome: "submitted" });
 }
@@ -22385,7 +22576,8 @@ async function peerStopTool(ctx, args) {
   const daemonArgs = { peer: args.peer };
   if (args.reason !== void 0) daemonArgs["reason"] = args.reason;
   if (args.force !== void 0) daemonArgs["force"] = args.force;
-  if (args.ackTimeoutMs !== void 0) daemonArgs["ackTimeoutMs"] = args.ackTimeoutMs;
+  if (args.ackTimeoutMs !== void 0)
+    daemonArgs["ackTimeoutMs"] = args.ackTimeoutMs;
   return submitDaemonRequest(ctx, "peer_stop", daemonArgs, {
     wait: args.wait,
     timeoutMs: args.timeoutMs
@@ -22422,7 +22614,8 @@ async function peerSpawnTool(ctx, args) {
     extraEnv: args.extraEnv ?? {}
   };
   if (args.model !== void 0) daemonArgs["model"] = args.model;
-  if (args.accountProfile !== void 0) daemonArgs["accountProfile"] = args.accountProfile;
+  if (args.accountProfile !== void 0)
+    daemonArgs["accountProfile"] = args.accountProfile;
   return submitDaemonRequest(ctx, "peer_spawn", daemonArgs, {
     wait: args.wait,
     timeoutMs: args.timeoutMs
@@ -22444,9 +22637,11 @@ async function peerRestartTool(ctx, args) {
   const daemonArgs = { peer: args.peer };
   if (args.reason !== void 0) daemonArgs["reason"] = args.reason;
   if (args.force !== void 0) daemonArgs["force"] = args.force;
-  if (args.readyTimeoutMs !== void 0) daemonArgs["readyTimeoutMs"] = args.readyTimeoutMs;
+  if (args.readyTimeoutMs !== void 0)
+    daemonArgs["readyTimeoutMs"] = args.readyTimeoutMs;
   if (args.model !== void 0) daemonArgs["model"] = args.model;
-  if (args.accountProfile !== void 0) daemonArgs["accountProfile"] = args.accountProfile;
+  if (args.accountProfile !== void 0)
+    daemonArgs["accountProfile"] = args.accountProfile;
   return submitDaemonRequest(ctx, "peer_restart", daemonArgs, {
     wait: args.wait,
     timeoutMs: args.timeoutMs
@@ -22457,6 +22652,23 @@ var PeerCompactArgs = external_exports.object({
   anchorTimeoutMs: external_exports.number().int().positive().max(3e5).optional(),
   ackPollMs: external_exports.number().int().positive().max(1e4).optional(),
   skipAnchorRequest: external_exports.boolean().optional(),
+  /**
+   * 🔴 THE DOOR THE ADVICE NAMED, WHICH NOBODY COULD OPEN (v0.11.58).
+   *
+   * The daemon has refused a below-threshold compact with "repeat with
+   * belowThreshold:true" since v0.11.48 — and the parameter existed ONLY in
+   * the daemon's schema. No bundle, at any version, ever forwarded it. So
+   * the advice was unexecutable from every session in the fleet: ai-velitel
+   * hit it twice this morning and twice again at 14:39, each time doing
+   * exactly what it said.
+   *
+   * v0.11.53 made that advice VERSION-AWARE, which made the older case
+   * honest and the current case worse: to a caller on 0.11.48+ it now says
+   * plainly "repeat with belowThreshold:true" — promising availability. I
+   * checked the caller's VERSION and never checked that the door existed at
+   * all. Today's own class, committed inside the fix for that class.
+   */
+  belowThreshold: external_exports.boolean().optional(),
   /** v0.11.25 — how long the daemon watches the transcript for the compact. */
   verifyTimeoutMs: external_exports.number().int().positive().max(6e5).optional(),
   /** v0.11.33 — how long the daemon waits for the acking turn to finish. */
@@ -22468,13 +22680,18 @@ var PeerCompactArgs = external_exports.object({
 }).strict();
 async function peerCompactTool(ctx, args) {
   const daemonArgs = { peer: args.peer };
-  if (args.anchorTimeoutMs !== void 0) daemonArgs["anchorTimeoutMs"] = args.anchorTimeoutMs;
+  if (args.anchorTimeoutMs !== void 0)
+    daemonArgs["anchorTimeoutMs"] = args.anchorTimeoutMs;
   if (args.ackPollMs !== void 0) daemonArgs["ackPollMs"] = args.ackPollMs;
   if (args.skipAnchorRequest !== void 0)
     daemonArgs["skipAnchorRequest"] = args.skipAnchorRequest;
-  if (args.verifyTimeoutMs !== void 0) daemonArgs["verifyTimeoutMs"] = args.verifyTimeoutMs;
-  if (args.idleTimeoutMs !== void 0) daemonArgs["idleTimeoutMs"] = args.idleTimeoutMs;
+  if (args.verifyTimeoutMs !== void 0)
+    daemonArgs["verifyTimeoutMs"] = args.verifyTimeoutMs;
+  if (args.idleTimeoutMs !== void 0)
+    daemonArgs["idleTimeoutMs"] = args.idleTimeoutMs;
   if (args.idlePollMs !== void 0) daemonArgs["idlePollMs"] = args.idlePollMs;
+  if (args.belowThreshold !== void 0)
+    daemonArgs["belowThreshold"] = args.belowThreshold;
   if (args.reason !== void 0) daemonArgs["reason"] = args.reason;
   return submitDaemonRequest(ctx, "peer_compact", daemonArgs, {
     wait: args.wait,
@@ -22537,7 +22754,8 @@ var TeamStopArgs = external_exports.object({
 async function teamStopTool(ctx, args) {
   const daemonArgs = { team: args.team };
   if (args.force !== void 0) daemonArgs["force"] = args.force;
-  if (args.anchorTimeoutMs !== void 0) daemonArgs["anchorTimeoutMs"] = args.anchorTimeoutMs;
+  if (args.anchorTimeoutMs !== void 0)
+    daemonArgs["anchorTimeoutMs"] = args.anchorTimeoutMs;
   if (args.ackPollMs !== void 0) daemonArgs["ackPollMs"] = args.ackPollMs;
   if (args.dryRun !== void 0) daemonArgs["dryRun"] = args.dryRun;
   if (args.inline !== void 0) daemonArgs["inline"] = args.inline;
@@ -22566,7 +22784,8 @@ var TeamAdoptArgs = external_exports.object({
 async function teamAdoptTool(ctx, args) {
   const daemonArgs = { team: args.team };
   if (args.mode !== void 0) daemonArgs["mode"] = args.mode;
-  if (args.hostSession !== void 0) daemonArgs["hostSession"] = args.hostSession;
+  if (args.hostSession !== void 0)
+    daemonArgs["hostSession"] = args.hostSession;
   if (args.mapping !== void 0) daemonArgs["mapping"] = args.mapping;
   if (args.dryRun !== void 0) daemonArgs["dryRun"] = args.dryRun;
   return submitDaemonRequest(ctx, "team_adopt", daemonArgs, {
@@ -22629,7 +22848,8 @@ async function teamRestartTool(ctx, args) {
   if (args.reason !== void 0) daemonArgs["reason"] = args.reason;
   if (args.settleMs !== void 0) daemonArgs["settleMs"] = args.settleMs;
   if (args.force !== void 0) daemonArgs["force"] = args.force;
-  if (args.continueOnError !== void 0) daemonArgs["continueOnError"] = args.continueOnError;
+  if (args.continueOnError !== void 0)
+    daemonArgs["continueOnError"] = args.continueOnError;
   if (args.dryRun !== void 0) daemonArgs["dryRun"] = args.dryRun;
   const peerCount = args.peers?.length ?? 25;
   const settle = args.settleMs ?? 3e3;
@@ -22644,7 +22864,9 @@ async function teamRestartTool(ctx, args) {
 var log7 = makeLogger("tools");
 function ok2(data) {
   return {
-    content: [{ type: "text", text: JSON.stringify({ ok: true, ...data }) }]
+    content: [
+      { type: "text", text: JSON.stringify({ ok: true, ...data }) }
+    ]
   };
 }
 function okText(text) {
@@ -22667,11 +22889,19 @@ async function listProjectsTool() {
     const projects = await listProjects();
     return ok2({
       count: projects.length,
-      projects: projects.map((p) => ({ projectDir: p.projectDir, path: p.absolutePath }))
+      projects: projects.map((p) => ({
+        projectDir: p.projectDir,
+        path: p.absolutePath
+      }))
     });
   } catch (e) {
-    log7.error("list_projects_failed", { err: e instanceof Error ? e.message : String(e) });
-    return err2("list_projects_failed", e instanceof Error ? e.message : "unknown");
+    log7.error("list_projects_failed", {
+      err: e instanceof Error ? e.message : String(e)
+    });
+    return err2(
+      "list_projects_failed",
+      e instanceof Error ? e.message : "unknown"
+    );
   }
 }
 var ListSessionsArgs = external_exports.object({
@@ -22685,7 +22915,12 @@ async function isSessionActive(sessionId) {
   const { stat: stat12 } = await import("node:fs/promises");
   const { homedir: homedir6 } = await import("node:os");
   const { join: join15 } = await import("node:path");
-  const hbPath = join15(homedir6(), ".claude-bridge", "status", `${sessionId}.json`);
+  const hbPath = join15(
+    homedir6(),
+    ".claude-bridge",
+    "status",
+    `${sessionId}.json`
+  );
   try {
     const s = await stat12(hbPath);
     return Date.now() - s.mtimeMs <= HEARTBEAT_ACTIVE_THRESHOLD_MS;
@@ -22747,8 +22982,13 @@ async function listSessionsTool(args) {
     );
     return ok2({ count: enriched.length, sessions: enriched });
   } catch (e) {
-    log7.error("list_sessions_failed", { err: e instanceof Error ? e.message : String(e) });
-    return err2("list_sessions_failed", e instanceof Error ? e.message : "unknown");
+    log7.error("list_sessions_failed", {
+      err: e instanceof Error ? e.message : String(e)
+    });
+    return err2(
+      "list_sessions_failed",
+      e instanceof Error ? e.message : "unknown"
+    );
   }
 }
 var SessionStatsArgs = external_exports.object({
@@ -22778,8 +23018,13 @@ async function sessionStatsTool(args) {
     }
     return ok2({ sessionId: args.sessionId, instances: results });
   } catch (e) {
-    log7.error("session_stats_failed", { err: e instanceof Error ? e.message : String(e) });
-    return err2("session_stats_failed", e instanceof Error ? e.message : "unknown");
+    log7.error("session_stats_failed", {
+      err: e instanceof Error ? e.message : String(e)
+    });
+    return err2(
+      "session_stats_failed",
+      e instanceof Error ? e.message : "unknown"
+    );
   }
 }
 async function resolveTargetPeer(ctx, target) {
@@ -22788,8 +23033,11 @@ async function resolveTargetPeer(ctx, target) {
   if (byId) return { ok: true, peer: byId };
   const byName = peers.filter((p) => p.name === target);
   if (byName.length === 1) return { ok: true, peer: byName[0] };
-  if (byName.length > 1) return { ok: false, code: "ambiguous_peer", candidates: byName };
-  const byShort = peers.filter((p) => shortFormOfName(p.name, teamOfName(p.name)) === target);
+  if (byName.length > 1)
+    return { ok: false, code: "ambiguous_peer", candidates: byName };
+  const byShort = peers.filter(
+    (p) => shortFormOfName(p.name, teamOfName(p.name)) === target
+  );
   if (byShort.length === 1) return { ok: true, peer: byShort[0] };
   if (byShort.length > 1) {
     const ownTeam = teamOfName(ctx.self.name);
@@ -22835,7 +23083,10 @@ async function queueHealth(ctx, peerId) {
 function sessionKindOf(pid) {
   if (pid === void 0) return void 0;
   try {
-    const raw = (0, import_node_fs3.readFileSync)((0, import_node_path12.join)((0, import_node_os5.homedir)(), ".claude", "sessions", `${pid}.json`), "utf-8");
+    const raw = (0, import_node_fs3.readFileSync)(
+      (0, import_node_path12.join)((0, import_node_os5.homedir)(), ".claude", "sessions", `${pid}.json`),
+      "utf-8"
+    );
     const parsed = JSON.parse(raw);
     return typeof parsed.kind === "string" ? parsed.kind : void 0;
   } catch {
@@ -22908,7 +23159,9 @@ async function peerListTool(ctx) {
       }))
     });
   } catch (e) {
-    log7.error("peer_list_failed", { err: e instanceof Error ? e.message : String(e) });
+    log7.error("peer_list_failed", {
+      err: e instanceof Error ? e.message : String(e)
+    });
     return err2("peer_list_failed", e instanceof Error ? e.message : "unknown");
   }
 }
@@ -22919,7 +23172,10 @@ var PeerAskArgs = external_exports.object({
 }).strict();
 async function peerAskTool(ctx, args) {
   if (args.to === ctx.self.id || args.to === ctx.self.name) {
-    return err2("self_send", `Cannot send to self (id=${ctx.self.id} name=${ctx.self.name})`);
+    return err2(
+      "self_send",
+      `Cannot send to self (id=${ctx.self.id} name=${ctx.self.name})`
+    );
   }
   const resolved = await resolveTargetPeer(ctx, args.to);
   if (!resolved.ok) {
@@ -22927,13 +23183,21 @@ async function peerAskTool(ctx, args) {
       return err2(
         "ambiguous_peer",
         `Multiple peers match name "${args.to}". Send by id instead.`,
-        resolved.candidates.map((c) => ({ id: c.id, name: c.name, cwd: c.cwd }))
+        resolved.candidates.map((c) => ({
+          id: c.id,
+          name: c.name,
+          cwd: c.cwd
+        }))
       );
     }
-    return err2("peer_not_found", `No active peer with id or name "${args.to}"`, {
-      activePeers: resolved.activePeers.map(peerDiagShape),
-      hint: PEER_NOT_FOUND_HINT
-    });
+    return err2(
+      "peer_not_found",
+      `No active peer with id or name "${args.to}"`,
+      {
+        activePeers: resolved.activePeers.map(peerDiagShape),
+        hint: PEER_NOT_FOUND_HINT
+      }
+    );
   }
   const envelope = {
     id: generateMessageId(),
@@ -22968,7 +23232,9 @@ async function peerAskTool(ctx, args) {
       ...control > 0 ? { recipientControlPending: control } : {}
     });
   } catch (e) {
-    log7.error("peer_ask_failed", { err: e instanceof Error ? e.message : String(e) });
+    log7.error("peer_ask_failed", {
+      err: e instanceof Error ? e.message : String(e)
+    });
     return err2("peer_ask_failed", e instanceof Error ? e.message : "unknown");
   }
 }
@@ -23049,7 +23315,9 @@ async function peerReplyTool(ctx, args) {
       inReplyTo: args.inReplyTo
     });
   } catch (e) {
-    log7.error("peer_reply_failed", { err: e instanceof Error ? e.message : String(e) });
+    log7.error("peer_reply_failed", {
+      err: e instanceof Error ? e.message : String(e)
+    });
     return err2("peer_reply_failed", e instanceof Error ? e.message : "unknown");
   }
 }
@@ -23065,10 +23333,18 @@ async function peerInboxReadTool(ctx) {
     const result = ok2({ count: consumed.length, messages: consumed });
     const block = formatInboxBlock(consumed);
     if (!block) return result;
-    return { ...result, content: [...result.content, { type: "text", text: block }] };
+    return {
+      ...result,
+      content: [...result.content, { type: "text", text: block }]
+    };
   } catch (e) {
-    log7.error("peer_inbox_read_failed", { err: e instanceof Error ? e.message : String(e) });
-    return err2("peer_inbox_read_failed", e instanceof Error ? e.message : "unknown");
+    log7.error("peer_inbox_read_failed", {
+      err: e instanceof Error ? e.message : String(e)
+    });
+    return err2(
+      "peer_inbox_read_failed",
+      e instanceof Error ? e.message : "unknown"
+    );
   }
 }
 var UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -23191,7 +23467,11 @@ async function resolveSessionForRead(ctx, to, crossProject) {
       result: err2(
         "ambiguous_peer",
         `Multiple peers match name "${to}". Use peer id instead.`,
-        resolved.candidates.map((c) => ({ id: c.id, name: c.name, cwd: c.cwd }))
+        resolved.candidates.map((c) => ({
+          id: c.id,
+          name: c.name,
+          cwd: c.cwd
+        }))
       )
     };
   }
@@ -23317,10 +23597,17 @@ async function peerChatReadTool(ctx, args) {
   if (args.sinceTimestamp) {
     sinceMs = Date.parse(args.sinceTimestamp);
     if (Number.isNaN(sinceMs)) {
-      return err2("invalid_timestamp", `Cannot parse sinceTimestamp "${args.sinceTimestamp}"`);
+      return err2(
+        "invalid_timestamp",
+        `Cannot parse sinceTimestamp "${args.sinceTimestamp}"`
+      );
     }
   }
-  const resolution = await resolveSessionForRead(ctx, args.to, args.crossProject);
+  const resolution = await resolveSessionForRead(
+    ctx,
+    args.to,
+    args.crossProject
+  );
   if (!resolution.ok) return resolution.result;
   const sessionFile = resolution.sessions[0];
   const rolesFilter = args.rolesOnly ? new Set(args.rolesOnly) : null;
@@ -23364,7 +23651,10 @@ async function peerChatReadTool(ctx, args) {
       file: sessionFile.filePath,
       err: e instanceof Error ? e.message : String(e)
     });
-    return err2("session_parse_failed", e instanceof Error ? e.message : "unknown");
+    return err2(
+      "session_parse_failed",
+      e instanceof Error ? e.message : "unknown"
+    );
   }
   let sinceLastUserPromptTrimmed = false;
   let working = messages;
@@ -23376,7 +23666,10 @@ async function peerChatReadTool(ctx, args) {
   if (args.query) {
     const matcher = buildQueryMatcher(args.query, args.queryRegex);
     if ("error" in matcher) {
-      return err2("invalid_query_regex", `Cannot compile regex: ${matcher.error}`);
+      return err2(
+        "invalid_query_regex",
+        `Cannot compile regex: ${matcher.error}`
+      );
     }
     const matchIndices = [];
     for (let i = 0; i < working.length; i++) {
@@ -23447,7 +23740,11 @@ async function peerChatReadTool(ctx, args) {
       bySinceLastUserPrompt: sinceLastUserPromptTrimmed
     },
     ...args.query ? {
-      query: { text: args.query, regex: args.queryRegex, contextLines: args.contextLines }
+      query: {
+        text: args.query,
+        regex: args.queryRegex,
+        contextLines: args.contextLines
+      }
     } : {},
     returnedCount: kept.length,
     bytes: totalBytes
@@ -23475,7 +23772,9 @@ async function resolveSearchSessions(scope, selfId) {
   } else {
     const currentProjectDir = encodeProjectDir(process.cwd());
     const allProjects = await listProjects();
-    const matching = allProjects.find((p) => p.projectDir === currentProjectDir);
+    const matching = allProjects.find(
+      (p) => p.projectDir === currentProjectDir
+    );
     sessions = matching ? await listSessionsInProject(matching) : [];
   }
   const fresh = sessions.filter((s) => s.modifiedAt.getTime() >= cutoffMs);
@@ -23530,7 +23829,10 @@ async function peerChatSearchTool(ctx, args) {
   }
   const eventMatcher = buildQueryMatcher(args.query, args.queryRegex);
   if ("error" in eventMatcher) {
-    return err2("invalid_query_regex", `Cannot compile regex: ${eventMatcher.error}`);
+    return err2(
+      "invalid_query_regex",
+      `Cannot compile regex: ${eventMatcher.error}`
+    );
   }
   const sessions = await resolveSearchSessions(
     args.scope,
@@ -23660,7 +23962,9 @@ function renderSearchMarkdown(args, matches, meta) {
   if (matches.length === 0) {
     lines.push("---");
     lines.push("");
-    lines.push("No matches found. Try a broader query or `scope='all-projects'`.");
+    lines.push(
+      "No matches found. Try a broader query or `scope='all-projects'`."
+    );
     return lines.join("\n");
   }
   const grouped = /* @__PURE__ */ new Map();
@@ -23685,11 +23989,15 @@ function renderSearchMarkdown(args, matches, meta) {
     sessionLines.push(
       `## ${label} \`${shortId(sess.sessionId)}\`${selfTag} \u2014 ${sessionMatches.length} match${sessionMatches.length === 1 ? "" : "es"}`
     );
-    sessionLines.push(`**Project:** \`${sess.projectDir}\` | mod ${sess.modifiedAt.toISOString()}`);
+    sessionLines.push(
+      `**Project:** \`${sess.projectDir}\` | mod ${sess.modifiedAt.toISOString()}`
+    );
     sessionLines.push("");
     for (const m of sessionMatches) {
       for (const c of m.context.filter((c2) => c2.ts < m.message.ts)) {
-        sessionLines.push(`### [${timeOfDay(c.ts)}] ${c.role} \`${shortId(c.uuid)}\` _(context)_`);
+        sessionLines.push(
+          `### [${timeOfDay(c.ts)}] ${c.role} \`${shortId(c.uuid)}\` _(context)_`
+        );
         sessionLines.push(c.text);
         sessionLines.push("");
       }
@@ -23699,7 +24007,9 @@ function renderSearchMarkdown(args, matches, meta) {
       sessionLines.push(m.message.text);
       sessionLines.push("");
       for (const c of m.context.filter((c2) => c2.ts > m.message.ts)) {
-        sessionLines.push(`### [${timeOfDay(c.ts)}] ${c.role} \`${shortId(c.uuid)}\` _(context)_`);
+        sessionLines.push(
+          `### [${timeOfDay(c.ts)}] ${c.role} \`${shortId(c.uuid)}\` _(context)_`
+        );
         sessionLines.push(c.text);
         sessionLines.push("");
       }
@@ -23715,7 +24025,9 @@ function renderSearchMarkdown(args, matches, meta) {
   }
   if (bytesTruncated) {
     lines.push("");
-    lines.push(`_(output truncated at maxBytes=${meta.maxBytes}; refine query to see more)_`);
+    lines.push(
+      `_(output truncated at maxBytes=${meta.maxBytes}; refine query to see more)_`
+    );
   }
   return lines.join("\n").trimEnd();
 }
@@ -23734,7 +24046,9 @@ function formatInboxBlock(messages, echoed = /* @__PURE__ */ new Set()) {
     lines.push("");
     const echo = echoed.has(m.id) ? " [already pushed to channel]" : "";
     const ext = m.from.startsWith("external:") ? " [external \u2014 peer_reply nelze]" : "";
-    lines.push(`[${m.id}] from ${formatSender(m)} (${m.kind}) at ${ts}${echo}${ext}:`);
+    lines.push(
+      `[${m.id}] from ${formatSender(m)} (${m.kind}) at ${ts}${echo}${ext}:`
+    );
     lines.push(`  ${m.content.split("\n").join("\n  ")}`);
     if (m.inReplyTo) lines.push(`  in_reply_to: ${m.inReplyTo}`);
     if (m.threadId) lines.push(`  thread: ${m.threadId}`);
@@ -23776,7 +24090,9 @@ async function buildContextStatusEntry(ctx, peerId, peerName, nameSource) {
   const usage = sessions.length > 0 ? await readContextUsageForSession(sessions) : (
     // No session file yet, but statusLine capture might still exist —
     // try with a minimal SessionRef so at least the statusLine path runs.
-    await readContextUsageForSession([{ sessionId: peerId, filePath: "" }])
+    await readContextUsageForSession([
+      { sessionId: peerId, filePath: "" }
+    ])
   );
   if (!usage) {
     const placeholder = noLiveDataStatus();
@@ -23827,7 +24143,9 @@ async function buildContextStatusEntry(ctx, peerId, peerName, nameSource) {
 }
 async function selfTarget(ctx) {
   try {
-    const row = (await ctx.registry.listActivePeers()).find((p) => p.id === ctx.self.id);
+    const row = (await ctx.registry.listActivePeers()).find(
+      (p) => p.id === ctx.self.id
+    );
     if (row) return { id: row.id, name: row.name, source: row.source };
   } catch {
   }
@@ -23874,27 +24192,42 @@ async function peerContextStatusTool(ctx, args) {
           return err2(
             "ambiguous_peer",
             `"${normalized}" matches ${resolved.candidates.length} peers \u2014 refusing to guess. Use the full name: ${resolved.candidates.map((c) => c.name).join(", ")}`,
-            resolved.candidates.map((c) => ({ id: c.id, name: c.name, cwd: c.cwd }))
+            resolved.candidates.map((c) => ({
+              id: c.id,
+              name: c.name,
+              cwd: c.cwd
+            }))
           );
         }
         if (UUID_RE.test(normalized)) {
           targets.push({ id: normalized, name: null, source: void 0 });
           continue;
         }
-        return err2("peer_not_found", `No active peer "${normalized}" and not a UUID`, {
-          activePeers: activePeers.map(peerDiagShape),
-          hint: PEER_NOT_FOUND_HINT
-        });
+        return err2(
+          "peer_not_found",
+          `No active peer "${normalized}" and not a UUID`,
+          {
+            activePeers: activePeers.map(peerDiagShape),
+            hint: PEER_NOT_FOUND_HINT
+          }
+        );
       }
     }
     const peers = [];
     for (const t of targets) {
-      peers.push(await buildContextStatusEntry(ctx, t.id, t.name, t.source ?? null));
+      peers.push(
+        await buildContextStatusEntry(ctx, t.id, t.name, t.source ?? null)
+      );
     }
     return ok2({ count: peers.length, peers });
   } catch (e) {
-    log7.error("peer_context_status_failed", { err: e instanceof Error ? e.message : String(e) });
-    return err2("peer_context_status_failed", e instanceof Error ? e.message : "unknown");
+    log7.error("peer_context_status_failed", {
+      err: e instanceof Error ? e.message : String(e)
+    });
+    return err2(
+      "peer_context_status_failed",
+      e instanceof Error ? e.message : "unknown"
+    );
   }
 }
 var DEFAULT_GUARD_CONFIG = {
@@ -23947,8 +24280,13 @@ async function peerSetContextGuardTool(ctx, args) {
     await writeContextGuard(ctx.self.id, next);
     return ok2({ guard: next, sessionId: ctx.self.id });
   } catch (e) {
-    log7.error("peer_set_context_guard_failed", { err: e instanceof Error ? e.message : String(e) });
-    return err2("peer_set_context_guard_failed", e instanceof Error ? e.message : "unknown");
+    log7.error("peer_set_context_guard_failed", {
+      err: e instanceof Error ? e.message : String(e)
+    });
+    return err2(
+      "peer_set_context_guard_failed",
+      e instanceof Error ? e.message : "unknown"
+    );
   }
 }
 var DEFAULT_NOTIFICATION_CONFIG = {
@@ -23986,8 +24324,13 @@ async function peerSetNotificationTool(ctx, args) {
     await writeNotificationConfig(ctx.self.id, next);
     return ok2({ notification: next, sessionId: ctx.self.id });
   } catch (e) {
-    log7.error("peer_set_notification_failed", { err: e instanceof Error ? e.message : String(e) });
-    return err2("peer_set_notification_failed", e instanceof Error ? e.message : "unknown");
+    log7.error("peer_set_notification_failed", {
+      err: e instanceof Error ? e.message : String(e)
+    });
+    return err2(
+      "peer_set_notification_failed",
+      e instanceof Error ? e.message : "unknown"
+    );
   }
 }
 var RateLimitStatusArgs = external_exports.object({}).strict();
@@ -23997,8 +24340,13 @@ async function rateLimitStatusTool() {
     const guard = await readRateLimitGuard();
     return ok2({ ...status, ...guard ? { guard } : {} });
   } catch (e) {
-    log7.error("rate_limit_status_failed", { err: e instanceof Error ? e.message : String(e) });
-    return err2("rate_limit_status_failed", e instanceof Error ? e.message : "unknown");
+    log7.error("rate_limit_status_failed", {
+      err: e instanceof Error ? e.message : String(e)
+    });
+    return err2(
+      "rate_limit_status_failed",
+      e instanceof Error ? e.message : "unknown"
+    );
   }
 }
 var DEFAULT_RATE_LIMIT_GUARD_CONFIG = {
@@ -24063,7 +24411,10 @@ async function peerSetRateLimitGuardTool(_ctx, args) {
     log7.error("peer_set_rate_limit_guard_failed", {
       err: e instanceof Error ? e.message : String(e)
     });
-    return err2("peer_set_rate_limit_guard_failed", e instanceof Error ? e.message : "unknown");
+    return err2(
+      "peer_set_rate_limit_guard_failed",
+      e instanceof Error ? e.message : "unknown"
+    );
   }
 }
 var ModelInfoArgs = external_exports.object({
@@ -24075,10 +24426,14 @@ async function modelInfoTool(args) {
     if (args.model) {
       const found = lookupModel(args.model);
       if (!found) {
-        return err2("model_not_found", `No metadata for model "${args.model}".`, {
-          knownIds: MODELS.map((m) => m.id),
-          hint: "Date suffix (-YYYYMMDD) and [1m] tag are stripped before lookup. If you believe this model should exist, file an issue."
-        });
+        return err2(
+          "model_not_found",
+          `No metadata for model "${args.model}".`,
+          {
+            knownIds: MODELS.map((m) => m.id),
+            hint: "Date suffix (-YYYYMMDD) and [1m] tag are stripped before lookup. If you believe this model should exist, file an issue."
+          }
+        );
       }
       return ok2({
         source: MODEL_METADATA_SOURCE,
@@ -24094,10 +24449,15 @@ async function modelInfoTool(args) {
     return ok2({
       source: MODEL_METADATA_SOURCE,
       modelsCount: list.length,
-      models: list.map((m) => ({ ...m, effectivePricing: effectivePricing(m) }))
+      models: list.map((m) => ({
+        ...m,
+        effectivePricing: effectivePricing(m)
+      }))
     });
   } catch (e) {
-    log7.error("model_info_failed", { err: e instanceof Error ? e.message : String(e) });
+    log7.error("model_info_failed", {
+      err: e instanceof Error ? e.message : String(e)
+    });
     return err2("model_info_failed", e instanceof Error ? e.message : "unknown");
   }
 }
@@ -24105,7 +24465,11 @@ var TOOLS = [
   {
     name: "list_projects",
     description: "List all Claude Code projects (encoded cwd dirs under ~/.claude/projects). Returns project dir names usable with list_sessions.",
-    inputSchema: { type: "object", properties: {}, additionalProperties: false },
+    inputSchema: {
+      type: "object",
+      properties: {},
+      additionalProperties: false
+    },
     handler: async () => listProjectsTool()
   },
   {
@@ -24137,7 +24501,8 @@ var TOOLS = [
     },
     handler: async (args) => {
       const parsed = ListSessionsArgs.safeParse(args);
-      if (!parsed.success) return err2("invalid_args", "Schema validation failed", parsed.error);
+      if (!parsed.success)
+        return err2("invalid_args", "Schema validation failed", parsed.error);
       return listSessionsTool(parsed.data);
     }
   },
@@ -24148,21 +24513,29 @@ var TOOLS = [
       type: "object",
       properties: {
         sessionId: { type: "string", description: "Session UUID" },
-        project: { type: "string", description: "Optional: restrict to a specific project dir" }
+        project: {
+          type: "string",
+          description: "Optional: restrict to a specific project dir"
+        }
       },
       required: ["sessionId"],
       additionalProperties: false
     },
     handler: async (args) => {
       const parsed = SessionStatsArgs.safeParse(args);
-      if (!parsed.success) return err2("invalid_args", "Schema validation failed", parsed.error);
+      if (!parsed.success)
+        return err2("invalid_args", "Schema validation failed", parsed.error);
       return sessionStatsTool(parsed.data);
     }
   },
   {
     name: "peer_list",
     description: "List all active claude-bridge peers (other Claude Code chats reachable via shared filesystem). Each peer has stable `id` (sessionId UUID) and display `name` (may collide across peers in same cwd). `pid` is the PEER's process \u2014 the Claude Code process itself. Before v0.10.7 it was this bridge server's own pid, so acting on it reached the bridge rather than the peer, and after an MCP reconnect it could name a process that had already exited; a heartbeat written by an older version still carries the old meaning until that peer's server restarts. `mcpServerPid` is the bridge server, for diagnostics only \u2014 never a lifecycle target.",
-    inputSchema: { type: "object", properties: {}, additionalProperties: false },
+    inputSchema: {
+      type: "object",
+      properties: {},
+      additionalProperties: false
+    },
     handler: async (_args, ctx) => peerListTool(ctx)
   },
   {
@@ -24176,14 +24549,18 @@ var TOOLS = [
           description: "Recipient peer id (preferred) or name (see peer_list)"
         },
         content: { type: "string", description: "Message content (text)" },
-        threadId: { type: "string", description: "Optional: correlation id for multi-turn dialog" }
+        threadId: {
+          type: "string",
+          description: "Optional: correlation id for multi-turn dialog"
+        }
       },
       required: ["to", "content"],
       additionalProperties: false
     },
     handler: async (args, ctx) => {
       const parsed = PeerAskArgs.safeParse(args);
-      if (!parsed.success) return err2("invalid_args", "Schema validation failed", parsed.error);
+      if (!parsed.success)
+        return err2("invalid_args", "Schema validation failed", parsed.error);
       return peerAskTool(ctx, parsed.data);
     }
   },
@@ -24204,14 +24581,19 @@ var TOOLS = [
     },
     handler: async (args, ctx) => {
       const parsed = PeerReplyArgs.safeParse(args);
-      if (!parsed.success) return err2("invalid_args", "Schema validation failed", parsed.error);
+      if (!parsed.success)
+        return err2("invalid_args", "Schema validation failed", parsed.error);
       return peerReplyTool(ctx, parsed.data);
     }
   },
   {
     name: "peer_inbox_read",
     description: "Explicitly drain own inbox and return pending messages. Usually unnecessary \u2014 every tool call piggybacks inbox check. Use when you've been idle and want to check explicitly.",
-    inputSchema: { type: "object", properties: {}, additionalProperties: false },
+    inputSchema: {
+      type: "object",
+      properties: {},
+      additionalProperties: false
+    },
     handler: async (_args, ctx) => peerInboxReadTool(ctx)
   },
   {
@@ -24286,7 +24668,8 @@ var TOOLS = [
     },
     handler: async (args, ctx) => {
       const parsed = PeerChatReadArgs.safeParse(args);
-      if (!parsed.success) return err2("invalid_args", "Schema validation failed", parsed.error);
+      if (!parsed.success)
+        return err2("invalid_args", "Schema validation failed", parsed.error);
       return peerChatReadTool(ctx, parsed.data);
     }
   },
@@ -24337,7 +24720,8 @@ var TOOLS = [
     },
     handler: async (args, ctx) => {
       const parsed = PeerChatSearchArgs.safeParse(args);
-      if (!parsed.success) return err2("invalid_args", "Schema validation failed", parsed.error);
+      if (!parsed.success)
+        return err2("invalid_args", "Schema validation failed", parsed.error);
       return peerChatSearchTool(ctx, parsed.data);
     }
   },
@@ -24349,7 +24733,10 @@ var TOOLS = [
       properties: {
         to: {
           oneOf: [
-            { type: "string", description: "Peer id (UUID), name, 'self', or 'all'" },
+            {
+              type: "string",
+              description: "Peer id (UUID), name, 'self', or 'all'"
+            },
             {
               type: "array",
               items: { type: "string" },
@@ -24363,7 +24750,8 @@ var TOOLS = [
     },
     handler: async (args, ctx) => {
       const parsed = PeerContextStatusArgs.safeParse(args);
-      if (!parsed.success) return err2("invalid_args", "Schema validation failed", parsed.error);
+      if (!parsed.success)
+        return err2("invalid_args", "Schema validation failed", parsed.error);
       return peerContextStatusTool(ctx, parsed.data);
     }
   },
@@ -24403,14 +24791,19 @@ var TOOLS = [
     },
     handler: async (args, ctx) => {
       const parsed = PeerSetContextGuardArgs.safeParse(args);
-      if (!parsed.success) return err2("invalid_args", "Schema validation failed", parsed.error);
+      if (!parsed.success)
+        return err2("invalid_args", "Schema validation failed", parsed.error);
       return peerSetContextGuardTool(ctx, parsed.data);
     }
   },
   {
     name: "rate_limit_status",
     description: "Read account-scoped rate limits (5-hour session + 7-day weekly + spend + extras) from LIVE data sources (v0.9.0+, BREAKING). USER-scoped \u2014 all peers on the same POSIX account share one set. Live source priority: (1) ~/.claude-bridge/live/statusline.json \u2014 written by plugin's chained statusLine wrapper per CC render (primary, per-turn); (2) ~/.claude-bridge/live/oauth-api.json \u2014 written by PostToolUse hook calling OAuth /api/oauth/usage endpoint, throttled ~1/min (secondary, richer fields incl. spend/extras/per-model/codenames); (3) neither \u2192 `hasLiveData: false` + `setupPointer`. When both are present the newer capture wins. Fossil ~/.claude/.usage_cache.json read from v0.8.x is REMOVED. **v0.11.26 \u2014 the two halves must be the SAME ACCOUNT.** Composition borrows only when both captures report the same WEEKLY resetsAt (\xB1120 s; the two sources differ by ~0.4 s on one account because one rounds a unix timestamp and the other carries microseconds). Across an account rotation they do not: the statusLine render follows the live credentials file at once while the OAuth capture freezes at the moment the endpoint starts refusing the new token. Observed live 2026-08-09, one minute after a rotation: `utilization` 0.46 from the new account beside `severity: critical` from the old, two different weekly windows in one object, `staleness: fresh` over the pair. When the halves disagree the answer is the pure statusLine one and `secondaryRejected` says so \u2014 a refusal is NOT a fault, it means the older capture describes a different account. The 5-hour window is deliberately not the boundary: it rolls every few hours on the same account, so a rule built on it would refuse borrows as a matter of routine. When both captures exist and agree the sources are COMBINED, not chosen between (v0.10.6 fix): utilization and reset times come from whichever is newer, while `scopedLimits` (including the `weekly_scoped` per-model budget), `spend`, `extraUsage`, `perModelWeekly`, `severity` and `isActive` come from the OAuth capture, which is the only one carrying them. `source` is then 'composed' and `secondary` states which fields were borrowed, from which capture, and how many seconds old it is \u2014 the two halves have different ages and the output says so. Before this, the newer capture simply won; statusLine is written every render, so it nearly always won and every richer field was silently dropped. Returns: hasLiveData, source ('statusline-stdin' | 'oauth-api' | 'composed' | 'no-live-data'), capturedAt, capturedAgeSeconds, staleness ('fresh'/'stale'/'expired-window'), session bucket, week bucket, scopedLimits, spend, extraUsage, perModelWeekly, rawExperimental, secondary. Each bucket has utilization (0-1), resetsAt, hoursUntilReset, severity, windowExpired, and isActive when known. `severity` is `'unknown'` and `isActive` is absent when the producing capture does not carry them \u2014 earlier versions reported 'normal' and true regardless, so a session at 88% was labelled normal while the API called it a warning. Includes `guard` config field if `peer_set_rate_limit_guard` was configured. See docs/SETUP-LIVE-DATA.md for install.",
-    inputSchema: { type: "object", properties: {}, additionalProperties: false },
+    inputSchema: {
+      type: "object",
+      properties: {},
+      additionalProperties: false
+    },
     handler: async () => rateLimitStatusTool()
   },
   {
@@ -24419,7 +24812,10 @@ var TOOLS = [
     inputSchema: {
       type: "object",
       properties: {
-        enabled: { type: "boolean", description: "Master toggle (default true)." },
+        enabled: {
+          type: "boolean",
+          description: "Master toggle (default true)."
+        },
         sessionWarnAtPercent: {
           type: "number",
           minimum: 0,
@@ -24454,7 +24850,8 @@ var TOOLS = [
     },
     handler: async (args, ctx) => {
       const parsed = PeerSetRateLimitGuardArgs.safeParse(args);
-      if (!parsed.success) return err2("invalid_args", "Schema validation failed", parsed.error);
+      if (!parsed.success)
+        return err2("invalid_args", "Schema validation failed", parsed.error);
       return peerSetRateLimitGuardTool(ctx, parsed.data);
     }
   },
@@ -24478,7 +24875,8 @@ var TOOLS = [
     },
     handler: async (args) => {
       const parsed = ModelInfoArgs.safeParse(args);
-      if (!parsed.success) return err2("invalid_args", "Schema validation failed", parsed.error);
+      if (!parsed.success)
+        return err2("invalid_args", "Schema validation failed", parsed.error);
       return modelInfoTool(parsed.data);
     }
   },
@@ -24503,7 +24901,8 @@ var TOOLS = [
     },
     handler: async (args, ctx) => {
       const parsed = PeerSetNotificationArgs.safeParse(args);
-      if (!parsed.success) return err2("invalid_args", "Schema validation failed", parsed.error);
+      if (!parsed.success)
+        return err2("invalid_args", "Schema validation failed", parsed.error);
       return peerSetNotificationTool(ctx, parsed.data);
     }
   },
@@ -24517,7 +24916,10 @@ var TOOLS = [
           type: "string",
           description: "Session id, full name, or short name in the caller's team"
         },
-        team: { type: "string", description: "Read every peer of this team (read-only)" },
+        team: {
+          type: "string",
+          description: "Read every peer of this team (read-only)"
+        },
         set: {
           type: "object",
           description: "Values to declare. Omit to read.",
@@ -24530,8 +24932,14 @@ var TOOLS = [
               type: "number",
               description: "Requested window position. Recorded only in v0.11.0."
             },
-            model: { type: ["string", "null"], description: "Model the peer SHOULD run" },
-            accountProfile: { type: ["string", "null"], description: "Billing identity" },
+            model: {
+              type: ["string", "null"],
+              description: "Model the peer SHOULD run"
+            },
+            accountProfile: {
+              type: ["string", "null"],
+              description: "Billing identity"
+            },
             anthropicBaseUrl: {
               type: ["string", "null"],
               description: "How this peer reaches Anthropic. String = route there; null = DELIBERATELY DIRECT; omit = nobody decided, fall back to the fleet default. `unset` withdraws the declaration and is NOT the same as setting null."
@@ -24543,12 +24951,24 @@ var TOOLS = [
           type: "array",
           items: {
             type: "string",
-            enum: ["label", "windowIndex", "model", "accountProfile", "anthropicBaseUrl"]
+            enum: [
+              "label",
+              "windowIndex",
+              "model",
+              "accountProfile",
+              "anthropicBaseUrl"
+            ]
           },
           description: "Withdraw a declaration, returning the key to 'nobody has said'. NOT the same as setting it empty: an undeclared windowIndex reports no drift wherever the window sits, a declared one that disagrees does."
         },
-        dryRun: { type: "boolean", description: "Preview the change without writing" },
-        reason: { type: "string", description: "Recorded in events.jsonl alongside the change" },
+        dryRun: {
+          type: "boolean",
+          description: "Preview the change without writing"
+        },
+        reason: {
+          type: "string",
+          description: "Recorded in events.jsonl alongside the change"
+        },
         wait: { type: "boolean" },
         timeoutMs: { type: "number" }
       },
@@ -24556,17 +24976,23 @@ var TOOLS = [
     },
     handler: async (args, ctx) => {
       const parsed = ControlConfigArgs.safeParse(args);
-      if (!parsed.success) return err2("invalid_args", "Schema validation failed", parsed.error);
+      if (!parsed.success)
+        return err2("invalid_args", "Schema validation failed", parsed.error);
       return controlConfigTool(ctx, parsed.data);
     }
   },
   {
     name: "control_status",
     description: "Read-only: check the v0.10.0 control-plane daemon health (pid, lock, heartbeat freshness) and summarise its state.json. Returns `daemon_not_running` with a setupPointer when the daemon isn't installed \u2014 no crash, no auto-start. See docs/architecture.md ADR-008 and the SETUP-LIVE-DATA doc for install steps.",
-    inputSchema: { type: "object", properties: {}, additionalProperties: false },
+    inputSchema: {
+      type: "object",
+      properties: {},
+      additionalProperties: false
+    },
     handler: async (args) => {
       const parsed = ControlStatusArgs.safeParse(args);
-      if (!parsed.success) return err2("invalid_args", "Schema validation failed", parsed.error);
+      if (!parsed.success)
+        return err2("invalid_args", "Schema validation failed", parsed.error);
       return controlStatusTool();
     }
   },
@@ -24594,7 +25020,8 @@ var TOOLS = [
     },
     handler: async (args) => {
       const parsed = ControlResultArgs.safeParse(args);
-      if (!parsed.success) return err2("invalid_args", "Schema validation failed", parsed.error);
+      if (!parsed.success)
+        return err2("invalid_args", "Schema validation failed", parsed.error);
       return controlResultTool(parsed.data);
     }
   },
@@ -24638,7 +25065,8 @@ var TOOLS = [
     },
     handler: async (args, ctx) => {
       const parsed = PeerStopArgs.safeParse(args);
-      if (!parsed.success) return err2("invalid_args", "Schema validation failed", parsed.error);
+      if (!parsed.success)
+        return err2("invalid_args", "Schema validation failed", parsed.error);
       return peerStopTool(ctx, parsed.data);
     }
   },
@@ -24707,7 +25135,8 @@ var TOOLS = [
     },
     handler: async (args, ctx) => {
       const parsed = PeerSpawnArgs.safeParse(args);
-      if (!parsed.success) return err2("invalid_args", "Schema validation failed", parsed.error);
+      if (!parsed.success)
+        return err2("invalid_args", "Schema validation failed", parsed.error);
       return peerSpawnTool(ctx, parsed.data);
     }
   },
@@ -24751,7 +25180,8 @@ var TOOLS = [
     },
     handler: async (args, ctx) => {
       const parsed = PeerRestartArgs.safeParse(args);
-      if (!parsed.success) return err2("invalid_args", "Schema validation failed", parsed.error);
+      if (!parsed.success)
+        return err2("invalid_args", "Schema validation failed", parsed.error);
       return peerRestartTool(ctx, parsed.data);
     }
   },
@@ -24769,14 +25199,18 @@ var TOOLS = [
           type: "boolean",
           description: "Include full per-peer fields (default false \u2192 compact view)."
         },
-        wait: { type: "boolean", description: "Default true \u2014 read query expects data." },
+        wait: {
+          type: "boolean",
+          description: "Default true \u2014 read query expects data."
+        },
         timeoutMs: { type: "number", minimum: 1, maximum: 6e4 }
       },
       additionalProperties: false
     },
     handler: async (args, ctx) => {
       const parsed = TeamStatusArgs.safeParse(args);
-      if (!parsed.success) return err2("invalid_args", "Schema validation failed", parsed.error);
+      if (!parsed.success)
+        return err2("invalid_args", "Schema validation failed", parsed.error);
       return teamStatusTool(ctx, parsed.data);
     }
   },
@@ -24786,7 +25220,10 @@ var TOOLS = [
     inputSchema: {
       type: "object",
       properties: {
-        peer: { type: "string", description: "Peer sessionId (UUID) or display name." },
+        peer: {
+          type: "string",
+          description: "Peer sessionId (UUID) or display name."
+        },
         anchorTimeoutMs: {
           type: "number",
           minimum: 1,
@@ -24821,7 +25258,10 @@ var TOOLS = [
           maximum: 6e5,
           description: "How long to watch the peer's transcript for the compact to actually run (default 360000). It said 180000 here until 2026-09-01, five days after the daemon moved to 360 s \u2014 the number a caller reads was HALF the number the daemon uses, and the caller who trusts it plans around a budget that is not the one in force. Measured on 24 compacts of one session: 6 ran longer than 180 s, the slowest 220 s. And the duration does NOT track the token count \u2014 706k took 206 s while 929k took 128 s \u2014 so this is not a number to tune to the largest peer. It is a generous ceiling, and an expired one is a statement about the watch, not about the compact."
         },
-        reason: { type: "string", description: "Free-text reason recorded in events.jsonl." },
+        reason: {
+          type: "string",
+          description: "Free-text reason recorded in events.jsonl."
+        },
         wait: { type: "boolean" },
         timeoutMs: { type: "number", minimum: 1, maximum: 12e4 }
       },
@@ -24830,7 +25270,8 @@ var TOOLS = [
     },
     handler: async (args, ctx) => {
       const parsed = PeerCompactArgs.safeParse(args);
-      if (!parsed.success) return err2("invalid_args", "Schema validation failed", parsed.error);
+      if (!parsed.success)
+        return err2("invalid_args", "Schema validation failed", parsed.error);
       return peerCompactTool(ctx, parsed.data);
     }
   },
@@ -24840,7 +25281,10 @@ var TOOLS = [
     inputSchema: {
       type: "object",
       properties: {
-        team: { type: "string", description: "Team name \u2014 matches `teams/<team>.json`." },
+        team: {
+          type: "string",
+          description: "Team name \u2014 matches `teams/<team>.json`."
+        },
         apply: {
           type: "boolean",
           description: "Actually reconcile (default true). Pass false for a preview (spawnedOk/stoppedOk stay empty; plannedSpawn/plannedStop populated)."
@@ -24853,7 +25297,10 @@ var TOOLS = [
           type: "object",
           description: "Provide the team spec inline instead of reading from teams/<team>.json. Same schema \u2014 { team, peers[] }."
         },
-        wait: { type: "boolean", description: "Default true \u2014 reconcile is a query." },
+        wait: {
+          type: "boolean",
+          description: "Default true \u2014 reconcile is a query."
+        },
         timeoutMs: { type: "number", minimum: 1, maximum: 6e4 }
       },
       required: ["team"],
@@ -24861,7 +25308,8 @@ var TOOLS = [
     },
     handler: async (args, ctx) => {
       const parsed = TeamLayoutArgs.safeParse(args);
-      if (!parsed.success) return err2("invalid_args", "Schema validation failed", parsed.error);
+      if (!parsed.success)
+        return err2("invalid_args", "Schema validation failed", parsed.error);
       return teamLayoutTool(ctx, parsed.data);
     }
   },
@@ -24871,7 +25319,10 @@ var TOOLS = [
     inputSchema: {
       type: "object",
       properties: {
-        team: { type: "string", description: "Team name \u2014 matches `teams/<team>.json`." },
+        team: {
+          type: "string",
+          description: "Team name \u2014 matches `teams/<team>.json`."
+        },
         force: {
           type: "boolean",
           description: "Kill peers that never acked. Default false: unacked peers keep running rather than lose unparked work."
@@ -24899,7 +25350,8 @@ var TOOLS = [
     },
     handler: async (args, ctx) => {
       const parsed = TeamStopArgs.safeParse(args);
-      if (!parsed.success) return err2("invalid_args", "Schema validation failed", parsed.error);
+      if (!parsed.success)
+        return err2("invalid_args", "Schema validation failed", parsed.error);
       return teamStopTool(ctx, parsed.data);
     }
   },
@@ -24938,7 +25390,8 @@ var TOOLS = [
     },
     handler: async (args, ctx) => {
       const parsed = TeamAdoptArgs.safeParse(args);
-      if (!parsed.success) return err2("invalid_args", "Schema validation failed", parsed.error);
+      if (!parsed.success)
+        return err2("invalid_args", "Schema validation failed", parsed.error);
       return teamAdoptTool(ctx, parsed.data);
     }
   },
@@ -24969,7 +25422,8 @@ var TOOLS = [
     },
     handler: async (args, ctx) => {
       const parsed = TeamReleaseArgs.safeParse(args);
-      if (!parsed.success) return err2("invalid_args", "Schema validation failed", parsed.error);
+      if (!parsed.success)
+        return err2("invalid_args", "Schema validation failed", parsed.error);
       return teamReleaseTool(ctx, parsed.data);
     }
   },
@@ -24994,7 +25448,8 @@ var TOOLS = [
     },
     handler: async (args, ctx) => {
       const parsed = TeamReconcileArgs.safeParse(args);
-      if (!parsed.success) return err2("invalid_args", "Schema validation failed", parsed.error);
+      if (!parsed.success)
+        return err2("invalid_args", "Schema validation failed", parsed.error);
       return teamReconcileTool(ctx, parsed.data);
     }
   },
@@ -25013,7 +25468,10 @@ var TOOLS = [
           type: "string",
           description: "Restart a whole team. Mutually exclusive with `peers`."
         },
-        reason: { type: "string", description: "Recorded on each restart and in the audit event." },
+        reason: {
+          type: "string",
+          description: "Recorded on each restart and in the audit event."
+        },
         settleMs: {
           type: "number",
           minimum: 0,
@@ -25039,7 +25497,8 @@ var TOOLS = [
     },
     handler: async (args, ctx) => {
       const parsed = TeamRestartArgs.safeParse(args);
-      if (!parsed.success) return err2("invalid_args", "Schema validation failed", parsed.error);
+      if (!parsed.success)
+        return err2("invalid_args", "Schema validation failed", parsed.error);
       return teamRestartTool(ctx, parsed.data);
     }
   }
@@ -25169,11 +25628,13 @@ async function startStdioServer() {
   } catch (e) {
     if (e instanceof IdentityError) {
       log9.error("identity_unresolvable", { message: e.message, hint: e.hint });
-      process.stderr.write(`
+      process.stderr.write(
+        `
 claude-bridge fatal: ${e.message}
 Hint: ${e.hint}
 
-`);
+`
+      );
     } else {
       log9.error("boot_failed", {
         err: e instanceof Error ? e.message : String(e)

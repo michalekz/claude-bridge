@@ -2,9 +2,9 @@ import { spawn } from "node:child_process";
 import { readFile } from "node:fs/promises";
 import { platform } from "node:os";
 import {
-  type StatusLineLiveEnvelope,
-  type StatusLineStdinPayload,
-  writeStatusLineLive,
+	type StatusLineLiveEnvelope,
+	type StatusLineStdinPayload,
+	writeStatusLineLive,
 } from "../parser/live-data.ts";
 import { makeLogger } from "../util/logger.ts";
 
@@ -40,79 +40,79 @@ import { makeLogger } from "../util/logger.ts";
 const log = makeLogger("statusline-wrapper");
 
 async function readAllStdin(): Promise<string> {
-  return new Promise((resolve, reject) => {
-    let data = "";
-    process.stdin.setEncoding("utf-8");
-    process.stdin.on("data", (chunk) => {
-      data += chunk;
-    });
-    process.stdin.on("end", () => resolve(data));
-    process.stdin.on("error", reject);
-  });
+	return new Promise((resolve, reject) => {
+		let data = "";
+		process.stdin.setEncoding("utf-8");
+		process.stdin.on("data", (chunk) => {
+			data += chunk;
+		});
+		process.stdin.on("end", () => resolve(data));
+		process.stdin.on("error", reject);
+	});
 }
 
 interface StdinWithSession {
-  payload: StatusLineStdinPayload;
-  sessionId: string;
+	payload: StatusLineStdinPayload;
+	sessionId: string;
 }
 
 function extractSessionId(payload: StatusLineStdinPayload): string {
-  // CC 2.1.205+ verified 2026-07-09: payload.session_id IS present on stdin
-  // (contrary to what we assumed on 2026-07-07 from static-only analysis of
-  // benabraham's script). This is the AUTHORITATIVE source and is essential
-  // for the v0.9.1 per-session partition — without it, every peer's wrapper
-  // would write into a shared file and cross-contaminate reads.
-  if (payload.session_id && typeof payload.session_id === "string") {
-    return payload.session_id;
-  }
-  // Fallback #1: env var (older CC versions may not populate session_id in
-  // stdin but still expose CLAUDE_CODE_SESSION_ID to hook children).
-  const fromEnv = process.env["CLAUDE_CODE_SESSION_ID"];
-  if (fromEnv) return fromEnv;
-  // Fallback #2: derive a stable id from cwd so different repos don't
-  // overwrite each other. Multiple sessions in the same cwd collide here —
-  // acceptable on truly ancient CC that provides neither signal.
-  const cwd = payload.cwd ?? "unknown-cwd";
-  return `unknown-${cwd.replace(/[^a-zA-Z0-9]/g, "-").slice(-40)}`;
+	// CC 2.1.205+ verified 2026-07-09: payload.session_id IS present on stdin
+	// (contrary to what we assumed on 2026-07-07 from static-only analysis of
+	// benabraham's script). This is the AUTHORITATIVE source and is essential
+	// for the v0.9.1 per-session partition — without it, every peer's wrapper
+	// would write into a shared file and cross-contaminate reads.
+	if (payload.session_id && typeof payload.session_id === "string") {
+		return payload.session_id;
+	}
+	// Fallback #1: env var (older CC versions may not populate session_id in
+	// stdin but still expose CLAUDE_CODE_SESSION_ID to hook children).
+	const fromEnv = process.env["CLAUDE_CODE_SESSION_ID"];
+	if (fromEnv) return fromEnv;
+	// Fallback #2: derive a stable id from cwd so different repos don't
+	// overwrite each other. Multiple sessions in the same cwd collide here —
+	// acceptable on truly ancient CC that provides neither signal.
+	const cwd = payload.cwd ?? "unknown-cwd";
+	return `unknown-${cwd.replace(/[^a-zA-Z0-9]/g, "-").slice(-40)}`;
 }
 
 async function parseStdin(): Promise<StdinWithSession | null> {
-  let raw: string;
-  try {
-    raw = await readAllStdin();
-  } catch (e) {
-    log.warn("statusline_stdin_read_failed", {
-      err: e instanceof Error ? e.message : String(e),
-    });
-    return null;
-  }
-  if (!raw.trim()) return null;
-  try {
-    const payload = JSON.parse(raw) as StatusLineStdinPayload;
-    if (typeof payload !== "object" || payload === null) return null;
-    return { payload, sessionId: extractSessionId(payload) };
-  } catch (e) {
-    log.warn("statusline_stdin_parse_failed", {
-      err: e instanceof Error ? e.message : String(e),
-      preview: raw.slice(0, 200),
-    });
-    return null;
-  }
+	let raw: string;
+	try {
+		raw = await readAllStdin();
+	} catch (e) {
+		log.warn("statusline_stdin_read_failed", {
+			err: e instanceof Error ? e.message : String(e),
+		});
+		return null;
+	}
+	if (!raw.trim()) return null;
+	try {
+		const payload = JSON.parse(raw) as StatusLineStdinPayload;
+		if (typeof payload !== "object" || payload === null) return null;
+		return { payload, sessionId: extractSessionId(payload) };
+	} catch (e) {
+		log.warn("statusline_stdin_parse_failed", {
+			err: e instanceof Error ? e.message : String(e),
+			preview: raw.slice(0, 200),
+		});
+		return null;
+	}
 }
 
 async function captureLive(parsed: StdinWithSession): Promise<void> {
-  const envelope: StatusLineLiveEnvelope = {
-    capturedAt: new Date().toISOString(),
-    sessionId: parsed.sessionId,
-    payload: parsed.payload,
-  };
-  try {
-    await writeStatusLineLive(envelope);
-  } catch (e) {
-    log.warn("statusline_live_write_failed", {
-      err: e instanceof Error ? e.message : String(e),
-    });
-  }
+	const envelope: StatusLineLiveEnvelope = {
+		capturedAt: new Date().toISOString(),
+		sessionId: parsed.sessionId,
+		payload: parsed.payload,
+	};
+	try {
+		await writeStatusLineLive(envelope);
+	} catch (e) {
+		log.warn("statusline_live_write_failed", {
+			err: e instanceof Error ? e.message : String(e),
+		});
+	}
 }
 
 /**
@@ -124,152 +124,157 @@ async function captureLive(parsed: StdinWithSession): Promise<void> {
  */
 export const PASSTHROUGH_TIMEOUT_MS = 10_000;
 
-async function passthrough(underlying: string, stdinRaw: string): Promise<number> {
-  return new Promise((resolve) => {
-    let child: ReturnType<typeof spawn> | null = null;
-    let settled = false;
-    let timer: NodeJS.Timeout | null = null;
+async function passthrough(
+	underlying: string,
+	stdinRaw: string,
+): Promise<number> {
+	return new Promise((resolve) => {
+		let child: ReturnType<typeof spawn> | null = null;
+		let settled = false;
+		let timer: NodeJS.Timeout | null = null;
 
-    const finish = (code: number): void => {
-      if (settled) return;
-      settled = true;
-      if (timer) clearTimeout(timer);
-      resolve(code);
-    };
+		const finish = (code: number): void => {
+			if (settled) return;
+			settled = true;
+			if (timer) clearTimeout(timer);
+			resolve(code);
+		};
 
-    const isWin = platform() === "win32";
-    // Cross-platform command handling — on Windows we go through cmd.exe to
-    // support shell-like paths and env expansion; on POSIX we use /bin/sh -c
-    // for the same reason. This matches how CC itself invokes statusLine.
-    const shell = isWin ? "cmd.exe" : "/bin/sh";
-    const args = isWin ? ["/d", "/s", "/c", underlying] : ["-c", underlying];
+		const isWin = platform() === "win32";
+		// Cross-platform command handling — on Windows we go through cmd.exe to
+		// support shell-like paths and env expansion; on POSIX we use /bin/sh -c
+		// for the same reason. This matches how CC itself invokes statusLine.
+		const shell = isWin ? "cmd.exe" : "/bin/sh";
+		const args = isWin ? ["/d", "/s", "/c", underlying] : ["-c", underlying];
 
-    try {
-      child = spawn(shell, args, {
-        stdio: ["pipe", "pipe", "inherit"],
-      });
-    } catch (e) {
-      log.warn("statusline_passthrough_spawn_failed", {
-        underlying,
-        err: e instanceof Error ? e.message : String(e),
-      });
-      finish(0);
-      return;
-    }
+		try {
+			child = spawn(shell, args, {
+				stdio: ["pipe", "pipe", "inherit"],
+			});
+		} catch (e) {
+			log.warn("statusline_passthrough_spawn_failed", {
+				underlying,
+				err: e instanceof Error ? e.message : String(e),
+			});
+			finish(0);
+			return;
+		}
 
-    // v0.10.2: bound the child. A statusLine command that blocks — a network
-    // call, a lock, a prompt nobody will answer — used to hang this wrapper
-    // forever, and CC's status bar hangs with it. SIGKILL rather than SIGTERM:
-    // the process already ignored its chance to be well-behaved.
-    timer = setTimeout(() => {
-      log.warn("statusline_passthrough_timeout", {
-        underlying,
-        timeoutMs: PASSTHROUGH_TIMEOUT_MS,
-      });
-      try {
-        child?.kill("SIGKILL");
-      } catch {
-        // already gone
-      }
-      finish(0);
-    }, PASSTHROUGH_TIMEOUT_MS);
-    timer.unref?.();
+		// v0.10.2: bound the child. A statusLine command that blocks — a network
+		// call, a lock, a prompt nobody will answer — used to hang this wrapper
+		// forever, and CC's status bar hangs with it. SIGKILL rather than SIGTERM:
+		// the process already ignored its chance to be well-behaved.
+		timer = setTimeout(() => {
+			log.warn("statusline_passthrough_timeout", {
+				underlying,
+				timeoutMs: PASSTHROUGH_TIMEOUT_MS,
+			});
+			try {
+				child?.kill("SIGKILL");
+			} catch {
+				// already gone
+			}
+			finish(0);
+		}, PASSTHROUGH_TIMEOUT_MS);
+		timer.unref?.();
 
-    child.stdout?.on("data", (chunk) => {
-      process.stdout.write(chunk);
-    });
-    child.on("error", (e) => {
-      log.warn("statusline_passthrough_child_error", {
-        underlying,
-        err: e instanceof Error ? e.message : String(e),
-      });
-      finish(0);
-    });
-    child.on("exit", (code) => {
-      finish(code ?? 0);
-    });
+		child.stdout?.on("data", (chunk) => {
+			process.stdout.write(chunk);
+		});
+		child.on("error", (e) => {
+			log.warn("statusline_passthrough_child_error", {
+				underlying,
+				err: e instanceof Error ? e.message : String(e),
+			});
+			finish(0);
+		});
+		child.on("exit", (code) => {
+			finish(code ?? 0);
+		});
 
-    // v0.10.2: EPIPE guard. `child.stdin.write()` does NOT throw when the
-    // child has already exited — it emits 'error' on the stream asynchronously.
-    // With no 'error' listener that becomes an unhandled stream error, which
-    // in Node is a hard process crash, and the try/catch below never sees it.
-    // A statusLine command that reads no stdin (`echo hi` is enough) was
-    // therefore able to kill the wrapper on every single render.
-    child.stdin?.on("error", (e: NodeJS.ErrnoException) => {
-      // EPIPE is the ordinary case and not worth a line in the log every turn.
-      if (e.code !== "EPIPE") {
-        log.warn("statusline_passthrough_stdin_error", {
-          code: e.code,
-          err: e.message,
-        });
-      }
-    });
+		// v0.10.2: EPIPE guard. `child.stdin.write()` does NOT throw when the
+		// child has already exited — it emits 'error' on the stream asynchronously.
+		// With no 'error' listener that becomes an unhandled stream error, which
+		// in Node is a hard process crash, and the try/catch below never sees it.
+		// A statusLine command that reads no stdin (`echo hi` is enough) was
+		// therefore able to kill the wrapper on every single render.
+		child.stdin?.on("error", (e: NodeJS.ErrnoException) => {
+			// EPIPE is the ordinary case and not worth a line in the log every turn.
+			if (e.code !== "EPIPE") {
+				log.warn("statusline_passthrough_stdin_error", {
+					code: e.code,
+					err: e.message,
+				});
+			}
+		});
 
-    try {
-      child.stdin?.write(stdinRaw);
-      child.stdin?.end();
-    } catch (e) {
-      log.warn("statusline_passthrough_stdin_write_failed", {
-        err: e instanceof Error ? e.message : String(e),
-      });
-    }
-  });
+		try {
+			child.stdin?.write(stdinRaw);
+			child.stdin?.end();
+		} catch (e) {
+			log.warn("statusline_passthrough_stdin_write_failed", {
+				err: e instanceof Error ? e.message : String(e),
+			});
+		}
+	});
 }
 
 export async function main(): Promise<number> {
-  const stdinRaw = await readAllStdin();
-  if (!stdinRaw.trim()) {
-    // No stdin — probably manual invocation for testing. Emit a tiny help
-    // string so users who run this directly get a hint.
-    process.stderr.write(
-      "claude-bridge-statusline: expected JSON on stdin from Claude Code.\n" +
-        "See docs/SETUP-LIVE-DATA.md for install instructions.\n",
-    );
-    return 0;
-  }
+	const stdinRaw = await readAllStdin();
+	if (!stdinRaw.trim()) {
+		// No stdin — probably manual invocation for testing. Emit a tiny help
+		// string so users who run this directly get a hint.
+		process.stderr.write(
+			"claude-bridge-statusline: expected JSON on stdin from Claude Code.\n" +
+				"See docs/SETUP-LIVE-DATA.md for install instructions.\n",
+		);
+		return 0;
+	}
 
-  // Parse — even if this fails we still passthrough (best-effort).
-  let parsed: StatusLineStdinPayload | null = null;
-  let sessionId = "unknown";
-  try {
-    const p = JSON.parse(stdinRaw) as StatusLineStdinPayload;
-    if (typeof p === "object" && p !== null) {
-      parsed = p;
-      sessionId = extractSessionId(p);
-    }
-  } catch (e) {
-    log.warn("statusline_parse_failed", {
-      err: e instanceof Error ? e.message : String(e),
-    });
-  }
+	// Parse — even if this fails we still passthrough (best-effort).
+	let parsed: StatusLineStdinPayload | null = null;
+	let sessionId = "unknown";
+	try {
+		const p = JSON.parse(stdinRaw) as StatusLineStdinPayload;
+		if (typeof p === "object" && p !== null) {
+			parsed = p;
+			sessionId = extractSessionId(p);
+		}
+	} catch (e) {
+		log.warn("statusline_parse_failed", {
+			err: e instanceof Error ? e.message : String(e),
+		});
+	}
 
-  // Capture (best-effort — don't await if we're about to spawn a subprocess,
-  // parallelize write with subprocess start for lower latency).
-  const capturePromise = parsed ? captureLive({ payload: parsed, sessionId }) : Promise.resolve();
+	// Capture (best-effort — don't await if we're about to spawn a subprocess,
+	// parallelize write with subprocess start for lower latency).
+	const capturePromise = parsed
+		? captureLive({ payload: parsed, sessionId })
+		: Promise.resolve();
 
-  const underlying = process.env["CLAUDE_BRIDGE_UNDERLYING_STATUSLINE"];
-  let exitCode = 0;
+	const underlying = process.env["CLAUDE_BRIDGE_UNDERLYING_STATUSLINE"];
+	let exitCode = 0;
 
-  if (underlying) {
-    exitCode = await passthrough(underlying, stdinRaw);
-  }
-  // If no underlying command, output nothing — CC renders an empty status
-  // line. User can add their own via CLAUDE_BRIDGE_UNDERLYING_STATUSLINE.
+	if (underlying) {
+		exitCode = await passthrough(underlying, stdinRaw);
+	}
+	// If no underlying command, output nothing — CC renders an empty status
+	// line. User can add their own via CLAUDE_BRIDGE_UNDERLYING_STATUSLINE.
 
-  await capturePromise;
-  return exitCode;
+	await capturePromise;
+	return exitCode;
 }
 
 if (require.main === module) {
-  main().then(
-    (code) => process.exit(code),
-    (e) => {
-      log.error("statusline_wrapper_fatal", {
-        err: e instanceof Error ? e.message : String(e),
-      });
-      process.exit(0); // never break CC rendering
-    },
-  );
+	main().then(
+		(code) => process.exit(code),
+		(e) => {
+			log.error("statusline_wrapper_fatal", {
+				err: e instanceof Error ? e.message : String(e),
+			});
+			process.exit(0); // never break CC rendering
+		},
+	);
 }
 
 // Unused imports guard for tree-shaking edge cases.
