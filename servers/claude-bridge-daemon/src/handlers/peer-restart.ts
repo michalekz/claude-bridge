@@ -30,6 +30,7 @@ import {
   restartThreadId,
 } from "./restart-protocol.ts";
 import { applyStateChange } from "./state-writer.ts";
+import { type TurnEndOutcome, waitForTurnEnd } from "./turn-end-gate.ts";
 import { RESTART_WAKE_PROMPT, wakePeer } from "./wake.ts";
 
 /**
@@ -78,6 +79,12 @@ export const PeerRestartArgsSchema = z
      * gets told so.
      */
     force: z.boolean().default(false),
+    /**
+     * v0.11.51 — budget for the post-ack TURN-END wait (see turn-end-gate.ts).
+     * 0 disables the wait. Ignored when `force`.
+     */
+    turnEndTimeoutMs: z.number().int().nonnegative().max(600_000).optional(),
+    turnEndPollMs: z.number().int().positive().max(10_000).optional(),
     /** How long the peer gets to say it is ready. Ignored when `force`. */
     readyTimeoutMs: z.number().int().positive().max(600_000).optional(),
     readyPollMs: z.number().int().positive().max(10_000).optional(),
@@ -855,6 +862,59 @@ export async function handlePeerRestart(
     );
   }
 
+  // v0.11.51 — THE TURN-END GATE. The ack is written by a tool call, i.e.
+  // inside a turn; killing on the ack alone cut that turn short and destroyed
+  // the record of the ack itself (oxy-marketing, 2026-09-12: ack accepted at
+  // 07:39:55.952, session killed ~07:39:56, the tool_use never persisted, and
+  // the peer honestly denied having acked). Wait for the session to go idle so
+  // the acking turn completes and persists. Policy for peers the probe cannot
+  // see is in turn-end-gate.ts — they proceed, exactly as every kill did
+  // before this gate existed.
+  let turnEnd: TurnEndOutcome | null = null;
+  if (ready.kind === "acked") {
+    turnEnd = await waitForTurnEnd(
+      record.desired.command,
+      record.observed.sessionId ?? undefined,
+      args.turnEndTimeoutMs,
+      args.turnEndPollMs,
+    );
+    if (turnEnd.state === "busy") {
+      await writeEvent({
+        event: "peer_restart_busy_after_ack",
+        level: "warn",
+        by: { sessionId: req.requestedBy.sessionId, name: req.requestedBy.name },
+        requestId: req.id,
+        details: {
+          handle: record.handle,
+          turnEndWaitedMs: turnEnd.waitedMs,
+          probeFailures: turnEnd.probeFailures,
+          note: "acked, but still mid-turn when the wait budget ran out — killing now would cut the running turn short (the 2026-09-12 mystery ack). Nothing was stopped.",
+        },
+      });
+      return errResult(
+        req.id,
+        req.tool,
+        "restart_peer_busy_after_ack",
+        `Peer '${record.handle}' acked the restart but its session was still mid-turn after ${turnEnd.waitedMs} ms of waiting. NOTHING WAS STOPPED: killing a running turn destroys its unpersisted tail — on 2026-09-12 that tail included the record of the ack itself, and the peer could not prove it had acked. The peer keeps running; call peer_restart again once it settles (it will ask again on a fresh window), or force:true to restart now and accept that loss.`,
+        { handle: record.handle, turnEndWaitedMs: turnEnd.waitedMs, stillRunning: true },
+      );
+    }
+    if (turnEnd.waited) {
+      await writeEvent({
+        event: "peer_restart_waited_turn_end",
+        by: { sessionId: req.requestedBy.sessionId, name: req.requestedBy.name },
+        requestId: req.id,
+        details: {
+          handle: record.handle,
+          turnEndWaitedMs: turnEnd.waitedMs,
+          state: turnEnd.state,
+          probeFailures: turnEnd.probeFailures,
+          note: "the acking turn was still running when the ack arrived — waited it out before stopping (v0.11.51)",
+        },
+      });
+    }
+  }
+
   const readyThreadId = ready.kind === "acked" ? ready.threadId : restartThreadId(record.handle);
   const restartMarkFields = {
     threadId: readyThreadId,
@@ -1216,6 +1276,7 @@ export async function handlePeerRestart(
       resumedSessionId: resumeSessionId,
       resumeSource: resumeDecision.kind === "resume" ? resumeDecision.source : null,
       readyWaitedMs: ready.kind === "acked" ? ready.waitedMs : null,
+      turnEndWaitedMs: turnEnd?.waited ? turnEnd.waitedMs : null,
       stoppedCleanly,
       measuredSessionId: identity.actual,
       envSource: record.observed.spawnEnv ? "stored" : "daemon",
@@ -1273,6 +1334,7 @@ export async function handlePeerRestart(
     ...(resumeDecision.kind === "fresh" ? { resumeSkipped: resumeDecision.why } : {}),
     // MEASURED waits, never budgets.
     readyWaitedMs: ready.kind === "acked" ? ready.waitedMs : null,
+    turnEndWaitedMs: turnEnd?.waited ? turnEnd.waitedMs : null,
     stoppedCleanly,
     measuredSessionId: identity.actual,
     // Step g). `false` means the peer is running and does not know why it

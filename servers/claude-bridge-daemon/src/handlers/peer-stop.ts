@@ -26,6 +26,7 @@ import {
   stopAcks,
   stopThreadId,
 } from "./stop-protocol.ts";
+import { waitForTurnEnd } from "./turn-end-gate.ts";
 
 /**
  * A heartbeat younger than this proves the peer is running.
@@ -116,6 +117,13 @@ export const PeerStopArgsSchema = z
     /** How long the peer gets to ack before the stop is reported as failed. */
     ackTimeoutMs: z.number().int().positive().max(600_000).optional(),
     ackPollMs: z.number().int().positive().max(10_000).optional(),
+    /**
+     * v0.11.51 — budget for the post-ack TURN-END wait (see turn-end-gate.ts).
+     * 0 disables the wait. Irrelevant under `force` or `skipCourtesy` (the
+     * restart handler runs its own gate before delegating here).
+     */
+    turnEndTimeoutMs: z.number().int().nonnegative().max(600_000).optional(),
+    turnEndPollMs: z.number().int().positive().max(10_000).optional(),
     /**
      * v0.10.1: keep the peer in state.peers with status:"stopped" instead
      * of deleting it. Used by team_stop so that team_layout apply can
@@ -515,6 +523,65 @@ export async function handlePeerStop(
           retryIsIdempotent: true,
         },
       );
+    }
+  }
+
+  // v0.11.51 — THE TURN-END GATE (see turn-end-gate.ts). The stop-ack is
+  // written by a tool call, i.e. inside a turn; killing on the ack alone cuts
+  // that turn short and its unpersisted tail — including the record of the
+  // ack — dies with it (the 2026-09-12 mystery ack, found on peer_restart;
+  // the stop path has the identical race). Only the graceful path gates:
+  // `force` is an explicit decision to lose the turn, `skipCourtesy` means
+  // peer_restart already ran this same gate.
+  if (courtesy.kind === "acked") {
+    const turnEnd = await waitForTurnEnd(
+      record.desired.command,
+      record.observed.sessionId ?? undefined,
+      args.turnEndTimeoutMs,
+      args.turnEndPollMs,
+    );
+    if (turnEnd.state === "busy") {
+      await writeEvent({
+        event: "peer_stop_busy_after_ack",
+        level: "warn",
+        by: { sessionId: req.requestedBy.sessionId, name: req.requestedBy.name },
+        requestId: req.id,
+        details: {
+          handle,
+          sessionKey,
+          turnEndWaitedMs: turnEnd.waitedMs,
+          probeFailures: turnEnd.probeFailures,
+          note: "acked, but still mid-turn when the wait budget ran out — killing now would cut the running turn short. Nothing was killed.",
+        },
+      });
+      return errResult(
+        req.id,
+        req.tool,
+        "stop_peer_busy_after_ack",
+        `Peer '${handle}' acked the stop but its session was still mid-turn after ${turnEnd.waitedMs} ms of waiting. NOTHING WAS KILLED: ending a running turn destroys its unpersisted tail — including, on 2026-09-12, the record of the very ack that authorized the kill. The peer keeps running; call peer_stop again once it settles, or force:true to end it now and accept that loss.`,
+        {
+          handle,
+          sessionKey,
+          stopped: false,
+          processLeftRunning: true,
+          turnEndWaitedMs: turnEnd.waitedMs,
+        },
+      );
+    }
+    if (turnEnd.waited) {
+      await writeEvent({
+        event: "peer_stop_waited_turn_end",
+        by: { sessionId: req.requestedBy.sessionId, name: req.requestedBy.name },
+        requestId: req.id,
+        details: {
+          handle,
+          sessionKey,
+          turnEndWaitedMs: turnEnd.waitedMs,
+          state: turnEnd.state,
+          probeFailures: turnEnd.probeFailures,
+          note: "the acking turn was still running when the ack arrived — waited it out before the kill (v0.11.51)",
+        },
+      });
     }
   }
 
