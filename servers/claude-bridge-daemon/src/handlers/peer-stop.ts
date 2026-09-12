@@ -26,7 +26,7 @@ import {
   stopAcks,
   stopThreadId,
 } from "./stop-protocol.ts";
-import { waitForTurnEnd } from "./turn-end-gate.ts";
+import { mayStop, waitForTurnEnd } from "./turn-end-gate.ts";
 
 /**
  * A heartbeat younger than this proves the peer is running.
@@ -539,8 +539,9 @@ export async function handlePeerStop(
       record.observed.sessionId ?? undefined,
       args.turnEndTimeoutMs,
       args.turnEndPollMs,
+      record.desired.cwd,
     );
-    if (turnEnd.state === "busy") {
+    if (!mayStop(turnEnd)) {
       await writeEvent({
         event: "peer_stop_busy_after_ack",
         level: "warn",
@@ -551,7 +552,8 @@ export async function handlePeerStop(
           sessionKey,
           turnEndWaitedMs: turnEnd.waitedMs,
           probeFailures: turnEnd.probeFailures,
-          note: "acked, but still mid-turn when the wait budget ran out — killing now would cut the running turn short. Nothing was killed.",
+          transcriptQuietMs: turnEnd.transcriptQuietMs,
+          note: "acked, but still mid-turn when the wait budget ran out — both sources agree (probe busy, transcript shows no concluded turn). Killing now would cut the running turn short. Nothing was killed.",
         },
       });
       return errResult(
@@ -579,7 +581,11 @@ export async function handlePeerStop(
           turnEndWaitedMs: turnEnd.waitedMs,
           state: turnEnd.state,
           probeFailures: turnEnd.probeFailures,
-          note: "the acking turn was still running when the ack arrived — waited it out before the kill (v0.11.51)",
+          concludedByTranscript: turnEnd.concludedByTranscript,
+          transcriptQuietMs: turnEnd.transcriptQuietMs,
+          note: turnEnd.concludedByTranscript
+            ? "the probe still says busy, but the peer's transcript shows its turn concluded and quiet — a background Monitor or agent holds `claude agents --json` busy for as long as it runs (v0.11.52)"
+            : "the acking turn was still running when the ack arrived — waited it out before the kill (v0.11.51)",
         },
       });
     }

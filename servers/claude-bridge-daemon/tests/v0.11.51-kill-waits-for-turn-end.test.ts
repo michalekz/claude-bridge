@@ -316,6 +316,94 @@ describe("peer_restart — the same gate guards the stop step", () => {
   }, 15_000);
 });
 
+describe("v0.11.52 — a background Monitor holds `busy` for ever; the transcript decides", () => {
+  /** The peer's own transcript, where `sessionFile(cwd, id)` will look for it. */
+  async function writeTranscript(rows: unknown[]): Promise<void> {
+    const { mkdir: mk, writeFile: wf } = await import("node:fs/promises");
+    const { projectDir } = await import("@claude-bridge/shared");
+    const dir = projectDir("/tmp");
+    await mk(dir, { recursive: true });
+    await wf(join(dir, `${IDENTITY}.jsonl`), `${rows.map((r) => JSON.stringify(r)).join("\n")}\n`);
+  }
+
+  it("🟢 busy for ever + a concluded, quiet turn → the restart COMPLETES", async () => {
+    // ai-kb-ops and ai-velitel, 2026-09-12: empty prompt, transcript minutes
+    // old, `claude agents --json` busy because their monitors were running.
+    // Under v0.11.51 alone both needed a deliberate `force`.
+    const bin = await fakeClaude(10_000);
+    stubSpawnAndWake();
+    await writeTranscript([
+      {
+        type: "assistant",
+        timestamp: new Date(Date.now() - 11 * 60_000).toISOString(),
+        message: { model: "claude-opus-5", content: [{ type: "text", text: "Ack zapsán." }] },
+      },
+    ]);
+    const { handlePeerRestart } = await import("../src/handlers/peer-restart.ts");
+    const state = stateWith(peerRecord(bin));
+    const { ctx, killed } = ctxWith(state);
+    ackSoon("restart-ack");
+
+    const res = await handlePeerRestart(
+      {
+        schemaVersion: 1,
+        id: "req-restart-bg",
+        ts: new Date().toISOString(),
+        tool: "peer_restart",
+        args: { peer: HANDLE, readyTimeoutMs: 5_000, readyPollMs: 50, turnEndPollMs: 50 },
+        requestedBy: { sessionId: "cli:test", name: "test" },
+        // biome-ignore lint/suspicious/noExplicitAny: hand-built minimal envelope
+      } as any,
+      ctx,
+    );
+
+    expect(res.outcome).toBe("ok");
+    expect(killed).toHaveLength(1);
+  }, 15_000);
+
+  it("🔴 busy + the INCIDENT shape in the transcript → still refuses", async () => {
+    // oxy-marketing at 07:39:55: the request is the last row, the assistant
+    // message that wrote the ack is not written yet. The second source must
+    // not loosen this — it is the whole reason the gate exists.
+    const bin = await fakeClaude(10_000);
+    stubSpawnAndWake();
+    await writeTranscript([
+      {
+        type: "user",
+        timestamp: new Date(Date.now() - 9 * 60_000).toISOString(),
+        message: { role: "user", content: "<channel>restart requested</channel>" },
+      },
+    ]);
+    const { handlePeerRestart } = await import("../src/handlers/peer-restart.ts");
+    const state = stateWith(peerRecord(bin));
+    const { ctx, killed } = ctxWith(state);
+    ackSoon("restart-ack");
+
+    const res = await handlePeerRestart(
+      {
+        schemaVersion: 1,
+        id: "req-restart-incident",
+        ts: new Date().toISOString(),
+        tool: "peer_restart",
+        args: {
+          peer: HANDLE,
+          readyTimeoutMs: 5_000,
+          readyPollMs: 50,
+          turnEndTimeoutMs: 400,
+          turnEndPollMs: 50,
+        },
+        requestedBy: { sessionId: "cli:test", name: "test" },
+        // biome-ignore lint/suspicious/noExplicitAny: hand-built minimal envelope
+      } as any,
+      ctx,
+    );
+
+    expect(res.outcome).toBe("error");
+    expect(res.error?.code).toBe("restart_peer_busy_after_ack");
+    expect(killed).toHaveLength(0);
+  }, 15_000);
+});
+
 describe("the request texts teach the protocol the gate enforces", () => {
   it("restart and stop requests say: ack LAST, then end the turn", async () => {
     const { requestRestartReady } = await import("../src/handlers/restart-protocol.ts");

@@ -7,7 +7,7 @@ var __export = (target, all) => {
 };
 
 // src/index.ts
-var import_promises22 = require("node:fs/promises");
+var import_promises23 = require("node:fs/promises");
 
 // ../../packages/shared/src/atomic-write.ts
 var import_node_crypto = require("node:crypto");
@@ -4335,7 +4335,7 @@ async function resolvePeer(idOrName, root = bridgeRoot(), now = Date.now()) {
 // package.json
 var package_default = {
   name: "claude-bridge-daemon",
-  version: "0.11.51",
+  version: "0.11.52",
   private: true,
   description: "Control-plane daemon for the claude-bridge plugin: peer lifecycle, telemetry, audit. Distributed as opt-in artefact \u2014 see ADR-008.",
   type: "module",
@@ -5263,8 +5263,8 @@ var LockAcquireError = class extends Error {
 function readProcStart(pid) {
   if (process.platform !== "linux") return null;
   try {
-    const stat5 = (0, import_node_fs2.readFileSync)(`/proc/${pid}/stat`, "utf-8");
-    const afterComm = stat5.slice(stat5.lastIndexOf(")") + 1).trim();
+    const stat6 = (0, import_node_fs2.readFileSync)(`/proc/${pid}/stat`, "utf-8");
+    const afterComm = stat6.slice(stat6.lastIndexOf(")") + 1).trim();
     const fields = afterComm.split(/\s+/);
     const starttime = fields[19];
     return starttime ?? null;
@@ -5792,20 +5792,20 @@ async function fileExists(path) {
 }
 var DEFAULT_PARK_WORK_TIMEOUT_MS = 3e5;
 async function verifyAckFile(path, requestedAtMs, threadId, otherPendingThreadIds = [], ackDeadlineMs = null) {
-  let stat5;
+  let stat6;
   try {
-    stat5 = await (0, import_promises10.lstat)(path);
+    stat6 = await (0, import_promises10.lstat)(path);
   } catch {
     return { accepted: false, reason: "none" };
   }
-  if (stat5.mtimeMs < requestedAtMs - 1e3) {
-    return { accepted: false, reason: "too_old", writtenAt: new Date(stat5.mtimeMs).toISOString() };
+  if (stat6.mtimeMs < requestedAtMs - 1e3) {
+    return { accepted: false, reason: "too_old", writtenAt: new Date(stat6.mtimeMs).toISOString() };
   }
-  if (ackDeadlineMs !== null && stat5.mtimeMs > ackDeadlineMs + 1e3) {
+  if (ackDeadlineMs !== null && stat6.mtimeMs > ackDeadlineMs + 1e3) {
     return {
       accepted: false,
       reason: "after_window",
-      writtenAt: new Date(stat5.mtimeMs).toISOString()
+      writtenAt: new Date(stat6.mtimeMs).toISOString()
     };
   }
   let ackThreadId = null;
@@ -5814,7 +5814,7 @@ async function verifyAckFile(path, requestedAtMs, threadId, otherPendingThreadId
     if (typeof parsed.threadId === "string") ackThreadId = parsed.threadId;
   } catch {
   }
-  const writtenAt = new Date(stat5.mtimeMs).toISOString();
+  const writtenAt = new Date(stat6.mtimeMs).toISOString();
   const rivals = otherPendingThreadIds.filter((t) => t !== threadId);
   if (ackThreadId !== null && ackThreadId !== threadId) {
     if (rivals.length > 0) {
@@ -5978,10 +5978,10 @@ var import_node_os4 = require("node:os");
 var import_node_path10 = require("node:path");
 var DEFAULT_MAX_DEPTH = 8;
 var UUID_RE = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i;
-function parsePpidFromStat(stat5) {
-  const close = stat5.lastIndexOf(")");
+function parsePpidFromStat(stat6) {
+  const close = stat6.lastIndexOf(")");
   if (close === -1) return null;
-  const fields = stat5.slice(close + 1).trim().split(/\s+/);
+  const fields = stat6.slice(close + 1).trim().split(/\s+/);
   const ppid = Number.parseInt(fields[1] ?? "", 10);
   return Number.isNaN(ppid) ? null : ppid;
 }
@@ -6045,8 +6045,8 @@ var LinuxProcessInspector = class {
       if (Number.isNaN(pid) || String(pid) !== entry) continue;
       const comm = await this.readProcFile(pid, "comm");
       if (comm?.trim() !== "claude") continue;
-      const stat5 = await this.readProcFile(pid, "stat");
-      const ppid = stat5 ? parsePpidFromStat(stat5) : null;
+      const stat6 = await this.readProcFile(pid, "stat");
+      const ppid = stat6 ? parsePpidFromStat(stat6) : null;
       const raw = await this.readProcFile(pid, "cmdline");
       const argv = (raw ?? "").split("\0").filter((a) => a.length > 0);
       const cmdline = argv.join(" ").trim();
@@ -6117,9 +6117,9 @@ var LinuxProcessInspector = class {
     const chain = [];
     let current = pid;
     for (let i = 0; i < maxDepth; i++) {
-      const stat5 = await this.readProcFile(current, "stat");
-      if (!stat5) break;
-      const ppid = parsePpidFromStat(stat5);
+      const stat6 = await this.readProcFile(current, "stat");
+      if (!stat6) break;
+      const ppid = parsePpidFromStat(stat6);
       if (ppid === null || ppid <= 1) break;
       chain.push(ppid);
       current = ppid;
@@ -6740,8 +6740,8 @@ function wakeAfterCompactLine() {
 }
 
 // src/handlers/peer-restart.ts
-var import_node_fs7 = require("node:fs");
-var import_promises15 = require("node:fs/promises");
+var import_node_fs8 = require("node:fs");
+var import_promises16 = require("node:fs/promises");
 var import_node_path15 = require("node:path");
 
 // src/base-url.ts
@@ -7363,7 +7363,7 @@ async function handlePeerSpawn(req, ctx) {
 }
 
 // src/handlers/peer-stop.ts
-var import_promises14 = require("node:fs/promises");
+var import_promises15 = require("node:fs/promises");
 
 // src/pid.ts
 var import_node_fs6 = require("node:fs");
@@ -7433,31 +7433,108 @@ Reason given: ${reason}` : ""
 }
 
 // src/handlers/turn-end-gate.ts
+var import_node_fs7 = require("node:fs");
+var import_promises14 = require("node:fs/promises");
+var QUIET_MS = 3e4;
 var DEFAULT_TURN_END_TIMEOUT_MS = 9e4;
 var DEFAULT_TURN_END_POLL_MS = 1e3;
 var PROBE_RETRY_ATTEMPTS2 = 3;
-async function waitForTurnEnd(claudeBin, sessionId, timeoutMs = DEFAULT_TURN_END_TIMEOUT_MS, pollMs = DEFAULT_TURN_END_POLL_MS) {
+var TAIL_BYTES = 256 * 1024;
+function probePasses(state) {
+  return state !== "busy";
+}
+function hasToolUse(row) {
+  const content = row.message?.content;
+  if (!Array.isArray(content)) return false;
+  return content.some(
+    (b) => typeof b === "object" && b !== null && b.type === "tool_use"
+  );
+}
+async function turnConcludedFor(transcriptPath) {
+  let handle = null;
+  try {
+    const size = (await (0, import_promises14.stat)(transcriptPath)).size;
+    const start = Math.max(0, size - TAIL_BYTES);
+    handle = await (0, import_promises14.open)(transcriptPath, "r");
+    const buf = Buffer.alloc(size - start);
+    await handle.read(buf, 0, buf.length, start);
+    const lines = buf.toString("utf-8").split("\n");
+    for (let i = lines.length - 1; i >= 0; i--) {
+      const line = lines[i];
+      if (!line?.trim()) continue;
+      let row;
+      try {
+        row = JSON.parse(line);
+      } catch {
+        continue;
+      }
+      if (row.type !== "assistant" && row.type !== "user") continue;
+      if (row.type === "user") return null;
+      if (hasToolUse(row)) return null;
+      if (!row.timestamp) return null;
+      const quietMs = Date.now() - Date.parse(row.timestamp);
+      return Number.isFinite(quietMs) && quietMs >= QUIET_MS ? quietMs : null;
+    }
+    return null;
+  } catch {
+    return null;
+  } finally {
+    await handle?.close().catch(() => void 0);
+  }
+}
+async function transcriptPathOf(sessionId, cwd) {
+  if (!sessionId) return null;
+  const fromStatusline = (await readPeerContext(sessionId)).transcriptPath;
+  if (fromStatusline && (0, import_node_fs7.existsSync)(fromStatusline)) return fromStatusline;
+  if (!cwd) return null;
+  const derived = sessionFile(cwd, sessionId);
+  return (0, import_node_fs7.existsSync)(derived) ? derived : null;
+}
+async function waitForTurnEnd(claudeBin, sessionId, timeoutMs = DEFAULT_TURN_END_TIMEOUT_MS, pollMs = DEFAULT_TURN_END_POLL_MS, cwd) {
   const startedAt = Date.now();
+  const transcriptPath = await transcriptPathOf(sessionId, cwd);
+  let quietMs = null;
+  const concluded = async () => {
+    if (transcriptPath === null) return false;
+    quietMs = await turnConcludedFor(transcriptPath);
+    return quietMs !== null;
+  };
   let probe = await probeAgents(claudeBin);
   let state = busyOf(probe, sessionId);
   let probeFailures = probe.ok ? 0 : 1;
-  const waited = state === "busy";
+  const waited = !probePasses(state);
+  let concludedByTranscript = false;
   if (waited && timeoutMs > 0) {
-    await pollUntil(
-      async () => {
-        probe = await probeAgents(claudeBin);
-        state = busyOf(probe, sessionId);
-        probeFailures = probe.ok ? 0 : probeFailures + 1;
-        return state === "busy" ? null : state;
-      },
-      {
-        timeoutMs,
-        pollMs,
-        abort: () => probeFailures >= PROBE_RETRY_ATTEMPTS2 ? { aborted: true, reason: "probe_failed_repeatedly" } : { aborted: false }
-      }
-    );
+    concludedByTranscript = await concluded();
+    if (!concludedByTranscript) {
+      await pollUntil(
+        async () => {
+          probe = await probeAgents(claudeBin);
+          state = busyOf(probe, sessionId);
+          probeFailures = probe.ok ? 0 : probeFailures + 1;
+          if (probePasses(state)) return state;
+          concludedByTranscript = await concluded();
+          return concludedByTranscript ? state : null;
+        },
+        {
+          timeoutMs,
+          pollMs,
+          abort: () => probeFailures >= PROBE_RETRY_ATTEMPTS2 ? { aborted: true, reason: "probe_failed_repeatedly" } : { aborted: false }
+        }
+      );
+    }
   }
-  return { state, waited, waitedMs: Date.now() - startedAt, probeFailures };
+  return {
+    state,
+    waited,
+    waitedMs: Date.now() - startedAt,
+    probeFailures,
+    concludedByTranscript,
+    transcriptQuietMs: quietMs
+  };
+}
+function mayStop(outcome) {
+  return probePasses(outcome.state) || outcome.concludedByTranscript;
 }
 
 // src/handlers/peer-stop.ts
@@ -7547,7 +7624,7 @@ async function runCourtesyPhase(req, ctx, target, args) {
   const bridgeId = bridgeIdOf(record);
   const timeoutMs = args.ackTimeoutMs ?? DEFAULT_STOP_ACK_TIMEOUT_MS;
   const pollMs = args.ackPollMs ?? DEFAULT_STOP_ACK_POLL_MS;
-  await (0, import_promises14.mkdir)(stopAcks.dir(), { recursive: true });
+  await (0, import_promises15.mkdir)(stopAcks.dir(), { recursive: true });
   const pending = record.observed.stopRequest ?? null;
   const resumed = pending !== null;
   let threadId;
@@ -7793,9 +7870,10 @@ async function handlePeerStop(req, ctx) {
       record.desired.command,
       record.observed.sessionId ?? void 0,
       args.turnEndTimeoutMs,
-      args.turnEndPollMs
+      args.turnEndPollMs,
+      record.desired.cwd
     );
-    if (turnEnd.state === "busy") {
+    if (!mayStop(turnEnd)) {
       await writeEvent({
         event: "peer_stop_busy_after_ack",
         level: "warn",
@@ -7806,7 +7884,8 @@ async function handlePeerStop(req, ctx) {
           sessionKey,
           turnEndWaitedMs: turnEnd.waitedMs,
           probeFailures: turnEnd.probeFailures,
-          note: "acked, but still mid-turn when the wait budget ran out \u2014 killing now would cut the running turn short. Nothing was killed."
+          transcriptQuietMs: turnEnd.transcriptQuietMs,
+          note: "acked, but still mid-turn when the wait budget ran out \u2014 both sources agree (probe busy, transcript shows no concluded turn). Killing now would cut the running turn short. Nothing was killed."
         }
       });
       return errResult(
@@ -7834,7 +7913,9 @@ async function handlePeerStop(req, ctx) {
           turnEndWaitedMs: turnEnd.waitedMs,
           state: turnEnd.state,
           probeFailures: turnEnd.probeFailures,
-          note: "the acking turn was still running when the ack arrived \u2014 waited it out before the kill (v0.11.51)"
+          concludedByTranscript: turnEnd.concludedByTranscript,
+          transcriptQuietMs: turnEnd.transcriptQuietMs,
+          note: turnEnd.concludedByTranscript ? "the probe still says busy, but the peer's transcript shows its turn concluded and quiet \u2014 a background Monitor or agent holds `claude agents --json` busy for as long as it runs (v0.11.52)" : "the acking turn was still running when the ack arrived \u2014 waited it out before the kill (v0.11.51)"
         }
       });
     }
@@ -8209,7 +8290,7 @@ async function confirmStillRunning(pid, identity, expectedSessionId, opts = {}) 
   if (pid === null) return { ok: false, reason: "no pid was reported by the spawn" };
   const windowMs = opts.settleMs ?? 2500;
   const procRoot = opts.procRoot ?? "/proc";
-  const alive = () => (0, import_node_fs7.existsSync)((0, import_node_path15.join)(procRoot, String(pid)));
+  const alive = () => (0, import_node_fs8.existsSync)((0, import_node_path15.join)(procRoot, String(pid)));
   const isClaude = (opts.command ?? "").split("/").pop() === "claude";
   const mustRegister = isClaude && isResumableSessionId(expectedSessionId);
   const registered = identity.actual !== null;
@@ -8297,7 +8378,7 @@ async function runReadyPhase(req, ctx, target, args, resumeSessionId) {
   const bridgeId = bridgeIdOf(record);
   const timeoutMs = args.readyTimeoutMs ?? DEFAULT_RESTART_READY_TIMEOUT_MS;
   const pollMs = args.readyPollMs ?? DEFAULT_RESTART_READY_POLL_MS;
-  await (0, import_promises15.mkdir)(restartAcks.dir(), { recursive: true });
+  await (0, import_promises16.mkdir)(restartAcks.dir(), { recursive: true });
   const pending = record.observed.restartRequest ?? null;
   const resumable = pending !== null && pending.phase === "ready-ack";
   let threadId;
@@ -8588,9 +8669,10 @@ async function handlePeerRestart(req, ctx) {
       record.desired.command,
       record.observed.sessionId ?? void 0,
       args.turnEndTimeoutMs,
-      args.turnEndPollMs
+      args.turnEndPollMs,
+      record.desired.cwd
     );
-    if (turnEnd.state === "busy") {
+    if (!mayStop(turnEnd)) {
       await writeEvent({
         event: "peer_restart_busy_after_ack",
         level: "warn",
@@ -8600,7 +8682,8 @@ async function handlePeerRestart(req, ctx) {
           handle: record.handle,
           turnEndWaitedMs: turnEnd.waitedMs,
           probeFailures: turnEnd.probeFailures,
-          note: "acked, but still mid-turn when the wait budget ran out \u2014 killing now would cut the running turn short (the 2026-09-12 mystery ack). Nothing was stopped."
+          transcriptQuietMs: turnEnd.transcriptQuietMs,
+          note: "acked, but still mid-turn when the wait budget ran out \u2014 both sources agree (the probe says busy and the transcript shows no concluded turn). Killing now would cut the running turn short (the 2026-09-12 mystery ack). Nothing was stopped."
         }
       });
       return errResult(
@@ -8621,7 +8704,9 @@ async function handlePeerRestart(req, ctx) {
           turnEndWaitedMs: turnEnd.waitedMs,
           state: turnEnd.state,
           probeFailures: turnEnd.probeFailures,
-          note: "the acking turn was still running when the ack arrived \u2014 waited it out before stopping (v0.11.51)"
+          concludedByTranscript: turnEnd.concludedByTranscript,
+          transcriptQuietMs: turnEnd.transcriptQuietMs,
+          note: turnEnd.concludedByTranscript ? "the probe still says busy, but the peer's transcript shows its turn concluded and quiet \u2014 a background Monitor or agent holds `claude agents --json` busy for as long as it runs (v0.11.52)" : "the acking turn was still running when the ack arrived \u2014 waited it out before stopping (v0.11.51)"
         }
       });
     }
@@ -9291,7 +9376,7 @@ async function handleTeamAdopt(req, ctx) {
 }
 
 // src/handlers/team-layout.ts
-var import_promises16 = require("node:fs/promises");
+var import_promises17 = require("node:fs/promises");
 var import_node_path16 = require("node:path");
 var PeerSpecSchema = external_exports.object({
   /**
@@ -9372,7 +9457,7 @@ function teamFilePath(team) {
 }
 async function loadTeamSpec(team) {
   try {
-    const raw = await (0, import_promises16.readFile)(teamFilePath(team), "utf-8");
+    const raw = await (0, import_promises17.readFile)(teamFilePath(team), "utf-8");
     const parsed = TeamFileSchema.safeParse(JSON.parse(raw));
     if (!parsed.success) throw new Error(`Team spec parse failed: ${parsed.error.message}`);
     return parsed.data;
@@ -9708,7 +9793,7 @@ async function handleTeamLayout(req, ctx) {
 }
 
 // src/handlers/team-reconcile.ts
-var import_node_fs8 = require("node:fs");
+var import_node_fs9 = require("node:fs");
 var import_node_path17 = require("node:path");
 var TeamReconcileArgsSchema = external_exports.object({
   /** Restrict the report to one team. Unmanaged processes are still listed. */
@@ -9720,7 +9805,7 @@ var TeamReconcileArgsSchema = external_exports.object({
   markDead: external_exports.boolean().default(false)
 }).strict();
 function pidAlive2(pid, procRoot) {
-  return (0, import_node_fs8.existsSync)((0, import_node_path17.join)(procRoot, String(pid)));
+  return (0, import_node_fs9.existsSync)((0, import_node_path17.join)(procRoot, String(pid)));
 }
 async function ownsProcess(inspector, panePid, childPid) {
   if (panePid === childPid) return true;
@@ -9878,7 +9963,7 @@ async function handleTeamReconcile(req, ctx) {
       continue;
     const claimed = sess.name !== null ? namesOnRecords.get(sess.name) : void 0;
     if (sess.kind !== null && sess.kind !== "interactive") {
-      const addressable = (0, import_node_fs8.existsSync)((0, import_node_path17.join)(bridgeRoot(), "status", `${sess.sessionId}.json`));
+      const addressable = (0, import_node_fs9.existsSync)((0, import_node_path17.join)(bridgeRoot(), "status", `${sess.sessionId}.json`));
       if (claimed === void 0 && !addressable) continue;
     }
     drift.push({
@@ -10523,7 +10608,7 @@ async function handleTeamStatus(req, ctx) {
 }
 
 // src/handlers/team-stop.ts
-var import_promises17 = require("node:fs/promises");
+var import_promises18 = require("node:fs/promises");
 var import_node_path18 = require("node:path");
 var DEFAULT_ANCHOR_TIMEOUT_MS2 = DEFAULT_PARK_WORK_TIMEOUT_MS;
 var DEFAULT_ACK_POLL_MS2 = 500;
@@ -10550,7 +10635,7 @@ function teamFilePath2(team) {
 }
 async function loadTeamOrder(team) {
   try {
-    const raw = await (0, import_promises17.readFile)(teamFilePath2(team), "utf-8");
+    const raw = await (0, import_promises18.readFile)(teamFilePath2(team), "utf-8");
     const json = JSON.parse(raw);
     const parsed = TeamStopFileSchema.safeParse(json);
     if (!parsed.success) throw new Error(`Team spec parse failed: ${parsed.error.message}`);
@@ -10785,17 +10870,17 @@ async function dispatch(req, ctx) {
 }
 
 // src/heartbeat.ts
-var import_promises18 = require("node:fs/promises");
+var import_promises19 = require("node:fs/promises");
 var log10 = makeLogger("daemon.heartbeat");
 var timer = null;
 async function touch() {
   const now = /* @__PURE__ */ new Date();
   try {
-    await (0, import_promises18.utimes)(heartbeatPath(), now, now);
+    await (0, import_promises19.utimes)(heartbeatPath(), now, now);
   } catch (e) {
     const code = e.code;
     if (code === "ENOENT") {
-      await (0, import_promises18.writeFile)(heartbeatPath(), "");
+      await (0, import_promises19.writeFile)(heartbeatPath(), "");
     } else {
       log10.warn("heartbeat_touch_failed", { err: String(e) });
     }
@@ -10817,8 +10902,8 @@ function stopHeartbeat() {
 
 // src/hosts/tmux-driver.ts
 var import_node_child_process2 = require("node:child_process");
-var import_node_fs9 = require("node:fs");
-var import_promises19 = require("node:fs/promises");
+var import_node_fs10 = require("node:fs");
+var import_promises20 = require("node:fs/promises");
 var import_node_path19 = require("node:path");
 var import_node_util2 = require("node:util");
 
@@ -10999,7 +11084,7 @@ function shQuote(value) {
   return `'${value.replaceAll("'", `'\\''`)}'`;
 }
 function paneCommand(env, command, args) {
-  const envBin = (0, import_node_fs9.existsSync)("/usr/bin/env") ? "/usr/bin/env" : "env";
+  const envBin = (0, import_node_fs10.existsSync)("/usr/bin/env") ? "/usr/bin/env" : "env";
   const assignments = Object.entries(env).filter(([k]) => !TMUX_OWNED_VARS.includes(k) && k !== "TERM").map(([k, v]) => `${k}=${shQuote(v)}`);
   const script = [
     "exec",
@@ -11818,10 +11903,10 @@ var TmuxDriver = class _TmuxDriver {
     if (content.trim().length === 0) return null;
     try {
       const dir = (0, import_node_path19.join)(controlDir(), "archive");
-      await (0, import_promises19.mkdir)(dir, { recursive: true });
+      await (0, import_promises20.mkdir)(dir, { recursive: true });
       const stamp = (/* @__PURE__ */ new Date()).toISOString().replace(/[:.]/g, "-");
       const path = (0, import_node_path19.join)(dir, `pane-${canonical}-${stamp}.log`);
-      await (0, import_promises19.appendFile)(
+      await (0, import_promises20.appendFile)(
         path,
         `# archived ${(/* @__PURE__ */ new Date()).toISOString()} \u2014 target ${canonical} \u2014 ${reason}
 ${content}`,
@@ -11862,13 +11947,13 @@ ${content}`,
   async logSendKeys(sessionKey, entry) {
     try {
       const dir = (0, import_node_path19.join)(controlDir(), "logs");
-      await (0, import_promises19.mkdir)(dir, { recursive: true });
+      await (0, import_promises20.mkdir)(dir, { recursive: true });
       const line = JSON.stringify({
         ts: (/* @__PURE__ */ new Date()).toISOString(),
         sessionKey,
         ...entry
       });
-      await (0, import_promises19.appendFile)((0, import_node_path19.join)(dir, `sendkeys-${sessionKey}.log`), `${line}
+      await (0, import_promises20.appendFile)((0, import_node_path19.join)(dir, `sendkeys-${sessionKey}.log`), `${line}
 `, "utf-8");
     } catch {
     }
@@ -12176,7 +12261,7 @@ async function runDaemon(opts) {
 
 // src/install.ts
 var import_node_child_process3 = require("node:child_process");
-var import_promises20 = require("node:fs/promises");
+var import_promises21 = require("node:fs/promises");
 var import_node_os5 = require("node:os");
 var import_node_path20 = require("node:path");
 var log14 = makeLogger("daemon.install");
@@ -12209,7 +12294,7 @@ async function readTemplate() {
   ];
   for (const candidate of candidates) {
     try {
-      return await (0, import_promises20.readFile)(candidate, "utf-8");
+      return await (0, import_promises21.readFile)(candidate, "utf-8");
     } catch {
     }
   }
@@ -12230,26 +12315,26 @@ async function deployDaemonBinary(sourceBin) {
     log14.info("deploy_skipped_same_path", { path: target });
     return target;
   }
-  await (0, import_promises20.mkdir)((0, import_node_path20.dirname)(target), { recursive: true });
-  await (0, import_promises20.copyFile)(sourceBin, target);
-  await (0, import_promises20.chmod)(target, 493);
+  await (0, import_promises21.mkdir)((0, import_node_path20.dirname)(target), { recursive: true });
+  await (0, import_promises21.copyFile)(sourceBin, target);
+  await (0, import_promises21.chmod)(target, 493);
   try {
     const templateSource = await readTemplate();
     const templateTarget = (0, import_node_path20.join)((0, import_node_path20.dirname)(target), "templates", UNIT_NAME);
-    await (0, import_promises20.mkdir)((0, import_node_path20.dirname)(templateTarget), { recursive: true });
-    await (0, import_promises20.writeFile)(templateTarget, templateSource, "utf-8");
+    await (0, import_promises21.mkdir)((0, import_node_path20.dirname)(templateTarget), { recursive: true });
+    await (0, import_promises21.writeFile)(templateTarget, templateSource, "utf-8");
   } catch (e) {
     log14.warn("template_deploy_failed", { err: String(e) });
   }
   let version = "unknown";
   try {
     const pkg = JSON.parse(
-      await (0, import_promises20.readFile)((0, import_node_path20.resolve)((0, import_node_path20.dirname)(sourceBin), "..", "package.json"), "utf-8")
+      await (0, import_promises21.readFile)((0, import_node_path20.resolve)((0, import_node_path20.dirname)(sourceBin), "..", "package.json"), "utf-8")
     );
     version = pkg.version ?? "unknown";
   } catch {
   }
-  await (0, import_promises20.writeFile)(
+  await (0, import_promises21.writeFile)(
     deployMetaPath(),
     `${JSON.stringify({ source: (0, import_node_path20.resolve)(sourceBin), version, deployedAt: (/* @__PURE__ */ new Date()).toISOString() }, null, 2)}
 `,
@@ -12267,8 +12352,8 @@ async function installSystemd() {
   const template = await readTemplate();
   const nodeDir = (0, import_node_path20.dirname)(nodeBin);
   const rendered = template.replace(/__NODE_BIN__/g, nodeBin).replace(/__DAEMON_BIN__/g, daemonBin).replace(/__NODE_DIR__/g, nodeDir);
-  await (0, import_promises20.mkdir)(systemdUserDir(), { recursive: true });
-  await (0, import_promises20.writeFile)(unitPath(), rendered, "utf-8");
+  await (0, import_promises21.mkdir)(systemdUserDir(), { recursive: true });
+  await (0, import_promises21.writeFile)(unitPath(), rendered, "utf-8");
   log14.info("unit_written", { path: unitPath(), execStart: daemonBin });
   runSystemctl("daemon-reload");
   runSystemctl("enable", UNIT_NAME);
@@ -12288,14 +12373,14 @@ async function uninstallSystemd() {
     log14.warn("systemd_disable_failed", { err: String(e) });
   }
   try {
-    await (0, import_promises20.unlink)(unitPath());
+    await (0, import_promises21.unlink)(unitPath());
   } catch (e) {
     const code = e.code;
     if (code !== "ENOENT") log14.warn("unit_unlink_failed", { err: String(e) });
   }
   for (const path of [deployedDaemonPath(), deployMetaPath()]) {
     try {
-      await (0, import_promises20.unlink)(path);
+      await (0, import_promises21.unlink)(path);
     } catch (e) {
       const code = e.code;
       if (code !== "ENOENT") log14.warn("deployed_binary_unlink_failed", { path, err: String(e) });
@@ -12313,7 +12398,7 @@ async function ensureBinariesExist(daemonBin, nodeBin) {
     ["node", nodeBin]
   ]) {
     try {
-      await (0, import_promises20.stat)(path);
+      await (0, import_promises21.stat)(path);
     } catch {
       throw new Error(`${label} binary not found at ${path} \u2014 build daemon first (npm run build)`);
     }
@@ -12321,7 +12406,7 @@ async function ensureBinariesExist(daemonBin, nodeBin) {
 }
 
 // src/send.ts
-var import_promises21 = require("node:fs/promises");
+var import_promises22 = require("node:fs/promises");
 var EXIT_OK = 0;
 var EXIT_PEER = 2;
 var EXIT_USAGE = 3;
@@ -12408,7 +12493,7 @@ ${SEND_HELP}` };
   let content;
   if (parsed.textFile !== void 0) {
     try {
-      content = parsed.textFile === "-" ? await readStdin() : await (0, import_promises21.readFile)(parsed.textFile, "utf-8");
+      content = parsed.textFile === "-" ? await readStdin() : await (0, import_promises22.readFile)(parsed.textFile, "utf-8");
     } catch (e) {
       return { code: EXIT_USAGE, stderr: `send: cannot read --text-file: ${String(e)}
 ` };
@@ -12516,7 +12601,7 @@ async function statusCommand() {
   const lock = await readLock();
   let heartbeatAgeMs = null;
   try {
-    const s = await (0, import_promises22.stat)(heartbeatPath());
+    const s = await (0, import_promises23.stat)(heartbeatPath());
     heartbeatAgeMs = Date.now() - s.mtimeMs;
   } catch {
     heartbeatAgeMs = null;

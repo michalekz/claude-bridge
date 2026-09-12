@@ -30,7 +30,7 @@ import {
   restartThreadId,
 } from "./restart-protocol.ts";
 import { applyStateChange } from "./state-writer.ts";
-import { type TurnEndOutcome, waitForTurnEnd } from "./turn-end-gate.ts";
+import { type TurnEndOutcome, mayStop, waitForTurnEnd } from "./turn-end-gate.ts";
 import { RESTART_WAKE_PROMPT, wakePeer } from "./wake.ts";
 
 /**
@@ -877,8 +877,9 @@ export async function handlePeerRestart(
       record.observed.sessionId ?? undefined,
       args.turnEndTimeoutMs,
       args.turnEndPollMs,
+      record.desired.cwd,
     );
-    if (turnEnd.state === "busy") {
+    if (!mayStop(turnEnd)) {
       await writeEvent({
         event: "peer_restart_busy_after_ack",
         level: "warn",
@@ -888,7 +889,8 @@ export async function handlePeerRestart(
           handle: record.handle,
           turnEndWaitedMs: turnEnd.waitedMs,
           probeFailures: turnEnd.probeFailures,
-          note: "acked, but still mid-turn when the wait budget ran out — killing now would cut the running turn short (the 2026-09-12 mystery ack). Nothing was stopped.",
+          transcriptQuietMs: turnEnd.transcriptQuietMs,
+          note: "acked, but still mid-turn when the wait budget ran out — both sources agree (the probe says busy and the transcript shows no concluded turn). Killing now would cut the running turn short (the 2026-09-12 mystery ack). Nothing was stopped.",
         },
       });
       return errResult(
@@ -909,7 +911,11 @@ export async function handlePeerRestart(
           turnEndWaitedMs: turnEnd.waitedMs,
           state: turnEnd.state,
           probeFailures: turnEnd.probeFailures,
-          note: "the acking turn was still running when the ack arrived — waited it out before stopping (v0.11.51)",
+          concludedByTranscript: turnEnd.concludedByTranscript,
+          transcriptQuietMs: turnEnd.transcriptQuietMs,
+          note: turnEnd.concludedByTranscript
+            ? "the probe still says busy, but the peer's transcript shows its turn concluded and quiet — a background Monitor or agent holds `claude agents --json` busy for as long as it runs (v0.11.52)"
+            : "the acking turn was still running when the ack arrived — waited it out before stopping (v0.11.51)",
         },
       });
     }
